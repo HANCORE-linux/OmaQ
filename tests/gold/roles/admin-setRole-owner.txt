@@ -1,0 +1,1 @@
+admin setRole owner 0

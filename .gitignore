@@ -1,0 +1,7 @@
+tests/omaq_test
+helper/omaq
+*.o
+/pkg
+/src
+*.pkg.tar*
+.DS_Store

@@ -1,0 +1,154 @@
+#define _DEFAULT_SOURCE
+#include "store.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define ROTATE_BYTES (2 * 1024 * 1024)
+
+static int mkdir_p(const char *path)
+{
+	if (mkdir(path, 0700) == 0 || errno == EEXIST)
+		return 0;
+	return -1;
+}
+
+static int hist_dir(const char *home, const char *conv_id, char *buf, size_t n)
+{
+	if (!home || !conv_id || !buf)
+		return -1;
+	if (strchr(conv_id, '/') || strstr(conv_id, ".."))
+		return -1;
+	if (snprintf(buf, n, "%s/history/%s", home, conv_id) >= (int)n)
+		return -1;
+	return 0;
+}
+
+static int hist_file(const char *home, const char *conv_id, char *buf, size_t n)
+{
+	char dir[512];
+	if (hist_dir(home, conv_id, dir, sizeof(dir)) != 0)
+		return -1;
+	if (snprintf(buf, n, "%s/messages.jsonl", dir) >= (int)n)
+		return -1;
+	return 0;
+}
+
+int omaq_store_append(const char *home, const char *conv_id, const char *line)
+{
+	char dir[512], path[576], rot[580];
+	char root[512];
+	FILE *f;
+	struct stat st;
+
+	if (!line || strchr(line, '\n'))
+		return -1;
+	if (hist_dir(home, conv_id, dir, sizeof(dir)) != 0)
+		return -1;
+	if (snprintf(root, sizeof(root), "%s/history", home) >= (int)sizeof(root))
+		return -1;
+	if (mkdir_p(root) != 0)
+		return -1;
+	if (mkdir_p(dir) != 0)
+		return -1;
+	if (hist_file(home, conv_id, path, sizeof(path)) != 0)
+		return -1;
+	if (stat(path, &st) == 0 && st.st_size >= ROTATE_BYTES) {
+		if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+			return -1;
+		rename(path, rot);
+	}
+	f = fopen(path, "a");
+	if (!f)
+		return -1;
+	if (fchmod(fileno(f), 0600) != 0) {
+		fclose(f);
+		return -1;
+	}
+	if (fprintf(f, "%s\n", line) < 0) {
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	return 0;
+}
+
+int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out, size_t *out_len)
+{
+	char path[576];
+	FILE *f;
+	char **lines = NULL;
+	size_t n = 0, cap = 0;
+	char buf[4096];
+	size_t i, start;
+	size_t total = 0;
+	char *acc;
+
+	if (!out || !out_len || limit < 0)
+		return -1;
+	*out = NULL;
+	*out_len = 0;
+	if (limit == 0) {
+		*out = calloc(1, 1);
+		return *out ? 0 : -1;
+	}
+	if (hist_file(home, conv_id, path, sizeof(path)) != 0)
+		return -1;
+	f = fopen(path, "r");
+	if (!f) {
+		*out = calloc(1, 1);
+		return *out ? 0 : -1;
+	}
+	while (fgets(buf, sizeof(buf), f)) {
+		size_t len = strlen(buf);
+		char *copy;
+		if (len && buf[len - 1] == '\n')
+			buf[--len] = '\0';
+		if (n == cap) {
+			size_t ncap = cap ? cap * 2 : 16;
+			char **nl = realloc(lines, ncap * sizeof(*nl));
+			if (!nl)
+				goto fail;
+			lines = nl;
+			cap = ncap;
+		}
+		copy = malloc(len + 1);
+		if (!copy)
+			goto fail;
+		memcpy(copy, buf, len + 1);
+		lines[n++] = copy;
+	}
+	fclose(f);
+	f = NULL;
+	start = n > (size_t)limit ? n - (size_t)limit : 0;
+	for (i = start; i < n; i++)
+		total += strlen(lines[i]) + 1;
+	acc = malloc(total + 1);
+	if (!acc)
+		goto fail;
+	acc[0] = '\0';
+	for (i = start; i < n; i++) {
+		strcat(acc, lines[i]);
+		if (i + 1 < n)
+			strcat(acc, "\n");
+	}
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	*out = acc;
+	*out_len = strlen(acc);
+	return 0;
+fail:
+	if (f)
+		fclose(f);
+	if (lines) {
+		for (i = 0; i < n; i++)
+			free(lines[i]);
+		free(lines);
+	}
+	return -1;
+}

@@ -1,0 +1,1 @@
+admin setRole member 0

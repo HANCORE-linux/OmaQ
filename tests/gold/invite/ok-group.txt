@@ -1,0 +1,2 @@
+omaq://invite/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab?i=g1&e=2000000000&k=group&g=room1&r=admin
+group

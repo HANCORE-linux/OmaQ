@@ -1,0 +1,2 @@
+omaq://invite/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab?k=direct&e=2000000000&i=zz9
+direct zz9

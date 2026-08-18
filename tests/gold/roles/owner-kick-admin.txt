@@ -1,0 +1,1 @@
+owner kick admin 1
