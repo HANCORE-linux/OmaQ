@@ -24,6 +24,14 @@ Panel {
     settings: root.settings
   }
 
+  ChatSurface {
+    id: chatSurface
+    visible: !omaq.attached
+    service: omaq
+    bar: root.bar
+    settings: root.settings
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -181,6 +189,16 @@ Panel {
             width: parent.width
             text: "Show safety code"
             onClicked: omaq.getSafety()
+          }
+
+          Button {
+            width: parent.width
+            text: "Open card"
+            onClicked: {
+              omaq.openCard()
+              if (chatSurface)
+                chatSurface.ensureCard(omaq.lastConversation)
+            }
           }
 
           Button {

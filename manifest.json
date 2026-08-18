@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hancore.omaq",
   "name": "OmaQ",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "hancore",
   "license": "MIT",
   "description": "Invite-only 1:1 and group chat for the Omarchy bar.",
@@ -15,6 +15,26 @@
     "description": "OmaQ chat",
     "category": "Communication",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "notifyBadge": true,
+      "notifyRightPanel": false,
+      "notifyDesktop": false,
+      "surfaceMode": "separate",
+      "sound": "off",
+      "soundCustomPath": "",
+      "chatTheme": "system",
+      "animateUnread": true
+    },
+    "schema": [
+      { "key": "notifyBadge", "type": "boolean", "label": "Badge", "defaultValue": true },
+      { "key": "notifyRightPanel", "type": "boolean", "label": "Right panel", "defaultValue": false },
+      { "key": "notifyDesktop", "type": "boolean", "label": "Desktop notification", "defaultValue": false },
+      { "key": "surfaceMode", "type": "enum", "label": "Cards", "options": ["separate", "bundled"], "defaultValue": "separate" },
+      { "key": "sound", "type": "enum", "label": "Sound", "options": ["off", "click", "pop", "bell", "soft", "knock", "custom"], "defaultValue": "off" },
+      { "key": "soundCustomPath", "type": "path", "label": "Custom sound", "defaultValue": "" },
+      { "key": "chatTheme", "type": "enum", "label": "Chat theme", "options": ["system", "paper", "ink", "moss", "dusk", "ember"], "defaultValue": "system" },
+      { "key": "animateUnread", "type": "boolean", "label": "Unread motion", "defaultValue": true }
+    ]
   }
 }

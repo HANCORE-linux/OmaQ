@@ -9,6 +9,7 @@
 #include "../helper/roles.h"
 #include "../helper/safety.h"
 #include "../helper/store.h"
+#include "../helper/surface.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -460,6 +461,39 @@ static void test_group_plan(void)
 	closedir(d);
 }
 
+static void test_surface(void)
+{
+	char dir[] = "/tmp/omaq-surf-XXXXXX";
+	omaq_surface s, g;
+
+	if (!mkdtemp(dir)) {
+		fail("surface mkdtemp");
+		return;
+	}
+	memset(&s, 0, sizeof(s));
+	memcpy(s.conversation, "0", 2);
+	memcpy(s.monitor, "DP-1", 5);
+	s.x = 12;
+	s.y = 34;
+	s.pinned = 0;
+	if (omaq_surface_set(dir, &s) != 0)
+		fail("surface set");
+	if (omaq_surface_get(dir, "0", &g) != 0)
+		fail("surface get");
+	else if (g.x != 12 || g.y != 34 || strcmp(g.monitor, "DP-1") != 0 || g.pinned)
+		fail("surface fields");
+	s.pinned = 1;
+	s.x = 99;
+	if (omaq_surface_set(dir, &s) != 0)
+		fail("surface update");
+	if (omaq_surface_get(dir, "0", &g) != 0 || !g.pinned || g.x != 99)
+		fail("surface pinned");
+	if (omaq_surface_get(dir, "missing", &g) == 0)
+		fail("surface missing");
+	if (omaq_surface_set(dir, &(omaq_surface){ .conversation = "a/../b" }) == 0)
+		fail("surface path escape");
+}
+
 static void test_qr_path(void)
 {
 	if (omaq_qr_path_ok("/tmp/x.png") != 0)
@@ -486,6 +520,7 @@ int main(void)
 	test_safety();
 	test_group_id();
 	test_group_plan();
+	test_surface();
 	test_qr_path();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);

@@ -18,11 +18,11 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/qr.c helper/group.c
+	helper/safety.c helper/qr.c helper/group.c helper/surface.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
-	helper/rate.c helper/safety.c helper/qr.c helper/group.c
+	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/surface.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
@@ -98,7 +98,24 @@ verify-3: test arch helper
 	sh tests/phase3.sh
 	@echo "verify-3: ok"
 
-verify-4 verify-5 verify-6 verify-7:
+verify-4: test arch helper
+	test -f themes/paper.json
+	test -f themes/ink.json
+	test -f themes/moss.json
+	test -f themes/dusk.json
+	test -f themes/ember.json
+	test -f themes/system.json
+	test -f sounds/click.wav
+	test -f sounds/pop.wav
+	test -f sounds/bell.wav
+	test -f sounds/soft.wav
+	test -f sounds/knock.wav
+	sh tests/lock-elect.sh
+	omarchy plugin validate .
+	sh tests/phase4.sh
+	@echo "verify-4: ok"
+
+verify-5 verify-6 verify-7:
 	@echo "$@: not this phase (current=$(PHASE))" >&2; exit 1
 
 clean:

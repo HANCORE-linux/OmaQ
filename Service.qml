@@ -19,6 +19,9 @@ Item {
   property string lastAddr: ""
   property string lastGroup: ""
   property bool pendingGroup: false
+  property string lastChatText: ""
+  property string lastChatDir: ""
+  property var lastSurface: ({})
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
@@ -46,7 +49,11 @@ Item {
       root.unreadCount = root.unreadCount + 1
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      root.lastChatText = ev.text || ""
+      root.lastChatDir = "in"
     }
+    if (ev.event === "surface")
+      root.lastSurface = ev
     if (ev.event === "invite") {
       if (ev.url)
         root.inviteUrl = ev.url
@@ -105,6 +112,12 @@ Item {
     if (!root.lastGroup)
       return
     sendOp({ op: "group.dissolve", group: root.lastGroup })
+  }
+  function openCard() {
+    sendOp({ op: "surface.set", conversation: root.lastConversation, monitor: "", x: 40, y: 80, pinned: false })
+  }
+  function setSurface(conv, mon, x, y, pinned) {
+    sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
   }
 
   function resetBackoff() {

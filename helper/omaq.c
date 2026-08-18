@@ -7,6 +7,7 @@
 #include "qr.h"
 #include "rate.h"
 #include "safety.h"
+#include "surface.h"
 
 #ifdef HAVE_TOX
 #include "identity.h"
@@ -658,6 +659,48 @@ static int handle_op(const omaq_op *op)
 		}
 #endif
 		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "surface.set") == 0) {
+		omaq_surface s;
+		memset(&s, 0, sizeof(s));
+		snprintf(s.conversation, sizeof(s.conversation), "%s",
+			 op->conversation[0] ? op->conversation : "0");
+		snprintf(s.monitor, sizeof(s.monitor), "%s", op->monitor);
+		s.x = op->x;
+		s.y = op->y;
+		s.pinned = op->has_pinned ? op->pinned : 0;
+		if (omaq_surface_set(state_dir(), &s) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		{
+			char ev[320], em[128];
+			if (omaq_json_escape(s.monitor, em, sizeof(em)) != 0)
+				em[0] = '\0';
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 s.conversation, em, s.x, s.y, s.pinned ? "true" : "false");
+			emit(ev);
+		}
+		return 0;
+	}
+	if (strcmp(op->op, "surface.get") == 0) {
+		omaq_surface s;
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		if (omaq_surface_get(state_dir(), cid, &s) != 0) {
+			emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
+			return 0;
+		}
+		{
+			char ev[320], em[128];
+			if (omaq_json_escape(s.monitor, em, sizeof(em)) != 0)
+				em[0] = '\0';
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 s.conversation, em, s.x, s.y, s.pinned ? "true" : "false");
+			emit(ev);
+		}
 		return 0;
 	}
 	if (strcmp(op->op, "safety.get") == 0) {
