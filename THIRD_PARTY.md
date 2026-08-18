@@ -1,11 +1,10 @@
 # Third-party
 
-No compiled dependencies in phase 0.
-
 | Dependency | Used from | License | When |
 |---|---|---|---|
-| *(none yet)* | | | |
-| `toxcore` | helper (planned) | GPL-3.0-or-later | phase 1, only after owner approval |
-| `qrencode` / `zbar` | host tools (already on Omarchy) | LGPL / others | QR in later phases |
+| `toxcore` (Arch extra) | `helper/tox_adapt.c` | GPL-3.0-or-later | phase 1 tox — install with `omarchy pkg add toxcore` |
+| `qrencode` / `zbar` | host tools (Omarchy) | their licenses | QR later |
 
-Helper will be GPL-3.0-or-later once it links toxcore. QML/plugin stays MIT.
+Helper is GPL-3.0-or-later once linked against toxcore. QML/plugin stays MIT.
+
+`toxcore` is **not** installed on this machine until the owner runs the official-repo install (needs their sudo password).
