@@ -18,11 +18,11 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/qr.c
+	helper/safety.c helper/qr.c helper/group.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
-	helper/rate.c helper/safety.c helper/qr.c
+	helper/rate.c helper/safety.c helper/qr.c helper/group.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
@@ -33,7 +33,7 @@ BIN_HELP := helper/omaq
 all: $(BIN_TEST) $(BIN_HELP)
 
 $(BIN_TEST): $(TEST_SRC)
-	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ $(TEST_SRC)
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -o $@ $(TEST_SRC)
 
 $(BIN_HELP): $(HELPER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
@@ -87,7 +87,18 @@ verify-2: test arch helper
 	sh tests/phase2.sh
 	@echo "verify-2: ok"
 
-verify-3 verify-4 verify-5 verify-6 verify-7:
+verify-3: test arch helper
+	@if [ "$(TOX_OK)" != "yes" ]; then \
+		echo "verify-3: toxcore not installed" >&2; \
+		exit 1; \
+	fi
+	test -f docs/stages/03-toxcore.md
+	sh tests/lock-elect.sh
+	omarchy plugin validate .
+	sh tests/phase3.sh
+	@echo "verify-3: ok"
+
+verify-4 verify-5 verify-6 verify-7:
 	@echo "$@: not this phase (current=$(PHASE))" >&2; exit 1
 
 clean:

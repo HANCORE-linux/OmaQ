@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 
+#include "group.h"
 #include "invite.h"
 #include "json_io.h"
 #include "message.h"
@@ -36,6 +37,13 @@ static int g_have_pending;
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
 static char g_issued_url[OMAQ_URL_MAX];
 static int64_t g_issued_exp;
+static int g_issued_is_group;
+static char g_issued_group[80];
+static omaq_role g_issued_grole;
+static int g_have_gpending;
+static uint32_t g_gpending_friend;
+static uint8_t g_gpending_data[1024];
+static size_t g_gpending_len;
 #endif
 static omaq_rate g_rate;
 
@@ -162,7 +170,18 @@ static void clear_invite(void)
 	g_issued_id[0] = '\0';
 	g_issued_url[0] = '\0';
 	g_issued_exp = 0;
+	g_issued_is_group = 0;
+	g_issued_group[0] = '\0';
 	g_have_pending = 0;
+}
+
+static void emit_group(const char *gid, const char *action, uint32_t peer)
+{
+	char ev[160];
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"group.changed\",\"group\":\"%s\",\"action\":\"%s\",\"peer\":\"%u\"}",
+		 gid, action, peer);
+	emit(ev);
 }
 
 static void pk_hex(const uint8_t *pk, char *out)
@@ -211,7 +230,51 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 		return;
 	memcpy(g_pending_pk, pk32, 32);
 	g_have_pending = 1;
-	emit("{\"event\":\"request\",\"kind\":\"direct\"}");
+	if (g_issued_is_group)
+		emit("{\"event\":\"request\",\"kind\":\"group\"}");
+	else
+		emit("{\"event\":\"request\",\"kind\":\"direct\"}");
+}
+
+static void hook_ginv(void *ud, uint32_t friend, const uint8_t *data, size_t len)
+{
+	(void)ud;
+	if (!data || len == 0 || len > sizeof(g_gpending_data))
+		return;
+	memcpy(g_gpending_data, data, len);
+	g_gpending_len = len;
+	g_gpending_friend = friend;
+	g_have_gpending = 1;
+	emit("{\"event\":\"request\",\"kind\":\"group\"}");
+}
+
+static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer, const char *text)
+{
+	char gid[OMAQ_GROUP_ID_MAX], esc[2800], ev[3000];
+	(void)ud;
+	(void)peer;
+	if (omaq_group_id_format(gnum, gid, sizeof(gid)) != 0)
+		return;
+	if (omaq_json_escape(text, esc, sizeof(esc)) != 0)
+		return;
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"message\",\"conversation\":\"%s\",\"text\":\"%s\"}",
+		 gid, esc);
+	emit(ev);
+	omaq_message_append(home_dir(), gid, "peer", text, "in");
+}
+
+static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined)
+{
+	char gid[OMAQ_GROUP_ID_MAX];
+	(void)ud;
+	if (omaq_group_id_format(gnum, gid, sizeof(gid)) != 0)
+		return;
+	if (joined)
+		omaq_group_note_peer(gnum, peer);
+	else
+		omaq_group_drop_peer(gnum, peer);
+	emit_group(gid, joined ? "join" : "leave", peer);
 }
 
 static void hook_msg(void *ud, uint32_t friend, const char *text)
@@ -261,6 +324,59 @@ static int handle_op(const omaq_op *op)
 	}
 	if (strcmp(op->op, "invite.create") == 0) {
 		if (strcmp(op->kind, "group") == 0) {
+#ifdef HAVE_TOX
+			if (g_tox) {
+				omaq_invite inv;
+				char url[OMAQ_URL_MAX];
+				char ev[OMAQ_URL_MAX + 64];
+				omaq_role self = ROLE_MEMBER;
+				omaq_role granted = ROLE_MEMBER;
+				int ttl = op->has_ttl ? op->ttl_sec : 86400;
+				if (!op->group[0] || omaq_group_self_role(g_tox, op->group, &self) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+				if (op->role[0] && omaq_role_parse(op->role, &granted) != 0) {
+					emit_error("unsupported");
+					return 0;
+				}
+				memset(&inv, 0, sizeof(inv));
+				omaq_tox_self_addr_hex(g_tox, inv.tox_addr);
+				rand_id(inv.id, sizeof(inv.id));
+				inv.expiry = (int64_t)time(NULL) + ttl;
+				inv.kind = INVITE_GROUP;
+				if (strlen(op->group) >= sizeof(inv.group)) {
+					emit_error("unsupported");
+					return 0;
+				}
+				memcpy(inv.group, op->group, strlen(op->group) + 1);
+				snprintf(inv.role, sizeof(inv.role), "%s", omaq_role_name(granted));
+				if (omaq_invite_format(&inv, url, sizeof(url)) != 0) {
+					emit_error("unsupported");
+					return 0;
+				}
+				if (!omaq_role_may(self, ACT_INVITE, granted)) {
+					emit_error("forbidden");
+					return 0;
+				}
+				if (op->id[0] &&
+				    omaq_group_invite_friend(g_tox, op->group,
+							     (uint32_t)atoi(op->id),
+							     self, granted) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+				snprintf(g_issued_id, sizeof(g_issued_id), "%s", inv.id);
+				snprintf(g_issued_url, sizeof(g_issued_url), "%s", url);
+				g_issued_exp = inv.expiry;
+				g_issued_is_group = 1;
+				snprintf(g_issued_group, sizeof(g_issued_group), "%s", op->group);
+				g_issued_grole = granted;
+				snprintf(ev, sizeof(ev), "{\"event\":\"invite\",\"url\":\"%s\"}", url);
+				emit(ev);
+				return 0;
+			}
+#endif
 			emit_error("unsupported");
 			return 0;
 		}
@@ -297,6 +413,17 @@ static int handle_op(const omaq_op *op)
 			return 0;
 		}
 		if (inv.kind == INVITE_GROUP) {
+#ifdef HAVE_TOX
+			if (g_tox) {
+				if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id) != 0) {
+					/* already a friend: group Tox invite must come from the owner */
+					emit("{\"event\":\"snapshot\",\"unread\":0}");
+					return 0;
+				}
+				emit("{\"event\":\"snapshot\",\"unread\":0}");
+				return 0;
+			}
+#endif
 			emit_error("unsupported");
 			return 0;
 		}
@@ -353,6 +480,27 @@ static int handle_op(const omaq_op *op)
 	}
 	if (strcmp(op->op, "contact.decide") == 0) {
 #ifdef HAVE_TOX
+		if (g_tox && g_have_gpending) {
+			if (op->has_accept && op->accept) {
+				uint32_t gnum;
+				char gid[OMAQ_GROUP_ID_MAX];
+				if (omaq_tox_group_invite_accept(g_tox, g_gpending_friend,
+								 g_gpending_data, g_gpending_len,
+								 &gnum) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+				g_have_gpending = 0;
+				if (omaq_group_id_format(gnum, gid, sizeof(gid)) == 0)
+					emit_group(gid, "join", 0);
+				else
+					emit("{\"event\":\"snapshot\",\"unread\":0}");
+				return 0;
+			}
+			g_have_gpending = 0;
+			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			return 0;
+		}
 		if (g_tox && g_have_pending) {
 			if (op->has_accept && op->accept) {
 				uint32_t fn;
@@ -361,6 +509,9 @@ static int handle_op(const omaq_op *op)
 					return 0;
 				}
 				fn = omaq_tox_friend_by_pk(g_tox, g_pending_pk);
+				if (g_issued_is_group && g_issued_group[0] && fn != UINT32_MAX)
+					(void)omaq_group_invite_friend(g_tox, g_issued_group, fn,
+								       ROLE_OWNER, g_issued_grole);
 				clear_invite();
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
 				if (fn != UINT32_MAX)
@@ -415,6 +566,100 @@ static int handle_op(const omaq_op *op)
 		emit_error("unsupported");
 		return 0;
 	}
+	if (strcmp(op->op, "group.create") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			char gid[OMAQ_GROUP_ID_MAX];
+			const char *title = op->title[0] ? op->title : (op->text[0] ? op->text : "group");
+			if (omaq_group_create(g_tox, title, gid, sizeof(gid)) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit_group(gid, "create", 0);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "group.dissolve") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			omaq_role self = ROLE_MEMBER;
+			const char *gid = op->group[0] ? op->group : op->conversation;
+			if (omaq_group_self_role(g_tox, gid, &self) != 0 ||
+			    omaq_group_dissolve(g_tox, gid, self) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit_group(gid, "dissolve", 0);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "group.member.setRole") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			omaq_role self = ROLE_MEMBER;
+			omaq_role next = ROLE_MEMBER;
+			const char *gid = op->group[0] ? op->group : op->conversation;
+			uint32_t peer = (uint32_t)atoi(op->member[0] ? op->member : (op->id[0] ? op->id : "0"));
+			if (op->role[0] && omaq_role_parse(op->role, &next) != 0) {
+				emit_error("unsupported");
+				return 0;
+			}
+			if (omaq_group_self_role(g_tox, gid, &self) != 0 ||
+			    omaq_group_set_role(g_tox, gid, peer, self, next) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit_group(gid, "role", peer);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "group.member.remove") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			omaq_role self = ROLE_MEMBER;
+			omaq_role victim = ROLE_MEMBER;
+			const char *gid = op->group[0] ? op->group : op->conversation;
+			uint32_t peer = (uint32_t)atoi(op->member[0] ? op->member : (op->id[0] ? op->id : "0"));
+			uint32_t gnum;
+			if (omaq_group_self_role(g_tox, gid, &self) != 0)
+				self = ROLE_MEMBER;
+			if (omaq_group_id_parse(gid, &gnum) == 0)
+				(void)omaq_tox_group_peer_role(g_tox, gnum, peer, (int *)&victim);
+			if (omaq_group_kick(g_tox, gid, peer, self, victim) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit_group(gid, "kick", peer);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "group.leave") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *gid = op->group[0] ? op->group : op->conversation;
+			if (omaq_group_leave(g_tox, gid) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit_group(gid, "leave", 0);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
 	if (strcmp(op->op, "safety.get") == 0) {
 #ifdef HAVE_TOX
 		if (g_tox) {
@@ -430,10 +675,17 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 		if (g_tox && op->text[0]) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
-			uint32_t fn = (uint32_t)atoi(cid);
-			if (omaq_tox_send(g_tox, fn, op->text) != 0) {
-				emit_error("forbidden");
-				return 0;
+			if (cid[0] == 'g') {
+				if (omaq_group_send(g_tox, cid, op->text) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+			} else {
+				uint32_t fn = (uint32_t)atoi(cid);
+				if (omaq_tox_send(g_tox, fn, op->text) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
 			}
 			omaq_message_append(home_dir(), cid, "me", op->text, "out");
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
@@ -591,8 +843,10 @@ int main(int argc, char **argv)
 		return 1;
 #ifdef HAVE_TOX
 	g_tox = omaq_identity_load(home_dir());
-	if (g_tox)
+	if (g_tox) {
 		omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
+		omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
+	}
 #endif
 	if (hold) {
 		for (;;) {

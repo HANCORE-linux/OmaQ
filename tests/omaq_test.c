@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "../helper/conversation.h"
+#include "../helper/group.h"
 #include "../helper/invite.h"
 #include "../helper/json_io.h"
 #include "../helper/message.h"
@@ -351,6 +352,114 @@ static void test_safety(void)
 		fail("safety short");
 }
 
+static void test_group_id(void)
+{
+	char id[16];
+	uint32_t n;
+
+	if (omaq_group_id_format(0, id, sizeof(id)) != 0 || strcmp(id, "g0") != 0)
+		fail("group id format");
+	if (omaq_group_id_parse("g0", &n) != 0 || n != 0)
+		fail("group id parse 0");
+	if (omaq_group_id_parse("g12", &n) != 0 || n != 12)
+		fail("group id parse 12");
+	if (omaq_group_id_parse("0", &n) == 0)
+		fail("group id not g");
+	if (omaq_group_id_parse("gx", &n) == 0)
+		fail("group id junk");
+}
+
+static void test_group_plan(void)
+{
+	DIR *d = opendir("tests/gold/group");
+	struct dirent *e;
+	if (!d) {
+		fail("open tests/gold/group");
+		return;
+	}
+	while ((e = readdir(d))) {
+		char path[512], body[256];
+		char *nl1, *nl2;
+		char actor[16], roles_s[128], expect[64];
+		omaq_role self, roles[8];
+		int kick[8], nkick = 0, nroles = 0;
+		char *tok;
+		size_t n = strlen(e->d_name);
+		if (n < 5 || strcmp(e->d_name + n - 4, ".txt") != 0)
+			continue;
+		snprintf(path, sizeof(path), "tests/gold/group/%s", e->d_name);
+		if (read_file(path, body, sizeof(body)) != 0) {
+			fail(path);
+			continue;
+		}
+		nl1 = strchr(body, '\n');
+		if (!nl1) {
+			fail(path);
+			continue;
+		}
+		*nl1 = '\0';
+		if (strlen(body) >= sizeof(actor)) {
+			fail(path);
+			continue;
+		}
+		memcpy(actor, body, strlen(body) + 1);
+		nl2 = strchr(nl1 + 1, '\n');
+		if (!nl2) {
+			fail(path);
+			continue;
+		}
+		*nl2 = '\0';
+		if (strlen(nl1 + 1) >= sizeof(roles_s) || strlen(nl2 + 1) >= sizeof(expect)) {
+			fail(path);
+			continue;
+		}
+		memcpy(roles_s, nl1 + 1, strlen(nl1 + 1) + 1);
+		memcpy(expect, nl2 + 1, strlen(nl2 + 1) + 1);
+		if (omaq_role_parse(actor, &self) != 0) {
+			fail(path);
+			continue;
+		}
+		tok = strtok(roles_s, " ");
+		while (tok && nroles < 8) {
+			if (omaq_role_parse(tok, &roles[nroles]) != 0) {
+				fail(path);
+				nroles = -1;
+				break;
+			}
+			nroles++;
+			tok = strtok(NULL, " ");
+		}
+		if (nroles < 0)
+			continue;
+		if (strcmp(expect, "err") == 0) {
+			if (omaq_group_dissolve_plan(self, roles, nroles, kick, &nkick) == 0)
+				fail(path);
+			continue;
+		}
+		if (omaq_group_dissolve_plan(self, roles, nroles, kick, &nkick) != 0) {
+			fail(path);
+			continue;
+		}
+		{
+			char got[64] = "";
+			int i;
+			for (i = 0; i < nroles; i++) {
+				int k, hit = 0;
+				for (k = 0; k < nkick; k++) {
+					if (kick[k] == i)
+						hit = 1;
+				}
+				if (got[0])
+					strcat(got, " ");
+				strcat(got, hit ? "1" : "0");
+			}
+			if (strcmp(got, expect) != 0)
+				fail(path);
+		}
+	}
+	closedir(d);
+}
+
 static void test_qr_path(void)
 {
 	if (omaq_qr_path_ok("/tmp/x.png") != 0)
@@ -375,6 +484,8 @@ int main(void)
 	test_rate_gold();
 	test_rate_hour();
 	test_safety();
+	test_group_id();
+	test_group_plan();
 	test_qr_path();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);

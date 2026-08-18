@@ -185,6 +185,35 @@ Panel {
 
           Button {
             width: parent.width
+            text: "Create group"
+            onClicked: omaq.createGroup()
+          }
+
+          Text {
+            visible: omaq.lastGroup !== ""
+            width: parent.width
+            text: "Group " + omaq.lastGroup
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Button {
+            visible: omaq.lastGroup !== ""
+            width: parent.width
+            text: "Invite last contact"
+            onClicked: omaq.inviteToGroup()
+          }
+
+          Button {
+            visible: omaq.lastGroup !== ""
+            width: parent.width
+            text: "Dissolve group"
+            onClicked: omaq.dissolveGroup()
+          }
+
+          Button {
+            width: parent.width
             text: "Remove contact"
             onClicked: omaq.removeContact()
           }

@@ -17,6 +17,8 @@ Item {
   property bool pending: false
   property string lastConversation: "0"
   property string lastAddr: ""
+  property string lastGroup: ""
+  property bool pendingGroup: false
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
@@ -51,8 +53,16 @@ Item {
       if (ev.qr)
         root.qrPath = ev.qr
     }
-    if (ev.event === "request")
+    if (ev.event === "request") {
       root.pending = true
+      root.pendingGroup = ev.kind === "group"
+    }
+    if (ev.event === "group.changed") {
+      if (ev.group)
+        root.lastGroup = ev.group
+      if (ev.action === "create" || ev.action === "join")
+        root.lastConversation = ev.group || root.lastConversation
+    }
     if (ev.event === "safety") {
       root.safetyCode = ev.code || ""
       root.safetyConv = ev.conversation || root.lastConversation
@@ -85,6 +95,17 @@ Item {
   function removeContact() { sendOp({ op: "contact.remove", id: root.lastConversation }) }
   function rotateNospam() { sendOp({ op: "nospam.rotate" }); root.inviteUrl = "" }
   function getSafety() { sendOp({ op: "safety.get", conversation: root.lastConversation }) }
+  function createGroup() { sendOp({ op: "group.create", title: "group" }) }
+  function inviteToGroup() {
+    if (!root.lastGroup)
+      return
+    sendOp({ op: "invite.create", kind: "group", group: root.lastGroup, role: "member", id: root.lastConversation, ttlSec: 86400 })
+  }
+  function dissolveGroup() {
+    if (!root.lastGroup)
+      return
+    sendOp({ op: "group.dissolve", group: root.lastGroup })
+  }
 
   function resetBackoff() {
     root.backoffMs = 200

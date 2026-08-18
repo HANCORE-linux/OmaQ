@@ -16,6 +16,9 @@ struct omaq_tox {
 	char home[512];
 	omaq_on_request on_req;
 	omaq_on_message on_msg;
+	omaq_on_group_invite on_ginv;
+	omaq_on_group_message on_gmsg;
+	omaq_on_group_peer on_gpeer;
 	void *ud;
 	int online;
 };
@@ -119,6 +122,73 @@ static void on_msg(Tox *tox, uint32_t friend_number, Tox_Message_Type type,
 		t->on_msg(t->ud, friend_number, tmp);
 }
 
+static void on_ginv(Tox *tox, uint32_t friend_number, const uint8_t *data, size_t len,
+		    const uint8_t *gname, size_t glen, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	(void)gname;
+	(void)glen;
+	if (t->on_ginv)
+		t->on_ginv(t->ud, friend_number, data, len);
+}
+
+static void on_gmsg(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Message_Type type,
+		    const uint8_t *message, size_t length, uint32_t mid, void *ud)
+{
+	struct omaq_tox *t = ud;
+	char tmp[1400];
+	(void)tox;
+	(void)type;
+	(void)mid;
+	if (length >= sizeof(tmp))
+		length = sizeof(tmp) - 1;
+	memcpy(tmp, message, length);
+	tmp[length] = '\0';
+	if (t->on_gmsg)
+		t->on_gmsg(t->ud, gnum, peer, tmp);
+}
+
+static void on_gjoin(Tox *tox, uint32_t gnum, uint32_t peer, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	if (t->on_gpeer)
+		t->on_gpeer(t->ud, gnum, peer, 1);
+}
+
+static void on_gexit(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Group_Exit_Type xt,
+		     const uint8_t *name, size_t nlen, const uint8_t *part, size_t plen, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	(void)xt;
+	(void)name;
+	(void)nlen;
+	(void)part;
+	(void)plen;
+	if (t->on_gpeer)
+		t->on_gpeer(t->ud, gnum, peer, 0);
+}
+
+static int role_to_tox(int r)
+{
+	if (r == 2)
+		return (int)TOX_GROUP_ROLE_FOUNDER;
+	if (r == 1)
+		return (int)TOX_GROUP_ROLE_MODERATOR;
+	return (int)TOX_GROUP_ROLE_USER;
+}
+
+static int role_from_tox(Tox_Group_Role r)
+{
+	if (r == TOX_GROUP_ROLE_FOUNDER)
+		return 2;
+	if (r == TOX_GROUP_ROLE_MODERATOR)
+		return 1;
+	return 0;
+}
+
 struct omaq_tox *omaq_tox_open(const char *home)
 {
 	struct omaq_tox *t;
@@ -165,6 +235,14 @@ struct omaq_tox *omaq_tox_open(const char *home)
 	tox_callback_self_connection_status(t->tox, on_status);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
+	tox_callback_group_invite(t->tox, on_ginv);
+	tox_callback_group_message(t->tox, on_gmsg);
+	tox_callback_group_peer_join(t->tox, on_gjoin);
+	tox_callback_group_peer_exit(t->tox, on_gexit);
+	{
+		static const uint8_t nick[] = "omaq";
+		tox_self_set_name(t->tox, nick, 4, NULL);
+	}
 	{
 		static const struct {
 			const char *host;
@@ -331,6 +409,151 @@ void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message
 int omaq_tox_online(const struct omaq_tox *t)
 {
 	return t ? t->online : 0;
+}
+
+void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
+			      omaq_on_group_message msg, omaq_on_group_peer peer, void *ud)
+{
+	if (!t)
+		return;
+	t->on_ginv = inv;
+	t->on_gmsg = msg;
+	t->on_gpeer = peer;
+	if (ud)
+		t->ud = ud;
+}
+
+int omaq_tox_group_new(struct omaq_tox *t, const char *title, uint32_t *gnum)
+{
+	Tox_Err_Group_New err = TOX_ERR_GROUP_NEW_OK;
+	uint32_t n;
+	static const uint8_t nick[] = "omaq";
+
+	if (!t || !t->tox || !title || !gnum)
+		return -1;
+	n = tox_group_new(t->tox, TOX_GROUP_PRIVACY_STATE_PRIVATE,
+			  (const uint8_t *)title, strlen(title), nick, 4, &err);
+	if (err != TOX_ERR_GROUP_NEW_OK || n == UINT32_MAX)
+		return -1;
+	*gnum = n;
+	omaq_tox_save(t);
+	return 0;
+}
+
+int omaq_tox_group_invite_friend(struct omaq_tox *t, uint32_t gnum, uint32_t friend)
+{
+	int i;
+	if (!t || !t->tox)
+		return -1;
+	for (i = 0; i < 25; i++) {
+		Tox_Err_Group_Invite_Friend err = TOX_ERR_GROUP_INVITE_FRIEND_OK;
+		if (tox_group_invite_friend(t->tox, gnum, friend, &err))
+			return 0;
+		if (err != TOX_ERR_GROUP_INVITE_FRIEND_DISCONNECTED &&
+		    err != TOX_ERR_GROUP_INVITE_FRIEND_FAIL_SEND &&
+		    err != TOX_ERR_GROUP_INVITE_FRIEND_INVITE_FAIL)
+			return -1;
+		tox_iterate(t->tox, t);
+		usleep(40000);
+	}
+	return -1;
+}
+
+int omaq_tox_group_invite_accept(struct omaq_tox *t, uint32_t friend,
+				 const uint8_t *data, size_t len, uint32_t *gnum)
+{
+	Tox_Err_Group_Invite_Accept err = TOX_ERR_GROUP_INVITE_ACCEPT_OK;
+	uint32_t n;
+	static const uint8_t nick[] = "omaq";
+
+	if (!t || !t->tox || !data || !gnum)
+		return -1;
+	n = tox_group_invite_accept(t->tox, friend, data, len, nick, 4, NULL, 0, &err);
+	if (err != TOX_ERR_GROUP_INVITE_ACCEPT_OK || n == UINT32_MAX)
+		return -1;
+	*gnum = n;
+	omaq_tox_save(t);
+	return 0;
+}
+
+int omaq_tox_group_set_role(struct omaq_tox *t, uint32_t gnum, uint32_t peer, int omaq_role)
+{
+	Tox_Err_Group_Set_Role err = TOX_ERR_GROUP_SET_ROLE_OK;
+	if (!t || !t->tox)
+		return -1;
+	if (!tox_group_set_role(t->tox, gnum, peer, (Tox_Group_Role)role_to_tox(omaq_role), &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_group_kick(struct omaq_tox *t, uint32_t gnum, uint32_t peer)
+{
+	Tox_Err_Group_Kick_Peer err = TOX_ERR_GROUP_KICK_PEER_OK;
+	if (!t || !t->tox)
+		return -1;
+	if (!tox_group_kick_peer(t->tox, gnum, peer, &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_group_leave(struct omaq_tox *t, uint32_t gnum)
+{
+	Tox_Err_Group_Leave err = TOX_ERR_GROUP_LEAVE_OK;
+	if (!t || !t->tox)
+		return -1;
+	if (!tox_group_leave(t->tox, gnum, NULL, 0, &err))
+		return -1;
+	omaq_tox_save(t);
+	return 0;
+}
+
+int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text)
+{
+	Tox_Err_Group_Send_Message err = TOX_ERR_GROUP_SEND_MESSAGE_OK;
+	if (!t || !t->tox || !text || !text[0])
+		return -1;
+	tox_group_send_message(t->tox, gnum, TOX_MESSAGE_TYPE_NORMAL,
+			       (const uint8_t *)text, strlen(text), &err);
+	return err == TOX_ERR_GROUP_SEND_MESSAGE_OK ? 0 : -1;
+}
+
+int omaq_tox_group_self_role(struct omaq_tox *t, uint32_t gnum, int *omaq_role)
+{
+	Tox_Err_Group_Self_Query err = TOX_ERR_GROUP_SELF_QUERY_OK;
+	Tox_Group_Role r;
+	if (!t || !t->tox || !omaq_role)
+		return -1;
+	r = tox_group_self_get_role(t->tox, gnum, &err);
+	if (err != TOX_ERR_GROUP_SELF_QUERY_OK)
+		return -1;
+	*omaq_role = role_from_tox(r);
+	return 0;
+}
+
+int omaq_tox_group_peer_role(struct omaq_tox *t, uint32_t gnum, uint32_t peer, int *omaq_role)
+{
+	Tox_Err_Group_Peer_Query err = TOX_ERR_GROUP_PEER_QUERY_OK;
+	Tox_Group_Role r;
+	if (!t || !t->tox || !omaq_role)
+		return -1;
+	r = tox_group_peer_get_role(t->tox, gnum, peer, &err);
+	if (err != TOX_ERR_GROUP_PEER_QUERY_OK)
+		return -1;
+	*omaq_role = role_from_tox(r);
+	return 0;
+}
+
+int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer)
+{
+	Tox_Err_Group_Self_Query err = TOX_ERR_GROUP_SELF_QUERY_OK;
+	uint32_t p;
+	if (!t || !t->tox || !peer)
+		return -1;
+	p = tox_group_self_get_peer_id(t->tox, gnum, &err);
+	if (err != TOX_ERR_GROUP_SELF_QUERY_OK)
+		return -1;
+	*peer = p;
+	return 0;
 }
 
 #endif /* HAVE_TOX */

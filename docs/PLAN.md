@@ -310,11 +310,13 @@ Roles stay three on purpose (small, Matrix-like). NGC’s fourth role `observer`
 
 **Phase 3 step 0 (mandatory, before code):** install toxcore (already approved by then), read the headers, write `docs/stages/03-toxcore.md`: what NGC guarantees for invite, kick, roles, dissolve, public vs private. Implement **only the gap** in `group.c`. Do not double-implement rules toxcore already enforces.
 
-Expected constraints (confirm in that note; change the plan if headers disagree):
+Confirmed in `docs/stages/03-toxcore.md` (headers, 0.2.22-2):
 
-- **Dissolve** is not a Tox primitive. OmaQ dissolve = kick everyone we can + leave + mark the conversation dissolved. The NGC group may linger on the network; we do not promise it is gone.
-- **Private group join** needs `tox_group_invite_friend` and thus an **existing Tox friend**. Group invite is therefore: already-accepted 1:1 contact, or redeem first does the 1:1 token dance then the group invite. No public DHT group directory. That keeps “invite is the only way in.”
-- **`r=admin`:** join as member, then founder/admin `setRole`. There is a member window. Model it; do not pretend the link is instant admin.
+- **Dissolve** is not a Tox primitive. OmaQ dissolve = kick everyone `role_may` allows + leave + mark dissolved. The NGC group may linger; we do not promise it is gone.
+- **Private group join** needs `tox_group_invite_friend` and an **existing Tox friend**. Group invite is: already-accepted 1:1, or redeem does the 1:1 token dance then the group invite. No public DHT directory. No `tox_group_join` (that is the public Chat-ID path).
+- **`r=admin`:** join as Tox `USER` (OmaQ member), then `setRole`. There is a member window.
+- **Gap vs product:** Tox lets only the founder promote to moderator. OmaQ `roles.c` still allows admin → admin; `tox_group_set_role` then returns `forbidden`. We do not invent a side channel.
+- **No peer-list API.** `group.c` tracks join/exit. Observer is never set.
 
 ---
 

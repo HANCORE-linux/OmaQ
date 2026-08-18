@@ -15,8 +15,10 @@ typedef struct {
 	char conversation[80];
 	char text[OMAQ_JSON_STR_MAX];
 	char group[80];
+	char member[80];
 	char role[16];
 	char path[OMAQ_JSON_STR_MAX];
+	char title[80];
 	char monitor[64];
 	int ttl_sec;
 	int limit;
