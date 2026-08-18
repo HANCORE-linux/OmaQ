@@ -9,8 +9,8 @@
 #include "safety.h"
 #include "surface.h"
 
-#ifdef HAVE_TOX
 #include "identity.h"
+#ifdef HAVE_TOX
 #include "tox_adapt.h"
 #endif
 
@@ -785,6 +785,99 @@ static int handle_op(const omaq_op *op)
 			return 0;
 		}
 		emit("{\"event\":\"history\",\"items\":[]}");
+		return 0;
+	}
+	if (strcmp(op->op, "search") == 0) {
+		char *out = NULL;
+		size_t n = 0;
+		int lim = op->has_limit ? op->limit : 20;
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		if (!op->text[0]) {
+			emit("{\"event\":\"search\",\"items\":[]}");
+			return 0;
+		}
+		if (omaq_message_search(home_dir(), cid, op->text, lim, &out, &n) == 0 && out) {
+			char ev[OMAQ_JSON_LINE_MAX];
+			char *p = ev;
+			size_t left = sizeof(ev);
+			int first = 1;
+			char *line = out;
+			int wr = snprintf(p, left, "{\"event\":\"search\",\"items\":[");
+			if (wr < 0 || (size_t)wr >= left) {
+				free(out);
+				emit_error("unsupported");
+				return 0;
+			}
+			p += wr;
+			left -= (size_t)wr;
+			while (*line) {
+				char *nl = strchr(line, '\n');
+				size_t ln = nl ? (size_t)(nl - line) : strlen(line);
+				if (!first) {
+					if (left < 2)
+						break;
+					*p++ = ',';
+					left--;
+				}
+				first = 0;
+				if (ln + 1 >= left)
+					break;
+				memcpy(p, line, ln);
+				p += ln;
+				left -= ln;
+				line += ln + (nl ? 1 : 0);
+			}
+			if (left < 3) {
+				free(out);
+				emit("{\"event\":\"search\",\"items\":[]}");
+				return 0;
+			}
+			memcpy(p, "]}", 3);
+			emit(ev);
+			free(out);
+			return 0;
+		}
+		emit("{\"event\":\"search\",\"items\":[]}");
+		return 0;
+	}
+	if (strcmp(op->op, "identity.export") == 0) {
+		char dest[512];
+		char ev[576], esc[512];
+		const char *path = op->path[0] ? op->path : dest;
+		if (!op->path[0]) {
+			if (snprintf(dest, sizeof(dest), "%s/omaq-identity.save", state_dir()) >= (int)sizeof(dest)) {
+				emit_error("unsupported");
+				return 0;
+			}
+		}
+		if (omaq_identity_export(home_dir(), path) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		if (omaq_json_escape(path, esc, sizeof(esc)) != 0) {
+			emit_error("unsupported");
+			return 0;
+		}
+		snprintf(ev, sizeof(ev), "{\"event\":\"identity\",\"op\":\"export\",\"path\":\"%s\"}", esc);
+		emit(ev);
+		return 0;
+	}
+	if (strcmp(op->op, "identity.import") == 0) {
+		int rc;
+		if (!op->path[0]) {
+			emit_error("unsupported");
+			return 0;
+		}
+		rc = omaq_identity_import(home_dir(), op->path, op->has_replace && op->replace);
+		if (rc == 1) {
+			emit_error("identity_exists");
+			return 0;
+		}
+		if (rc != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		emit("{\"event\":\"identity\",\"op\":\"import\"}");
 		return 0;
 	}
 	emit_error("unsupported");

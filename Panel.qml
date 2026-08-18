@@ -230,6 +230,24 @@ Panel {
             onClicked: omaq.dissolveGroup()
           }
 
+          TextField {
+            id: searchField
+            width: parent.width
+            placeholderText: "Search this chat"
+          }
+
+          Button {
+            width: parent.width
+            text: "Search"
+            onClicked: omaq.searchChat(searchField.text)
+          }
+
+          Button {
+            width: parent.width
+            text: "Export identity"
+            onClicked: omaq.exportIdentity()
+          }
+
           Button {
             width: parent.width
             text: "Remove contact"

@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 #include "../helper/conversation.h"
 #include "../helper/group.h"
+#include "../helper/identity.h"
 #include "../helper/invite.h"
 #include "../helper/json_io.h"
 #include "../helper/message.h"
@@ -233,6 +234,66 @@ static void test_conv(void)
 	omaq_conv_note(&c, "hello", 1);
 	if (c.unread != 1 || strcmp(c.last, "hello") != 0)
 		fail("conv note");
+}
+
+static void test_search(void)
+{
+	char dir[] = "/tmp/omaq-search-XXXXXX";
+	char *out = NULL;
+	size_t n = 0;
+
+	if (!mkdtemp(dir)) {
+		fail("search mkdtemp");
+		return;
+	}
+	if (omaq_store_append(dir, "c1", "{\"text\":\"alpha one\"}") != 0 ||
+	    omaq_store_append(dir, "c1", "{\"text\":\"bravo two\"}") != 0 ||
+	    omaq_store_append(dir, "c1", "{\"text\":\"ALPHA three\"}") != 0)
+		fail("search append");
+	if (omaq_store_search(dir, "c1", "alpha", 20, &out, &n) != 0)
+		fail("search");
+	else if (!out || !strstr(out, "alpha one") || !strstr(out, "ALPHA three") ||
+		 strstr(out, "bravo"))
+		fail("search hits");
+	free(out);
+}
+
+static void test_identity_files(void)
+{
+	char dir[] = "/tmp/omaq-id-XXXXXX";
+	char src[256], dst[256], other[256];
+	FILE *f;
+
+	if (!mkdtemp(dir)) {
+		fail("id mkdtemp");
+		return;
+	}
+	if (snprintf(src, sizeof(src), "%s/tox.save", dir) >= (int)sizeof(src) ||
+	    snprintf(dst, sizeof(dst), "%s/backup.save", dir) >= (int)sizeof(dst) ||
+	    snprintf(other, sizeof(other), "%s/other.save", dir) >= (int)sizeof(other)) {
+		fail("id path");
+		return;
+	}
+	f = fopen(src, "w");
+	if (!f) {
+		fail("id write");
+		return;
+	}
+	fputs("SAVE-A", f);
+	fclose(f);
+	if (omaq_identity_export(dir, dst) != 0)
+		fail("id export");
+	if (omaq_identity_import(dir, dst, 0) != 1)
+		fail("id exists");
+	f = fopen(other, "w");
+	if (!f) {
+		fail("id other");
+		return;
+	}
+	fputs("SAVE-B", f);
+	fclose(f);
+	if (omaq_identity_import(dir, other, 1) != 0)
+		fail("id replace");
 }
 
 static void test_expire(void)
@@ -512,6 +573,8 @@ int main(void)
 	test_roles();
 	test_json();
 	test_store();
+	test_search();
+	test_identity_files();
 	test_mutate();
 	test_conv();
 	test_expire();

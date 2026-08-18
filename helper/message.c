@@ -38,3 +38,9 @@ int omaq_message_history(const char *home, const char *conv_id, int limit,
 		limit = 50;
 	return omaq_store_tail(home, conv_id, limit, out, out_len);
 }
+
+int omaq_message_search(const char *home, const char *conv_id, const char *needle,
+			int limit, char **out, size_t *out_len)
+{
+	return omaq_store_search(home, conv_id, needle, limit, out, out_len);
+}

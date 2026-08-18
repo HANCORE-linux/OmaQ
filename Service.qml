@@ -119,6 +119,18 @@ Item {
   function setSurface(conv, mon, x, y, pinned) {
     sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
   }
+  function exportIdentity() {
+    sendOp({ op: "identity.export" })
+  }
+  function importIdentity(path, replace) {
+    var o = { op: "identity.import", path: path }
+    if (replace)
+      o.replace = true
+    sendOp(o)
+  }
+  function searchChat(q) {
+    sendOp({ op: "search", conversation: root.lastConversation, text: q, limit: 20 })
+  }
 
   function resetBackoff() {
     root.backoffMs = 200

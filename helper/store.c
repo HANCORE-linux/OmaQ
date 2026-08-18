@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 #include "store.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -165,5 +166,101 @@ fail:
 			free(lines[i]);
 		free(lines);
 	}
+	return -1;
+}
+
+static int ci_has(const char *hay, const char *needle)
+{
+	size_t nlen, hlen, i, j;
+
+	if (!hay || !needle || !needle[0])
+		return 0;
+	nlen = strlen(needle);
+	hlen = strlen(hay);
+	if (nlen > hlen)
+		return 0;
+	for (i = 0; i + nlen <= hlen; i++) {
+		for (j = 0; j < nlen; j++) {
+			unsigned char a = (unsigned char)hay[i + j];
+			unsigned char b = (unsigned char)needle[j];
+			if (tolower(a) != tolower(b))
+				break;
+		}
+		if (j == nlen)
+			return 1;
+	}
+	return 0;
+}
+
+int omaq_store_search(const char *home, const char *conv_id, const char *needle,
+		      int limit, char **out, size_t *out_len)
+{
+	char path[576], rot[580];
+	char **lines = NULL;
+	size_t n = 0, cap = 0, i, total = 0;
+	size_t *hit = NULL;
+	size_t nhit = 0;
+	char *acc;
+
+	if (!out || !out_len || !needle || strchr(needle, '\n'))
+		return -1;
+	*out = NULL;
+	*out_len = 0;
+	if (limit <= 0)
+		limit = 20;
+	if (limit > 20)
+		limit = 20;
+	if (hist_file(home, conv_id, path, sizeof(path)) != 0)
+		return -1;
+	if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	if (read_lines(rot, &lines, &n, &cap) != 0)
+		goto sfail;
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		goto sfail;
+	hit = calloc(n ? n : 1, sizeof(*hit));
+	if (!hit)
+		goto sfail;
+	for (i = 0; i < n; i++) {
+		if (ci_has(lines[i], needle))
+			hit[nhit++] = i;
+	}
+	if (nhit > (size_t)limit) {
+		memmove(hit, hit + (nhit - (size_t)limit), (size_t)limit * sizeof(*hit));
+		nhit = (size_t)limit;
+	}
+	if (nhit == 0) {
+		free(hit);
+		for (i = 0; i < n; i++)
+			free(lines[i]);
+		free(lines);
+		*out = calloc(1, 1);
+		return *out ? 0 : -1;
+	}
+	for (i = 0; i < nhit; i++)
+		total += strlen(lines[hit[i]]) + 1;
+	acc = malloc(total + 1);
+	if (!acc)
+		goto sfail;
+	acc[0] = '\0';
+	for (i = 0; i < nhit; i++) {
+		strcat(acc, lines[hit[i]]);
+		if (i + 1 < nhit)
+			strcat(acc, "\n");
+	}
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	free(hit);
+	*out = acc;
+	*out_len = strlen(acc);
+	return 0;
+sfail:
+	if (lines) {
+		for (i = 0; i < n; i++)
+			free(lines[i]);
+		free(lines);
+	}
+	free(hit);
 	return -1;
 }

@@ -258,6 +258,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"msg.send","conversation":"...","text":"..."}
 {"op":"history","conversation":"...","limit":50}
 {"op":"nospam.rotate"}
+{"op":"search","conversation":"...","text":"...","limit":20}
 {"op":"identity.export"}
 {"op":"identity.import","path":"..."}
 {"op":"identity.import","path":"...","replace":true}
