@@ -17,10 +17,12 @@ endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
-	helper/identity.c helper/tox_adapt.c
+	helper/identity.c helper/tox_adapt.c helper/rate.c \
+	helper/safety.c helper/qr.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
-	helper/json_io.c helper/store.c helper/message.c
+	helper/json_io.c helper/store.c helper/message.c \
+	helper/rate.c helper/safety.c helper/qr.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
@@ -74,7 +76,18 @@ verify-1: verify-1-offline
 	@if [ "$(TOX_OK)" = "yes" ]; then $(MAKE) verify-1-tox; \
 	else echo "verify-1: offline ok; tox not enabled (omarchy pkg add toxcore)"; fi
 
-verify-2 verify-3 verify-4 verify-5 verify-6 verify-7:
+verify-2: test arch helper
+	@if [ "$(TOX_OK)" != "yes" ]; then \
+		echo "verify-2: toxcore not installed. Run: omarchy pkg add toxcore" >&2; \
+		exit 1; \
+	fi
+	sh tests/lock-elect.sh
+	sh tests/two-clients.sh
+	omarchy plugin validate .
+	sh tests/phase2.sh
+	@echo "verify-2: ok"
+
+verify-3 verify-4 verify-5 verify-6 verify-7:
 	@echo "$@: not this phase (current=$(PHASE))" >&2; exit 1
 
 clean:

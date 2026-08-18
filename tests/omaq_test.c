@@ -3,7 +3,10 @@
 #include "../helper/invite.h"
 #include "../helper/json_io.h"
 #include "../helper/message.h"
+#include "../helper/qr.h"
+#include "../helper/rate.h"
 #include "../helper/roles.h"
+#include "../helper/safety.h"
 #include "../helper/store.h"
 
 #include <dirent.h>
@@ -230,6 +233,136 @@ static void test_conv(void)
 		fail("conv note");
 }
 
+static void test_expire(void)
+{
+	omaq_invite inv;
+
+	memset(&inv, 0, sizeof(inv));
+	inv.expiry = 10;
+	if (!omaq_invite_expired(&inv, 10))
+		fail("expire at e");
+	if (!omaq_invite_expired(&inv, 11))
+		fail("expire after e");
+	if (omaq_invite_expired(&inv, 9))
+		fail("expire before e");
+}
+
+static void test_rate_gold(void)
+{
+	char body[1024];
+	char *line;
+	omaq_rate r;
+
+	if (read_file("tests/gold/rate/same-key-sixth.txt", body, sizeof(body)) != 0) {
+		fail("rate gold missing");
+		return;
+	}
+	omaq_rate_init(&r);
+	line = body;
+	while (*line) {
+		char *nl = strchr(line, '\n');
+		long t;
+		char key[32];
+		char want[16];
+		int rc;
+		if (nl)
+			*nl = '\0';
+		if (line[0] && line[0] != '#') {
+			if (sscanf(line, "%ld %31s %15s", &t, key, want) != 3) {
+				fail("rate gold parse");
+			} else {
+				rc = omaq_rate_allow(&r, key, (int64_t)t);
+				if (strcmp(want, "allow") == 0 && rc != 0)
+					fail("rate gold allow");
+				if (strcmp(want, "deny") == 0 && rc == 0)
+					fail("rate gold deny");
+			}
+		}
+		if (!nl)
+			break;
+		line = nl + 1;
+	}
+}
+
+static void test_rate_hour(void)
+{
+	omaq_rate r;
+	int i;
+	char key[16];
+
+	omaq_rate_init(&r);
+	for (i = 0; i < OMAQ_RATE_PER_HOUR; i++) {
+		snprintf(key, sizeof(key), "k%d", i);
+		if (omaq_rate_allow(&r, key, 1000 + i) != 0)
+			fail("rate hour allow");
+	}
+	if (omaq_rate_allow(&r, "extra", 1020) == 0)
+		fail("rate hour deny");
+	if (omaq_rate_allow(&r, "later", 1000 + 3600) != 0)
+		fail("rate hour rolled");
+}
+
+static void test_safety(void)
+{
+	char body[512];
+	char *nl1, *nl2;
+	char a[65], b[65], expect[200];
+	char got[OMAQ_SAFETY_MAX];
+	char got2[OMAQ_SAFETY_MAX];
+
+	if (read_file("tests/gold/safety/order.txt", body, sizeof(body)) != 0) {
+		fail("safety gold missing");
+		return;
+	}
+	nl1 = strchr(body, '\n');
+	if (!nl1) {
+		fail("safety gold");
+		return;
+	}
+	*nl1 = '\0';
+	if (strlen(body) != 64) {
+		fail("safety gold a");
+		return;
+	}
+	memcpy(a, body, 65);
+	nl2 = strchr(nl1 + 1, '\n');
+	if (!nl2) {
+		fail("safety gold");
+		return;
+	}
+	*nl2 = '\0';
+	if (strlen(nl1 + 1) != 64) {
+		fail("safety gold b");
+		return;
+	}
+	memcpy(b, nl1 + 1, 65);
+	if (strlen(nl2 + 1) >= sizeof(expect)) {
+		fail("safety gold expect");
+		return;
+	}
+	memcpy(expect, nl2 + 1, strlen(nl2 + 1) + 1);
+	if (omaq_safety_code(a, b, got, sizeof(got)) != 0)
+		fail("safety code");
+	else if (strcmp(got, expect) != 0)
+		fail("safety gold match");
+	if (omaq_safety_code(b, a, got2, sizeof(got2)) != 0 || strcmp(got, got2) != 0)
+		fail("safety order");
+	if (omaq_safety_code("nope", b, got, sizeof(got)) == 0)
+		fail("safety short");
+}
+
+static void test_qr_path(void)
+{
+	if (omaq_qr_path_ok("/tmp/x.png") != 0)
+		fail("qr path ok");
+	if (omaq_qr_path_ok("/tmp/../etc/x.png") == 0)
+		fail("qr path ..");
+	if (omaq_qr_path_ok("rel.png") == 0)
+		fail("qr path rel");
+	if (omaq_qr_path_ok("/tmp/x.txt") == 0)
+		fail("qr path ext");
+}
+
 int main(void)
 {
 	test_invites();
@@ -238,6 +371,11 @@ int main(void)
 	test_store();
 	test_mutate();
 	test_conv();
+	test_expire();
+	test_rate_gold();
+	test_rate_hour();
+	test_safety();
+	test_qr_path();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);
 		return 1;

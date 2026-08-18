@@ -33,7 +33,7 @@ if [ -d helper ]; then
 fi
 
 # Pure policy: no IO, no tox.
-for f in helper/roles.c helper/invite.c helper/conversation.c; do
+for f in helper/roles.c helper/invite.c helper/conversation.c helper/rate.c helper/safety.c; do
 	[ -f "$f" ] || continue
 	if grep -En '([^[:alnum:]_](open|fopen|socket)\()' "$f" >/dev/null; then
 		die "$f contains IO"

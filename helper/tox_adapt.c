@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <tox/tox.h>
 
@@ -220,6 +221,66 @@ int omaq_tox_self_addr_hex(struct omaq_tox *t, char *hex76)
 		return -1;
 	tox_self_get_address(t->tox, addr);
 	hex_of(addr, TOX_ADDRESS_SIZE, hex76);
+	return 0;
+}
+
+int omaq_tox_self_pk_hex(struct omaq_tox *t, char *hex64)
+{
+	uint8_t pk[TOX_PUBLIC_KEY_SIZE];
+	if (!t || !t->tox || !hex64)
+		return -1;
+	tox_self_get_public_key(t->tox, pk);
+	hex_of(pk, TOX_PUBLIC_KEY_SIZE, hex64);
+	return 0;
+}
+
+int omaq_tox_friend_pk_hex(struct omaq_tox *t, uint32_t friend_number, char *hex64)
+{
+	uint8_t pk[TOX_PUBLIC_KEY_SIZE];
+	Tox_Err_Friend_Get_Public_Key err = TOX_ERR_FRIEND_GET_PUBLIC_KEY_OK;
+	if (!t || !t->tox || !hex64)
+		return -1;
+	if (!tox_friend_get_public_key(t->tox, friend_number, pk, &err))
+		return -1;
+	hex_of(pk, TOX_PUBLIC_KEY_SIZE, hex64);
+	return 0;
+}
+
+int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number)
+{
+	Tox_Err_Friend_Delete err = TOX_ERR_FRIEND_DELETE_OK;
+	if (!t || !t->tox)
+		return -1;
+	if (!tox_friend_delete(t->tox, friend_number, &err))
+		return -1;
+	omaq_tox_save(t);
+	return 0;
+}
+
+uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32)
+{
+	Tox_Err_Friend_By_Public_Key err = TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK;
+	uint32_t fn;
+
+	if (!t || !t->tox || !pk32)
+		return UINT32_MAX;
+	fn = tox_friend_by_public_key(t->tox, pk32, &err);
+	if (err != TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK)
+		return UINT32_MAX;
+	return fn;
+}
+
+int omaq_tox_nospam_rotate(struct omaq_tox *t)
+{
+	uint32_t nospam = 0;
+	if (!t || !t->tox)
+		return -1;
+	if (getentropy(&nospam, sizeof(nospam)) != 0)
+		nospam = (uint32_t)getpid() ^ (uint32_t)time(NULL);
+	if (nospam == tox_self_get_nospam(t->tox))
+		nospam ^= 0x9e3779b9u;
+	tox_self_set_nospam(t->tox, nospam);
+	omaq_tox_save(t);
 	return 0;
 }
 

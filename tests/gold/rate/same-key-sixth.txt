@@ -1,0 +1,8 @@
+1000 k1 allow
+1001 k1 allow
+1002 k1 allow
+1003 k1 allow
+1004 k1 allow
+1005 k1 deny
+1005 k2 allow
+1065 k1 allow

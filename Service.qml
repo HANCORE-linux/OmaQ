@@ -10,21 +10,55 @@ Item {
   property string lastError: ""
   property bool attached: false
   property int backoffMs: 200
+  property string inviteUrl: ""
+  property string qrPath: ""
+  property string safetyCode: ""
+  property string safetyConv: ""
+  property bool pending: false
+  property string lastConversation: "0"
+  property string lastAddr: ""
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
   readonly property string stateDir: Quickshell.env("OMAQ_STATE") || (Quickshell.env("HOME") + "/.local/state/omaq")
   readonly property string sockPath: stateDir + "/omaq.sock"
+  readonly property string defaultQrPath: {
+    var d = Quickshell.env("XDG_DOWNLOAD_DIR")
+    if (!d || d === "")
+      d = (Quickshell.env("HOME") || "") + "/Downloads"
+    return d + "/omaq-invite.png"
+  }
 
   function handleLine(line) {
     var ev
     try { ev = JSON.parse(line) } catch (e) { return }
-    if (ev.event === "snapshot" && ev.unread !== undefined)
-      root.unreadCount = ev.unread
+    if (ev.event === "snapshot") {
+      if (ev.unread !== undefined)
+        root.unreadCount = ev.unread
+      if (ev.addr)
+        root.lastAddr = ev.addr
+    }
     if (ev.event === "error")
       root.lastError = ev.code || "error"
-    if (ev.event === "message")
+    if (ev.event === "message") {
       root.unreadCount = root.unreadCount + 1
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
+    if (ev.event === "invite") {
+      if (ev.url)
+        root.inviteUrl = ev.url
+      if (ev.qr)
+        root.qrPath = ev.qr
+    }
+    if (ev.event === "request")
+      root.pending = true
+    if (ev.event === "safety") {
+      root.safetyCode = ev.code || ""
+      root.safetyConv = ev.conversation || root.lastConversation
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
   }
 
   function sendOp(obj) {
@@ -34,6 +68,23 @@ Item {
     else
       proc.write(line)
   }
+
+  function createInvite() { sendOp({ op: "invite.create", kind: "direct", ttlSec: 86400 }) }
+  function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = "" }
+  function saveQr() {
+    var u = root.inviteUrl
+    if (!u)
+      return
+    sendOp({ op: "invite.qr", payload: u, path: root.defaultQrPath })
+  }
+  function redeem(url) { sendOp({ op: "invite.redeem", payload: url }) }
+  function decide(ok) {
+    sendOp({ op: "contact.decide", id: "x", accept: !!ok })
+    root.pending = false
+  }
+  function removeContact() { sendOp({ op: "contact.remove", id: root.lastConversation }) }
+  function rotateNospam() { sendOp({ op: "nospam.rotate" }); root.inviteUrl = "" }
+  function getSafety() { sendOp({ op: "safety.get", conversation: root.lastConversation }) }
 
   function resetBackoff() {
     root.backoffMs = 200

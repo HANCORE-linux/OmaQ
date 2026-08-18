@@ -3,6 +3,9 @@
 #include "invite.h"
 #include "json_io.h"
 #include "message.h"
+#include "qr.h"
+#include "rate.h"
+#include "safety.h"
 
 #ifdef HAVE_TOX
 #include "identity.h"
@@ -31,7 +34,10 @@ static struct omaq_tox *g_tox;
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
+static char g_issued_url[OMAQ_URL_MAX];
+static int64_t g_issued_exp;
 #endif
+static omaq_rate g_rate;
 
 static int g_lockfd = -1;
 static int g_listen = -1;
@@ -151,10 +157,57 @@ static void emit_error(const char *code)
 }
 
 #ifdef HAVE_TOX
+static void clear_invite(void)
+{
+	g_issued_id[0] = '\0';
+	g_issued_url[0] = '\0';
+	g_issued_exp = 0;
+	g_have_pending = 0;
+}
+
+static void pk_hex(const uint8_t *pk, char *out)
+{
+	static const char *d = "0123456789abcdef";
+	int i;
+
+	for (i = 0; i < 32; i++) {
+		out[i * 2] = d[pk[i] >> 4];
+		out[i * 2 + 1] = d[pk[i] & 0xf];
+	}
+	out[64] = '\0';
+}
+
+static void emit_safety(uint32_t friend)
+{
+	char self[65], peer[65], code[OMAQ_SAFETY_MAX], ev[320], conv[16];
+
+	if (!g_tox)
+		return;
+	if (omaq_tox_self_pk_hex(g_tox, self) != 0)
+		return;
+	if (omaq_tox_friend_pk_hex(g_tox, friend, peer) != 0)
+		return;
+	if (omaq_safety_code(self, peer, code, sizeof(code)) != 0)
+		return;
+	snprintf(conv, sizeof(conv), "%u", friend);
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"safety\",\"conversation\":\"%s\",\"code\":\"%s\"}",
+		 conv, code);
+	emit(ev);
+}
+
 static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 {
+	char key[65];
+	int64_t now = (int64_t)time(NULL);
+
 	(void)ud;
+	pk_hex(pk32, key);
+	if (omaq_rate_allow(&g_rate, key, now) != 0)
+		return;
 	if (!g_issued_id[0] || !msg || strcmp(msg, g_issued_id) != 0)
+		return;
+	if (g_issued_exp && now >= g_issued_exp)
 		return;
 	memcpy(g_pending_pk, pk32, 32);
 	g_have_pending = 1;
@@ -227,6 +280,8 @@ static int handle_op(const omaq_op *op)
 				return 0;
 			}
 			snprintf(g_issued_id, sizeof(g_issued_id), "%s", inv.id);
+			snprintf(g_issued_url, sizeof(g_issued_url), "%s", url);
+			g_issued_exp = inv.expiry;
 			snprintf(ev, sizeof(ev), "{\"event\":\"invite\",\"url\":\"%s\"}", url);
 			emit(ev);
 			return 0;
@@ -256,6 +311,7 @@ static int handle_op(const omaq_op *op)
 				return 0;
 			}
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			emit_safety(0);
 			return 0;
 		}
 #endif
@@ -264,23 +320,110 @@ static int handle_op(const omaq_op *op)
 	}
 	if (strcmp(op->op, "invite.revoke") == 0) {
 #ifdef HAVE_TOX
-		g_issued_id[0] = '\0';
-		g_have_pending = 0;
+		clear_invite();
 #endif
 		emit("{\"event\":\"snapshot\",\"unread\":0}");
 		return 0;
 	}
+	if (strcmp(op->op, "invite.qr") == 0) {
+		const char *url = op->payload[0] ? op->payload : NULL;
+		char ev[OMAQ_URL_MAX + OMAQ_JSON_STR_MAX + 48];
+		char esc_path[OMAQ_JSON_STR_MAX];
+#ifdef HAVE_TOX
+		if (!url)
+			url = g_issued_url[0] ? g_issued_url : NULL;
+#endif
+		if (!url || !op->path[0]) {
+			emit_error("unsupported");
+			return 0;
+		}
+		if (omaq_qr_write_png(url, op->path) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		if (omaq_json_escape(op->path, esc_path, sizeof(esc_path)) != 0) {
+			emit_error("unsupported");
+			return 0;
+		}
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"invite\",\"url\":\"%s\",\"qr\":\"%s\"}",
+			 url, esc_path);
+		emit(ev);
+		return 0;
+	}
 	if (strcmp(op->op, "contact.decide") == 0) {
 #ifdef HAVE_TOX
-		if (g_tox && op->accept && g_have_pending) {
-			omaq_tox_friend_accept(g_tox, g_pending_pk);
+		if (g_tox && g_have_pending) {
+			if (op->has_accept && op->accept) {
+				uint32_t fn;
+				if (omaq_tox_friend_accept(g_tox, g_pending_pk) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+				fn = omaq_tox_friend_by_pk(g_tox, g_pending_pk);
+				clear_invite();
+				emit("{\"event\":\"snapshot\",\"unread\":0}");
+				if (fn != UINT32_MAX)
+					emit_safety(fn);
+				return 0;
+			}
 			g_have_pending = 0;
-			g_issued_id[0] = '\0';
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
 #endif
 		emit("{\"event\":\"snapshot\",\"unread\":0,\"conversations\":[]}");
+		return 0;
+	}
+	if (strcmp(op->op, "contact.remove") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->id[0] ? op->id : op->conversation;
+			uint32_t fn = (uint32_t)atoi(cid[0] ? cid : "0");
+			if (omaq_tox_friend_delete(g_tox, fn) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "nospam.rotate") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			char addr[77];
+			char ev[160];
+			if (omaq_tox_nospam_rotate(g_tox) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			clear_invite();
+			if (omaq_tox_self_addr_hex(g_tox, addr) == 0) {
+				snprintf(ev, sizeof(ev),
+					 "{\"event\":\"snapshot\",\"unread\":0,\"online\":%s,\"addr\":\"%s\"}",
+					 omaq_tox_online(g_tox) ? "true" : "false", addr);
+				emit(ev);
+			} else {
+				emit("{\"event\":\"snapshot\",\"unread\":0}");
+			}
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "safety.get") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			emit_safety((uint32_t)atoi(cid));
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
 		return 0;
 	}
 	if (strcmp(op->op, "msg.send") == 0) {
@@ -434,6 +577,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "omaq: OMAQ_HOME and OMAQ_STATE required\n");
 		return 1;
 	}
+	omaq_rate_init(&g_rate);
 	if (mkdir(state_dir(), 0700) != 0 && errno != EEXIST)
 		return 1;
 	rc = take_lock();
