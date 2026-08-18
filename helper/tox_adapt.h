@@ -45,5 +45,34 @@ int omaq_tox_group_self_role(struct omaq_tox *t, uint32_t gnum, int *omaq_role);
 int omaq_tox_group_peer_role(struct omaq_tox *t, uint32_t gnum, uint32_t peer, int *omaq_role);
 int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer);
 
+#define OMAQ_TOX_FILE_RESUME 0
+#define OMAQ_TOX_FILE_PAUSE 1
+#define OMAQ_TOX_FILE_CANCEL 2
+
+int omaq_tox_file_send(struct omaq_tox *t, uint32_t friend, uint64_t size,
+		       const char *name, uint32_t *fnum);
+int omaq_tox_file_chunk(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
+			uint64_t pos, const uint8_t *data, size_t len);
+int omaq_tox_file_control(struct omaq_tox *t, uint32_t friend, uint32_t fnum, int control);
+
+typedef void (*omaq_on_file_recv)(void *ud, uint32_t friend, uint32_t fnum,
+				  const char *name, uint64_t size);
+typedef void (*omaq_on_file_chunk_req)(void *ud, uint32_t friend, uint32_t fnum,
+				       uint64_t pos, size_t len);
+typedef void (*omaq_on_file_chunk)(void *ud, uint32_t friend, uint32_t fnum,
+				   uint64_t pos, const uint8_t *data, size_t len);
+typedef void (*omaq_on_file_ctrl)(void *ud, uint32_t friend, uint32_t fnum, int control);
+void omaq_tox_set_file_hooks(struct omaq_tox *t, omaq_on_file_recv recv,
+			     omaq_on_file_chunk_req req, omaq_on_file_chunk chunk,
+			     omaq_on_file_ctrl ctrl, void *ud);
+
+int omaq_tox_av_call(struct omaq_tox *t, uint32_t friend);
+int omaq_tox_av_answer(struct omaq_tox *t, uint32_t friend);
+int omaq_tox_av_hangup(struct omaq_tox *t, uint32_t friend);
+
+/* incoming: 1 = ringing, 0 = ended */
+typedef void (*omaq_on_call)(void *ud, uint32_t friend, int incoming);
+void omaq_tox_set_call_hook(struct omaq_tox *t, omaq_on_call cb, void *ud);
+
 #endif /* HAVE_TOX */
 #endif

@@ -10,15 +10,22 @@
 #include <time.h>
 #include <unistd.h>
 #include <tox/tox.h>
+#include <tox/toxav.h>
 
 struct omaq_tox {
 	Tox *tox;
+	ToxAV *av;
 	char home[512];
 	omaq_on_request on_req;
 	omaq_on_message on_msg;
 	omaq_on_group_invite on_ginv;
 	omaq_on_group_message on_gmsg;
 	omaq_on_group_peer on_gpeer;
+	omaq_on_file_recv on_frecv;
+	omaq_on_file_chunk_req on_fcreq;
+	omaq_on_file_chunk on_fchunk;
+	omaq_on_file_ctrl on_fctrl;
+	omaq_on_call on_call;
 	void *ud;
 	int online;
 };
@@ -189,6 +196,90 @@ static int role_from_tox(Tox_Group_Role r)
 	return 0;
 }
 
+static void on_file_recv(Tox *tox, uint32_t friend, uint32_t fnum, uint32_t kind, uint64_t size,
+			 const uint8_t *filename, size_t flen, void *ud)
+{
+	struct omaq_tox *t = ud;
+	char name[129];
+
+	(void)tox;
+	if (kind != TOX_FILE_KIND_DATA) {
+		tox_file_control(t->tox, friend, fnum, TOX_FILE_CONTROL_CANCEL, NULL);
+		return;
+	}
+	if (flen >= sizeof(name))
+		flen = sizeof(name) - 1;
+	memcpy(name, filename, flen);
+	name[flen] = '\0';
+	if (t->on_frecv)
+		t->on_frecv(t->ud, friend, fnum, name, size);
+}
+
+static void on_file_chunk_req(Tox *tox, uint32_t friend, uint32_t fnum, uint64_t pos,
+			      size_t len, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	if (t->on_fcreq)
+		t->on_fcreq(t->ud, friend, fnum, pos, len);
+}
+
+static void on_file_chunk(Tox *tox, uint32_t friend, uint32_t fnum, uint64_t pos,
+			  const uint8_t *data, size_t len, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	if (t->on_fchunk)
+		t->on_fchunk(t->ud, friend, fnum, pos, data, len);
+}
+
+static void on_file_ctrl(Tox *tox, uint32_t friend, uint32_t fnum, Tox_File_Control control,
+			 void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	if (t->on_fctrl)
+		t->on_fctrl(t->ud, friend, fnum, (int)control);
+}
+
+static void on_av_audio(ToxAV *av, uint32_t friend, const int16_t *pcm, size_t samples,
+			uint8_t channels, uint32_t rate, void *ud)
+{
+	(void)av;
+	(void)friend;
+	(void)pcm;
+	(void)samples;
+	(void)channels;
+	(void)rate;
+	(void)ud;
+}
+
+static void on_av_call(ToxAV *av, uint32_t friend, bool audio, bool video, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)av;
+	(void)audio;
+	(void)video;
+	if (t->on_call)
+		t->on_call(t->ud, friend, 1);
+}
+
+static void on_av_state(ToxAV *av, uint32_t friend, uint32_t state, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)av;
+	if (state == TOXAV_FRIEND_CALL_STATE_FINISHED ||
+	    state == TOXAV_FRIEND_CALL_STATE_ERROR) {
+		if (t->on_call)
+			t->on_call(t->ud, friend, 0);
+	}
+}
+
 struct omaq_tox *omaq_tox_open(const char *home)
 {
 	struct omaq_tox *t;
@@ -239,6 +330,19 @@ struct omaq_tox *omaq_tox_open(const char *home)
 	tox_callback_group_message(t->tox, on_gmsg);
 	tox_callback_group_peer_join(t->tox, on_gjoin);
 	tox_callback_group_peer_exit(t->tox, on_gexit);
+	tox_callback_file_recv(t->tox, on_file_recv);
+	tox_callback_file_chunk_request(t->tox, on_file_chunk_req);
+	tox_callback_file_recv_chunk(t->tox, on_file_chunk);
+	tox_callback_file_recv_control(t->tox, on_file_ctrl);
+	{
+		Toxav_Err_New aerr = TOXAV_ERR_NEW_OK;
+		t->av = toxav_new(t->tox, &aerr);
+		if (t->av) {
+			toxav_callback_audio_receive_frame(t->av, on_av_audio, t);
+			toxav_callback_call(t->av, on_av_call, t);
+			toxav_callback_call_state(t->av, on_av_state, t);
+		}
+	}
 	{
 		static const uint8_t nick[] = "omaq";
 		tox_self_set_name(t->tox, nick, 4, NULL);
@@ -277,6 +381,10 @@ void omaq_tox_close(struct omaq_tox *t)
 	if (!t)
 		return;
 	omaq_tox_save(t);
+	if (t->av) {
+		toxav_kill(t->av);
+		t->av = NULL;
+	}
 	if (t->tox)
 		tox_kill(t->tox);
 	free(t);
@@ -284,15 +392,22 @@ void omaq_tox_close(struct omaq_tox *t)
 
 void omaq_tox_iterate(struct omaq_tox *t)
 {
-	if (t && t->tox)
-		tox_iterate(t->tox, t);
+	if (!t || !t->tox)
+		return;
+	tox_iterate(t->tox, t);
+	if (t->av)
+		toxav_iterate(t->av);
 }
 
 uint32_t omaq_tox_interval_ms(const struct omaq_tox *t)
 {
+	uint32_t a, b;
+
 	if (!t || !t->tox)
 		return 50;
-	return tox_iteration_interval(t->tox);
+	a = tox_iteration_interval(t->tox);
+	b = t->av ? toxav_iteration_interval(t->av) : a;
+	return a < b ? a : b;
 }
 
 int omaq_tox_self_addr_hex(struct omaq_tox *t, char *hex76)
@@ -557,6 +672,110 @@ int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer)
 		return -1;
 	*peer = p;
 	return 0;
+}
+
+int omaq_tox_file_send(struct omaq_tox *t, uint32_t friend, uint64_t size,
+		       const char *name, uint32_t *fnum)
+{
+	Tox_Err_File_Send err = TOX_ERR_FILE_SEND_OK;
+	uint32_t n;
+
+	if (!t || !t->tox || !name || !fnum || !name[0])
+		return -1;
+	n = tox_file_send(t->tox, friend, TOX_FILE_KIND_DATA, size, NULL,
+			  (const uint8_t *)name, strlen(name), &err);
+	if (err != TOX_ERR_FILE_SEND_OK)
+		return -1;
+	*fnum = n;
+	return 0;
+}
+
+int omaq_tox_file_chunk(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
+			uint64_t pos, const uint8_t *data, size_t len)
+{
+	Tox_Err_File_Send_Chunk err = TOX_ERR_FILE_SEND_CHUNK_OK;
+
+	if (!t || !t->tox)
+		return -1;
+	if (len && !data)
+		return -1;
+	if (!tox_file_send_chunk(t->tox, friend, fnum, pos, data, len, &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_file_control(struct omaq_tox *t, uint32_t friend, uint32_t fnum, int control)
+{
+	Tox_Err_File_Control err = TOX_ERR_FILE_CONTROL_OK;
+	Tox_File_Control c;
+
+	if (!t || !t->tox)
+		return -1;
+	if (control == OMAQ_TOX_FILE_PAUSE)
+		c = TOX_FILE_CONTROL_PAUSE;
+	else if (control == OMAQ_TOX_FILE_CANCEL)
+		c = TOX_FILE_CONTROL_CANCEL;
+	else
+		c = TOX_FILE_CONTROL_RESUME;
+	if (!tox_file_control(t->tox, friend, fnum, c, &err))
+		return -1;
+	return 0;
+}
+
+void omaq_tox_set_file_hooks(struct omaq_tox *t, omaq_on_file_recv recv,
+			     omaq_on_file_chunk_req req, omaq_on_file_chunk chunk,
+			     omaq_on_file_ctrl ctrl, void *ud)
+{
+	if (!t)
+		return;
+	t->on_frecv = recv;
+	t->on_fcreq = req;
+	t->on_fchunk = chunk;
+	t->on_fctrl = ctrl;
+	if (ud)
+		t->ud = ud;
+}
+
+int omaq_tox_av_call(struct omaq_tox *t, uint32_t friend)
+{
+	Toxav_Err_Call err = TOXAV_ERR_CALL_OK;
+
+	if (!t || !t->av)
+		return -1;
+	if (!toxav_call(t->av, friend, 48, 0, &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_av_answer(struct omaq_tox *t, uint32_t friend)
+{
+	Toxav_Err_Answer err = TOXAV_ERR_ANSWER_OK;
+
+	if (!t || !t->av)
+		return -1;
+	if (!toxav_answer(t->av, friend, 48, 0, &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_av_hangup(struct omaq_tox *t, uint32_t friend)
+{
+	Toxav_Err_Call_Control err = TOXAV_ERR_CALL_CONTROL_OK;
+
+	if (!t || !t->av)
+		return -1;
+	if (!toxav_call_control(t->av, friend, TOXAV_CALL_CONTROL_CANCEL, &err))
+		return -1;
+	return 0;
+}
+
+void omaq_tox_set_call_hook(struct omaq_tox *t, omaq_on_call cb, void *ud)
+{
+	if (!t)
+		return;
+	t->on_call = cb;
+	if (ud)
+		t->ud = ud;
 }
 
 #endif /* HAVE_TOX */

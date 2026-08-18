@@ -18,11 +18,13 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/qr.c helper/group.c helper/surface.c
+	helper/safety.c helper/qr.c helper/group.c helper/surface.c \
+	helper/file.c helper/av.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c helper/identity.c \
-	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/surface.c
+	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/surface.c \
+	helper/file.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
@@ -125,7 +127,17 @@ verify-5: test arch helper
 	sh tests/phase5.sh
 	@echo "verify-5: ok"
 
-verify-6 verify-7:
+verify-6: test arch helper
+	@if [ "$(TOX_OK)" != "yes" ]; then \
+		echo "verify-6: toxcore not installed" >&2; \
+		exit 1; \
+	fi
+	sh tests/lock-elect.sh
+	omarchy plugin validate .
+	sh tests/phase6.sh
+	@echo "verify-6: ok"
+
+verify-7:
 	@echo "$@: not this phase (current=$(PHASE))" >&2; exit 1
 
 clean:

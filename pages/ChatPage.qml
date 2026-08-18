@@ -66,6 +66,62 @@ Item {
           onClicked: root.send()
         }
       }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(6)
+        TextField {
+          id: filePath
+          width: parent.width - Style.space(90)
+          placeholderText: "Absolute file path"
+        }
+        Button {
+          text: "File"
+          onClicked: {
+            if (service && filePath.text)
+              service.sendFile(filePath.text)
+          }
+        }
+      }
+
+      Row {
+        visible: service && service.pendingFile
+        spacing: Style.space(6)
+        Button { text: "Accept file"; onClicked: service.acceptFile() }
+        Button { text: "Decline file"; onClicked: service.cancelFile() }
+      }
+
+      Text {
+        visible: service && service.lastFileName !== ""
+        width: parent.width
+        text: (service.lastFilePath !== "" ? service.lastFilePath : service.lastFileName)
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        wrapMode: Text.WrapAnywhere
+      }
+
+      Image {
+        visible: {
+          var p = service ? service.lastFilePath : ""
+          return p && /\.(png|jpe?g|gif|webp)$/i.test(p)
+        }
+        width: Math.min(parent.width, 160)
+        height: visible ? 80 : 0
+        fillMode: Image.PreserveAspectFit
+        source: (service && service.lastFilePath) ? ("file://" + service.lastFilePath) : ""
+      }
+
+      Row {
+        spacing: Style.space(6)
+        Button { text: "Call"; onClicked: if (service) service.startCall() }
+        Button {
+          visible: service && service.incomingCall
+          text: "Answer"
+          onClicked: service.answerCall()
+        }
+        Button { text: "Hang up"; onClicked: if (service) service.stopCall() }
+      }
     }
   }
 }

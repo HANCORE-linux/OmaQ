@@ -22,6 +22,12 @@ Item {
   property string lastChatText: ""
   property string lastChatDir: ""
   property var lastSurface: ({})
+  property string lastFileId: ""
+  property string lastFileName: ""
+  property string lastFilePath: ""
+  property bool pendingFile: false
+  property bool incomingCall: false
+  property string lastCallState: ""
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
@@ -73,6 +79,36 @@ Item {
     if (ev.event === "safety") {
       root.safetyCode = ev.code || ""
       root.safetyConv = ev.conversation || root.lastConversation
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
+    if (ev.event === "file.offer") {
+      root.lastFileId = ev.id || ""
+      root.lastFileName = ev.name || ""
+      root.pendingFile = true
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
+    if (ev.event === "file.done") {
+      root.pendingFile = false
+      root.lastFilePath = ev.path || ""
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
+    if (ev.event === "file.failed") {
+      root.pendingFile = false
+      root.lastError = "file_failed"
+    }
+    if (ev.event === "call.incoming") {
+      root.incomingCall = true
+      root.lastCallState = "incoming"
+      if (ev.conversation)
+        root.lastConversation = ev.conversation
+    }
+    if (ev.event === "call.state") {
+      root.lastCallState = ev.state || ""
+      if (ev.state === "ended" || ev.state === "")
+        root.incomingCall = false
       if (ev.conversation)
         root.lastConversation = ev.conversation
     }
@@ -130,6 +166,32 @@ Item {
   }
   function searchChat(q) {
     sendOp({ op: "search", conversation: root.lastConversation, text: q, limit: 20 })
+  }
+  function sendFile(path) {
+    sendOp({ op: "file.send", conversation: root.lastConversation, path: path })
+  }
+  function acceptFile() {
+    if (!root.lastFileId)
+      return
+    sendOp({ op: "file.accept", id: root.lastFileId })
+    root.pendingFile = false
+  }
+  function cancelFile() {
+    if (!root.lastFileId)
+      return
+    sendOp({ op: "file.cancel", id: root.lastFileId })
+    root.pendingFile = false
+  }
+  function startCall() {
+    sendOp({ op: "call.start", conversation: root.lastConversation })
+  }
+  function answerCall() {
+    sendOp({ op: "call.answer", conversation: root.lastConversation })
+    root.incomingCall = false
+  }
+  function stopCall() {
+    sendOp({ op: "call.stop", conversation: root.lastConversation })
+    root.incomingCall = false
   }
 
   function resetBackoff() {

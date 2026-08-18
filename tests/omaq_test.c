@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "../helper/conversation.h"
+#include "../helper/file.h"
 #include "../helper/group.h"
 #include "../helper/identity.h"
 #include "../helper/invite.h"
@@ -567,6 +568,73 @@ static void test_qr_path(void)
 		fail("qr path ext");
 }
 
+static void test_file(void)
+{
+	DIR *d = opendir("tests/gold/file");
+	struct dirent *e;
+	char name[OMAQ_FILE_NAME_MAX + 1];
+	char id[OMAQ_FILE_ID_MAX];
+	uint32_t fn, fnum;
+
+	if (!d) {
+		fail("open tests/gold/file");
+		return;
+	}
+	while ((e = readdir(d))) {
+		char path[512], body[256];
+		char *nl, expect[128];
+		size_t n = strlen(e->d_name);
+
+		if (n < 5 || strcmp(e->d_name + n - 4, ".txt") != 0)
+			continue;
+		snprintf(path, sizeof(path), "tests/gold/file/%s", e->d_name);
+		if (read_file(path, body, sizeof(body)) != 0) {
+			fail(path);
+			continue;
+		}
+		nl = strchr(body, '\n');
+		if (!nl) {
+			fail(path);
+			continue;
+		}
+		*nl = '\0';
+		snprintf(expect, sizeof(expect), "%s", nl + 1);
+		if (strncmp(e->d_name, "basename-", 9) == 0) {
+			if (omaq_file_basename(body, name, sizeof(name)) != 0 ||
+			    strcmp(name, expect) != 0)
+				fail(path);
+			continue;
+		}
+		if (strncmp(e->d_name, "path-", 5) == 0) {
+			if (strcmp(expect, "err") == 0) {
+				if (omaq_file_path_ok(body))
+					fail(path);
+			} else if (!omaq_file_path_ok(body))
+				fail(path);
+			continue;
+		}
+		if (strncmp(e->d_name, "id-", 3) == 0) {
+			if (strcmp(expect, "err") == 0) {
+				if (omaq_file_id_parse(body, &fn, &fnum) == 0)
+					fail(path);
+			} else if (omaq_file_id_parse(body, &fn, &fnum) != 0)
+				fail(path);
+			else {
+				unsigned int a = 0, b = 0;
+				if (sscanf(expect, "%u %u", &a, &b) != 2 || fn != a || fnum != b)
+					fail(path);
+			}
+			continue;
+		}
+		fail(path);
+	}
+	closedir(d);
+	if (omaq_file_id_format(3, 7, id, sizeof(id)) != 0 || strcmp(id, "3:7") != 0)
+		fail("file id format");
+	if (omaq_file_path_ok("/tmp/ok.bin") != 1)
+		fail("file path ok");
+}
+
 int main(void)
 {
 	test_invites();
@@ -585,6 +653,7 @@ int main(void)
 	test_group_plan();
 	test_surface();
 	test_qr_path();
+	test_file();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);
 		return 1;

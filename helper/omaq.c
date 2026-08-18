@@ -1,5 +1,7 @@
 #define _DEFAULT_SOURCE
 
+#include "av.h"
+#include "file.h"
 #include "group.h"
 #include "invite.h"
 #include "json_io.h"
@@ -290,6 +292,109 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		 conv, esc);
 	emit(ev);
 	omaq_message_append(home_dir(), conv, "peer", text, "in");
+}
+
+static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
+		      const char *name, uint64_t size, const char *path)
+{
+	char id[OMAQ_FILE_ID_MAX], conv[16], ev[900];
+	char ename[OMAQ_FILE_NAME_MAX * 2 + 8], epath[OMAQ_JSON_STR_MAX];
+
+	if (omaq_file_id_format(friend, fnum, id, sizeof(id)) != 0)
+		return;
+	snprintf(conv, sizeof(conv), "%u", friend);
+	ename[0] = '\0';
+	epath[0] = '\0';
+	if (name && omaq_json_escape(name, ename, sizeof(ename)) != 0)
+		ename[0] = '\0';
+	if (path && omaq_json_escape(path, epath, sizeof(epath)) != 0)
+		epath[0] = '\0';
+	if (strcmp(state, "offer") == 0) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"file.offer\",\"id\":\"%s\",\"conversation\":\"%s\",\"name\":\"%s\",\"size\":%llu}",
+			 id, conv, ename, (unsigned long long)size);
+	} else if (strcmp(state, "done") == 0) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"file.done\",\"id\":\"%s\",\"conversation\":\"%s\",\"path\":\"%s\"}",
+			 id, conv, epath);
+	} else {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"file.failed\",\"id\":\"%s\",\"conversation\":\"%s\"}",
+			 id, conv);
+	}
+	emit(ev);
+}
+
+static void hook_file_recv(void *ud, uint32_t friend, uint32_t fnum,
+			   const char *name, uint64_t size)
+{
+	(void)ud;
+	if (omaq_file_offer_store(friend, fnum, name, size) != 0) {
+		omaq_file_cancel(g_tox, friend, fnum);
+		return;
+	}
+	emit_file("offer", friend, fnum, name, size, NULL);
+}
+
+static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t pos, size_t len)
+{
+	(void)ud;
+	if (omaq_file_chunk_out(g_tox, friend, fnum, pos, len) != 0) {
+		omaq_file_cancel(g_tox, friend, fnum);
+		emit_file("failed", friend, fnum, NULL, 0, NULL);
+		return;
+	}
+	if (len == 0)
+		emit_file("done", friend, fnum, NULL, 0, NULL);
+}
+
+static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t pos,
+			    const uint8_t *data, size_t len)
+{
+	char dest[512];
+	int rc;
+
+	(void)ud;
+	rc = omaq_file_chunk_in(friend, fnum, pos, data, len, dest, sizeof(dest));
+	if (rc < 0) {
+		omaq_file_cancel(g_tox, friend, fnum);
+		emit_file("failed", friend, fnum, NULL, 0, NULL);
+		return;
+	}
+	if (rc == 1) {
+		char conv[16];
+		snprintf(conv, sizeof(conv), "%u", friend);
+		omaq_message_append(home_dir(), conv, "peer", dest, "in");
+		emit_file("done", friend, fnum, NULL, 0, dest);
+	}
+}
+
+static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control)
+{
+	(void)ud;
+	if (control != OMAQ_TOX_FILE_CANCEL)
+		return;
+	omaq_file_offer_drop(friend, fnum);
+	omaq_file_cancel(g_tox, friend, fnum);
+	emit_file("failed", friend, fnum, NULL, 0, NULL);
+}
+
+static void hook_call(void *ud, uint32_t friend, int incoming)
+{
+	char conv[16], ev[160];
+
+	(void)ud;
+	snprintf(conv, sizeof(conv), "%u", friend);
+	if (incoming) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"call.incoming\",\"conversation\":\"%s\"}", conv);
+		emit(ev);
+		return;
+	}
+	omaq_av_note_end(friend);
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}", conv);
+	emit(ev);
 }
 
 static void rand_id(char *out, size_t n)
@@ -862,6 +967,164 @@ static int handle_op(const omaq_op *op)
 		emit(ev);
 		return 0;
 	}
+	if (strcmp(op->op, "file.send") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			uint32_t fn, fnum;
+			char name[OMAQ_FILE_NAME_MAX + 1];
+
+			if (cid[0] == 'g') {
+				emit_error("forbidden");
+				return 0;
+			}
+			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0) {
+				emit_error("unsupported");
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
+			if (omaq_file_send_begin(g_tox, fn, op->path, &fnum) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			(void)fnum;
+			(void)name;
+			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "file.accept") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			uint32_t fn, fnum;
+			char name[OMAQ_FILE_NAME_MAX + 1];
+			char dest[512];
+			char conv[16];
+			uint64_t size = 0;
+			const char *over = op->path[0] ? op->path : NULL;
+
+			if (omaq_file_id_parse(op->id, &fn, &fnum) != 0) {
+				emit_error("unsupported");
+				return 0;
+			}
+			if (omaq_file_offer_lookup(fn, fnum, name, sizeof(name), &size) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			snprintf(conv, sizeof(conv), "%u", fn);
+			if (omaq_file_recv_begin(home_dir(), conv, fn, fnum, name, size,
+						 over, dest, sizeof(dest)) != 0) {
+				omaq_file_cancel(g_tox, fn, fnum);
+				emit_error("forbidden");
+				return 0;
+			}
+			if (omaq_tox_file_control(g_tox, fn, fnum, OMAQ_TOX_FILE_RESUME) != 0) {
+				omaq_file_cancel(g_tox, fn, fnum);
+				emit_error("forbidden");
+				return 0;
+			}
+			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "file.cancel") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			uint32_t fn, fnum;
+
+			if (omaq_file_id_parse(op->id, &fn, &fnum) != 0) {
+				emit_error("unsupported");
+				return 0;
+			}
+			omaq_file_cancel(g_tox, fn, fnum);
+			emit_file("failed", fn, fnum, NULL, 0, NULL);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "call.start") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			uint32_t fn;
+			char ev[160];
+
+			if (cid[0] == 'g') {
+				emit_error("forbidden");
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
+			if (omaq_av_start(g_tox, fn) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ringing\"}",
+				 cid);
+			emit(ev);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "call.answer") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			uint32_t fn;
+			char ev[160];
+
+			if (cid[0] == 'g') {
+				emit_error("forbidden");
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
+			if (omaq_av_answer(g_tox, fn) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"active\"}",
+				 cid);
+			emit(ev);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "call.stop") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			uint32_t fn;
+			char ev[160];
+
+			if (cid[0] == 'g') {
+				emit_error("forbidden");
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
+			(void)omaq_av_stop(g_tox, fn);
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}",
+				 cid);
+			emit(ev);
+			return 0;
+		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
 	if (strcmp(op->op, "identity.import") == 0) {
 		int rc;
 		if (!op->path[0]) {
@@ -982,6 +1245,9 @@ int main(int argc, char **argv)
 	if (g_tox) {
 		omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
 		omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
+		omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
+					hook_file_ctrl, NULL);
+		omaq_tox_set_call_hook(g_tox, hook_call, NULL);
 	}
 #endif
 	if (hold) {
