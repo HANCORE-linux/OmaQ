@@ -244,25 +244,28 @@ struct omaq_tox *omaq_tox_open(const char *home)
 		tox_self_set_name(t->tox, nick, 4, NULL);
 	}
 	{
+		/* Live nodes from nodes.tox.chat (status_udp+status_tcp).
+		 * TCP ports are outbound-only; no inbound listen required. */
 		static const struct {
 			const char *host;
-			uint16_t port;
+			uint16_t udp_port;
+			uint16_t tcp_port;
 			const char *key_hex;
 		} nodes[] = {
-			{ "85.143.221.42", 33445,
-			  "DA4E4ED4B697F2E9B000EEFE3A34B554ACD3F45F5C96EAEA2516DD7FF9AF7B43" },
-			{ "205.185.116.116", 33445,
-			  "A179B09749AC826FF01F37A9613F6B57118AE014D4196A0E1105A98F93A54702" },
-			{ "tox.abilinski.com", 33445,
-			  "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E" },
+			{ "144.217.167.73", 33445, 3389,
+			  "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C" },
+			{ "tox1.mf-net.eu", 33445, 33445,
+			  "B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506" },
+			{ "139.162.110.188", 33445, 443,
+			  "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
 		};
 		for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
 			uint8_t key[TOX_PUBLIC_KEY_SIZE];
 			Tox_Err_Bootstrap berr = TOX_ERR_BOOTSTRAP_OK;
 			if (hex_in(nodes[i].key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
 				continue;
-			tox_bootstrap(t->tox, nodes[i].host, nodes[i].port, key, &berr);
-			tox_add_tcp_relay(t->tox, nodes[i].host, nodes[i].port, key, &berr);
+			tox_bootstrap(t->tox, nodes[i].host, nodes[i].udp_port, key, &berr);
+			tox_add_tcp_relay(t->tox, nodes[i].host, nodes[i].tcp_port, key, &berr);
 		}
 	}
 	omaq_tox_save(t);
