@@ -7,4 +7,4 @@
 
 Helper is GPL-3.0-or-later once linked against toxcore. QML/plugin stays MIT.
 
-`toxcore` is **not** installed on this machine until the owner runs the official-repo install (needs their sudo password).
+Installed here: `toxcore` 1:0.2.22-2 from Arch extra (`omarchy pkg add toxcore`).
