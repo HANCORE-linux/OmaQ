@@ -8,7 +8,13 @@
 - Offline modules + gold + lock election + `omarchy plugin validate`
 - `toxcore` 1:0.2.22-2 (Arch extra), helper built with `-DHAVE_TOX`
 - `tests/two-homes.sh`: invite + accept + one `ping` between two temp identities
-- Singleton: third helper on the same home exits 2
+- Singleton: lock owner binds `$OMAQ_STATE/omaq.sock` (0600); second starter exits 2
+- `tests/two-clients.sh`: two Unix-socket clients, one helper, fan-out status
+- Token-gated friend request; `invite.revoke` clears the token; accept consumes it
+- JSON-escape on events and JSONL; history emits `items` (last 50, including `messages.jsonl.1`)
+- Atomic `tox.save.tmp` + fsync + rename; compiled-in public bootstrap + TCP relays
+- `Service.qml`: always exec; exit 2 → Socket; other death → 200ms/1s/5s backoff (cap 30s)
+- Sanitizers on `tests/omaq_test` only
 - `Service.qml` / `Panel.qml` stub (badge)
 
 ## How to check
@@ -20,9 +26,9 @@ make verify-1-tox
 
 ## Measured
 
-- Helper idle RSS (process A during two-homes): **29048 kB** (~28 MB)
+- Helper idle RSS (process A during two-homes, no ASan): **6648 kB**
 - That is the phase-1 baseline. Later idle gate: > 1.5× this value fails.
-- The old 20 MB figure was a target, not this measurement.
+- The earlier 29048 kB figure was an ASan-linked helper, not the packaged shape.
 
 ## Stays out
 

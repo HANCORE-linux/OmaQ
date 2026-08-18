@@ -147,6 +147,10 @@ static void test_json(void)
 		fail("json incomplete");
 	if (omaq_json_parse_op("{\"foo\":1}", &op) == 0)
 		fail("json unknown key");
+	if (omaq_json_parse_op("{\"op\":\"x\",\"ttlSec\":99999999999999999999}", &op) == 0)
+		fail("json ttl overflow");
+	if (omaq_json_parse_op("{\"op\":\"x\",\"limit\":2147483648}", &op) == 0)
+		fail("json limit overflow");
 }
 
 static void test_store(void)
@@ -173,6 +177,26 @@ static void test_store(void)
 	free(out);
 	if (omaq_message_append(dir, "c1", "me", "hi", "out") != 0)
 		fail("message append");
+	if (omaq_message_append(dir, "c1", "me", "say \"hi\" \\ok", "out") != 0)
+		fail("message escape append");
+	{
+		char live[640], rot[640];
+		char *out2 = NULL;
+		size_t n2 = 0;
+		if (snprintf(live, sizeof(live), "%s/history/c1/messages.jsonl", dir) >= (int)sizeof(live))
+			fail("store rotate path");
+		else if (snprintf(rot, sizeof(rot), "%s.1", live) >= (int)sizeof(rot))
+			fail("store rotate dest");
+		else if (rename(live, rot) != 0)
+			fail("store rotate rename");
+		else if (omaq_store_append(dir, "c1", "{\"n\":99}") != 0)
+			fail("store append after rotate");
+		else if (omaq_store_tail(dir, "c1", 3, &out2, &n2) != 0)
+			fail("store tail after rotate");
+		else if (!out2 || !strstr(out2, "\"n\":99") || !strstr(out2, "say \\\"hi\\\""))
+			fail("store tail rotated content");
+		free(out2);
+	}
 }
 
 static void test_mutate(void)

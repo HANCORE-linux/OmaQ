@@ -34,7 +34,7 @@ $(BIN_TEST): $(TEST_SRC)
 	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ $(TEST_SRC)
 
 $(BIN_HELP): $(HELPER_SRC)
-	$(CC) $(CFLAGS) $(SANFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 test: $(BIN_TEST)
 	./$(BIN_TEST)
@@ -58,6 +58,7 @@ verify-0: test arch
 
 verify-1-offline: test arch helper
 	sh tests/lock-elect.sh
+	sh tests/two-clients.sh
 	omarchy plugin validate .
 	@echo "verify-1-offline: ok"
 

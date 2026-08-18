@@ -47,9 +47,9 @@ static void save_path(const char *home, char *buf, size_t n)
 
 void omaq_tox_save(struct omaq_tox *t)
 {
-	char path[576];
+	char path[576], tmp[580];
 	FILE *f;
-	size_t n;
+	size_t n, wr;
 	uint8_t *buf;
 
 	if (!t || !t->tox)
@@ -60,13 +60,27 @@ void omaq_tox_save(struct omaq_tox *t)
 		return;
 	tox_get_savedata(t->tox, buf);
 	save_path(t->home, path, sizeof(path));
-	f = fopen(path, "w");
-	if (f) {
-		fwrite(buf, 1, n, f);
-		fchmod(fileno(f), 0600);
-		fclose(f);
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) {
+		free(buf);
+		return;
 	}
+	f = fopen(tmp, "w");
+	if (!f) {
+		free(buf);
+		return;
+	}
+	wr = fwrite(buf, 1, n, f);
+	if (wr != n || fflush(f) != 0 || fsync(fileno(f)) != 0) {
+		fclose(f);
+		unlink(tmp);
+		free(buf);
+		return;
+	}
+	fchmod(fileno(f), 0600);
+	fclose(f);
 	free(buf);
+	if (rename(tmp, path) != 0)
+		unlink(tmp);
 }
 
 static void on_status(Tox *tox, Tox_Connection st, void *ud)
@@ -150,6 +164,28 @@ struct omaq_tox *omaq_tox_open(const char *home)
 	tox_callback_self_connection_status(t->tox, on_status);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
+	{
+		static const struct {
+			const char *host;
+			uint16_t port;
+			const char *key_hex;
+		} nodes[] = {
+			{ "85.143.221.42", 33445,
+			  "DA4E4ED4B697F2E9B000EEFE3A34B554ACD3F45F5C96EAEA2516DD7FF9AF7B43" },
+			{ "205.185.116.116", 33445,
+			  "A179B09749AC826FF01F37A9613F6B57118AE014D4196A0E1105A98F93A54702" },
+			{ "tox.abilinski.com", 33445,
+			  "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E" },
+		};
+		for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+			uint8_t key[TOX_PUBLIC_KEY_SIZE];
+			Tox_Err_Bootstrap berr = TOX_ERR_BOOTSTRAP_OK;
+			if (hex_in(nodes[i].key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
+				continue;
+			tox_bootstrap(t->tox, nodes[i].host, nodes[i].port, key, &berr);
+			tox_add_tcp_relay(t->tox, nodes[i].host, nodes[i].port, key, &berr);
+		}
+	}
 	omaq_tox_save(t);
 	return t;
 }

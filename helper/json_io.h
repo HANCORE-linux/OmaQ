@@ -31,7 +31,7 @@ typedef struct {
 	int has_pinned;
 } omaq_op;
 
-/* 0 = ok, -1 = invalid JSON / unknown shape (not a known key set). */
 int omaq_json_parse_op(const char *line, omaq_op *out);
+int omaq_json_escape(const char *in, char *out, size_t outn);
 
 #endif

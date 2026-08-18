@@ -52,21 +52,62 @@ static int parse_int(const char **pp, int *out)
 {
 	const char *p = *pp;
 	int sign = 1;
-	int v = 0;
+	long v = 0;
 	int any = 0;
 	if (*p == '-') {
 		sign = -1;
 		p++;
 	}
 	while (*p >= '0' && *p <= '9') {
-		v = v * 10 + (*p - '0');
+		int d = *p - '0';
+		if (v > (2147483647L - d) / 10)
+			return -1;
+		v = v * 10 + d;
 		any = 1;
 		p++;
 	}
 	if (!any)
 		return -1;
-	*out = sign * v;
+	if (sign < 0)
+		v = -v;
+	*out = (int)v;
 	*pp = p;
+	return 0;
+}
+
+int omaq_json_escape(const char *in, char *out, size_t outn)
+{
+	size_t o = 0;
+	if (!in || !out || outn == 0)
+		return -1;
+	for (; *in; in++) {
+		const char *rep = NULL;
+		char buf[2];
+		size_t rl;
+		if (*in == '"')
+			rep = "\\\"";
+		else if (*in == '\\')
+			rep = "\\\\";
+		else if (*in == '\n')
+			rep = "\\n";
+		else if (*in == '\r')
+			rep = "\\r";
+		else if (*in == '\t')
+			rep = "\\t";
+		else if ((unsigned char)*in < 0x20)
+			return -1;
+		else {
+			buf[0] = *in;
+			buf[1] = '\0';
+			rep = buf;
+		}
+		rl = strlen(rep);
+		if (o + rl + 1 > outn)
+			return -1;
+		memcpy(out + o, rep, rl);
+		o += rl;
+	}
+	out[o] = '\0';
 	return 0;
 }
 

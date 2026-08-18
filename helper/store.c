@@ -77,13 +77,46 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 	return 0;
 }
 
+static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
+{
+	FILE *f;
+	char buf[4096];
+
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+	while (fgets(buf, sizeof(buf), f)) {
+		size_t len = strlen(buf);
+		char *copy;
+		if (len && buf[len - 1] == '\n')
+			buf[--len] = '\0';
+		if (*n == *cap) {
+			size_t ncap = *cap ? *cap * 2 : 16;
+			char **nl = realloc(*lines, ncap * sizeof(*nl));
+			if (!nl) {
+				fclose(f);
+				return -1;
+			}
+			*lines = nl;
+			*cap = ncap;
+		}
+		copy = malloc(len + 1);
+		if (!copy) {
+			fclose(f);
+			return -1;
+		}
+		memcpy(copy, buf, len + 1);
+		(*lines)[(*n)++] = copy;
+	}
+	fclose(f);
+	return 0;
+}
+
 int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out, size_t *out_len)
 {
-	char path[576];
-	FILE *f;
+	char path[576], rot[580];
 	char **lines = NULL;
 	size_t n = 0, cap = 0;
-	char buf[4096];
 	size_t i, start;
 	size_t total = 0;
 	char *acc;
@@ -98,32 +131,16 @@ int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out
 	}
 	if (hist_file(home, conv_id, path, sizeof(path)) != 0)
 		return -1;
-	f = fopen(path, "r");
-	if (!f) {
+	if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	if (read_lines(rot, &lines, &n, &cap) != 0)
+		goto fail;
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		goto fail;
+	if (n == 0) {
 		*out = calloc(1, 1);
 		return *out ? 0 : -1;
 	}
-	while (fgets(buf, sizeof(buf), f)) {
-		size_t len = strlen(buf);
-		char *copy;
-		if (len && buf[len - 1] == '\n')
-			buf[--len] = '\0';
-		if (n == cap) {
-			size_t ncap = cap ? cap * 2 : 16;
-			char **nl = realloc(lines, ncap * sizeof(*nl));
-			if (!nl)
-				goto fail;
-			lines = nl;
-			cap = ncap;
-		}
-		copy = malloc(len + 1);
-		if (!copy)
-			goto fail;
-		memcpy(copy, buf, len + 1);
-		lines[n++] = copy;
-	}
-	fclose(f);
-	f = NULL;
 	start = n > (size_t)limit ? n - (size_t)limit : 0;
 	for (i = start; i < n; i++)
 		total += strlen(lines[i]) + 1;
@@ -143,8 +160,6 @@ int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out
 	*out_len = strlen(acc);
 	return 0;
 fail:
-	if (f)
-		fclose(f);
 	if (lines) {
 		for (i = 0; i < n; i++)
 			free(lines[i]);

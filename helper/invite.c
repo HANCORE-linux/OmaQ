@@ -1,6 +1,7 @@
 #include "invite.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,13 +28,21 @@ static int parse_i64(const char *s, int64_t *out)
 {
 	int64_t v = 0;
 	int any = 0;
+	int digits = 0;
 	if (*s == '-')
 		return -1;
 	while (*s) {
+		int d;
 		if (*s < '0' || *s > '9')
 			return -1;
-		v = v * 10 + (*s - '0');
+		d = *s - '0';
+		if (v > (INT64_MAX - d) / 10)
+			return -1;
+		v = v * 10 + d;
 		any = 1;
+		digits++;
+		if (digits > 19)
+			return -1;
 		s++;
 	}
 	if (!any)
