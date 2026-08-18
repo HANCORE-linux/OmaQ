@@ -94,7 +94,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Memory | Do not invent an RSS gate. `verify-1-tox` **records** idle RSS after a successful two-client run. Later verifies fail if idle RSS > 1.5× that baseline (floor 20 MB until the first measurement exists, as a target only). Phase 6 records a call-peak baseline the same way. |
 | Bootstrap | Public Tox nodes, compiled in. |
 | Live | Never write `~/.config/omarchy/plugins/` except one announced install. Verify uses temp dirs only. |
-| Package | AUR in **phase 7**. Package files live under `/usr/share/omaq/`; the shell does **not** scan that path. Activation is an explicit user command (see §11). |
+| Package | AUR in **phase 7**. **AUR account registration is temporarily off** — do not upload, do not create an AUR account, do not start phase 7 until a new **go**. Package files live under `/usr/share/omaq/`; the shell does **not** scan that path. Activation is an explicit user command (see §11). |
 
 Incoming friend requests without a live token are rejected. Rate limit: 5 / minute / key, 20 / hour global; extras dropped. A leaked QR can knock, not flood.
 
@@ -484,7 +484,9 @@ Export/import (`identity_exists` / `replace`), search on disk.
 
 ### Phase 7 — package
 
-**Done:** `make verify-7` + `docs/stages/07-package.md`. AUR upload only after another explicit go.
+**Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, do not register an AUR account. Local PKGBUILD work waits for a new **go**. AUR upload is a second go after that.
+
+**Done (later):** `make verify-7` + `docs/stages/07-package.md`. AUR upload only after another explicit go.
 
 ---
 
