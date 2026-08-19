@@ -13,6 +13,7 @@ This folder **is** the progress log. One English file per finished phase, after 
 | `05-daily.md` | 5 |
 | `06-media.md` | 6 |
 | `07-package.md` | 7 |
+| `08-ratchet.md` | 8 |
 
 Each note: what landed, the verify command, measured RSS if any, what stays out.
 

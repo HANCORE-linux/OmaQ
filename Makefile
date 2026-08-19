@@ -30,7 +30,7 @@ BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
 
 .PHONY: all test helper arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
-	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 clean
+	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
 all: $(BIN_TEST) $(BIN_HELP)
 

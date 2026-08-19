@@ -28,7 +28,7 @@ QML (views)  →  Service (exec + socket)  →  helper ops  →  adapters (store
 3. Address chat only as a **conversation** (`direct` | `group`). No second chat stack for groups.
 4. **One helper process** per user session. Service always execs. Helper `flock`s. Exit `2` = already running → Service connects. No flock in QML.
 5. **Helper is authoritative.** `Model.js` is UX precheck only. It never decides redeem, roles, or history.
-6. Pure policy has no IO: `roles.c`, `invite.c`, `conversation.c`. IO lives in `store.c` (history + `surfaces.json`) and `tox_adapt.c` (`tox.h` + `toxav.h` only).
+6. Pure policy has no IO: `roles.c`, `invite.c`, `conversation.c`. IO lives in `store.c` (history + `surfaces.json`) and `tox_adapt.c` (`tox.h` + `toxav.h` + `toxencryptsave.h` only). Signal/Olm headers live only in `ratchet_adapt.c`.
 7. `message.c` talks `store.h`, not paths. `group.c` talks `roles.c` + `tox_adapt`, not a second policy.
 8. Every rule that can be wrong must be testable **without network and without toxcore**. `make arch` in `verify-0` enforces the include/IO greps.
 9. Untrusted input (`json_io`, invite parse) builds under `-fsanitize=address,undefined -Wall -Werror`.
@@ -91,7 +91,10 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Surfaces | **Card:** Quickshell overlay, drag to any monitor, stay there. **Pinned:** real Hyprland `xdg-toplevel`, terminal look. Then stock Omarchy keys apply (`SUPER+T` tile↔float, `SUPER+SHIFT+arrows` swap). Unpin (`lösen`) returns to the card. OmaQ does not bind those keys. |
 | Theme | Default System (`colors.toml`). Palettes: Paper, Ink, Moss, Dusk, Ember. Terminal-pin style uses the same palette, monospace. |
 | Sound | off, click, pop, bell, soft, knock, custom file. |
-| Memory | Do not invent an RSS gate. `verify-1-tox` **records** idle RSS after a successful two-client run. Later verifies fail if idle RSS > 1.5× that baseline (floor 20 MB until the first measurement exists, as a target only). Phase 6 records a call-peak baseline the same way. |
+| Memory | **50 MB RSS** for everything OmaQ starts (one helper + QML in a session). Do not invent a number in prose — measure. `verify-1-tox` records idle RSS; phase 6 records call-peak; phase 8 records ratchet idle + one-text. Fail if a single helper > 51200 kB. |
+| Payload | **Double Ratchet** (Signal spec) on **direct** conversations. Tox is the pipe. Not SimpleX. Not a second handshake we write ourselves. Library: Arch extra `libsignal-protocol-c` (existing). Groups stay Tox-native until a later go. |
+| Ratchet bootstrap | Invite may carry `rk=` (32-byte identity key, 64 hex). Prekey bundle after Tox connect, signed by that key. Safety code still binds the Tox ids. |
+| Out of 50 MB | No Tor child. No second Tox instance per contact. No SimpleX stack. |
 | Bootstrap | Public Tox nodes, compiled in. |
 | Live | Never write `~/.config/omarchy/plugins/` except one announced install. Verify uses temp dirs only. |
 | Package | AUR in **phase 7**. **AUR account registration is temporarily off** — do not upload, do not create an AUR account, do not start phase 7 until a new **go**. Package files live under `/usr/share/omaq/`; the shell does **not** scan that path. Activation is an explicit user command (see §11). |
@@ -119,8 +122,11 @@ Panel.qml  (one instance per monitor — host fact)
               roster.c
               group.c          # phase 3: orchestrates roles + tox_adapt
               file.c av.c      # phase 6
-              tox_adapt.c      # only tox.h and toxav.h
+              ratchet.c        # phase 8: session use cases
+              ratchet_adapt.c  # only Signal protocol headers
+              tox_adapt.c      # only tox.h, toxav.h, toxencryptsave.h
         → toxcore
+        → libsignal-protocol-c
 Model.js                       # UX precheck only; helper is authoritative
 ChatSurface.qml                # unpinned overlay + pinned terminal window
 ```
@@ -129,7 +135,8 @@ New capability = new module + new `op`/`event` **and** a gold test, then code.
 
 **Mechanical (not prose):** `make arch` in `verify-0` (~grep):
 
-- only `tox_adapt.c` may include `<tox/tox.h>` or `<tox/toxav.h>`
+- only `tox_adapt.c` may include `<tox/tox.h>`, `<tox/toxav.h>`, or `<tox/toxencryptsave.h>`
+- only `ratchet_adapt.c` may include Signal protocol headers (`<signal/…>`)
 - only `store.c` may open `$OMAQ_HOME/history`
 - `roles.c`, `invite.c`, `conversation.c` contain no `open(`, `fopen`, `socket`, `tox_`
 - `Model.js` contains no `Qt`, `Quickshell`, `XMLHttpRequest`
@@ -188,7 +195,7 @@ Dev helper: `./helper/omaq`. Packaged: `/usr/lib/omaq/omaq`.
 ## 4. Invite grammar (complete)
 
 ```text
-omaq://invite/<tox-addr>?i=<invite-id>&e=<unix-expiry>&k=<kind>[&g=<group-id>][&r=<role>]
+omaq://invite/<tox-addr>?i=<invite-id>&e=<unix-expiry>&k=<kind>[&g=<group-id>][&r=<role>][&rk=<64-hex>]
 ```
 
 | Part | Rule |
@@ -200,6 +207,7 @@ omaq://invite/<tox-addr>?i=<invite-id>&e=<unix-expiry>&k=<kind>[&g=<group-id>][&
 | `k` | required, `direct` or `group` |
 | `g` | required iff `k=group`, forbidden iff `k=direct` |
 | `r` | iff `k=group`: `member` or `admin`. Default `member` if omitted. Forbidden on `direct` |
+| `rk` | optional, 64 hex: Signal identity public key for the Double Ratchet. Direct only. Forbidden on `group`. Phase 8. |
 | query order | irrelevant |
 | duplicate key | invalid |
 | unknown key or unknown `k`/`r` | invalid (not “half accept”) |
@@ -435,6 +443,7 @@ make verify-N
 | **verify-5** | import refuses without `replace`; `replace` on temp home; search hits one fixture line | no | yes |
 | **verify-6** | file on disk; call start/stop; peak RSS recorded | yes | yes |
 | **verify-7** | `makepkg -f`; `namcap`; tar has no `home/`, no `tox.save`; enable path (symlink or plugin add) validates | no | build dep |
+| **verify-8** | two homes: invite with `rk`, one ratchet text; ciphertext is not plaintext on the wire; helper RSS ≤ 51200 kB | yes | toxcore + libsignal-protocol-c |
 
 Missing binary → fail. Real home paths → fail. No stage note `docs/stages/0N-….md` → phase not done.
 
@@ -492,6 +501,13 @@ Export/import (`identity_exists` / `replace`), search on disk.
 **Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, do not register an AUR account. Local PKGBUILD work waits for a new **go**. AUR upload is a second go after that.
 
 **Done (later):** `make verify-7` + `docs/stages/07-package.md`. AUR upload only after another explicit go.
+
+### Phase 8 — Double Ratchet on 1:1 (50 MB)
+
+Tox stays the pipe. Direct `msg.send` is Double Ratchet (Arch extra `libsignal-protocol-c`). One helper, one Tox identity. Invite `rk=`. No Tor process. No per-contact Tox. Groups unchanged.
+
+**Starts** only after owner installs: `omarchy pkg add libsignal-protocol-c`.  
+**Done:** `make verify-8` + `docs/stages/08-ratchet.md` (measured RSS). Live plugin: separate yes.
 
 ---
 
