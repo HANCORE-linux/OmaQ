@@ -6,13 +6,19 @@ OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no direct
 
 Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages.
 
+## Install
+
 ```bash
 omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable
 ```
 
+## Update
+
 ```bash
 omarchy plugin update hancore.omaq --yes
 ```
+
+## Uninstall
 
 ```bash
 omarchy plugin remove hancore.omaq
