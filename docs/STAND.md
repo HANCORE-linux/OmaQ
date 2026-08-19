@@ -2,7 +2,7 @@
 
 This file is the snapshot for a new session. Product contract (German): [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). How we build: [`PLAN.md`](PLAN.md).
 
-**Commit:** see `git log -1` on `main` (private `HANCORE-linux/OmaQ`). Reviewer+verifier 2026-08-19; review bugs 1–8 and gate holes 9–11,15 fixed in the follow-up commit.  
+**Commit:** `dd403e3` on `main` (private `HANCORE-linux/OmaQ`). Reviewer + verifier 2026-08-19 on `852ba90`; confirmed bugs 1–8 and gate holes 9–11, 15 are fixed in this tree.  
 **`.phase`:** 8  
 **Plugin id:** `hancore.omaq`  
 **Live bar:** off. Do not write `~/.config/omarchy/plugins/` except one announced install. No silent `omarchy restart shell`.  
