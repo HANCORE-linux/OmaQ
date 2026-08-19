@@ -262,6 +262,9 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"identity.export"}
 {"op":"identity.import","path":"..."}
 {"op":"identity.import","path":"...","replace":true}
+{"op":"identity.protect","passphrase":"..."}
+{"op":"identity.unlock","passphrase":"..."}
+{"op":"identity.unprotect","passphrase":"..."}
 {"op":"surface.set","conversation":"...","monitor":"...","x":0,"y":0,"pinned":false}
 {"op":"surface.get","conversation":"..."}
 {"op":"file.send","conversation":"...","path":"..."}
@@ -272,11 +275,13 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"call.stop","conversation":"..."}
 ```
 
-Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited`).
+Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited` | `locked`).
 
 `file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `$OMAQ_HOME/files/<conv>/<name>`, `0600`, cap 8 MiB. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
 
 `identity.import` without `replace` **refuses** if `tox.save` already exists (`identity_exists`). `replace:true` is an irreversible overwrite and needs an explicit UI confirm. Never default to replace.
+
+`identity.protect` encrypts `tox.save` with toxcore `toxencryptsave` (passphrase, RAM only). Default remains plaintext. Encrypted save on helper start emits `locked`; other ops return `locked` until `identity.unlock`. Wrong passphrase stays locked. This is at-rest for the identity file only — not a second chat protocol, not SimpleX.
 
 Phase 1 implements direct invite, decide, send, history, status, revoke. Group ops and export/import return `unsupported` until their phase.
 

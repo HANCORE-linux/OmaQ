@@ -248,6 +248,34 @@ Panel {
             onClicked: omaq.exportIdentity()
           }
 
+          TextField {
+            id: passField
+            width: parent.width
+            echoMode: TextInput.Password
+            placeholderText: omaq.locked ? "Passphrase to unlock" : "Passphrase for tox.save"
+          }
+
+          Button {
+            visible: omaq.locked
+            width: parent.width
+            text: "Unlock identity"
+            onClicked: omaq.unlockIdentity(passField.text)
+          }
+
+          Button {
+            visible: !omaq.locked && !omaq.saveProtected
+            width: parent.width
+            text: "Protect identity"
+            onClicked: omaq.protectIdentity(passField.text)
+          }
+
+          Button {
+            visible: !omaq.locked && omaq.saveProtected
+            width: parent.width
+            text: "Remove identity lock"
+            onClicked: omaq.unprotectIdentity(passField.text)
+          }
+
           Button {
             width: parent.width
             text: "Remove contact"

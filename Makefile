@@ -135,6 +135,7 @@ verify-6: test arch helper
 	sh tests/lock-elect.sh
 	omarchy plugin validate .
 	sh tests/phase6.sh
+	sh tests/encryptsave.sh
 	@echo "verify-6: ok"
 
 verify-7:

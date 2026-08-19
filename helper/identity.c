@@ -7,10 +7,48 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifdef HAVE_TOX
-struct omaq_tox *omaq_identity_load(const char *home)
+int omaq_identity_pass_ok(const char *pass)
 {
-	return omaq_tox_open(home);
+	size_t n;
+
+	if (!pass)
+		return 0;
+	n = strlen(pass);
+	if (n == 0 || n > 128)
+		return 0;
+	if (strchr(pass, '\n') || strchr(pass, '\r'))
+		return 0;
+	return 1;
+}
+
+#ifdef HAVE_TOX
+struct omaq_tox *omaq_identity_load(const char *home, const char *pass, int *err)
+{
+	if (pass && pass[0] && !omaq_identity_pass_ok(pass)) {
+		if (err)
+			*err = -1;
+		return NULL;
+	}
+	return omaq_tox_open(home, pass, err);
+}
+
+int omaq_identity_protect(struct omaq_tox *t, const char *pass)
+{
+	if (!omaq_identity_pass_ok(pass))
+		return -1;
+	return omaq_tox_protect(t, pass);
+}
+
+int omaq_identity_unprotect(struct omaq_tox *t, const char *pass)
+{
+	if (!omaq_identity_pass_ok(pass))
+		return -1;
+	return omaq_tox_unprotect(t, pass);
+}
+
+int omaq_identity_protected(const struct omaq_tox *t)
+{
+	return omaq_tox_protected(t);
 }
 #endif
 

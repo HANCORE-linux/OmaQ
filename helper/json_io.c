@@ -198,6 +198,9 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "monitor") == 0) {
 			if (parse_string(&p, out->monitor, sizeof(out->monitor)) != 0)
 				return -1;
+		} else if (strcmp(key, "passphrase") == 0) {
+			if (parse_string(&p, out->passphrase, sizeof(out->passphrase)) != 0)
+				return -1;
 		} else if (strcmp(key, "ttlSec") == 0) {
 			if (parse_int(&p, &out->ttl_sec) != 0)
 				return -1;

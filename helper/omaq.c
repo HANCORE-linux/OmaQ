@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/file.h>
 #include <sys/random.h>
 #include <sys/socket.h>
@@ -35,6 +36,7 @@
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
+static int g_locked;
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
@@ -411,16 +413,50 @@ static void rand_id(char *out, size_t n)
 }
 #endif
 
+#ifdef HAVE_TOX
+static void attach_hooks(void)
+{
+	if (!g_tox)
+		return;
+	omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
+	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
+	omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
+				hook_file_ctrl, NULL);
+	omaq_tox_set_call_hook(g_tox, hook_call, NULL);
+}
+
+static int load_tox(const char *pass)
+{
+	int err = 0;
+
+	g_tox = omaq_identity_load(home_dir(), pass, &err);
+	if (err == OMAQ_TOX_LOCKED) {
+		g_locked = 1;
+		return 1;
+	}
+	g_locked = 0;
+	if (!g_tox)
+		return -1;
+	attach_hooks();
+	return 0;
+}
+#endif
+
 static int handle_op(const omaq_op *op)
 {
 	if (strcmp(op->op, "status") == 0) {
 #ifdef HAVE_TOX
 		char addr[77];
-		char ev[160];
+		char ev[192];
+		if (g_locked && !g_tox) {
+			emit("{\"event\":\"snapshot\",\"unread\":0,\"locked\":true}");
+			return 0;
+		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"unread\":0,\"online\":%s,\"addr\":\"%s\"}",
-				 omaq_tox_online(g_tox) ? "true" : "false", addr);
+				 "{\"event\":\"snapshot\",\"unread\":0,\"online\":%s,\"addr\":\"%s\",\"protected\":%s}",
+				 omaq_tox_online(g_tox) ? "true" : "false", addr,
+				 omaq_identity_protected(g_tox) ? "true" : "false");
 			emit(ev);
 			return 0;
 		}
@@ -428,6 +464,48 @@ static int handle_op(const omaq_op *op)
 		emit("{\"event\":\"snapshot\",\"unread\":0,\"conversations\":[]}");
 		return 0;
 	}
+#ifdef HAVE_TOX
+	if (g_locked && !g_tox &&
+	    strcmp(op->op, "identity.unlock") != 0) {
+		emit_error("locked");
+		return 0;
+	}
+	if (strcmp(op->op, "identity.unlock") == 0) {
+		int rc;
+
+		if (g_tox) {
+			emit("{\"event\":\"identity\",\"op\":\"unlock\"}");
+			return 0;
+		}
+		if (!omaq_identity_pass_ok(op->passphrase)) {
+			emit_error("forbidden");
+			return 0;
+		}
+		rc = load_tox(op->passphrase);
+		if (rc != 0) {
+			emit_error("locked");
+			return 0;
+		}
+		emit("{\"event\":\"identity\",\"op\":\"unlock\"}");
+		return 0;
+	}
+	if (strcmp(op->op, "identity.protect") == 0) {
+		if (!g_tox || omaq_identity_protect(g_tox, op->passphrase) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		emit("{\"event\":\"identity\",\"op\":\"protect\",\"protected\":true}");
+		return 0;
+	}
+	if (strcmp(op->op, "identity.unprotect") == 0) {
+		if (!g_tox || omaq_identity_unprotect(g_tox, op->passphrase) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		emit("{\"event\":\"identity\",\"op\":\"protect\",\"protected\":false}");
+		return 0;
+	}
+#endif
 	if (strcmp(op->op, "invite.create") == 0) {
 		if (strcmp(op->kind, "group") == 0) {
 #ifdef HAVE_TOX
@@ -1161,7 +1239,11 @@ static int serve_line(char *line)
 		emit_error("unsupported");
 		return 0;
 	}
-	return handle_op(&op);
+	{
+		int rc = handle_op(&op);
+		explicit_bzero(op.passphrase, sizeof(op.passphrase));
+		return rc;
+	}
 }
 
 static void accept_client(void)
@@ -1241,14 +1323,7 @@ int main(int argc, char **argv)
 	if (write_pid() != 0)
 		return 1;
 #ifdef HAVE_TOX
-	g_tox = omaq_identity_load(home_dir());
-	if (g_tox) {
-		omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
-		omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
-		omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
-					hook_file_ctrl, NULL);
-		omaq_tox_set_call_hook(g_tox, hook_call, NULL);
-	}
+	(void)load_tox(NULL);
 #endif
 	if (hold) {
 		for (;;) {

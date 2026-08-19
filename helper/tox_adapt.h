@@ -8,7 +8,12 @@
 
 struct omaq_tox;
 
-struct omaq_tox *omaq_tox_open(const char *home);
+#define OMAQ_TOX_LOCKED 1
+
+struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err);
+int omaq_tox_protect(struct omaq_tox *t, const char *pass);
+int omaq_tox_unprotect(struct omaq_tox *t, const char *pass);
+int omaq_tox_protected(const struct omaq_tox *t);
 void omaq_tox_close(struct omaq_tox *t);
 void omaq_tox_iterate(struct omaq_tox *t);
 uint32_t omaq_tox_interval_ms(const struct omaq_tox *t);

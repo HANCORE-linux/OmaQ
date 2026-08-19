@@ -13,7 +13,8 @@ die() { warn "FAIL: $*"; fail=1; }
 # Only tox_adapt.c may include tox headers.
 if [ -d helper ]; then
 	hits=$(grep -RIn --include='*.c' --include='*.h' \
-		-e '<tox/tox.h>' -e '<tox/toxav.h>' -e '"tox/tox.h"' -e '"tox/toxav.h"' \
+		-e '<tox/tox.h>' -e '<tox/toxav.h>' -e '<tox/toxencryptsave.h>' \
+		-e '"tox/tox.h"' -e '"tox/toxav.h"' -e '"tox/toxencryptsave.h"' \
 		helper 2>/dev/null | grep -v '/tox_adapt\.[ch]:' || true)
 	if [ -n "$hits" ]; then
 		die "tox include outside tox_adapt.c"

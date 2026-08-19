@@ -28,6 +28,8 @@ Item {
   property bool pendingFile: false
   property bool incomingCall: false
   property string lastCallState: ""
+  property bool locked: false
+  property bool saveProtected: false
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
@@ -48,9 +50,24 @@ Item {
         root.unreadCount = ev.unread
       if (ev.addr)
         root.lastAddr = ev.addr
+      if (ev.locked !== undefined)
+        root.locked = !!ev.locked
+      if (ev.protected !== undefined)
+        root.saveProtected = !!ev.protected
+      if (ev.locked === true)
+        root.lastError = "locked"
     }
-    if (ev.event === "error")
+    if (ev.event === "error") {
       root.lastError = ev.code || "error"
+      if (ev.code === "locked")
+        root.locked = true
+    }
+    if (ev.event === "identity") {
+      if (ev.op === "unlock")
+        root.locked = false
+      if (ev.protected !== undefined)
+        root.saveProtected = !!ev.protected
+    }
     if (ev.event === "message") {
       root.unreadCount = root.unreadCount + 1
       if (ev.conversation)
@@ -166,6 +183,15 @@ Item {
   }
   function searchChat(q) {
     sendOp({ op: "search", conversation: root.lastConversation, text: q, limit: 20 })
+  }
+  function unlockIdentity(pass) {
+    sendOp({ op: "identity.unlock", passphrase: pass })
+  }
+  function protectIdentity(pass) {
+    sendOp({ op: "identity.protect", passphrase: pass })
+  }
+  function unprotectIdentity(pass) {
+    sendOp({ op: "identity.unprotect", passphrase: pass })
   }
   function sendFile(path) {
     sendOp({ op: "file.send", conversation: root.lastConversation, path: path })

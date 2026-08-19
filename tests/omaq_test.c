@@ -297,6 +297,16 @@ static void test_identity_files(void)
 		fail("id replace");
 }
 
+static void test_pass_ok(void)
+{
+	if (omaq_identity_pass_ok("") || omaq_identity_pass_ok(NULL))
+		fail("pass empty");
+	if (omaq_identity_pass_ok("has\nnl"))
+		fail("pass newline");
+	if (!omaq_identity_pass_ok("ok-pass-1"))
+		fail("pass ok");
+}
+
 static void test_expire(void)
 {
 	omaq_invite inv;
@@ -643,6 +653,7 @@ int main(void)
 	test_store();
 	test_search();
 	test_identity_files();
+	test_pass_ok();
 	test_mutate();
 	test_conv();
 	test_expire();

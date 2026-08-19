@@ -12,6 +12,7 @@
 - Groups (`g…`) return `forbidden` for file and call
 - Chat page: file path, accept/decline, small image preview of the dest, call/answer/hang up
 - `make verify-6`; `.phase` is 6
+- Optional `toxencryptsave` on `tox.save` (`identity.protect` / `unlock` / `unprotect`). Default stays plaintext. Does not change the chat handshake.
 
 ## How to check
 
