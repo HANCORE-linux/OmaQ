@@ -18,6 +18,7 @@ typedef struct {
 	omaq_invite_kind kind;
 	char group[65];
 	char role[16];
+	char rk[65];
 } omaq_invite;
 
 /* 0 = ok, -1 = invalid. Never half-accepts. */

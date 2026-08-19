@@ -7,6 +7,7 @@
 #include "json_io.h"
 #include "message.h"
 #include "qr.h"
+#include "ratchet.h"
 #include "rate.h"
 #include "safety.h"
 #include "surface.h"
@@ -37,6 +38,10 @@
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
 static int g_locked;
+#ifdef HAVE_SIGNAL
+static struct omaq_ratchet *g_ratchet;
+static char g_pending_rk[OMAQ_RK_HEX + 1];
+#endif
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
@@ -285,8 +290,23 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined)
 static void hook_msg(void *ud, uint32_t friend, const char *text)
 {
 	char esc[2800], ev[3000], conv[16];
+#ifdef HAVE_SIGNAL
+	char plain[1400];
+#endif
 	(void)ud;
 	snprintf(conv, sizeof(conv), "%u", friend);
+#ifdef HAVE_SIGNAL
+	if (g_ratchet && text && strncmp(text, "OQB1", 4) == 0) {
+		(void)omaq_ratchet_accept_bundle(g_ratchet, conv, text + 4,
+						 g_pending_rk[0] ? g_pending_rk : NULL);
+		return;
+	}
+	if (g_ratchet && text && strncmp(text, "OQR1", 4) == 0) {
+		if (omaq_ratchet_decrypt(g_ratchet, conv, text, plain, sizeof(plain)) != 0)
+			return;
+		text = plain;
+	}
+#endif
 	if (omaq_json_escape(text, esc, sizeof(esc)) != 0)
 		return;
 	snprintf(ev, sizeof(ev),
@@ -575,6 +595,10 @@ static int handle_op(const omaq_op *op)
 			rand_id(inv.id, sizeof(inv.id));
 			inv.expiry = (int64_t)time(NULL) + ttl;
 			inv.kind = INVITE_DIRECT;
+#ifdef HAVE_SIGNAL
+			if (g_ratchet)
+				(void)omaq_ratchet_local_rk(g_ratchet, inv.rk);
+#endif
 			if (omaq_invite_format(&inv, url, sizeof(url)) != 0) {
 				emit_error("unsupported");
 				return 0;
@@ -621,6 +645,10 @@ static int handle_op(const omaq_op *op)
 				emit_error("forbidden");
 				return 0;
 			}
+#ifdef HAVE_SIGNAL
+			if (inv.rk[0] && omaq_rk_ok(inv.rk))
+				snprintf(g_pending_rk, sizeof(g_pending_rk), "%s", inv.rk);
+#endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_safety(0);
 			return 0;
@@ -908,6 +936,32 @@ static int handle_op(const omaq_op *op)
 				}
 			} else {
 				uint32_t fn = (uint32_t)atoi(cid);
+#ifdef HAVE_SIGNAL
+				if (g_ratchet) {
+					char bun[900], wire[2800];
+					if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
+						char bmsg[920];
+						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
+						(void)omaq_tox_send(g_tox, fn, bmsg);
+					}
+					if (!omaq_ratchet_has_session(g_ratchet, cid)) {
+						emit("{\"event\":\"snapshot\",\"unread\":0}");
+						return 0;
+					}
+					if (omaq_ratchet_encrypt(g_ratchet, cid, op->text,
+								wire, sizeof(wire)) != 0) {
+						emit_error("forbidden");
+						return 0;
+					}
+					if (omaq_tox_send(g_tox, fn, wire) != 0) {
+						emit_error("forbidden");
+						return 0;
+					}
+					omaq_message_append(home_dir(), cid, "me", op->text, "out");
+					emit("{\"event\":\"snapshot\",\"unread\":0}");
+					return 0;
+				}
+#endif
 				if (omaq_tox_send(g_tox, fn, op->text) != 0) {
 					emit_error("forbidden");
 					return 0;
@@ -1325,6 +1379,9 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 	(void)load_tox(NULL);
 #endif
+#ifdef HAVE_SIGNAL
+	g_ratchet = omaq_ratchet_open(home_dir());
+#endif
 	if (hold) {
 		for (;;) {
 #ifdef HAVE_TOX
@@ -1393,6 +1450,10 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 	if (g_tox)
 		omaq_tox_close(g_tox);
+#endif
+#ifdef HAVE_SIGNAL
+	if (g_ratchet)
+		omaq_ratchet_close(g_ratchet);
 #endif
 	if (g_lockfd >= 0)
 		close(g_lockfd);

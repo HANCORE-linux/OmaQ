@@ -20,6 +20,13 @@ if [ -d helper ]; then
 		die "tox include outside tox_adapt.c"
 		printf '%s\n' "$hits" >&2
 	fi
+	hits=$(grep -RIn --include='*.c' --include='*.h' \
+		-e '<signal/' -e '"signal/' \
+		helper 2>/dev/null | grep -v '/ratchet_adapt\.c:' || true)
+	if [ -n "$hits" ]; then
+		die "signal include outside ratchet_adapt.c"
+		printf '%s\n' "$hits" >&2
+	fi
 fi
 
 # Only store.c may mention the history path.

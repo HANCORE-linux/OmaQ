@@ -7,6 +7,7 @@
 #include "../helper/json_io.h"
 #include "../helper/message.h"
 #include "../helper/qr.h"
+#include "../helper/ratchet.h"
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
@@ -654,6 +655,10 @@ int main(void)
 	test_search();
 	test_identity_files();
 	test_pass_ok();
+	if (!omaq_rk_ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+		fail("rk ok");
+	if (omaq_rk_ok("aa") || omaq_rk_ok(""))
+		fail("rk bad");
 	test_mutate();
 	test_conv();
 	test_expire();

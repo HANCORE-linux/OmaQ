@@ -20,7 +20,7 @@ function parseInvite(url) {
     var q = rest.slice(TOX_ADDR_LEN + 1)
     var parts = q.split("&")
     var seen = {}
-    var out = { id: "", expiry: "", kind: "", group: "", role: "" }
+    var out = { id: "", expiry: "", kind: "", group: "", role: "", rk: "" }
     for (var i = 0; i < parts.length; i++) {
         var eq = parts[i].indexOf("=")
         if (eq < 1)
@@ -40,6 +40,8 @@ function parseInvite(url) {
             out.group = v
         else if (k === "r")
             out.role = v
+        else if (k === "rk")
+            out.rk = v
         else
             return null
     }
@@ -49,7 +51,9 @@ function parseInvite(url) {
         return null
     if (out.kind === "direct" && (out.group || out.role))
         return null
-    if (out.kind === "group" && !out.group)
+    if (out.rk && (out.rk.length !== 64 || !/^[0-9a-fA-F]+$/.test(out.rk)))
+        return null
+    if (out.kind === "group" && (out.rk || !out.group))
         return null
     return out
 }

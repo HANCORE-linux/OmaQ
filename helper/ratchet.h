@@ -1,0 +1,26 @@
+#ifndef OMAQ_RATCHET_H
+#define OMAQ_RATCHET_H
+
+#include <stddef.h>
+
+#define OMAQ_RK_HEX 64
+
+int omaq_rk_ok(const char *hex64);
+
+#ifdef HAVE_SIGNAL
+struct omaq_ratchet;
+
+struct omaq_ratchet *omaq_ratchet_open(const char *home);
+void omaq_ratchet_close(struct omaq_ratchet *r);
+int omaq_ratchet_local_rk(struct omaq_ratchet *r, char hex64[OMAQ_RK_HEX + 1]);
+int omaq_ratchet_bundle(struct omaq_ratchet *r, char *out, size_t n);
+int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
+			       const char *hex, const char *expect_rk);
+int omaq_ratchet_has_session(struct omaq_ratchet *r, const char *peer);
+int omaq_ratchet_encrypt(struct omaq_ratchet *r, const char *peer,
+			 const char *plain, char *out, size_t n);
+int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
+			 const char *wire, char *out, size_t n);
+#endif
+
+#endif

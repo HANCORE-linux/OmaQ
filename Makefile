@@ -7,6 +7,7 @@ PKG_CONFIG ?= pkg-config
 
 TOX_OK := $(shell $(PKG_CONFIG) --exists libtoxcore && echo yes || \
 	($(PKG_CONFIG) --exists toxcore && echo yes || echo no))
+SIG_OK := $(shell $(PKG_CONFIG) --exists libsignal-protocol-c && echo yes || echo no)
 
 ifeq ($(TOX_OK),yes)
   TOX_PC := $(shell $(PKG_CONFIG) --exists libtoxcore && echo libtoxcore || echo toxcore)
@@ -15,16 +16,23 @@ ifeq ($(TOX_OK),yes)
   TOX_LIBS := $(shell $(PKG_CONFIG) --libs $(TOX_PC))
 endif
 
+ifeq ($(SIG_OK),yes)
+  CFLAGS += -DHAVE_SIGNAL
+  CFLAGS += $(shell $(PKG_CONFIG) --cflags libsignal-protocol-c)
+  TOX_LIBS += $(shell $(PKG_CONFIG) --libs libsignal-protocol-c)
+  TOX_LIBS += $(shell $(PKG_CONFIG) --libs libcrypto)
+endif
+
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
 	helper/safety.c helper/qr.c helper/group.c helper/surface.c \
-	helper/file.c helper/av.c
+	helper/file.c helper/av.c helper/ratchet.c helper/ratchet_adapt.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c helper/identity.c \
 	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/surface.c \
-	helper/file.c
+	helper/file.c helper/ratchet.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
@@ -139,7 +147,19 @@ verify-6: test arch helper
 	@echo "verify-6: ok"
 
 verify-7:
-	@echo "$@: not this phase (current=$(PHASE))" >&2; exit 1
+	@echo "$@: halted (AUR registration off)" >&2; exit 1
+
+verify-8: test arch helper
+	@if [ "$(TOX_OK)" != "yes" ]; then echo "verify-8: toxcore missing" >&2; exit 1; fi
+	@if [ "$(SIG_OK)" != "yes" ]; then \
+		echo "verify-8: libsignal-protocol-c missing. omarchy pkg add libsignal-protocol-c" >&2; \
+		exit 1; \
+	fi
+	test -f docs/stages/08-ratchet.md
+	sh tests/lock-elect.sh
+	omarchy plugin validate .
+	sh tests/phase8.sh
+	@echo "verify-8: ok"
 
 clean:
 	rm -f $(BIN_TEST) $(BIN_HELP)

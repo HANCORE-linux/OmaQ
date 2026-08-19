@@ -4,8 +4,9 @@
 |---|---|---|---|
 | `toxcore` (Arch extra) | `helper/tox_adapt.c` | GPL-3.0-or-later | phase 1 tox — install with `omarchy pkg add toxcore` |
 | `qrencode` 4.1.1-4 / `zbar` 0.23.93-7 | `helper/qr.c` + `zbarimg` in `verify-2` | LGPL | phase 2 |
-| `libsignal-protocol-c` (Arch extra) | `helper/ratchet_adapt.c` (phase 8) | GPL-3.0 | not installed yet — `omarchy pkg add libsignal-protocol-c` |
+| `libsignal-protocol-c` (Arch extra) | `helper/ratchet_adapt.c` | GPL-3.0 | phase 8 — `omarchy pkg add libsignal-protocol-c` |
+| OpenSSL `libcrypto` (already on box) | `ratchet_adapt.c` crypto provider (HMAC-SHA256, AES) | Apache-2.0 | phase 8 |
 
 Helper is GPL-3.0-or-later once linked against toxcore. QML/plugin stays MIT.
 
-Installed here: `toxcore` 1:0.2.22-2 from Arch extra (`omarchy pkg add toxcore`).
+Installed here: `toxcore` 1:0.2.22-2; `libsignal-protocol-c` 2.3.3-2 (`omarchy pkg add libsignal-protocol-c`, 2026-08-19).
