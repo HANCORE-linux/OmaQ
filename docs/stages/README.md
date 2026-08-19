@@ -2,6 +2,8 @@
 
 This folder **is** the progress log. One English file per finished phase, after `make verify-N` exits 0.
 
+The live snapshot across all phases is [`../STAND.md`](../STAND.md).
+
 | File | Phase |
 |---|---|
 | `00-harness.md` | 0 |

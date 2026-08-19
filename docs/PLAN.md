@@ -2,7 +2,7 @@
 
 **Authority:** This file is how we build. German product contract: [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). If they disagree, stop and fix both before writing code.
 
-**Status:** Closed after review against the live Quattro shell (`Bar.qml` per-monitor widgets, `PluginRegistry` scan paths). Phase 0 starts only after an explicit **go**.  
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is off the bar. Snapshot: [`STAND.md`](STAND.md).  
 **Tree:** `/home/hancore/Projects/omaq`  
 **Id:** `hancore.omaq`
 
