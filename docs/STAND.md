@@ -2,7 +2,7 @@
 
 This file is the snapshot for a new session. Product contract (German): [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). How we build: [`PLAN.md`](PLAN.md).
 
-**Commit:** `d5f86a6` (`main`, private `HANCORE-linux/OmaQ`)  
+**Commit:** see `git log -1` on `main` (private `HANCORE-linux/OmaQ`). Reviewer+verifier 2026-08-19; review bugs 1–8 and gate holes 9–11,15 fixed in the follow-up commit.  
 **`.phase`:** 8  
 **Plugin id:** `hancore.omaq`  
 **Live bar:** off. Do not write `~/.config/omarchy/plugins/` except one announced install. No silent `omarchy restart shell`.  
@@ -30,7 +30,7 @@ Chat with the owner is German. Repo, UI, and this file are English.
 - 1:1 and group text (same chat page)
 - Optional `toxencryptsave` lock on `tox.save`
 - File send (paused until accept, dest `$OMAQ_HOME/files/<conv>/`)
-- 1:1 audio call start/stop
+- 1:1 call **signaling** (start/answer/stop). No microphone PCM yet.
 - Direct messages: Double Ratchet over Tox (`OQB1` / `OQR1`, invite `rk=`)
 - Two local helpers exchange a ratchet plaintext; `make verify-8` green
 
@@ -50,9 +50,9 @@ KCI on the Tox handshake does not decrypt ratchet text once `rk` came from the i
 
 | Gate | kB |
 |---|---|
-| Idle (two-home) | 6648 |
-| Call peak | ~21540 |
-| Ratchet 1:1 (`verify-8`) | **11232** |
+| Idle (two-home, with ratchet) | 11216 |
+| Call peak | 26032 |
+| Ratchet 1:1 (`phase8`) | **11324** |
 | Product cap | **51200** (50 MB) |
 
 ## Packages (Arch extra, owner-approved)

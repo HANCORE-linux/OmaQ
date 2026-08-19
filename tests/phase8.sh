@@ -75,14 +75,23 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$sent" -eq 1 ] || { echo "phase8: no ratchet plaintext event" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
 
-# Ciphertext on the helper log must not be the raw ping inside a tox send path;
-# the event is decrypted. Ensure a raw OQR1 appeared in err or that ping is only in events.
-if grep -a '"message"' "$fb" | grep -q 'secret-ratchet-ping'; then
-	:
-else
-	echo "phase8: decrypted event missing" >&2
+if grep -a '"message"' "$fa" "$fb" | grep -E -q 'OQR1|OQB1'; then
+	echo "phase8: ciphertext leaked into message event" >&2
 	exit 1
 fi
+
+sent2=0
+i=0
+while [ "$i" -lt 30 ]; do
+	echo '{"op":"msg.send","conversation":"0","text":"secret-ratchet-pong"}' >&3
+	sleep 1
+	if grep -a -q 'secret-ratchet-pong' "$fb"; then
+		sent2=1
+		break
+	fi
+	i=$((i + 1))
+done
+[ "$sent2" -eq 1 ] || { echo "phase8: second ratchet message missing" >&2; exit 1; }
 
 rss=$(ps -o rss= -p "$pa" | tr -d ' ')
 if [ "$rss" -gt 51200 ]; then

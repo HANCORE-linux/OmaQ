@@ -10,7 +10,7 @@ int omaq_rk_ok(const char *hex64);
 #ifdef HAVE_SIGNAL
 struct omaq_ratchet;
 
-struct omaq_ratchet *omaq_ratchet_open(const char *home);
+struct omaq_ratchet *omaq_ratchet_open(const char *home); /* persists under $home/ratchet */
 void omaq_ratchet_close(struct omaq_ratchet *r);
 int omaq_ratchet_local_rk(struct omaq_ratchet *r, char hex64[OMAQ_RK_HEX + 1]);
 int omaq_ratchet_bundle(struct omaq_ratchet *r, char *out, size_t n);

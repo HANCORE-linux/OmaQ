@@ -61,7 +61,7 @@ if [ -f Model.js ]; then
 fi
 
 if find . -name '*.qml' | grep -q .; then
-	hits=$(grep -RIn --include='*.qml' -e 'toxcore' -e '<tox/' -e 'tox_friend' . || true)
+	hits=$(grep -RIn --include='*.qml' -ie 'tox' . || true)
 	if [ -n "$hits" ]; then
 		die "QML mentions tox"
 		printf '%s\n' "$hits" >&2

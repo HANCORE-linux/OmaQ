@@ -1,2 +1,2 @@
 omaq://invite/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab?i=abc1&e=2000000000&k=direct&rk=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-direct abc1
+direct abc1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

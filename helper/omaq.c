@@ -40,7 +40,45 @@ static struct omaq_tox *g_tox;
 static int g_locked;
 #ifdef HAVE_SIGNAL
 static struct omaq_ratchet *g_ratchet;
-static char g_pending_rk[OMAQ_RK_HEX + 1];
+static struct {
+	char conv[16];
+	char rk[OMAQ_RK_HEX + 1];
+} g_rkmap[8];
+
+static void rk_set(const char *conv, const char *rk)
+{
+	int i, free_i = -1;
+
+	if (!conv || !rk)
+		return;
+	for (i = 0; i < 8; i++) {
+		if (!g_rkmap[i].conv[0]) {
+			if (free_i < 0)
+				free_i = i;
+			continue;
+		}
+		if (strcmp(g_rkmap[i].conv, conv) == 0) {
+			snprintf(g_rkmap[i].rk, sizeof(g_rkmap[i].rk), "%s", rk);
+			return;
+		}
+	}
+	if (free_i < 0)
+		return;
+	snprintf(g_rkmap[free_i].conv, sizeof(g_rkmap[free_i].conv), "%s", conv);
+	snprintf(g_rkmap[free_i].rk, sizeof(g_rkmap[free_i].rk), "%s", rk);
+}
+
+static const char *rk_get(const char *conv)
+{
+	int i;
+	if (!conv)
+		return NULL;
+	for (i = 0; i < 8; i++) {
+		if (g_rkmap[i].conv[0] && strcmp(g_rkmap[i].conv, conv) == 0)
+			return g_rkmap[i].rk;
+	}
+	return NULL;
+}
 #endif
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
@@ -238,6 +276,8 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 		return;
 	if (g_issued_exp && now >= g_issued_exp)
 		return;
+	if (g_have_pending)
+		return;
 	memcpy(g_pending_pk, pk32, 32);
 	g_have_pending = 1;
 	if (g_issued_is_group)
@@ -250,6 +290,8 @@ static void hook_ginv(void *ud, uint32_t friend, const uint8_t *data, size_t len
 {
 	(void)ud;
 	if (!data || len == 0 || len > sizeof(g_gpending_data))
+		return;
+	if (g_have_gpending)
 		return;
 	memcpy(g_gpending_data, data, len);
 	g_gpending_len = len;
@@ -297,8 +339,16 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	snprintf(conv, sizeof(conv), "%u", friend);
 #ifdef HAVE_SIGNAL
 	if (g_ratchet && text && strncmp(text, "OQB1", 4) == 0) {
-		(void)omaq_ratchet_accept_bundle(g_ratchet, conv, text + 4,
-						 g_pending_rk[0] ? g_pending_rk : NULL);
+		int had = omaq_ratchet_has_session(g_ratchet, conv);
+		if (!had)
+			(void)omaq_ratchet_accept_bundle(g_ratchet, conv, text + 4, rk_get(conv));
+		if (!had && g_tox) {
+			char bun[900], bmsg[920];
+			if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
+				snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
+				(void)omaq_tox_send(g_tox, friend, bmsg);
+			}
+		}
 		return;
 	}
 	if (g_ratchet && text && strncmp(text, "OQR1", 4) == 0) {
@@ -620,10 +670,14 @@ static int handle_op(const omaq_op *op)
 			emit_error("unsupported");
 			return 0;
 		}
+		if (omaq_invite_expired(&inv, (int64_t)time(NULL))) {
+			emit_error("invite_expired");
+			return 0;
+		}
 		if (inv.kind == INVITE_GROUP) {
 #ifdef HAVE_TOX
 			if (g_tox) {
-				if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id) != 0) {
+				if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, NULL) != 0) {
 					/* already a friend: group Tox invite must come from the owner */
 					emit("{\"event\":\"snapshot\",\"unread\":0}");
 					return 0;
@@ -635,22 +689,22 @@ static int handle_op(const omaq_op *op)
 			emit_error("unsupported");
 			return 0;
 		}
-		if (omaq_invite_expired(&inv, (int64_t)time(NULL))) {
-			emit_error("invite_expired");
-			return 0;
-		}
 #ifdef HAVE_TOX
 		if (g_tox) {
-			if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id) != 0) {
+			uint32_t fn = 0;
+			if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, &fn) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
 #ifdef HAVE_SIGNAL
-			if (inv.rk[0] && omaq_rk_ok(inv.rk))
-				snprintf(g_pending_rk, sizeof(g_pending_rk), "%s", inv.rk);
+			if (inv.rk[0] && omaq_rk_ok(inv.rk)) {
+				char conv[16];
+				snprintf(conv, sizeof(conv), "%u", fn);
+				rk_set(conv, inv.rk);
+			}
 #endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
-			emit_safety(0);
+			emit_safety(fn);
 			return 0;
 		}
 #endif
@@ -939,7 +993,8 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_SIGNAL
 				if (g_ratchet) {
 					char bun[900], wire[2800];
-					if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
+					if (!omaq_ratchet_has_session(g_ratchet, cid) &&
+					    omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
 						char bmsg[920];
 						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
 						(void)omaq_tox_send(g_tox, fn, bmsg);
@@ -1272,6 +1327,13 @@ static int handle_op(const omaq_op *op)
 			emit_error("forbidden");
 			return 0;
 		}
+#ifdef HAVE_TOX
+		if (g_tox) {
+			omaq_tox_discard(g_tox);
+			g_tox = NULL;
+			(void)load_tox(NULL);
+		}
+#endif
 		emit("{\"event\":\"identity\",\"op\":\"import\"}");
 		return 0;
 	}
@@ -1296,6 +1358,7 @@ static int serve_line(char *line)
 	{
 		int rc = handle_op(&op);
 		explicit_bzero(op.passphrase, sizeof(op.passphrase));
+		explicit_bzero(line, n + 1);
 		return rc;
 	}
 }

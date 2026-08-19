@@ -73,13 +73,25 @@ while [ "$i" -lt 40 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "encryptsave: expected locked" >&2; cat "$out2" >&2; exit 1; }
 
+before=$(wc -l <"$out2")
 echo '{"op":"msg.send","conversation":"0","text":"no"}' >&3
 sleep 0.2
-grep -a -q 'locked' "$out2" || { echo "encryptsave: send should be locked" >&2; exit 1; }
+tail -n +"$((before + 1))" "$out2" | grep -a -q '"code":"locked"' || {
+	echo "encryptsave: send should error locked" >&2
+	exit 1
+}
 
+before=$(wc -l <"$out2")
 echo '{"op":"identity.unlock","passphrase":"wrong-pass"}' >&3
 sleep 0.3
-grep -a -q 'locked' "$out2" || { echo "encryptsave: wrong pass" >&2; exit 1; }
+tail -n +"$((before + 1))" "$out2" | grep -a -q '"code":"locked"' || {
+	echo "encryptsave: wrong pass should error locked" >&2
+	exit 1
+}
+if tail -n +"$((before + 1))" "$out2" | grep -a -q '"op":"unlock"'; then
+	echo "encryptsave: wrong pass must not unlock" >&2
+	exit 1
+fi
 
 echo '{"op":"identity.unlock","passphrase":"test-pass-1"}' >&3
 i=0

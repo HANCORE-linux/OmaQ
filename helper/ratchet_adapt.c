@@ -3,10 +3,13 @@
 #define _DEFAULT_SOURCE
 #include "ratchet.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
@@ -35,6 +38,7 @@ struct omaq_ratchet {
 	signal_buffer *id_priv;
 	uint32_t reg_id;
 	uint32_t spk_id;
+	char home[512];
 	struct rec sess[SLOTS];
 	struct rec pre[PREKEYS];
 	struct rec spk[4];
@@ -567,6 +571,186 @@ static int setup_keys(struct omaq_ratchet *r)
 	return 0;
 }
 
+static int write_blob(const char *path, const uint8_t *p, size_t n)
+{
+	char tmp[580];
+	FILE *f;
+
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+		return -1;
+	f = fopen(tmp, "wb");
+	if (!f)
+		return -1;
+	if (fwrite(p, 1, n, f) != n || fflush(f) != 0 || fsync(fileno(f)) != 0) {
+		fclose(f);
+		unlink(tmp);
+		return -1;
+	}
+	fchmod(fileno(f), 0600);
+	fclose(f);
+	if (rename(tmp, path) != 0) {
+		unlink(tmp);
+		return -1;
+	}
+	return 0;
+}
+
+static int read_blob(const char *path, uint8_t **out, size_t *n)
+{
+	FILE *f;
+	struct stat st;
+	uint8_t *buf;
+	size_t got;
+
+	f = fopen(path, "rb");
+	if (!f)
+		return -1;
+	if (fstat(fileno(f), &st) != 0 || st.st_size <= 0) {
+		fclose(f);
+		return -1;
+	}
+	buf = malloc((size_t)st.st_size);
+	if (!buf) {
+		fclose(f);
+		return -1;
+	}
+	got = fread(buf, 1, (size_t)st.st_size, f);
+	fclose(f);
+	if (got != (size_t)st.st_size) {
+		free(buf);
+		return -1;
+	}
+	*out = buf;
+	*n = got;
+	return 0;
+}
+
+static int save_keys(struct omaq_ratchet *r)
+{
+	char dir[576], p[640];
+	ratchet_identity_key_pair *idp = NULL;
+	ec_public_key *pub = NULL;
+	ec_private_key *priv = NULL;
+	signal_buffer *ser = NULL;
+	session_signed_pre_key *spk = NULL;
+	uint8_t reg[4];
+
+	if (!r->home[0])
+		return 0;
+	if (snprintf(dir, sizeof(dir), "%s/ratchet", r->home) >= (int)sizeof(dir))
+		return -1;
+	if (mkdir(dir, 0700) != 0 && errno != EEXIST)
+		return -1;
+	if (curve_decode_point(&pub, signal_buffer_data(r->id_pub),
+			       signal_buffer_len(r->id_pub), r->ctx) != 0)
+		return -1;
+	if (curve_decode_private_point(&priv, signal_buffer_data(r->id_priv),
+				       signal_buffer_len(r->id_priv), r->ctx) != 0) {
+		SIGNAL_UNREF(pub);
+		return -1;
+	}
+	if (ratchet_identity_key_pair_create(&idp, pub, priv) != 0) {
+		SIGNAL_UNREF(priv);
+		SIGNAL_UNREF(pub);
+		return -1;
+	}
+	if (ratchet_identity_key_pair_serialize(&ser, idp) != 0) {
+		SIGNAL_UNREF(idp);
+		return -1;
+	}
+	if (snprintf(p, sizeof(p), "%s/identity", dir) >= (int)sizeof(p) ||
+	    write_blob(p, signal_buffer_data(ser), signal_buffer_len(ser)) != 0) {
+		signal_buffer_free(ser);
+		SIGNAL_UNREF(idp);
+		return -1;
+	}
+	signal_buffer_free(ser);
+	SIGNAL_UNREF(idp);
+	memcpy(reg, &r->reg_id, 4);
+	if (snprintf(p, sizeof(p), "%s/reg", dir) >= (int)sizeof(p) ||
+	    write_blob(p, reg, 4) != 0)
+		return -1;
+	if (signal_protocol_signed_pre_key_load_key(r->store, &spk, r->spk_id) != 0)
+		return -1;
+	if (session_signed_pre_key_serialize(&ser, spk) != 0) {
+		SIGNAL_UNREF(spk);
+		return -1;
+	}
+	if (snprintf(p, sizeof(p), "%s/spk", dir) >= (int)sizeof(p) ||
+	    write_blob(p, signal_buffer_data(ser), signal_buffer_len(ser)) != 0) {
+		signal_buffer_free(ser);
+		SIGNAL_UNREF(spk);
+		return -1;
+	}
+	signal_buffer_free(ser);
+	SIGNAL_UNREF(spk);
+	return 0;
+}
+
+static int load_keys(struct omaq_ratchet *r)
+{
+	char p[640];
+	uint8_t *buf = NULL;
+	size_t n = 0;
+	ratchet_identity_key_pair *idp = NULL;
+	session_signed_pre_key *spk = NULL;
+	ec_public_key *pub;
+	ec_private_key *priv;
+
+	if (!r->home[0])
+		return -1;
+	if (snprintf(p, sizeof(p), "%s/ratchet/identity", r->home) >= (int)sizeof(p))
+		return -1;
+	if (read_blob(p, &buf, &n) != 0)
+		return -1;
+	if (ratchet_identity_key_pair_deserialize(&idp, buf, n, r->ctx) != 0) {
+		free(buf);
+		return -1;
+	}
+	free(buf);
+	buf = NULL;
+	pub = ratchet_identity_key_pair_get_public(idp);
+	priv = ratchet_identity_key_pair_get_private(idp);
+	if (ec_public_key_serialize(&r->id_pub, pub) != 0 ||
+	    ec_private_key_serialize(&r->id_priv, priv) != 0) {
+		SIGNAL_UNREF(idp);
+		return -1;
+	}
+	SIGNAL_UNREF(idp);
+	if (snprintf(p, sizeof(p), "%s/ratchet/reg", r->home) >= (int)sizeof(p) ||
+	    read_blob(p, &buf, &n) != 0 || n != 4) {
+		free(buf);
+		return -1;
+	}
+	memcpy(&r->reg_id, buf, 4);
+	free(buf);
+	buf = NULL;
+	r->spk_id = 1;
+	if (snprintf(p, sizeof(p), "%s/ratchet/spk", r->home) >= (int)sizeof(p) ||
+	    read_blob(p, &buf, &n) != 0)
+		return -1;
+	if (session_signed_pre_key_deserialize(&spk, buf, n, r->ctx) != 0) {
+		free(buf);
+		return -1;
+	}
+	free(buf);
+	if (signal_protocol_signed_pre_key_store_key(r->store, spk) != 0) {
+		SIGNAL_UNREF(spk);
+		return -1;
+	}
+	SIGNAL_UNREF(spk);
+	{
+		signal_protocol_key_helper_pre_key_list_node *head = NULL, *nn;
+		if (signal_protocol_key_helper_generate_pre_keys(&head, 1, 4, r->ctx) != 0)
+			return -1;
+		for (nn = head; nn; nn = signal_protocol_key_helper_key_list_next(nn))
+			(void)signal_protocol_pre_key_store_key(r->store,
+				signal_protocol_key_helper_key_list_element(nn));
+		signal_protocol_key_helper_key_list_free(head);
+	}
+	return 0;
+}
+
 struct omaq_ratchet *omaq_ratchet_open(const char *home)
 {
 	struct omaq_ratchet *r;
@@ -625,10 +809,11 @@ struct omaq_ratchet *omaq_ratchet_open(const char *home)
 		.user_data = NULL
 	};
 
-	(void)home;
 	r = calloc(1, sizeof(*r));
 	if (!r)
 		return NULL;
+	if (home)
+		snprintf(r->home, sizeof(r->home), "%s", home);
 	if (signal_context_create(&r->ctx, r) != 0) {
 		free(r);
 		return NULL;
@@ -648,10 +833,15 @@ struct omaq_ratchet *omaq_ratchet_open(const char *home)
 	    signal_protocol_store_context_set_pre_key_store(r->store, &ps) != 0 ||
 	    signal_protocol_store_context_set_signed_pre_key_store(r->store, &sps) != 0 ||
 	    signal_protocol_store_context_set_identity_key_store(r->store, &ids) != 0 ||
-	    signal_protocol_store_context_set_sender_key_store(r->store, &sks) != 0 ||
-	    setup_keys(r) != 0) {
+	    signal_protocol_store_context_set_sender_key_store(r->store, &sks) != 0) {
 		omaq_ratchet_close(r);
 		return NULL;
+	}
+	if (load_keys(r) != 0) {
+		if (setup_keys(r) != 0 || save_keys(r) != 0) {
+			omaq_ratchet_close(r);
+			return NULL;
+		}
 	}
 	return r;
 }
@@ -710,7 +900,7 @@ int omaq_ratchet_bundle(struct omaq_ratchet *r, char *out, size_t n)
 	session_pre_key *pk = NULL;
 	ec_public_key *spub, *ppub;
 	signal_buffer *sbuf = NULL, *pbuf = NULL;
-	uint8_t raw[8 + 33 + 33 + 64 + 33];
+	uint8_t raw[4 + 4 + 4 + 33 + 33 + 64 + 33];
 	size_t off = 0;
 	uint32_t pkid = 1;
 
@@ -719,13 +909,31 @@ int omaq_ratchet_bundle(struct omaq_ratchet *r, char *out, size_t n)
 	if (signal_protocol_signed_pre_key_load_key(r->store, &spk, r->spk_id) != 0)
 		return -1;
 	if (signal_protocol_pre_key_load_key(r->store, &pk, pkid) != 0) {
-		SIGNAL_UNREF(spk);
-		return -1;
+		signal_protocol_key_helper_pre_key_list_node *head = NULL, *nnode;
+		if (signal_protocol_key_helper_generate_pre_keys(&head, 1, 4, r->ctx) != 0)
+			return -1;
+		for (nnode = head; nnode; nnode = signal_protocol_key_helper_key_list_next(nnode))
+			(void)signal_protocol_pre_key_store_key(r->store,
+				signal_protocol_key_helper_key_list_element(nnode));
+		signal_protocol_key_helper_key_list_free(head);
+		if (signal_protocol_pre_key_load_key(r->store, &pk, pkid) != 0) {
+			SIGNAL_UNREF(spk);
+			return -1;
+		}
 	}
 	spub = ec_key_pair_get_public(session_signed_pre_key_get_key_pair(spk));
 	ppub = ec_key_pair_get_public(session_pre_key_get_key_pair(pk));
 	if (ec_public_key_serialize(&sbuf, spub) != 0 ||
 	    ec_public_key_serialize(&pbuf, ppub) != 0) {
+		SIGNAL_UNREF(pk);
+		SIGNAL_UNREF(spk);
+		return -1;
+	}
+	if (signal_buffer_len(r->id_pub) != 33 ||
+	    signal_buffer_len(sbuf) != 33 ||
+	    signal_buffer_len(pbuf) != 33) {
+		signal_buffer_free(sbuf);
+		signal_buffer_free(pbuf);
 		SIGNAL_UNREF(pk);
 		SIGNAL_UNREF(spk);
 		return -1;

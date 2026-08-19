@@ -74,7 +74,11 @@ static void test_invite_file(const char *path)
 		return;
 	}
 	if (strncmp(expect, "direct ", 7) == 0) {
-		if (inv.kind != INVITE_DIRECT || strcmp(inv.id, expect + 7) != 0)
+		char id[80], rk[80];
+		int n = sscanf(expect + 7, "%79s %79s", id, rk);
+		if (inv.kind != INVITE_DIRECT || strcmp(inv.id, id) != 0)
+			fail(path);
+		else if (n == 2 && strcmp(inv.rk, rk) != 0)
 			fail(path);
 		return;
 	}

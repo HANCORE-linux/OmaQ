@@ -486,19 +486,28 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	return t;
 }
 
+void omaq_tox_discard(struct omaq_tox *t)
+{
+	if (!t)
+		return;
+	if (t->av) {
+		toxav_kill(t->av);
+		t->av = NULL;
+	}
+	if (t->tox) {
+		tox_kill(t->tox);
+		t->tox = NULL;
+	}
+	wipe_pass(t);
+	free(t);
+}
+
 void omaq_tox_close(struct omaq_tox *t)
 {
 	if (!t)
 		return;
 	omaq_tox_save(t);
-	if (t->av) {
-		toxav_kill(t->av);
-		t->av = NULL;
-	}
-	if (t->tox)
-		tox_kill(t->tox);
-	wipe_pass(t);
-	free(t);
+	omaq_tox_discard(t);
 }
 
 int omaq_tox_protect(struct omaq_tox *t, const char *pass)
@@ -617,19 +626,24 @@ int omaq_tox_nospam_rotate(struct omaq_tox *t)
 	return 0;
 }
 
-int omaq_tox_friend_add(struct omaq_tox *t, const char *addr_hex, const char *msg)
+int omaq_tox_friend_add(struct omaq_tox *t, const char *addr_hex, const char *msg, uint32_t *fn_out)
 {
 	uint8_t addr[TOX_ADDRESS_SIZE];
 	Tox_Err_Friend_Add err = TOX_ERR_FRIEND_ADD_OK;
+	uint32_t fn;
 	if (!t || !addr_hex || !msg)
 		return -1;
 	if (strlen(addr_hex) != TOX_ADDRESS_SIZE * 2)
 		return -1;
 	if (hex_in(addr_hex, addr, TOX_ADDRESS_SIZE) != 0)
 		return -1;
-	tox_friend_add(t->tox, addr, (const uint8_t *)msg, strlen(msg), &err);
+	fn = tox_friend_add(t->tox, addr, (const uint8_t *)msg, strlen(msg), &err);
+	if (err != TOX_ERR_FRIEND_ADD_OK)
+		return -1;
 	omaq_tox_save(t);
-	return err == TOX_ERR_FRIEND_ADD_OK ? 0 : -1;
+	if (fn_out)
+		*fn_out = fn;
+	return 0;
 }
 
 int omaq_tox_friend_accept(struct omaq_tox *t, const uint8_t *pk32)

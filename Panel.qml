@@ -252,7 +252,7 @@ Panel {
             id: passField
             width: parent.width
             echoMode: TextInput.Password
-            placeholderText: omaq.locked ? "Passphrase to unlock" : "Passphrase for tox.save"
+            placeholderText: omaq.locked ? "Passphrase to unlock" : "Passphrase for identity file"
           }
 
           Button {

@@ -19,6 +19,7 @@ static struct {
 	FILE *fp;
 	char path[512];
 	uint64_t size;
+	uint64_t got;
 } xf[XFERS];
 
 static struct {
@@ -324,6 +325,8 @@ int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 	if (i < 0 || xf[i].sending || !xf[i].fp)
 		return -1;
 	if (len == 0) {
+		if (xf[i].got != xf[i].size)
+			return -1;
 		if (done_path && n) {
 			if (snprintf(done_path, n, "%s", xf[i].path) >= (int)n)
 				return -1;
@@ -339,6 +342,8 @@ int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 		return -1;
 	if (fwrite(data, 1, len, xf[i].fp) != len)
 		return -1;
+	if (pos + len > xf[i].got)
+		xf[i].got = pos + len;
 	return 0;
 }
 
