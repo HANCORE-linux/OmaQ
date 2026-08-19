@@ -56,13 +56,26 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     iconComponent: Component {
-      Text {
-        text: omaq.unreadCount > 0 ? String(omaq.unreadCount) : "Q"
-        color: root.barForeground
-        font.pixelSize: 12
-        font.family: root.fontFamily
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
+      Item {
+        implicitWidth: 18
+        implicitHeight: 18
+        Image {
+          anchors.fill: parent
+          source: Qt.resolvedUrl("assets/mark.svg")
+          fillMode: Image.PreserveAspectFit
+          visible: omaq.unreadCount <= 0
+          smooth: false
+        }
+        Text {
+          anchors.fill: parent
+          visible: omaq.unreadCount > 0
+          text: String(omaq.unreadCount)
+          color: root.barForeground
+          font.pixelSize: 12
+          font.family: root.fontFamily
+          horizontalAlignment: Text.AlignHCenter
+          verticalAlignment: Text.AlignVCenter
+        }
       }
     }
     onPressed: function() { root.toggle() }

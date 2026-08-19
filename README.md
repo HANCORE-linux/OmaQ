@@ -1,13 +1,21 @@
-# OmaQ
+<p align="center">
+  <img src="assets/markdownlogo.png" alt="OmaQ" width="420">
+</p>
 
-Lightweight chat for Omarchy Quattro. Tox underneath, invite by link or QR, no account. Direct messages first; groups later on the same conversation and invite modules.
+OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no directory.
 
-This directory is the project root. Do not copy it into `~/.config/omarchy/plugins/` until a reviewed install is announced.
+Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages.
 
-**Name:** `OmaQ`  
-**Plugin id:** `hancore.omaq`  
-**Remote:** private `https://github.com/HANCORE-linux/OmaQ` — only the owner may make it public.  
-**How we build:** [`docs/PLAN.md`](docs/PLAN.md) — start at **Architecture law**.  
-**Where we are:** [`docs/STAND.md`](docs/STAND.md) (phase 8 done, AUR halted, plugin off the bar).
+```bash
+omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable
+```
 
-A phase is done only when `make verify-N` exits 0 and `docs/stages/0N-….md` exists. After that: commit and push. AUR is phase 7 and is halted until registration is on.
+```bash
+omarchy plugin update hancore.omaq --yes
+```
+
+```bash
+omarchy plugin remove hancore.omaq
+```
+
+[Documentation](docs/README.md)
