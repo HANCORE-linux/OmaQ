@@ -69,6 +69,7 @@ Item {
   property int searchTick: 0
   property string selfAvatar: ""
   property string selfNickname: ""
+  property int nicknameTick: 0
   property bool selfOnline: false
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
@@ -107,6 +108,7 @@ Item {
       root.selfNickname = String(ev.value || "")
       if (root.lastError !== "helper_down")
         root.lastError = ""
+      root.nicknameTick = root.nicknameTick + 1
     }
     if (ev.event === "error") {
       root.lastError = ev.code || "error"
@@ -367,8 +369,9 @@ Item {
   function setNickname(value) {
     var nickname = String(value || "").trim()
     if (!nickname || nickname.length > 128)
-      return
+      return false
     sendOp({ op: "nickname.set", nickname: nickname })
+    return true
   }
   function requestHistory(conv) {
     sendOp({ op: "history", conversation: conv || root.lastConversation, limit: 50 })

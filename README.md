@@ -18,20 +18,33 @@ Create a one-time invite in the bar panel and send the link or QR out of band. T
 
 ## Install
 
-The plugin source does not contain the ignored `helper/omaq` binary. Install `toxcore`, `libsignal-protocol-c`, and a C compiler, then build the helper in the clone before enabling the plugin:
+AUR packaging is currently halted. Until an AUR package is released, use this
+transitional source installation. The repository intentionally does not contain
+the generated `helper/omaq` binary; it is built locally so direct messages can
+require the Signal Double Ratchet:
 
 ```bash
-omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable
-cd ~/.config/omarchy/plugins/hancore.omaq
-make helper
+omarchy pkg add base-devel git toxcore libsignal-protocol-c qrencode ttf-material-symbols-variable && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
-If the plugin was added from another checkout, run `make helper` in that checkout and copy the resulting `helper/omaq` into the plugin directory. Direct messages are refused unless the Signal Ratchet helper is available.
+The one-line command installs the build/runtime dependencies, adds and enables
+the plugin, then builds the helper in the plugin directory. Direct messages are
+refused unless the Signal Ratchet helper is available.
+
+For separate steps:
+
+```bash
+omarchy pkg add base-devel git toxcore libsignal-protocol-c qrencode ttf-material-symbols-variable
+omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable
+make -C ~/.config/omarchy/plugins/hancore.omaq helper
+```
 
 ## Update
 
+Update the plugin and rebuild its local helper:
+
 ```bash
-omarchy plugin update hancore.omaq --yes
+omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
 ## Uninstall

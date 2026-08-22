@@ -21,6 +21,8 @@ BarWidget {
   property string moreSection: ""
   property bool themeOpen: false
   property bool copied: false
+  property bool nicknameEditOpen: false
+  property bool nicknameSubmitPending: false
   property bool avatarRestorePending: false
   property bool avatarRestoreMore: false
   property int avatarPickExitCode: -1
@@ -188,6 +190,7 @@ BarWidget {
     property string fontFamily: root.fontFamily
     property real fontSize: Style.font.body
     property real iconSize: Style.font.icon
+    property string iconFontFamily: fontFamily
     property real horizontalPadding: Style.space(6)
     property real verticalPadding: Style.space(4)
     signal clicked()
@@ -222,7 +225,7 @@ BarWidget {
         visible: tokenButton.iconText !== ""
         text: tokenButton.iconText
         color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
-        font.family: tokenButton.fontFamily
+        font.family: tokenButton.iconFontFamily
         font.pixelSize: tokenButton.iconSize
         anchors.verticalCenter: parent.verticalCenter
       }
@@ -1054,6 +1057,22 @@ BarWidget {
                 y: (parent.height - height) / 2
                 spacing: 0
                 Text {
+                  visible: omaq.selfNickname !== "" && !root.nicknameEditOpen
+                  text: omaq.selfNickname
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.nicknameEditOpen = true
+                      Qt.callLater(function() { nicknameField.forceActiveFocus() })
+                    }
+                  }
+                }
+                Text {
                   text: omaq.selfOnline ? "Online" : "Offline"
                   color: omaq.selfOnline ? root.foreground : root.dim
                   font.family: root.fontFamily
@@ -1074,26 +1093,30 @@ BarWidget {
             }
 
             Row {
+              visible: omaq.selfNickname === "" || root.nicknameEditOpen
               width: parent.width
               spacing: root.btnGap
               TokenTextField {
                 id: nicknameField
                 width: parent.width - nicknameButton.implicitWidth - root.btnGap
                 foreground: root.controlForeground
-                placeholderText: "Nickname"
+                placeholderText: "Set your Nickname"
                 maximumLength: 128
                 text: omaq.selfNickname
                 onAccepted: nicknameButton.clicked()
               }
               TokenButton {
                 id: nicknameButton
-                width: Style.space(104)
-                text: "Set nickname"
+                iconText: "check"
+                iconFontFamily: "Material Symbols Rounded"
+                text: "Set"
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 enabled: nicknameField.text.trim() !== ""
-                onClicked: omaq.setNickname(nicknameField.text)
+                onClicked: {
+                  root.nicknameSubmitPending = omaq.setNickname(nicknameField.text)
+                }
               }
             }
 
@@ -1101,6 +1124,20 @@ BarWidget {
               target: omaq
               function onSelfNicknameChanged() {
                 nicknameField.text = omaq.selfNickname
+                if (root.nicknameSubmitPending && omaq.selfNickname !== "") {
+                  root.nicknameSubmitPending = false
+                  root.nicknameEditOpen = false
+                }
+              }
+              function onNicknameTickChanged() {
+                if (root.nicknameSubmitPending) {
+                  root.nicknameSubmitPending = false
+                  root.nicknameEditOpen = false
+                }
+              }
+              function onLastErrorTickChanged() {
+                if (root.nicknameSubmitPending && omaq.lastError === "nickname_invalid")
+                  root.nicknameSubmitPending = false
               }
             }
 
