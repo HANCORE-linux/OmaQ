@@ -24,20 +24,12 @@ the generated `helper/omaq` binary; it is built locally so direct messages can
 require the Signal Double Ratchet:
 
 ```bash
-omarchy pkg add base-devel git toxcore libsignal-protocol-c qrencode ttf-material-symbols-variable && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
+omarchy pkg add toxcore libsignal-protocol-c && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
-The one-line command installs the build/runtime dependencies, adds and enables
-the plugin, then builds the helper in the plugin directory. Direct messages are
+The one-line command installs OmaQ's required packages, adds and enables the
+plugin, then builds the helper in the plugin directory. Direct messages are
 refused unless the Signal Ratchet helper is available.
-
-For separate steps:
-
-```bash
-omarchy pkg add base-devel git toxcore libsignal-protocol-c qrencode ttf-material-symbols-variable
-omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable
-make -C ~/.config/omarchy/plugins/hancore.omaq helper
-```
 
 ## Update
 
