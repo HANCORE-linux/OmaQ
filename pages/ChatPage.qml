@@ -1413,8 +1413,8 @@ Item {
 
         Row {
           id: replyBar
-          x: input.x
-          width: input.width
+          x: inputBox.x
+          width: inputBox.width
           visible: root.replyToId !== "" || root.editingId !== ""
           spacing: Style.space(6)
           height: visible ? Math.max(replyPreview.implicitHeight, clearReplyBtn.implicitHeight) : 0
@@ -1440,8 +1440,8 @@ Item {
 
         Flow {
           id: emojiFlow
-          x: input.x
-          width: input.width
+          x: inputBox.x
+          width: inputBox.width
           height: visible ? implicitHeight : 0
           spacing: Style.space(3)
           visible: root.emojiOpen
@@ -1459,8 +1459,8 @@ Item {
 
         Item {
           id: formatFlow
-          x: input.x
-          width: input.width
+          x: inputBox.x
+          width: inputBox.width
           height: visible ? Style.space(30) : 0
           visible: input.text.length > 0
           clip: true
