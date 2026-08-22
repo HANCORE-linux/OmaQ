@@ -28,6 +28,27 @@ BarWidget {
   property string systemThemeName: "System"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color barForeground: bar && "barForeground" in bar ? bar.barForeground : foreground
+  readonly property var shibumiTokens: bar && "visualTokens" in bar ? bar.visualTokens : null
+  readonly property color panelBackground: shibumiTokens && shibumiTokens.panelBackground !== undefined
+    ? shibumiTokens.panelBackground : Color.popups.background
+  readonly property color panelBorder: shibumiTokens && shibumiTokens.panelBorder !== undefined
+    ? shibumiTokens.panelBorder : Color.popups.border
+  readonly property real panelBorderWidth: shibumiTokens && shibumiTokens.panelBorderWidth !== undefined
+    ? Number(shibumiTokens.panelBorderWidth) : Math.max(1, Style.space(1))
+  readonly property real panelRadius: shibumiTokens && shibumiTokens.panelRadius !== undefined
+    ? Number(shibumiTokens.panelRadius) : Style.cornerRadius
+  readonly property color controlForeground: bar ? bar.foreground : Color.popups.text
+  readonly property color controlAccent: bar ? bar.urgent : Color.accent
+  readonly property real controlRadius: shibumiTokens && shibumiTokens.tileRadius !== undefined
+    ? Number(shibumiTokens.tileRadius) : Style.cornerRadius
+  readonly property color controlBorder: shibumiTokens && shibumiTokens.separator !== undefined
+    ? shibumiTokens.separator : Qt.rgba(controlForeground.r, controlForeground.g, controlForeground.b, 0.18)
+  readonly property color controlFill: shibumiTokens && shibumiTokens.fillIdle !== undefined
+    ? shibumiTokens.fillIdle : Qt.rgba(0, 0, 0, 0.12)
+  readonly property color controlHoverFill: shibumiTokens && shibumiTokens.fillHover !== undefined
+    ? shibumiTokens.fillHover : Qt.rgba(controlAccent.r, controlAccent.g, controlAccent.b, 0.10)
+  readonly property color controlActiveFill: shibumiTokens && shibumiTokens.fillActive !== undefined
+    ? shibumiTokens.fillActive : Qt.rgba(controlAccent.r, controlAccent.g, controlAccent.b, 0.18)
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -116,11 +137,101 @@ BarWidget {
     }
   }
 
-  component ActionButton: Button {
-    foreground: root.foreground
-    accent: Color.accent
+  component TokenButton: BorderSurface {
+    id: tokenButton
+    property string text: ""
+    property string iconText: ""
+    property string tooltipText: ""
+    property bool selected: false
+    property bool active: false
+    property bool focusable: false
+    property bool bordered: false
+    property color foreground: root.controlForeground
+    property color accent: root.controlAccent
+    property string fontFamily: root.fontFamily
+    property real fontSize: Style.font.body
+    property real iconSize: Style.font.icon
+    property real horizontalPadding: Style.space(6)
+    property real verticalPadding: Style.space(4)
+    signal clicked()
+
+    readonly property bool hot: mouseArea.containsMouse
+    readonly property color actionColor: accent
+    readonly property var normalBorder: bordered
+      ? Border.flat(root.controlBorder, 1) : Border.none()
+    readonly property var activeBorder: Border.flat(actionColor, 1)
+
+    activeFocusOnTab: focusable
+    Keys.onReturnPressed: if (focusable) tokenButton.clicked()
+    Keys.onEnterPressed: if (focusable) tokenButton.clicked()
+    Keys.onSpacePressed: if (focusable) tokenButton.clicked()
+
+    implicitWidth: row.implicitWidth + horizontalPadding * 2
+    implicitHeight: row.implicitHeight + verticalPadding * 2
+    radius: root.controlRadius
+    color: mouseArea.pressed ? root.controlActiveFill
+      : activeFocus || selected || active ? root.controlActiveFill
+      : hot ? root.controlHoverFill : root.controlFill
+    borderSpec: activeFocus || hot || selected || active ? activeBorder : normalBorder
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    Row {
+      id: row
+      anchors.centerIn: parent
+      spacing: iconText !== "" && text !== "" ? Style.space(5) : 0
+
+      Text {
+        visible: tokenButton.iconText !== ""
+        text: tokenButton.iconText
+        color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
+        font.family: tokenButton.fontFamily
+        font.pixelSize: tokenButton.iconSize
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        visible: tokenButton.text !== ""
+        text: tokenButton.text
+        color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
+        font.family: tokenButton.fontFamily
+        font.pixelSize: tokenButton.fontSize
+        font.bold: tokenButton.selected
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      id: mouseArea
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (tokenButton.focusable)
+          tokenButton.forceActiveFocus()
+        tokenButton.clicked()
+      }
+    }
+  }
+
+  component TokenTextField: TextField {
+    foreground: root.controlForeground
+    accent: root.controlAccent
+    font.family: root.fontFamily
+    background: BorderSurface {
+      anchors.fill: parent
+      color: root.controlFill
+      borderSpec: Border.flat(
+        parent.activeFocus || parent.hovered ? root.controlAccent : root.controlBorder, 1)
+      radius: root.controlRadius
+    }
+  }
+
+  component ActionButton: TokenButton {
+    foreground: root.controlForeground
+    accent: root.controlAccent
     fontFamily: root.fontFamily
-    radius: Style.cornerRadius
+    radius: root.controlRadius
     bordered: true
     focusable: true
     iconSize: Math.round(Style.font.subtitle * 1.5)
@@ -556,9 +667,9 @@ BarWidget {
       width: root.cardWidth
       height: Math.min(column.implicitHeight + root.pad * 2,
                        popup.screen ? Math.max(Style.space(260), popup.screen.height - Style.space(24)) : Style.space(720))
-      color: Color.popups.background
-      borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(1)))
-      radius: Style.cornerRadius
+      color: root.panelBackground
+      borderSpec: Border.flat(root.panelBorder, root.panelBorderWidth)
+      radius: root.panelRadius
 
       onHeightChanged: if (root.opened) root.placeCard()
 
@@ -840,15 +951,15 @@ BarWidget {
               wrapMode: Text.WordWrap
             }
 
-            TextField {
+            TokenTextField {
               id: unlockField
               width: parent.width
-              foreground: root.foreground
+              foreground: root.controlForeground
               password: true
               placeholderText: "Passphrase"
             }
 
-            Button {
+            TokenButton {
               width: parent.width
               text: "Unlock"
               bordered: true
@@ -891,7 +1002,7 @@ BarWidget {
 
                 Row {
                   spacing: root.btnGap
-                  Button {
+                  TokenButton {
                     text: "Accept"
                     bordered: true
                     focusable: true
@@ -899,7 +1010,7 @@ BarWidget {
                     fontFamily: root.fontFamily
                     onClicked: omaq.decide(true)
                   }
-                  Button {
+                  TokenButton {
                     text: "Decline"
                     focusable: true
                     foreground: root.foreground
@@ -913,7 +1024,7 @@ BarWidget {
             Row {
               visible: omaq.incomingCall
               spacing: root.btnGap
-              Button {
+              TokenButton {
                 text: "Answer"
                 bordered: true
                 focusable: true
@@ -921,7 +1032,7 @@ BarWidget {
                 fontFamily: root.fontFamily
                 onClicked: omaq.answerCall(omaq.lastCallConv)
               }
-              Button {
+              TokenButton {
                 text: "Decline call"
                 focusable: true
                 foreground: root.foreground
@@ -962,7 +1073,7 @@ BarWidget {
 
               Row {
                 spacing: root.btnGap
-                Button {
+                TokenButton {
                   text: root.copied ? "Copied" : "Copy link"
                   bordered: true
                   focusable: true
@@ -970,7 +1081,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: root.copyInvite()
                 }
-                Button {
+                TokenButton {
                   text: "Revoke"
                   focusable: true
                   foreground: root.foreground
@@ -995,17 +1106,17 @@ BarWidget {
                 fontFamily: root.fontFamily
               }
 
-              TextField {
+              TokenTextField {
                 id: redeemField
                 width: parent.width
-                foreground: root.foreground
+                foreground: root.controlForeground
                 placeholderText: "Paste omaq:// invite"
                 text: root.redeemDraft
                 onTextChanged: root.redeemDraft = text
                 onAccepted: joinBtn.clicked()
               }
 
-              Button {
+              TokenButton {
                 id: joinBtn
                 width: parent.width
                 text: "Join chat"
@@ -1047,7 +1158,7 @@ BarWidget {
               foreground: root.foreground
             }
 
-            Button {
+            TokenButton {
               text: root.moreOpen ? "Less" : "More"
               focusable: true
               foreground: root.foreground
@@ -1114,15 +1225,15 @@ BarWidget {
                 visible: root.moreSection === "chat"
                 width: parent.width
                 spacing: root.btnGap
-                TextField {
+                TokenTextField {
                   id: searchField
                   width: parent.width - searchBtn.implicitWidth - root.btnGap
-                  foreground: root.foreground
+                  foreground: root.controlForeground
                   placeholderText: "Search this chat"
                   onAccepted: omaq.searchChat(searchField.text)
                   onTextChanged: if (!text) omaq.searchItems = []
                 }
-                Button {
+                TokenButton {
                   id: searchBtn
                   iconText: "󰍉"
                   text: "Search"
@@ -1181,7 +1292,7 @@ BarWidget {
                 columns: 2
                 columnSpacing: root.btnGap
                 rowSpacing: Style.space(4)
-                Button {
+                TokenButton {
                   Layout.fillWidth: true
                   text: "Create group"
                   bordered: true
@@ -1190,7 +1301,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: omaq.createGroup()
                 }
-                Button {
+                TokenButton {
                   visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
                   Layout.fillWidth: true
                   text: "Invite last contact"
@@ -1204,7 +1315,7 @@ BarWidget {
                     omaq.inviteToGroup()
                   }
                 }
-                Button {
+                TokenButton {
                   visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
                   Layout.fillWidth: true
                   text: "Make admin"
@@ -1213,7 +1324,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: omaq.setLastGroupMemberRole("admin")
                 }
-                Button {
+                TokenButton {
                   visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
                   Layout.fillWidth: true
                   text: "Make member"
@@ -1222,7 +1333,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: omaq.setLastGroupMemberRole("member")
                 }
-                Button {
+                TokenButton {
                   visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
                   Layout.fillWidth: true
                   text: "Remove last member"
@@ -1231,7 +1342,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: omaq.removeLastGroupMember()
                 }
-                Button {
+                TokenButton {
                   visible: omaq.lastGroup !== ""
                   Layout.fillWidth: true
                   text: "Leave group"
@@ -1252,7 +1363,7 @@ BarWidget {
                 wrapMode: Text.WrapAnywhere
               }
 
-              Button {
+              TokenButton {
                 visible: root.moreSection === "groups" && omaq.lastGroup !== ""
                 text: "Dissolve group"
                 focusable: true
@@ -1283,11 +1394,11 @@ BarWidget {
                 font.bold: true
               }
 
-              TextField {
+              TokenTextField {
                 id: passField
                 visible: root.moreSection === "identity"
                 width: parent.width
-                foreground: root.foreground
+                foreground: root.controlForeground
                 password: true
                 placeholderText: "Passphrase for identity file"
               }
@@ -1298,7 +1409,7 @@ BarWidget {
                 columns: 2
                 columnSpacing: root.btnGap
                 rowSpacing: Style.space(4)
-                Button {
+                TokenButton {
                   visible: !omaq.saveProtected
                   Layout.fillWidth: true
                   iconText: "󰌾"
@@ -1309,7 +1420,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   onClicked: omaq.protectIdentity(passField.text)
                 }
-                Button {
+                TokenButton {
                   visible: omaq.saveProtected
                   Layout.fillWidth: true
                   iconText: "󰌿"
@@ -1327,11 +1438,11 @@ BarWidget {
                 }
               }
 
-              TextField {
+              TokenTextField {
                 id: importPath
                 visible: root.moreSection === "identity"
                 width: parent.width
-                foreground: root.foreground
+                foreground: root.controlForeground
                 placeholderText: "Path to identity file"
               }
 
