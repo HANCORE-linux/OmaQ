@@ -15,12 +15,16 @@ BarWidget {
   property bool opened: false
   property string redeemDraft: ""
   property bool nospamConfirm: false
+  property bool removeContactConfirm: false
   property bool showJoin: false
+  property bool chatPickerOpen: false
   property bool inviteOpen: false
   property bool moreOpen: false
   property string moreSection: ""
   property bool themeOpen: false
   property bool copied: false
+  property bool safetyCodeVisible: false
+  property bool safetyCopied: false
   property bool nicknameEditOpen: false
   property bool nicknameSubmitPending: false
   property bool avatarRestorePending: false
@@ -296,10 +300,12 @@ BarWidget {
     if (!root.opened)
       return
     root.showJoin = false
+    root.chatPickerOpen = false
     root.moreOpen = false
     root.moreSection = ""
     root.themeOpen = false
     root.nospamConfirm = false
+    root.removeContactConfirm = false
     root.opened = false
     if (bar && typeof bar.releasePopout === "function") {
       var screenName = popup.screen ? String(popup.screen.name || "") : ""
@@ -320,6 +326,10 @@ BarWidget {
     if (!root.moreOpen)
       root.moreOpen = true
     root.moreSection = root.moreSection === section ? "" : section
+    if (root.moreSection !== "danger") {
+      root.nospamConfirm = false
+      root.removeContactConfirm = false
+    }
   }
 
   function errorText(code) {
@@ -354,6 +364,28 @@ BarWidget {
     copiedTimer.restart()
   }
 
+  function copySafetyCode() {
+    if (!omaq.safetyCode)
+      return
+    Quickshell.execDetached([
+      "bash", "-c",
+      "if command -v wl-copy >/dev/null 2>&1; then printf '%s' \"$1\" | wl-copy -n; elif command -v xclip >/dev/null 2>&1; then printf '%s' \"$1\" | xclip -selection clipboard; fi",
+      "omaq-copy-safety", omaq.safetyCode
+    ])
+    root.safetyCopied = true
+    safetyCopiedTimer.restart()
+  }
+
+  function showSafetyCode() {
+    root.safetyCodeVisible = true
+    omaq.getSafety()
+  }
+
+  function hideSafetyCode() {
+    root.safetyCodeVisible = false
+    root.safetyCopied = false
+  }
+
   function toggleInvite() {
     if (root.inviteOpen) {
       root.inviteOpen = false
@@ -366,9 +398,13 @@ BarWidget {
   }
 
   function openChat() {
-    if (chatSurface)
-      chatSurface.ensureCard(omaq.lastConversation)
-    root.close()
+    root.inviteOpen = false
+    root.showJoin = false
+    root.themeOpen = false
+    root.moreOpen = false
+    root.moreSection = ""
+    root.chatPickerOpen = !root.chatPickerOpen
+    omaq.sendOp({ op: "status" })
   }
 
   function localFileUrl(path) {
@@ -591,6 +627,12 @@ BarWidget {
     id: copiedTimer
     interval: 1400
     onTriggered: root.copied = false
+  }
+
+  Timer {
+    id: safetyCopiedTimer
+    interval: 1400
+    onTriggered: root.safetyCopied = false
   }
 
   Connections {
@@ -1015,6 +1057,7 @@ BarWidget {
               Layout.fillWidth: true
               iconText: "󰍩"
               text: "Chat"
+              selected: root.chatPickerOpen
               onClicked: root.openChat()
             }
             ActionButton {
@@ -1031,6 +1074,47 @@ BarWidget {
               selected: root.themeOpen
               accent: root.chatTheme === "system" ? Color.accent : Model.themeFor(root.chatTheme).accent
               onClicked: root.themeOpen = !root.themeOpen
+            }
+          }
+
+          Column {
+            visible: root.chatPickerOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "CHAT WITH"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              visible: !omaq.friends || omaq.friends.length === 0
+              width: parent.width
+              text: "No contacts yet. Use Invite or Join first."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+              model: omaq.friends
+              delegate: ActionButton {
+                required property var modelData
+                width: parent ? parent.width : 0
+                text: {
+                  var name = modelData && modelData.name
+                    ? String(modelData.name)
+                    : ("Friend " + (modelData ? modelData.id : ""))
+                  return name + (modelData && modelData.online ? " · online" : " · offline")
+                }
+                focusable: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.openFriend(modelData ? modelData.id : "",
+                  modelData ? modelData.name : "")
+              }
             }
           }
 
@@ -1133,7 +1217,7 @@ BarWidget {
             }
 
             Text {
-              visible: omaq.friends && omaq.friends.length > 0
+              visible: !root.chatPickerOpen && omaq.friends && omaq.friends.length > 0
               text: "FRIENDS"
               color: root.dim
               font.family: root.fontFamily
@@ -1146,6 +1230,7 @@ BarWidget {
               model: omaq.friends
               Row {
                 required property var modelData
+                visible: !root.chatPickerOpen
                 spacing: Style.space(8)
                 width: parent ? parent.width : 0
 
@@ -1352,7 +1437,7 @@ BarWidget {
                 width: 148
                 height: 148
                 fillMode: Image.PreserveAspectFit
-                source: omaq.qrPath !== "" ? ("file://" + omaq.qrPath) : ""
+                source: omaq.qrPath !== "" ? root.localFileUrl(omaq.qrPath) : ""
                 asynchronous: true
                 smooth: false
               }
@@ -1426,32 +1511,6 @@ BarWidget {
                     omaq.lastError = "unsupported"
                 }
               }
-            }
-
-            Column {
-              visible: omaq.safetyCode !== ""
-              width: parent.width
-              spacing: Style.space(6)
-
-              PanelSectionHeader {
-                text: "SAFETY CODE"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Text {
-                width: parent.width
-                text: omaq.safetyCode
-                color: root.foreground
-                font.family: "monospace"
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
-              }
-            }
-
-            PanelSeparator {
-              visible: omaq.safetyCode !== ""
-              foreground: root.foreground
             }
 
             TokenButton {
@@ -1563,16 +1622,58 @@ BarWidget {
               }
 
               ActionButton {
-                visible: root.moreSection === "chat" && omaq.safetyCode === "" && omaq.lastDirectId !== ""
+                visible: root.moreSection === "chat" && omaq.lastDirectId !== "" &&
+                  (!root.safetyCodeVisible || omaq.safetyCode === "")
                 width: parent.width
                 iconText: "󰌾"
                 text: "Show safety code"
-                onClicked: omaq.getSafety()
+                onClicked: root.showSafetyCode()
+              }
+
+              Column {
+                visible: root.moreSection === "chat" && root.safetyCodeVisible &&
+                  omaq.safetyCode !== ""
+                width: parent.width
+                spacing: Style.space(6)
+
+                PanelSectionHeader {
+                  text: "SAFETY CODE"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                }
+
+                Text {
+                  width: parent.width
+                  text: omaq.safetyCode
+                  color: root.foreground
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
+
+                Row {
+                  width: parent.width
+                  spacing: root.btnGap
+                  ActionButton {
+                    width: (parent.width - root.btnGap) / 2
+                    iconText: root.safetyCopied ? "check" : "content_copy"
+                    iconFontFamily: "Material Symbols Rounded"
+                    text: root.safetyCopied ? "Copied" : "Copy"
+                    onClicked: root.copySafetyCode()
+                  }
+                  ActionButton {
+                    width: (parent.width - root.btnGap) / 2
+                    iconText: "visibility_off"
+                    iconFontFamily: "Material Symbols Rounded"
+                    text: "Hide"
+                    onClicked: root.hideSafetyCode()
+                  }
+                }
               }
 
               PanelSeparator {
-                visible: root.moreSection === "chat" &&
-                  (omaq.safetyCode !== "" || omaq.lastDirectId !== "")
+                visible: root.moreSection === "chat" && root.safetyCodeVisible &&
+                  omaq.safetyCode !== ""
                 foreground: root.foreground
               }
 
@@ -1781,21 +1882,22 @@ BarWidget {
               }
 
               GridLayout {
-                visible: root.moreSection === "danger"
+                visible: root.moreSection === "danger" &&
+                  !root.nospamConfirm && !root.removeContactConfirm
                 width: parent.width
                 columns: 2
                 columnSpacing: root.btnGap
                 rowSpacing: Style.space(4)
 
                 ActionButton {
+                  visible: omaq.lastDirectId !== ""
                   Layout.fillWidth: true
                   iconText: "󰆴"
                   text: "Remove contact"
-                  onClicked: omaq.removeContact()
+                  onClicked: root.removeContactConfirm = true
                 }
 
                 ActionButton {
-                  visible: !root.nospamConfirm
                   Layout.fillWidth: true
                   iconText: "󰒭"
                   text: "Rotate personal ID"
@@ -1804,9 +1906,43 @@ BarWidget {
               }
 
               Text {
+                visible: root.moreSection === "danger" && root.removeContactConfirm
+                width: parent.width
+                text: "Remove this contact? Chat history stays on this machine."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              GridLayout {
+                visible: root.moreSection === "danger" && root.removeContactConfirm
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
+                ActionButton {
+                  Layout.fillWidth: true
+                  text: "Cancel"
+                  onClicked: root.removeContactConfirm = false
+                }
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰆴"
+                  text: "Remove"
+                  accent: root.urgent
+                  onClicked: {
+                    omaq.removeContact()
+                    root.removeContactConfirm = false
+                    root.safetyCodeVisible = false
+                  }
+                }
+              }
+
+              Text {
                 visible: root.moreSection === "danger" && root.nospamConfirm
                 width: parent.width
-                text: "This voids every open invite."
+                text: "Rotate your personal ID? This voids every open invite."
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -1828,6 +1964,7 @@ BarWidget {
                   Layout.fillWidth: true
                   iconText: "󰒭"
                   text: "Rotate"
+                  accent: root.urgent
                   onClicked: {
                     omaq.rotateNospam()
                     root.nospamConfirm = false

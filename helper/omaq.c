@@ -1248,7 +1248,6 @@ static int handle_op(const omaq_op *op)
 #endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_friends();
-			emit_safety(fn);
 			return 0;
 		}
 #endif
@@ -1351,7 +1350,6 @@ static int handle_op(const omaq_op *op)
 					char selfav[512];
 					uint8_t hid[32];
 
-					emit_safety(fn);
 					if (omaq_avatar_dest(home_dir(), "self", selfav, sizeof(selfav)) == 0 &&
 					    access(selfav, R_OK) == 0 &&
 					    avatar_hash_file(selfav, hid) == 0)

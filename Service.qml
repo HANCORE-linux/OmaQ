@@ -138,6 +138,8 @@ Item {
         if (!stillFriend && root.lastConversation === root.lastDirectId) {
           root.lastDirectId = ""
           root.lastConversation = ""
+          root.safetyCode = ""
+          root.safetyConv = ""
         }
       }
     }
@@ -426,6 +428,8 @@ Item {
     if (!root.lastDirectId)
       return
     sendOp({ op: "contact.remove", id: root.lastDirectId })
+    root.safetyCode = ""
+    root.safetyConv = ""
   }
   function rotateNospam() {
     sendOp({ op: "nospam.rotate" })

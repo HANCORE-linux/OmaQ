@@ -32,9 +32,9 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 **Panel**
 
 - Hero: transparent trimmed panel render `assets/OmaQ_Final-panel.png` derived from `assets/OmaQ_Final.png`, with a subtle pulse animation. Click opens https://github.com/HANCORE-linux/OmaQ. Omarchy.org news is gone.
-- Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active.
-- More exposes the compact daily controls (chat/search, group create/invite/dissolve, group member roles/removal/leave, identity protection/export/import, and danger actions).
-- Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token.
+- Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active. Chat opens a contact picker before opening a conversation.
+- More exposes the compact daily controls (chat/search, group create/invite/dissolve, group member roles/removal/leave, identity protection/export/import, and danger actions). Contact removal and personal-ID rotation require explicit confirmation.
+- Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token. Safety codes are only shown on demand under More → Chat and can be copied or hidden.
 - Theme icon opens the list (not a permanent color bar). Palettes: **System** (live Omarchy `color0`–`color7` from `colors.toml` with `onFileChanged: reload()`, name from `~/.local/state/omarchy/current/theme.name`) then Traffic-Board **gruvbox**, **rose pine**, **everforest**, **gruvbox light**, **catppuccin latte**, **tokyo night light**. Default `chatTheme`: `system`.
 - **You** and **Friends** sit under Demo/Theme. Click a friend to open that 1:1. You can set the local Tox nickname and self avatar under **You**; avatars use zenity (`op: avatar.set`, 512 KiB, png/jpeg/webp). Friends send `TOX_FILE_KIND_AVATAR`. The fallback uses the Material Symbols Rounded `person` glyph. Green/gray dot = Tox online/offline (`friend_connection_status`). Names from Tox; empty name → `Friend <id>`.
 

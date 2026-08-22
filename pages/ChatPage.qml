@@ -552,10 +552,17 @@ Item {
   function failPending() {
     if (!service || !service.lastErrorConv || !root.sameConv(service.lastErrorConv))
       return
+    var code = String(service.lastError || "error")
+    var message = code === "ratchet_pending"
+      ? "Secure session is being established. Send again in a moment."
+      : code === "no_ratchet"
+        ? "Secure session unavailable. Re-pair this contact with a fresh invite."
+        : "Message failed: " + code
     for (var i = lines.count - 1; i >= 0; i--) {
       var item = lines.get(i)
       if (item && item.local && item.pending) {
         lines.remove(i)
+        root.appendLine({ dir: "sys", text: message, ack: -1 })
         list.positionViewAtEnd()
         return
       }
