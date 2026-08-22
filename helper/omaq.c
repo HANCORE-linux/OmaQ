@@ -4,13 +4,19 @@
 #include "avatar.h"
 #include "file.h"
 #include "group.h"
+#include "group_invite.h"
 #include "invite.h"
 #include "json_io.h"
 #include "message.h"
+#include "message_action.h"
 #include "qr.h"
+#include "presence.h"
+#include "receipt.h"
 #include "ratchet.h"
+#include "ratchet_pin.h"
 #include "rate.h"
 #include "safety.h"
+#include "store.h"
 #include "surface.h"
 
 #include "identity.h"
@@ -41,48 +47,13 @@ static struct omaq_tox *g_tox;
 static int g_locked;
 #ifdef HAVE_SIGNAL
 static struct omaq_ratchet *g_ratchet;
-static struct {
-	char conv[16];
-	char rk[OMAQ_RK_HEX + 1];
-} g_rkmap[8];
-
-static void rk_set(const char *conv, const char *rk)
-{
-	int i, free_i = -1;
-
-	if (!conv || !rk)
-		return;
-	for (i = 0; i < 8; i++) {
-		if (!g_rkmap[i].conv[0]) {
-			if (free_i < 0)
-				free_i = i;
-			continue;
-		}
-		if (strcmp(g_rkmap[i].conv, conv) == 0) {
-			snprintf(g_rkmap[i].rk, sizeof(g_rkmap[i].rk), "%s", rk);
-			return;
-		}
-	}
-	if (free_i < 0)
-		return;
-	snprintf(g_rkmap[free_i].conv, sizeof(g_rkmap[free_i].conv), "%s", conv);
-	snprintf(g_rkmap[free_i].rk, sizeof(g_rkmap[free_i].rk), "%s", rk);
-}
-
-static const char *rk_get(const char *conv)
-{
-	int i;
-	if (!conv)
-		return NULL;
-	for (i = 0; i < 8; i++) {
-		if (g_rkmap[i].conv[0] && strcmp(g_rkmap[i].conv, conv) == 0)
-			return g_rkmap[i].rk;
-	}
-	return NULL;
-}
 #endif
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
+#ifdef HAVE_SIGNAL
+static char g_pending_rk[OMAQ_RK_HEX + 1];
+static int g_have_pending_rk;
+#endif
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
 static char g_issued_url[OMAQ_URL_MAX];
 static int64_t g_issued_exp;
@@ -93,6 +64,11 @@ static int g_have_gpending;
 static uint32_t g_gpending_friend;
 static uint8_t g_gpending_data[1024];
 static size_t g_gpending_len;
+static int g_gpending_announced;
+static int g_have_gauth;
+static uint32_t g_gauth_friend;
+static int64_t g_gauth_exp;
+static char g_gauth_group[OMAQ_GROUP_ID_MAX];
 #endif
 static omaq_rate g_rate;
 
@@ -113,6 +89,19 @@ static const char *state_dir(void)
 {
 	const char *h = getenv("OMAQ_STATE");
 	return h && h[0] ? h : NULL;
+}
+
+static int direct_id_ok(const char *id)
+{
+	size_t i;
+
+	if (!id || !id[0])
+		return 0;
+	for (i = 0; id[i]; i++) {
+		if (id[i] < '0' || id[i] > '9')
+			return 0;
+	}
+	return 1;
 }
 
 static int take_lock(void)
@@ -213,7 +202,194 @@ static void emit_error(const char *code)
 	emit(buf);
 }
 
+static void emit_json_items(const char *event, const char *conversation,
+			     const char *items, size_t items_len)
+{
+	char esc_conv[128], prefix[256];
+	char *ev, *p, *line;
+	size_t cap, left;
+	int first = 1;
+	int wr;
+
+	if (!event || !conversation || !items ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    items_len > (SIZE_MAX - 512u) / 2u) {
+		emit_error("unsupported");
+		return;
+	}
+	wr = snprintf(prefix, sizeof(prefix), "{\"event\":\"%s\",\"conversation\":\"%s\",\"items\":[",
+		      event, esc_conv);
+	if (wr < 0 || (size_t)wr >= sizeof(prefix)) {
+		emit_error("unsupported");
+		return;
+	}
+	cap = items_len * 2u + (size_t)wr + 3u;
+	ev = malloc(cap);
+	if (!ev) {
+		emit_error("unsupported");
+		return;
+	}
+	memcpy(ev, prefix, (size_t)wr);
+	p = ev + wr;
+	left = cap - (size_t)wr;
+	line = (char *)items;
+	while (*line) {
+		char *nl = strchr(line, '\n');
+		size_t len = nl ? (size_t)(nl - line) : strlen(line);
+		if (len == 0) {
+			line += nl ? 1 : 0;
+			continue;
+		}
+		if (!first) {
+			if (left < 2)
+				break;
+			*p++ = ',';
+			left--;
+		}
+		if (len + 2 > left)
+			break;
+		memcpy(p, line, len);
+		p += len;
+		left -= len;
+		first = 0;
+		line += len + (nl ? 1 : 0);
+	}
+	if (*line || left < 3) {
+		free(ev);
+		emit_error("unsupported");
+		return;
+	}
+	memcpy(p, "]}", 3);
+	emit(ev);
+	free(ev);
+}
+
+static void emit_error_conv(const char *code, const char *conversation)
+{
+	char esc[128], buf[320];
+
+	if (!conversation || omaq_json_escape(conversation, esc, sizeof(esc)) != 0) {
+		emit_error(code);
+		return;
+	}
+	snprintf(buf, sizeof(buf),
+		 "{\"event\":\"error\",\"code\":\"%s\",\"conversation\":\"%s\"}",
+		 code, esc);
+	emit(buf);
+}
+
+static void emit_message_event(const char *conversation, const char *id,
+				const char *reply, const char *text, const char *dir)
+{
+	char esc_conv[128], esc_id[128], esc_reply[128], esc_text[2800], ev[3400];
+	int has_id, has_reply;
+
+	if (!conversation || !text || !dir ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    omaq_json_escape(text, esc_text, sizeof(esc_text)) != 0)
+		return;
+	has_id = id && id[0] && omaq_json_escape(id, esc_id, sizeof(esc_id)) == 0;
+	has_reply = reply && reply[0] && omaq_json_escape(reply, esc_reply, sizeof(esc_reply)) == 0;
+	if (has_id && has_reply) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, esc_id, esc_reply, esc_text, dir);
+	} else if (has_id) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, esc_id, esc_text, dir);
+	} else {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, esc_text, dir);
+	}
+	emit(ev);
+}
+
 #ifdef HAVE_TOX
+static void emit_message_update(const char *conversation, const char *id, const char *text, int deleted)
+{
+	char esc_conv[128], esc_id[128], esc_text[2800], ev[3200];
+
+	if (!conversation || !id || !text ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0 ||
+	    omaq_json_escape(text, esc_text, sizeof(esc_text)) != 0)
+		return;
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"message.updated\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"deleted\":%s,\"edited\":%s}",
+		 esc_conv, esc_id, esc_text, deleted ? "true" : "false", deleted ? "false" : "true");
+	emit(ev);
+}
+
+static void emit_receipt_event(const char *conversation, const char *id, const char *state)
+{
+	char esc_conv[128], esc_id[128], ev[360];
+
+	if (!conversation || !id || !state ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0)
+		return;
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"receipt\",\"conversation\":\"%s\",\"id\":\"%s\",\"state\":\"%s\"}",
+		 esc_conv, esc_id, state);
+	emit(ev);
+}
+
+#ifdef HAVE_SIGNAL
+static int send_message_action_wire(uint32_t friend, const char *conversation,
+				      const char *id, const char *text, int deleted)
+{
+	char plain[3200], wire[3600];
+
+	if (!g_tox || !conversation || !id)
+		return -1;
+	if (deleted) {
+		if (omaq_message_delete_wire_pack(plain, sizeof(plain), id) != 0)
+			return -1;
+	} else if (omaq_message_edit_wire_pack(plain, sizeof(plain), id, text) != 0) {
+		return -1;
+	}
+	if (omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0 ||
+	    omaq_tox_send(g_tox, friend, wire) != 0)
+		return -1;
+	return 0;
+}
+
+static int send_receipt_wire(uint32_t friend, const char *conversation,
+			     const char *id, const char *state)
+{
+	char plain[180], wire[420];
+
+	if (!g_tox || !g_ratchet || !conversation || !id ||
+	    omaq_receipt_wire_pack(plain, sizeof(plain), id, state) != 0 ||
+	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0 ||
+	    omaq_tox_send(g_tox, friend, wire) != 0)
+		return -1;
+	return 0;
+}
+#endif
+
+static int send_message_action(uint32_t friend, const char *conversation,
+			       const char *id, const char *text, int deleted)
+{
+	char plain[3200];
+
+	if (!g_tox || !conversation || !id)
+		return -1;
+	if (conversation[0] == 'g') {
+		if ((deleted && omaq_message_delete_wire_pack(plain, sizeof(plain), id) != 0) ||
+		    (!deleted && omaq_message_edit_wire_pack(plain, sizeof(plain), id, text) != 0))
+			return -1;
+		return omaq_group_send(g_tox, conversation, plain);
+	}
+#ifdef HAVE_SIGNAL
+	return send_message_action_wire(friend, conversation, id, text, deleted);
+#else
+	return -1;
+#endif
+}
+
 static void clear_invite(void)
 {
 	g_issued_id[0] = '\0';
@@ -222,6 +398,18 @@ static void clear_invite(void)
 	g_issued_is_group = 0;
 	g_issued_group[0] = '\0';
 	g_have_pending = 0;
+#ifdef HAVE_SIGNAL
+	g_pending_rk[0] = '\0';
+	g_have_pending_rk = 0;
+#endif
+}
+
+static void clear_group_auth(void)
+{
+	g_have_gauth = 0;
+	g_gauth_friend = UINT32_MAX;
+	g_gauth_exp = 0;
+	g_gauth_group[0] = '\0';
 }
 
 static void emit_group(const char *gid, const char *action, uint32_t peer)
@@ -243,6 +431,25 @@ static void pk_hex(const uint8_t *pk, char *out)
 		out[i * 2 + 1] = d[pk[i] & 0xf];
 	}
 	out[64] = '\0';
+}
+
+static int friend_for_addr(const char *addr, uint32_t *out)
+{
+	uint32_t list[64];
+	char pk[65];
+	int n, i;
+
+	if (!g_tox || !addr || strlen(addr) < 64 || !out)
+		return -1;
+	n = omaq_tox_friend_list(g_tox, list, 64);
+	for (i = 0; i < n; i++) {
+		if (omaq_tox_friend_pk_hex(g_tox, list[i], pk) == 0 &&
+		    strncasecmp(pk, addr, 64) == 0) {
+			*out = list[i];
+			return 0;
+		}
+	}
+	return -1;
 }
 
 static void emit_safety(uint32_t friend)
@@ -348,18 +555,28 @@ static void emit_self_avatar(void)
 
 static int avatar_hash_file(const char *path, uint8_t out[32])
 {
-	unsigned char buf[OMAQ_AVATAR_MAX];
+	unsigned char *buf;
 	FILE *f;
 	size_t n;
+	int rc;
 
+	buf = malloc(OMAQ_AVATAR_MAX);
+	if (!buf)
+		return -1;
 	f = fopen(path, "rb");
-	if (!f)
+	if (!f) {
+		free(buf);
 		return -1;
-	n = fread(buf, 1, sizeof(buf), f);
+	}
+	n = fread(buf, 1, OMAQ_AVATAR_MAX, f);
 	fclose(f);
-	if (!n)
+	if (!n) {
+		free(buf);
 		return -1;
-	return omaq_tox_hash(buf, n, out);
+	}
+	rc = omaq_tox_hash(buf, n, out);
+	free(buf);
+	return rc;
 }
 
 static void avatar_broadcast(const char *path)
@@ -392,17 +609,49 @@ static void hook_presence(void *ud, uint32_t friend, int online)
 		(void)omaq_file_send_avatar_begin(g_tox, friend, selfav, hid, NULL);
 }
 
+static void hook_typing(void *ud, uint32_t friend, int typing)
+{
+	char conv[16], ev[180];
+
+	(void)ud;
+	snprintf(conv, sizeof(conv), "%u", friend);
+	if (omaq_presence_typing_event(ev, sizeof(ev), conv, typing) == 0)
+		emit(ev);
+}
+
 static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 {
 	char key[65];
+	const char *sep;
 	int64_t now = (int64_t)time(NULL);
 
 	(void)ud;
 	pk_hex(pk32, key);
 	if (omaq_rate_allow(&g_rate, key, now) != 0)
 		return;
-	if (!g_issued_id[0] || !msg || strcmp(msg, g_issued_id) != 0)
+	if (!g_issued_id[0] || !msg)
 		return;
+	sep = strstr(msg, "|rk=");
+	if (sep) {
+#ifdef HAVE_SIGNAL
+		if (g_issued_is_group || (size_t)(sep - msg) != strlen(g_issued_id) ||
+		    strncmp(msg, g_issued_id, (size_t)(sep - msg)) != 0 ||
+		    strlen(sep + 4) != OMAQ_RK_HEX || !omaq_rk_ok(sep + 4))
+			return;
+		snprintf(g_pending_rk, sizeof(g_pending_rk), "%s", sep + 4);
+		g_have_pending_rk = 1;
+#else
+		return;
+#endif
+	} else {
+		if (strcmp(msg, g_issued_id) != 0)
+			return;
+#ifdef HAVE_SIGNAL
+		/* Direct Ratchet contacts must return their own identity pin. */
+		if (!g_issued_is_group)
+			return;
+#endif
+	}
 	if (g_issued_exp && now >= g_issued_exp)
 		return;
 	if (g_have_pending)
@@ -417,32 +666,65 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 
 static void hook_ginv(void *ud, uint32_t friend, const uint8_t *data, size_t len)
 {
+	char key[32];
+	int64_t now = (int64_t)time(NULL);
+
 	(void)ud;
 	if (!data || len == 0 || len > sizeof(g_gpending_data))
 		return;
-	if (g_have_gpending)
+	snprintf(key, sizeof(key), "group:%u", friend);
+	if (omaq_rate_allow(&g_rate, key, now) != 0 ||
+	    (g_have_gpending && g_gpending_announced))
 		return;
 	memcpy(g_gpending_data, data, len);
 	g_gpending_len = len;
 	g_gpending_friend = friend;
 	g_have_gpending = 1;
-	emit("{\"event\":\"request\",\"kind\":\"group\"}");
+	g_gpending_announced = 0;
+	if (g_have_gauth && omaq_group_invite_match(g_gauth_friend, friend, g_gauth_exp, now)) {
+		g_gpending_announced = 1;
+		emit("{\"event\":\"request\",\"kind\":\"group\"}");
+	}
 }
 
 static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer, const char *text)
 {
-	char gid[OMAQ_GROUP_ID_MAX], esc[2800], ev[3000];
+	char gid[OMAQ_GROUP_ID_MAX], peer_from[48], mid[64], wire_id[64], wire_reply[80], wire_text[1400];
+	const char *display = text;
 	(void)ud;
 	(void)peer;
-	if (omaq_group_id_format(gnum, gid, sizeof(gid)) != 0)
+	wire_reply[0] = '\0';
+	if (omaq_group_id_format(gnum, gid, sizeof(gid)) != 0 ||
+	    snprintf(peer_from, sizeof(peer_from), "peer:%u", peer) >= (int)sizeof(peer_from))
 		return;
-	if (omaq_json_escape(text, esc, sizeof(esc)) != 0)
+	if (text && strncmp(text, "OQE1|", 5) == 0) {
+		char action_id[80], action_text[1400];
+		if (omaq_message_edit_wire_unpack(text, action_id, sizeof(action_id), action_text, sizeof(action_text)) == 0 &&
+		    omaq_message_apply_edit_from(home_dir(), gid, action_id, action_text, peer_from) == 0) {
+			emit_message_update(gid, action_id, action_text, 0);
+			return;
+		}
 		return;
-	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"message\",\"conversation\":\"%s\",\"text\":\"%s\"}",
-		 gid, esc);
-	emit(ev);
-	omaq_message_append(home_dir(), gid, "peer", text, "in");
+	}
+	if (text && strncmp(text, "OQD1|", 5) == 0) {
+		char action_id[80];
+		if (omaq_message_delete_wire_unpack(text, action_id, sizeof(action_id)) == 0 &&
+		    omaq_message_apply_delete_from(home_dir(), gid, action_id, peer_from) == 0) {
+			emit_message_update(gid, action_id, "", 1);
+			return;
+		}
+		return;
+	}
+	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
+				     wire_text, sizeof(wire_text)) == 0) {
+		display = wire_text;
+		if (omaq_message_append_id_reply(home_dir(), gid, peer_from, display, "in", wire_id, wire_reply) != 0)
+			return;
+		snprintf(mid, sizeof(mid), "%s", wire_id);
+	} else if (omaq_message_append_with_id(home_dir(), gid, peer_from, display, "in", mid, sizeof(mid)) != 0) {
+		return;
+	}
+	emit_message_event(gid, mid, wire_reply, display, "in");
 }
 
 static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined)
@@ -460,17 +742,25 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined)
 
 static void hook_msg(void *ud, uint32_t friend, const char *text)
 {
-	char esc[2800], ev[3000], conv[16];
+	char conv[16], mid[64], wire_id[64], wire_reply[80], wire_text[1400], receipt_id[64], receipt_state[16];
+	const char *display = text;
+	int has_wire_id = 0;
 #ifdef HAVE_SIGNAL
 	char plain[1400];
 #endif
 	(void)ud;
 	snprintf(conv, sizeof(conv), "%u", friend);
 #ifdef HAVE_SIGNAL
-	if (g_ratchet && text && strncmp(text, "OQB1", 4) == 0) {
+	if (text && strncmp(text, "OQB1", 4) == 0) {
+		char expected[OMAQ_RK_HEX + 1];
+		if (!g_ratchet)
+			return;
 		int had = omaq_ratchet_has_session(g_ratchet, conv);
-		if (!had)
-			(void)omaq_ratchet_accept_bundle(g_ratchet, conv, text + 4, rk_get(conv));
+		int pin = omaq_ratchet_pin_get(home_dir(), conv, expected, sizeof(expected));
+		if (pin != 1)
+			return;
+		if (!had && omaq_ratchet_accept_bundle(g_ratchet, conv, text + 4, expected) != 0)
+			return;
 		if (!had && g_tox) {
 			char bun[900], bmsg[920];
 			if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
@@ -480,19 +770,53 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		}
 		return;
 	}
-	if (g_ratchet && text && strncmp(text, "OQR1", 4) == 0) {
-		if (omaq_ratchet_decrypt(g_ratchet, conv, text, plain, sizeof(plain)) != 0)
-			return;
-		text = plain;
-	}
-#endif
-	if (omaq_json_escape(text, esc, sizeof(esc)) != 0)
+	if (!text || strncmp(text, "OQR1", 4) != 0 ||
+	    !g_ratchet || omaq_ratchet_decrypt(g_ratchet, conv, text, plain, sizeof(plain)) != 0)
 		return;
-	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"message\",\"conversation\":\"%s\",\"text\":\"%s\"}",
-		 conv, esc);
-	emit(ev);
-	omaq_message_append(home_dir(), conv, "peer", text, "in");
+	text = plain;
+#endif
+	if (text && strncmp(text, "OQE1|", 5) == 0) {
+		char action_id[80], action_text[1400];
+		if (omaq_message_edit_wire_unpack(text, action_id, sizeof(action_id), action_text, sizeof(action_text)) == 0 &&
+		    omaq_message_apply_edit(home_dir(), conv, action_id, action_text) == 0) {
+			emit_message_update(conv, action_id, action_text, 0);
+			return;
+		}
+		return;
+	}
+	if (text && strncmp(text, "OQD1|", 5) == 0) {
+		char action_id[80];
+		if (omaq_message_delete_wire_unpack(text, action_id, sizeof(action_id)) == 0 &&
+		    omaq_message_apply_delete(home_dir(), conv, action_id) == 0) {
+			emit_message_update(conv, action_id, "", 1);
+			return;
+		}
+		return;
+	}
+	if (omaq_receipt_wire_unpack(text, receipt_id, sizeof(receipt_id),
+				     receipt_state, sizeof(receipt_state)) == 0) {
+		(void)omaq_store_update_receipt(home_dir(), conv, receipt_id, receipt_state);
+		emit_receipt_event(conv, receipt_id, receipt_state);
+		return;
+	}
+	wire_reply[0] = '\0';
+	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
+				     wire_text, sizeof(wire_text)) == 0) {
+		display = wire_text;
+		has_wire_id = 1;
+	}
+	if (has_wire_id) {
+		if (omaq_message_append_id_reply(home_dir(), conv, "peer", display, "in", wire_id, wire_reply) != 0)
+			return;
+		snprintf(mid, sizeof(mid), "%s", wire_id);
+	} else if (omaq_message_append_with_id(home_dir(), conv, "peer", display, "in", mid, sizeof(mid)) != 0) {
+		return;
+	}
+	emit_message_event(conv, mid, wire_reply, display, "in");
+#ifdef HAVE_SIGNAL
+	if (has_wire_id)
+		(void)send_receipt_wire(friend, conv, wire_id, "delivered");
+#endif
 }
 
 static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
@@ -655,6 +979,7 @@ static void attach_hooks(void)
 		return;
 	omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
 	omaq_tox_set_presence_hook(g_tox, hook_presence, NULL);
+	omaq_tox_set_typing_hook(g_tox, hook_typing, NULL);
 	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
 	omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
 				hook_file_ctrl, NULL);
@@ -782,6 +1107,10 @@ static int handle_op(const omaq_op *op)
 					emit_error("forbidden");
 					return 0;
 				}
+				if (op->id[0] && !direct_id_ok(op->id)) {
+					emit_error("unsupported");
+					return 0;
+				}
 				if (op->id[0] &&
 				    omaq_group_invite_friend(g_tox, op->group,
 							     (uint32_t)atoi(op->id),
@@ -815,8 +1144,13 @@ static int handle_op(const omaq_op *op)
 			inv.expiry = (int64_t)time(NULL) + ttl;
 			inv.kind = INVITE_DIRECT;
 #ifdef HAVE_SIGNAL
-			if (g_ratchet)
-				(void)omaq_ratchet_local_rk(g_ratchet, inv.rk);
+			if (!g_ratchet || omaq_ratchet_local_rk(g_ratchet, inv.rk) != 0) {
+				emit_error("no_ratchet");
+				return 0;
+			}
+#else
+			emit_error("no_ratchet");
+			return 0;
 #endif
 			if (omaq_invite_format(&inv, url, sizeof(url)) != 0) {
 				emit_error("unsupported");
@@ -846,10 +1180,26 @@ static int handle_op(const omaq_op *op)
 		if (inv.kind == INVITE_GROUP) {
 #ifdef HAVE_TOX
 			if (g_tox) {
-				if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, NULL) != 0) {
-					/* already a friend: group Tox invite must come from the owner */
-					emit("{\"event\":\"snapshot\",\"unread\":0}");
+				uint32_t fn = UINT32_MAX, gnum;
+				if (omaq_group_id_parse(inv.group, &gnum) != 0 ||
+				    strlen(inv.group) >= sizeof(g_gauth_group)) {
+					emit_error("unsupported");
 					return 0;
+				}
+				if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, &fn) != 0 &&
+				    friend_for_addr(inv.tox_addr, &fn) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
+				g_have_gauth = 1;
+				g_gauth_friend = fn;
+				g_gauth_exp = inv.expiry;
+				memcpy(g_gauth_group, inv.group, strlen(inv.group) + 1);
+				if (g_have_gpending && !g_gpending_announced &&
+				    omaq_group_invite_match(g_gauth_friend, g_gpending_friend,
+								g_gauth_exp, (int64_t)time(NULL))) {
+					g_gpending_announced = 1;
+					emit("{\"event\":\"request\",\"kind\":\"group\"}");
 				}
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
 				return 0;
@@ -861,15 +1211,36 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 		if (g_tox) {
 			uint32_t fn = 0;
-			if (omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, &fn) != 0) {
+			char request[OMAQ_INVITE_ID_MAX + OMAQ_RK_HEX + 8];
+#ifdef HAVE_SIGNAL
+			char local_rk[OMAQ_RK_HEX + 1];
+			if (!g_ratchet || !inv.rk[0] ||
+			    omaq_ratchet_local_rk(g_ratchet, local_rk) != 0) {
+				emit_error("no_ratchet");
+				return 0;
+			}
+			if (snprintf(request, sizeof(request), "%s|rk=%s", inv.id, local_rk) >=
+			    (int)sizeof(request)) {
+				emit_error("unsupported");
+				return 0;
+			}
+#else
+			emit_error("no_ratchet");
+			return 0;
+#endif
+			if (omaq_tox_friend_add(g_tox, inv.tox_addr, request, &fn) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
 #ifdef HAVE_SIGNAL
-			if (inv.rk[0] && omaq_rk_ok(inv.rk)) {
+			{
 				char conv[16];
 				snprintf(conv, sizeof(conv), "%u", fn);
-				rk_set(conv, inv.rk);
+				if (omaq_ratchet_pin_set(home_dir(), conv, inv.rk) != 0) {
+					(void)omaq_tox_friend_delete(g_tox, fn);
+					emit_error("forbidden");
+					return 0;
+				}
 			}
 #endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
@@ -916,24 +1287,31 @@ static int handle_op(const omaq_op *op)
 	}
 	if (strcmp(op->op, "contact.decide") == 0) {
 #ifdef HAVE_TOX
-		if (g_tox && g_have_gpending) {
+		if (g_tox && g_have_gpending && g_gpending_announced && g_have_gauth) {
 			if (op->has_accept && op->accept) {
-				uint32_t gnum;
-				char gid[OMAQ_GROUP_ID_MAX];
-				if (omaq_tox_group_invite_accept(g_tox, g_gpending_friend,
-								 g_gpending_data, g_gpending_len,
-								 &gnum) != 0) {
+				uint32_t gnum = UINT32_MAX;
+				char gid[OMAQ_GROUP_ID_MAX] = "";
+				int accepted = omaq_tox_group_invite_accept(g_tox, g_gpending_friend,
+									g_gpending_data, g_gpending_len,
+									&gnum) == 0;
+				int have_gid = accepted && omaq_group_id_format(gnum, gid, sizeof(gid)) == 0;
+				if (!have_gid || !g_have_gauth || strcmp(gid, g_gauth_group) != 0) {
+					if (have_gid)
+						(void)omaq_group_leave(g_tox, gid);
+					g_have_gpending = 0;
+					g_gpending_announced = 0;
+					clear_group_auth();
 					emit_error("forbidden");
 					return 0;
 				}
 				g_have_gpending = 0;
-				if (omaq_group_id_format(gnum, gid, sizeof(gid)) == 0)
-					emit_group(gid, "join", 0);
-				else
-					emit("{\"event\":\"snapshot\",\"unread\":0}");
+				g_gpending_announced = 0;
+				clear_group_auth();
+				emit_group(gid, "join", 0);
 				return 0;
 			}
 			g_have_gpending = 0;
+			g_gpending_announced = 0;
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
@@ -945,6 +1323,21 @@ static int handle_op(const omaq_op *op)
 					return 0;
 				}
 				fn = omaq_tox_friend_by_pk(g_tox, g_pending_pk);
+#ifdef HAVE_SIGNAL
+				if (!g_issued_is_group && g_have_pending_rk) {
+					char pin_conv[16];
+					if (fn == UINT32_MAX ||
+					    snprintf(pin_conv, sizeof(pin_conv), "%u", fn) >=
+					    (int)sizeof(pin_conv) ||
+					    omaq_ratchet_pin_set(home_dir(), pin_conv, g_pending_rk) != 0) {
+						if (fn != UINT32_MAX)
+							(void)omaq_tox_friend_delete(g_tox, fn);
+						clear_invite();
+						emit_error("forbidden");
+						return 0;
+					}
+				}
+#endif
 				if (g_issued_is_group && g_issued_group[0] && fn != UINT32_MAX)
 					(void)omaq_group_invite_friend(g_tox, g_issued_group, fn,
 								       ROLE_OWNER, g_issued_grole);
@@ -975,7 +1368,12 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 		if (g_tox) {
 			const char *cid = op->id[0] ? op->id : op->conversation;
-			uint32_t fn = (uint32_t)atoi(cid[0] ? cid : "0");
+			uint32_t fn;
+			if (!direct_id_ok(cid)) {
+				emit_error("unsupported");
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
 			if (omaq_tox_friend_delete(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
@@ -997,7 +1395,7 @@ static int handle_op(const omaq_op *op)
 			return 0;
 		}
 		if (omaq_avatar_install(home_dir(), "self", op->path, dest, sizeof(dest)) != 0) {
-			emit_error("forbidden");
+			emit_error("avatar_failed");
 			return 0;
 		}
 		emit_avatar("self", dest);
@@ -1149,6 +1547,53 @@ static int handle_op(const omaq_op *op)
 		}
 		return 0;
 	}
+	if (strcmp(op->op, "surface.list") == 0) {
+		omaq_surface surfaces[OMAQ_SURFACE_MAX];
+		int n = omaq_surface_list(state_dir(), surfaces, OMAQ_SURFACE_MAX);
+		size_t cap = 64u + (size_t)(n > 0 ? n : 0) * 260u;
+		char *ev = malloc(cap);
+		char *p;
+		size_t left;
+		int i, first = 1;
+		if (n < 0 || !ev) {
+			free(ev);
+			emit("{\"event\":\"surfaces\",\"items\":[]}");
+			return 0;
+		}
+		p = ev;
+		left = cap;
+		if (snprintf(p, left, "{\"event\":\"surfaces\",\"items\":[") >= (int)left) {
+			free(ev);
+			emit("{\"event\":\"surfaces\",\"items\":[]}");
+			return 0;
+		}
+		p += strlen(p);
+		left = cap - (size_t)(p - ev);
+		for (i = 0; i < n; i++) {
+			char ec[160], em[128];
+			int wr;
+			if (omaq_json_escape(surfaces[i].conversation, ec, sizeof(ec)) != 0 ||
+			    omaq_json_escape(surfaces[i].monitor, em, sizeof(em)) != 0)
+				continue;
+			wr = snprintf(p, left, "%s{\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				      first ? "" : ",", ec, em, surfaces[i].x, surfaces[i].y,
+				      surfaces[i].pinned ? "true" : "false");
+			if (wr < 0 || (size_t)wr >= left)
+				break;
+			p += wr;
+			left -= (size_t)wr;
+			first = 0;
+		}
+		if (left < 3) {
+			free(ev);
+			emit("{\"event\":\"surfaces\",\"items\":[]}");
+			return 0;
+		}
+		memcpy(p, "]}", 3);
+		emit(ev);
+		free(ev);
+		return 0;
+	}
 	if (strcmp(op->op, "surface.get") == 0) {
 		omaq_surface s;
 		const char *cid = op->conversation[0] ? op->conversation : "0";
@@ -1171,9 +1616,93 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
+			if (!direct_id_ok(cid)) {
+				emit_error("forbidden");
+				return 0;
+			}
 			emit_safety((uint32_t)atoi(cid));
 			return 0;
 		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "typing.set") == 0) {
+#ifdef HAVE_TOX
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		if (!g_tox || !direct_id_ok(cid) || !op->has_typing ||
+		    omaq_tox_set_typing(g_tox, (uint32_t)atoi(cid), op->typing) != 0) {
+			emit_error_conv("forbidden", cid);
+			return 0;
+		}
+		return 0;
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "message.edit") == 0 || strcmp(op->op, "message.delete") == 0) {
+#ifdef HAVE_TOX
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		int deleted = strcmp(op->op, "message.delete") == 0;
+		uint32_t fn;
+		int update;
+		if (!op->id[0] || (!deleted && !op->text[0])) {
+			emit_error_conv("invalid", cid);
+			return 0;
+		}
+		if (cid[0] == 'g') {
+			if (send_message_action(UINT32_MAX, cid, op->id, deleted ? "" : op->text, deleted) != 0) {
+				emit_error_conv("forbidden", cid);
+				return 0;
+			}
+		} else {
+			if (!direct_id_ok(cid)) {
+				emit_error_conv("unsupported", cid);
+				return 0;
+			}
+			fn = (uint32_t)atoi(cid);
+#ifndef HAVE_SIGNAL
+			emit_error_conv("no_ratchet", cid);
+			return 0;
+#else
+			if (!g_ratchet || !omaq_ratchet_has_session(g_ratchet, cid)) {
+				emit_error_conv("ratchet_pending", cid);
+				return 0;
+			}
+			if (send_message_action(fn, cid, op->id, deleted ? "" : op->text, deleted) != 0) {
+				emit_error_conv("forbidden", cid);
+				return 0;
+			}
+#endif
+		}
+		update = deleted ? omaq_message_delete(home_dir(), cid, op->id) :
+			omaq_message_edit(home_dir(), cid, op->id, op->text);
+		if (update != 0) {
+			emit_error_conv("forbidden", cid);
+			return 0;
+		}
+		emit_message_update(cid, op->id, deleted ? "" : op->text, deleted);
+		emit("{\"event\":\"snapshot\",\"unread\":0}");
+		return 0;
+#else
+		emit_error("unsupported");
+		return 0;
+#endif
+	}
+	if (strcmp(op->op, "receipt.send") == 0) {
+#ifdef HAVE_TOX
+#ifdef HAVE_SIGNAL
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		if (!g_tox || !direct_id_ok(cid) || !op->id[0] || !op->state[0] ||
+		    send_receipt_wire((uint32_t)atoi(cid), cid, op->id, op->state) != 0) {
+			emit_error_conv("forbidden", cid);
+			return 0;
+		}
+		return 0;
+#else
+		emit_error_conv("no_ratchet", op->conversation[0] ? op->conversation : "0");
+		return 0;
+#endif
 #endif
 		emit_error("unsupported");
 		return 0;
@@ -1183,45 +1712,80 @@ static int handle_op(const omaq_op *op)
 		if (g_tox && op->text[0]) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			if (cid[0] == 'g') {
-				if (omaq_group_send(g_tox, cid, op->text) != 0) {
-					emit_error("forbidden");
+				char mid[64], packed[3200];
+				if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
+				    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0 ||
+				    omaq_group_send(g_tox, cid, packed) != 0 ||
+				    omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
+					emit_error_conv("forbidden", cid);
 					return 0;
 				}
+				emit_message_event(cid, mid, op->reply, op->text, "out");
+				emit("{\"event\":\"snapshot\",\"unread\":0}");
+				return 0;
 			} else {
-				uint32_t fn = (uint32_t)atoi(cid);
+				uint32_t fn;
+				if (!direct_id_ok(cid)) {
+					emit_error_conv("unsupported", cid);
+					return 0;
+				}
+				fn = (uint32_t)atoi(cid);
 #ifdef HAVE_SIGNAL
-				if (g_ratchet) {
-					char bun[900], wire[2800];
-					if (!omaq_ratchet_has_session(g_ratchet, cid) &&
-					    omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
-						char bmsg[920];
-						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
-						(void)omaq_tox_send(g_tox, fn, bmsg);
-					}
+				if (!g_ratchet) {
+					emit_error_conv("no_ratchet", cid);
+					return 0;
+				}
+				{
+					char bun[900], packed[3200], wire[3600], mid[64];
 					if (!omaq_ratchet_has_session(g_ratchet, cid)) {
-						emit("{\"event\":\"snapshot\",\"unread\":0}");
+						char bmsg[920];
+						if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) != 0) {
+							emit_error_conv("no_ratchet", cid);
+							return 0;
+						}
+						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
+						if (omaq_tox_send(g_tox, fn, bmsg) != 0) {
+							emit_error_conv("forbidden", cid);
+							return 0;
+						}
+						emit_error_conv("ratchet_pending", cid);
 						return 0;
 					}
-					if (omaq_ratchet_encrypt(g_ratchet, cid, op->text,
+					if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
+					    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0 ||
+					    omaq_ratchet_encrypt(g_ratchet, cid, packed,
 								wire, sizeof(wire)) != 0) {
-						emit_error("forbidden");
+						emit_error_conv("forbidden", cid);
 						return 0;
 					}
 					if (omaq_tox_send(g_tox, fn, wire) != 0) {
-						emit_error("forbidden");
+						emit_error_conv("forbidden", cid);
 						return 0;
 					}
-					omaq_message_append(home_dir(), cid, "me", op->text, "out");
+					{
+						if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
+							emit_error_conv("forbidden", cid);
+							return 0;
+						}
+						emit_message_event(cid, mid, op->reply, op->text, "out");
+					}
 					emit("{\"event\":\"snapshot\",\"unread\":0}");
 					return 0;
 				}
 #endif
-				if (omaq_tox_send(g_tox, fn, op->text) != 0) {
-					emit_error("forbidden");
+#ifndef HAVE_SIGNAL
+				emit_error_conv("no_ratchet", cid);
+				return 0;
+#endif
+			}
+			{
+				char mid[64];
+				if (omaq_message_append_with_id(home_dir(), cid, "me", op->text, "out", mid, sizeof(mid)) != 0) {
+					emit_error_conv("forbidden", cid);
 					return 0;
 				}
+				emit_message_event(cid, mid, op->reply, op->text, "out");
 			}
-			omaq_message_append(home_dir(), cid, "me", op->text, "out");
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
@@ -1235,54 +1799,7 @@ static int handle_op(const omaq_op *op)
 		int lim = op->has_limit ? op->limit : 50;
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		if (omaq_message_history(home_dir(), cid, lim, &out, &n) == 0 && out) {
-			char ev[OMAQ_JSON_LINE_MAX];
-			char *p = ev;
-			size_t left = sizeof(ev);
-			int first = 1;
-			char *line = out;
-			char esc_cid[128];
-			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0) {
-				free(out);
-				emit("{\"event\":\"history\",\"conversation\":\"0\",\"items\":[]}");
-				return 0;
-			}
-			int wr = snprintf(p, left,
-					 "{\"event\":\"history\",\"conversation\":\"%s\",\"items\":[",
-					 esc_cid);
-			if (wr < 0 || (size_t)wr >= left) {
-				free(out);
-				emit_error("unsupported");
-				return 0;
-			}
-			p += wr;
-			left -= (size_t)wr;
-			while (*line) {
-				char *nl = strchr(line, '\n');
-				size_t ln = nl ? (size_t)(nl - line) : strlen(line);
-				if (!first) {
-					if (left < 2)
-						break;
-					*p++ = ',';
-					left--;
-				}
-				first = 0;
-				if (ln + 1 >= left)
-					break;
-				memcpy(p, line, ln);
-				p += ln;
-				left -= ln;
-				line += ln + (nl ? 1 : 0);
-			}
-			if (left < 3) {
-				free(out);
-				snprintf(ev, sizeof(ev),
-					 "{\"event\":\"history\",\"conversation\":\"%s\",\"items\":[]}",
-					 esc_cid);
-				emit(ev);
-				return 0;
-			}
-			memcpy(p, "]}", 3);
-			emit(ev);
+			emit_json_items("history", cid, out, n);
 			free(out);
 			return 0;
 		}
@@ -1306,51 +1823,30 @@ static int handle_op(const omaq_op *op)
 		int lim = op->has_limit ? op->limit : 20;
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		if (!op->text[0]) {
-			emit("{\"event\":\"search\",\"items\":[]}");
+			char esc_cid[128];
+			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) == 0) {
+				char empty[220];
+				snprintf(empty, sizeof(empty), "{\"event\":\"search\",\"conversation\":\"%s\",\"items\":[]}", esc_cid);
+				emit(empty);
+			} else {
+				emit("{\"event\":\"search\",\"conversation\":\"0\",\"items\":[]}");
+			}
 			return 0;
 		}
 		if (omaq_message_search(home_dir(), cid, op->text, lim, &out, &n) == 0 && out) {
-			char ev[OMAQ_JSON_LINE_MAX];
-			char *p = ev;
-			size_t left = sizeof(ev);
-			int first = 1;
-			char *line = out;
-			int wr = snprintf(p, left, "{\"event\":\"search\",\"items\":[");
-			if (wr < 0 || (size_t)wr >= left) {
-				free(out);
-				emit_error("unsupported");
-				return 0;
-			}
-			p += wr;
-			left -= (size_t)wr;
-			while (*line) {
-				char *nl = strchr(line, '\n');
-				size_t ln = nl ? (size_t)(nl - line) : strlen(line);
-				if (!first) {
-					if (left < 2)
-						break;
-					*p++ = ',';
-					left--;
-				}
-				first = 0;
-				if (ln + 1 >= left)
-					break;
-				memcpy(p, line, ln);
-				p += ln;
-				left -= ln;
-				line += ln + (nl ? 1 : 0);
-			}
-			if (left < 3) {
-				free(out);
-				emit("{\"event\":\"search\",\"items\":[]}");
-				return 0;
-			}
-			memcpy(p, "]}", 3);
-			emit(ev);
+			emit_json_items("search", cid, out, n);
 			free(out);
 			return 0;
 		}
-		emit("{\"event\":\"search\",\"items\":[]}");
+		{
+			char esc_cid[128], empty[220];
+			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) == 0) {
+				snprintf(empty, sizeof(empty), "{\"event\":\"search\",\"conversation\":\"%s\",\"items\":[]}", esc_cid);
+				emit(empty);
+			} else {
+				emit("{\"event\":\"search\",\"conversation\":\"0\",\"items\":[]}");
+			}
+		}
 		return 0;
 	}
 	if (strcmp(op->op, "identity.export") == 0) {
@@ -1382,17 +1878,19 @@ static int handle_op(const omaq_op *op)
 			uint32_t fn, fnum;
 			char name[OMAQ_FILE_NAME_MAX + 1];
 
-			if (cid[0] == 'g') {
-				emit_error("forbidden");
-				return 0;
-			}
-			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0) {
-				emit_error("unsupported");
+			if (!direct_id_ok(cid)) {
+				emit_error_conv("forbidden", cid);
 				return 0;
 			}
 			fn = (uint32_t)atoi(cid);
+			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0) {
+				emit_file("failed", fn, 0, NULL, 0, NULL);
+				emit_error_conv("unsupported", cid);
+				return 0;
+			}
 			if (omaq_file_send_begin(g_tox, fn, op->path, &fnum) != 0) {
-				emit_error("forbidden");
+				emit_file("failed", fn, 0, NULL, 0, NULL);
+				emit_error_conv("forbidden", cid);
 				return 0;
 			}
 			(void)fnum;
@@ -1401,7 +1899,7 @@ static int handle_op(const omaq_op *op)
 			return 0;
 		}
 #endif
-		emit_error("unsupported");
+		emit_error_conv("unsupported", op->conversation[0] ? op->conversation : NULL);
 		return 0;
 	}
 	if (strcmp(op->op, "file.accept") == 0) {
@@ -1465,7 +1963,7 @@ static int handle_op(const omaq_op *op)
 			uint32_t fn;
 			char ev[160];
 
-			if (cid[0] == 'g') {
+			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
 				return 0;
 			}
@@ -1491,7 +1989,7 @@ static int handle_op(const omaq_op *op)
 			uint32_t fn;
 			char ev[160];
 
-			if (cid[0] == 'g') {
+			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
 				return 0;
 			}
@@ -1517,7 +2015,7 @@ static int handle_op(const omaq_op *op)
 			uint32_t fn;
 			char ev[160];
 
-			if (cid[0] == 'g') {
+			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
 				return 0;
 			}

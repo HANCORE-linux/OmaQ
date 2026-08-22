@@ -28,7 +28,7 @@ QML (views)  →  Service (exec + socket)  →  helper ops  →  adapters (store
 3. Address chat only as a **conversation** (`direct` | `group`). No second chat stack for groups.
 4. **One helper process** per user session. Service always execs. Helper `flock`s. Exit `2` = already running → Service connects. No flock in QML.
 5. **Helper is authoritative.** `Model.js` is UX precheck only. It never decides redeem, roles, or history.
-6. Pure policy has no IO: `roles.c`, `invite.c`, `conversation.c`. IO lives in `store.c` (history + `surfaces.json`) and `tox_adapt.c` (`tox.h` + `toxav.h` + `toxencryptsave.h` only). Signal/Olm headers live only in `ratchet_adapt.c`.
+6. Pure policy has no IO: `roles.c`, `invite.c`, `conversation.c`. IO lives in `store.c` (history) and `surface.c` (`surfaces.jsonl`), while `tox_adapt.c` owns (`tox.h` + `toxav.h` + `toxencryptsave.h` only). Signal/Olm headers live only in `ratchet_adapt.c`.
 7. `message.c` talks `store.h`, not paths. `group.c` talks `roles.c` + `tox_adapt`, not a second policy.
 8. Every rule that can be wrong must be testable **without network and without toxcore**. `make arch` in `verify-0` enforces the include/IO greps.
 9. Untrusted input (`json_io`, invite parse) builds under `-fsanitize=address,undefined -Wall -Werror`.
@@ -93,7 +93,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Sound | off, click, pop, bell, soft, knock, custom file. |
 | Memory | **50 MB RSS** for everything OmaQ starts (one helper + QML in a session). Do not invent a number in prose — measure. `verify-1-tox` records idle RSS; phase 6 records call-peak; phase 8 records ratchet idle + one-text. Fail if a single helper > 51200 kB. |
 | Payload | **Double Ratchet** (Signal spec) on **direct** conversations. Tox is the pipe. Not SimpleX. Not a second handshake we write ourselves. Library: Arch extra `libsignal-protocol-c` (existing). Groups stay Tox-native until a later go. |
-| Ratchet bootstrap | Invite may carry `rk=` (32-byte identity key, 64 hex). Prekey bundle after Tox connect, signed by that key. Safety code still binds the Tox ids. |
+| Ratchet bootstrap | Direct invite requires `rk=` (32-byte identity key, 64 hex). The redeeming peer returns its own ratchet identity in the token-authenticated friend request; both expected pins and Signal identity keys persist before a bundle is accepted. Safety code still binds the Tox ids. |
 | Out of 50 MB | No Tor child. No second Tox instance per contact. No SimpleX stack. |
 | Bootstrap | Public Tox nodes, compiled in. |
 | Live | Never write `~/.config/omarchy/plugins/` except one announced install. Verify uses temp dirs only. |
@@ -170,7 +170,7 @@ Helper (C):
   else: exit 2
 ```
 
-In-flight `msg.send` on death is not “sent”. Restart reloads `tox.save` and jsonl; no second identity.
+In-flight `msg.send` on death is not “sent”. Restart reloads `tox.save`, history JSONL, persisted ratchet pins/identities/sessions; no second identity.
 
 **Lock contention is `verify-1-offline`:** two helper processes, one temp home, no network, no toxcore. Exactly one stays up, the other exits 2. `verify-1-tox` still asserts one process when Tox is on.
 
@@ -183,7 +183,7 @@ $OMAQ_HOME/tox.save
 $OMAQ_HOME/omaq.lock
 $OMAQ_HOME/history/<conversation-id>/messages.jsonl
 $OMAQ_STATE/omaq.sock
-$OMAQ_STATE/surfaces.json      # monitor, x, y, pinned, per conversation
+$OMAQ_STATE/surfaces.jsonl     # monitor, x, y, pinned, per conversation
 ```
 
 Verify sets `OMAQ_HOME` / `OMAQ_STATE` to temp dirs and **fails** if they resolve to the real home paths.
@@ -283,7 +283,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"call.stop","conversation":"..."}
 ```
 
-Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited` | `locked`).
+Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited` | `locked` | `no_ratchet` | `ratchet_pending`).
 
 `file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `$OMAQ_HOME/files/<conv>/<name>`, `0600`, cap 8 MiB. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
 
@@ -318,7 +318,7 @@ OmaQ **must not** bind `SUPER+T` or `SUPER+SHIFT+arrows`. No new Hyprland config
 
 `SUPER+T` is not “lösen”. Tile↔float stays a Hyprland window. Lösen is unpin to card.
 
-**The helper owns `$OMAQ_STATE/surfaces.json`.** N Panels must not write it. `surface.set` / `surface.get` are the only writers/readers. That is the same singleton that owns conversation ids. Do not use last-writer-wins from QML.
+**The helper owns `$OMAQ_STATE/surfaces.jsonl`.** N Panels must not write it. `surface.set` / `surface.get` are the only writers/readers. That is the same singleton that owns conversation ids. Do not use last-writer-wins from QML.
 
 Remember: monitor, x, y, `pinned` true/false.
 
@@ -439,7 +439,7 @@ make verify-N
 | **verify-1** | offline + (tox if approved, else skip tox with a loud “tox not enabled”) | | |
 | **verify-2** | expire, revoke, nospam voids all invites, safety-code match, rate-limit | temp only | yes |
 | **verify-3** | after `03-toxcore.md` exists: role matrix, dissolve = our definition, no second helper | yes | yes |
-| **verify-4** | validate + schema; surfaces.json read/write; still one helper | no extra | yes |
+| **verify-4** | validate + schema; surfaces.jsonl read/write; still one helper | no extra | yes |
 | **verify-5** | import refuses without `replace`; `replace` on temp home; search hits one fixture line | no | yes |
 | **verify-6** | file on disk; call start/stop; peak RSS recorded | yes | yes |
 | **verify-7** | `makepkg -f`; `namcap`; tar has no `home/`, no `tox.save`; enable path (symlink or plugin add) validates | no | build dep |

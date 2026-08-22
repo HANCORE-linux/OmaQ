@@ -58,6 +58,17 @@ echo "$got" | grep -a -q '"pinned":false' || { echo "phase4: pinned mismatch" >&
 [ -f "$state/surfaces.jsonl" ] || { echo "phase4: missing surfaces.jsonl" >&2; exit 1; }
 grep -q 'DP-1' "$state/surfaces.jsonl" || { echo "phase4: file content" >&2; exit 1; }
 
+echo '{"op":"surface.list"}' >&3
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a -q '"event":"surfaces"' "$out" && grep -a -q '"conversation":"0"' "$out"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.05
+done
+[ "$i" -lt 40 ] || { echo "phase4: no surface list" >&2; exit 1; }
+
 echo '{"op":"surface.set","conversation":"0","monitor":"HDMI-1","x":1,"y":2,"pinned":true}' >&3
 sleep 0.2
 echo '{"op":"surface.get","conversation":"0"}' >&3

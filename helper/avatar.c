@@ -3,6 +3,7 @@
 #include "file.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -94,7 +95,7 @@ int omaq_avatar_install(const char *home, const char *id, const char *src,
 			char *dest, size_t destn)
 {
 	char dir[512], out[512];
-	unsigned char buf[OMAQ_AVATAR_MAX];
+	unsigned char *buf = NULL;
 	struct stat st;
 	FILE *in, *fp;
 	size_t got;
@@ -109,28 +110,41 @@ int omaq_avatar_install(const char *home, const char *id, const char *src,
 		return -1;
 	if (mkdir_p(dir) != 0)
 		return -1;
+	buf = malloc(OMAQ_AVATAR_MAX);
+	if (!buf)
+		return -1;
 	in = fopen(src, "rb");
-	if (!in)
+	if (!in) {
+		free(buf);
 		return -1;
-	got = fread(buf, 1, sizeof(buf), in);
+	}
+	got = fread(buf, 1, OMAQ_AVATAR_MAX, in);
 	fclose(in);
-	if (got == 0 || got != (size_t)st.st_size)
+	if (got == 0 || got != (size_t)st.st_size) {
+		free(buf);
 		return -1;
+	}
 	png = got >= 8 && buf[0] == 0x89 && buf[1] == 'P' && buf[2] == 'N' && buf[3] == 'G';
 	jpg = got >= 3 && buf[0] == 0xff && buf[1] == 0xd8 && buf[2] == 0xff;
 	webp = got >= 12 && buf[0] == 'R' && buf[8] == 'W' && buf[9] == 'E' &&
 	       buf[10] == 'B' && buf[11] == 'P';
-	if (!png && !jpg && !webp)
+	if (!png && !jpg && !webp) {
+		free(buf);
 		return -1;
+	}
 	fp = fopen(out, "wb");
-	if (!fp)
+	if (!fp) {
+		free(buf);
 		return -1;
+	}
 	if (fchmod(fileno(fp), 0600) != 0 || fwrite(buf, 1, got, fp) != got) {
 		fclose(fp);
 		unlink(out);
+		free(buf);
 		return -1;
 	}
 	fclose(fp);
+	free(buf);
 	if (dest && destn) {
 		if (snprintf(dest, destn, "%s", out) >= (int)destn)
 			return -1;

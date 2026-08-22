@@ -15,5 +15,6 @@ typedef struct {
 /* Read/write $OMAQ_STATE/surfaces.jsonl. Only this module opens that file. */
 int omaq_surface_set(const char *state, const omaq_surface *s);
 int omaq_surface_get(const char *state, const char *conv, omaq_surface *s);
+int omaq_surface_list(const char *state, omaq_surface *out, int cap);
 
 #endif

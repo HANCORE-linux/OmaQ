@@ -29,6 +29,7 @@ struct omaq_tox {
 	omaq_on_file_ctrl on_fctrl;
 	omaq_on_avatar on_avatar;
 	omaq_on_presence on_presence;
+	omaq_on_typing on_typing;
 	omaq_on_call on_call;
 	void *ud;
 	int online;
@@ -161,6 +162,15 @@ static void on_friend_conn(Tox *tox, uint32_t friend_number, Tox_Connection st, 
 	(void)tox;
 	if (t->on_presence)
 		t->on_presence(t->ud, friend_number, st != TOX_CONNECTION_NONE);
+}
+
+static void on_friend_typing(Tox *tox, uint32_t friend_number, bool typing, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	if (t->on_typing)
+		t->on_typing(t->ud, friend_number, typing ? 1 : 0);
 }
 
 static void on_req(Tox *tox, const uint8_t *pk, const uint8_t *msg, size_t len, void *ud)
@@ -453,6 +463,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	}
 	tox_callback_self_connection_status(t->tox, on_status);
 	tox_callback_friend_connection_status(t->tox, on_friend_conn);
+	tox_callback_friend_typing(t->tox, on_friend_typing);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
 	tox_callback_group_invite(t->tox, on_ginv);
@@ -761,6 +772,24 @@ void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *u
 	t->on_presence = cb;
 	if (ud)
 		t->ud = ud;
+}
+
+void omaq_tox_set_typing_hook(struct omaq_tox *t, omaq_on_typing cb, void *ud)
+{
+	if (!t)
+		return;
+	t->on_typing = cb;
+	if (ud)
+		t->ud = ud;
+}
+
+int omaq_tox_set_typing(struct omaq_tox *t, uint32_t friend_number, int typing)
+{
+	Tox_Err_Set_Typing err = TOX_ERR_SET_TYPING_OK;
+
+	if (!t || !t->tox || !tox_self_set_typing(t->tox, friend_number, typing != 0, &err))
+		return -1;
+	return err == TOX_ERR_SET_TYPING_OK ? 0 : -1;
 }
 
 int omaq_tox_online(const struct omaq_tox *t)

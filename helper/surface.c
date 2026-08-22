@@ -161,6 +161,22 @@ int omaq_surface_set(const char *state, const omaq_surface *s)
 	return write_all(path, arr, n);
 }
 
+int omaq_surface_list(const char *state, omaq_surface *out, int cap)
+{
+	char path[576];
+	omaq_surface all[OMAQ_SURFACE_MAX];
+	int n = 0, copy;
+
+	if (!out || cap <= 0 || surf_path(state, path, sizeof(path)) != 0)
+		return -1;
+	if (load_all(path, all, &n) != 0)
+		return -1;
+	copy = n < cap ? n : cap;
+	if (copy > 0)
+		memcpy(out, all, (size_t)copy * sizeof(*out));
+	return copy;
+}
+
 int omaq_surface_get(const char *state, const char *conv, omaq_surface *s)
 {
 	char path[576];

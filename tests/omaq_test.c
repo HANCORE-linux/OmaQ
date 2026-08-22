@@ -3,12 +3,17 @@
 #include "../helper/avatar.h"
 #include "../helper/file.h"
 #include "../helper/group.h"
+#include "../helper/group_invite.h"
 #include "../helper/identity.h"
 #include "../helper/invite.h"
 #include "../helper/json_io.h"
+#include "../helper/message_action.h"
 #include "../helper/message.h"
 #include "../helper/qr.h"
 #include "../helper/ratchet.h"
+#include "../helper/ratchet_pin.h"
+#include "../helper/presence.h"
+#include "../helper/receipt.h"
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
@@ -19,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int fails;
@@ -154,6 +160,9 @@ static void test_json(void)
 		fail("json status");
 	if (omaq_json_parse_op("{\"op\":\"invite.create\",\"ttlSec\":86400,\"kind\":\"direct\"}", &op) != 0)
 		fail("json create");
+	if (omaq_json_parse_op("{\"op\":\"typing.set\",\"conversation\":\"7\",\"typing\":true}", &op) != 0 ||
+	    !op.has_typing || !op.typing || strcmp(op.conversation, "7") != 0)
+		fail("json typing");
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
 	if (omaq_json_parse_op("{", &op) == 0)
@@ -193,6 +202,26 @@ static void test_store(void)
 	if (omaq_message_append(dir, "c1", "me", "say \"hi\" \\ok", "out") != 0)
 		fail("message escape append");
 	{
+		char id[64], *updated = NULL;
+		size_t updated_n = 0;
+		if (omaq_message_append_with_id(dir, "c1", "me", "editable", "out", id, sizeof(id)) != 0 ||
+		    omaq_message_edit(dir, "c1", id, "edited") != 0 ||
+		    omaq_store_update_receipt(dir, "c1", id, "delivered") != 0 ||
+		    omaq_store_update_receipt(dir, "c1", id, "read") != 0 ||
+		    omaq_store_update_receipt(dir, "c1", id, "delivered") != 0 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated, "\"text\":\"edited\"") || !strstr(updated, "\"edited\":true") ||
+		    !strstr(updated, "\"receipt\":\"read\"}"))
+			fail("message edit");
+		free(updated);
+		if (omaq_message_append_id(dir, "c1", "peer", "peer text", "in", "peer-1") != 0 ||
+		    omaq_message_apply_delete(dir, "c1", "peer-1") != 0 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated, "\"id\":\"peer-1\"") || !strstr(updated, "\"deleted\":true"))
+			fail("message delete");
+		free(updated);
+	}
+	{
 		char live[640], rot[640];
 		char *out2 = NULL;
 		size_t n2 = 0;
@@ -204,7 +233,7 @@ static void test_store(void)
 			fail("store rotate rename");
 		else if (omaq_store_append(dir, "c1", "{\"n\":99}") != 0)
 			fail("store append after rotate");
-		else if (omaq_store_tail(dir, "c1", 3, &out2, &n2) != 0)
+		else if (omaq_store_tail(dir, "c1", 6, &out2, &n2) != 0)
 			fail("store tail after rotate");
 		else if (!out2 || !strstr(out2, "\"n\":99") || !strstr(out2, "say \\\"hi\\\""))
 			fail("store tail rotated content");
@@ -431,6 +460,51 @@ static void test_safety(void)
 		fail("safety short");
 }
 
+static void test_group_invite(void)
+{
+	int64_t now = 1000;
+
+	if (!omaq_group_invite_match(7, 7, now + 1, now))
+		fail("group invite match");
+	if (omaq_group_invite_match(7, 8, now + 1, now))
+		fail("group invite friend mismatch");
+	if (omaq_group_invite_match(7, 7, now, now))
+		fail("group invite expiry");
+	if (omaq_group_invite_match(UINT32_MAX, 7, now + 1, now))
+		fail("group invite without redemption");
+}
+
+static void test_ratchet_pins(void)
+{
+	char dir[] = "/tmp/omaq-rk-XXXXXX";
+	char got[OMAQ_RK_HEX + 1], conv[16], path[512];
+	struct stat st;
+	int i;
+
+	if (!mkdtemp(dir)) {
+		fail("rk mkdtemp");
+		return;
+	}
+	if (omaq_ratchet_pin_get(dir, "0", got, sizeof(got)) != 0)
+		fail("rk missing");
+	for (i = 0; i < 12; i++) {
+		snprintf(conv, sizeof(conv), "%d", i);
+		if (omaq_ratchet_pin_set(dir, conv,
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0)
+			fail("rk set");
+	}
+	if (omaq_ratchet_pin_get(dir, "11", got, sizeof(got)) != 1 ||
+	    strcmp(got, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0)
+		fail("rk get persisted");
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/11", dir) >= (int)sizeof(path))
+		fail("rk path test");
+	else if (stat(path, &st) != 0 || (st.st_mode & 0777) != 0600)
+		fail("rk permissions");
+	if (omaq_ratchet_pin_set(dir, "../x",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0)
+		fail("rk path escape");
+}
+
 static void test_group_id(void)
 {
 	char id[16];
@@ -542,7 +616,8 @@ static void test_group_plan(void)
 static void test_surface(void)
 {
 	char dir[] = "/tmp/omaq-surf-XXXXXX";
-	omaq_surface s, g;
+	omaq_surface s, g, listed[2];
+	int listed_n;
 
 	if (!mkdtemp(dir)) {
 		fail("surface mkdtemp");
@@ -568,6 +643,11 @@ static void test_surface(void)
 		fail("surface pinned");
 	if (omaq_surface_get(dir, "missing", &g) == 0)
 		fail("surface missing");
+	if (omaq_surface_list(dir, listed, 2) != 1 || strcmp(listed[0].conversation, "0") != 0)
+		fail("surface list");
+	listed_n = omaq_surface_list(dir, listed, 0);
+	if (listed_n != -1)
+		fail("surface list cap");
 	if (omaq_surface_set(dir, &(omaq_surface){ .conversation = "a/../b" }) == 0)
 		fail("surface path escape");
 }
@@ -651,6 +731,63 @@ static void test_file(void)
 		fail("file path ok");
 }
 
+static void test_receipts(void)
+{
+	char wire[256], expected[256], id[64], reply[64], text[160], state[16];
+	char too_long[98];
+
+	memset(too_long, 'a', sizeof(too_long) - 1);
+	too_long[sizeof(too_long) - 1] = '\0';
+	if (!omaq_message_id_ok("msg-1") || omaq_message_id_ok("msg|1") ||
+	    omaq_message_id_ok("msg\n1") || omaq_message_id_ok(too_long))
+		fail("message id validation");
+	if (read_file("tests/gold/receipt/message-wire.txt", expected, sizeof(expected)) != 0 ||
+	    omaq_message_wire_pack(wire, sizeof(wire), "msg-1", "reply-1", "hello|world") != 0 ||
+	    strcmp(wire, expected) != 0 ||
+	    omaq_message_wire_unpack(wire, id, sizeof(id), reply, sizeof(reply), text, sizeof(text)) != 0 ||
+	    strcmp(id, "msg-1") != 0 || strcmp(reply, "reply-1") != 0 || strcmp(text, "hello|world") != 0)
+		fail("message wire envelope");
+	if (read_file("tests/gold/receipt/read-wire.txt", expected, sizeof(expected)) != 0 ||
+	    omaq_receipt_wire_pack(wire, sizeof(wire), "msg-1", "read") != 0 ||
+	    strcmp(wire, expected) != 0 ||
+	    omaq_receipt_wire_unpack(wire, id, sizeof(id), state, sizeof(state)) != 0 ||
+	    strcmp(id, "msg-1") != 0 || strcmp(state, "read") != 0)
+		fail("receipt wire envelope");
+	if (omaq_receipt_wire_pack(wire, sizeof(wire), "msg|1", "read") == 0 ||
+	    omaq_message_delete_wire_pack(wire, sizeof(wire), "msg|1") == 0 ||
+	    omaq_receipt_wire_pack(wire, sizeof(wire), "msg-1", "bad") == 0 ||
+	    omaq_message_wire_unpack("plain", id, sizeof(id), reply, sizeof(reply), text, sizeof(text)) == 0)
+		fail("receipt wire validation");
+	if (read_file("tests/gold/actions/edit-wire.txt", expected, sizeof(expected)) != 0 ||
+	    omaq_message_edit_wire_pack(wire, sizeof(wire), "msg-1", "edited text|with pipe") != 0 ||
+	    strcmp(wire, expected) != 0 ||
+	    omaq_message_edit_wire_unpack(wire, id, sizeof(id), text, sizeof(text)) != 0 ||
+	    strcmp(id, "msg-1") != 0 || strcmp(text, "edited text|with pipe") != 0)
+		fail("message edit wire");
+	if (read_file("tests/gold/actions/delete-wire.txt", expected, sizeof(expected)) != 0 ||
+	    omaq_message_delete_wire_pack(wire, sizeof(wire), "msg-1") != 0 ||
+	    strcmp(wire, expected) != 0 || omaq_message_delete_wire_unpack(wire, id, sizeof(id)) != 0 ||
+	    strcmp(id, "msg-1") != 0)
+		fail("message delete wire");
+}
+
+static void test_presence(void)
+{
+	char event[160], expected[160];
+
+	if (read_file("tests/gold/presence/typing-on.json", expected, sizeof(expected)) != 0 ||
+	    omaq_presence_typing_event(event, sizeof(event), "7", 1) != 0 ||
+	    strcmp(event, expected) != 0)
+		fail("typing event on");
+	if (read_file("tests/gold/presence/typing-off.json", expected, sizeof(expected)) != 0 ||
+	    omaq_presence_typing_event(event, sizeof(event), "7", 0) != 0 ||
+	    strcmp(event, expected) != 0)
+		fail("typing event off");
+	if (omaq_presence_typing_event(event, sizeof(event), "g0", 1) == 0 ||
+	    omaq_presence_typing_event(event, sizeof(event), "", 1) == 0)
+		fail("typing event conversation validation");
+}
+
 static void test_avatar(void)
 {
 	if (!omaq_avatar_id_ok("self") || !omaq_avatar_id_ok("0") || !omaq_avatar_id_ok("12"))
@@ -665,6 +802,33 @@ static void test_avatar(void)
 		fail("avatar src bad");
 	{
 		char d[256];
+		char src[] = "/tmp/omaq-avatar-large.png";
+		unsigned char block[4096] = { 0 };
+		FILE *f;
+		struct stat st;
+		int i;
+
+		block[0] = 0x89;
+		block[1] = 'P';
+		block[2] = 'N';
+		block[3] = 'G';
+		(void)mkdir("/tmp/omaq-av", 0700);
+		f = fopen(src, "wb");
+		if (!f)
+			fail("avatar fixture open");
+		else {
+			for (i = 0; i < 25; i++)
+				if (fwrite(block, 1, sizeof(block), f) != sizeof(block))
+					fail("avatar fixture write");
+			fclose(f);
+		}
+		if (omaq_avatar_install("/tmp/omaq-av", "self", src, d, sizeof(d)) != 0 ||
+		    stat("/tmp/omaq-av/avatars/self.png", &st) != 0 || st.st_size != 25 * (off_t)sizeof(block))
+			fail("avatar install large");
+		unlink(src);
+		unlink("/tmp/omaq-av/avatars/self.png");
+		rmdir("/tmp/omaq-av/avatars");
+		rmdir("/tmp/omaq-av");
 
 		if (omaq_avatar_dest("/tmp/omaq-av", "self", d, sizeof(d)) != 0 ||
 		    strcmp(d, "/tmp/omaq-av/avatars/self.png") != 0)
@@ -695,11 +859,15 @@ int main(void)
 	test_rate_gold();
 	test_rate_hour();
 	test_safety();
+	test_group_invite();
+	test_ratchet_pins();
 	test_group_id();
 	test_group_plan();
 	test_surface();
 	test_qr_path();
 	test_file();
+	test_receipts();
+	test_presence();
 	test_avatar();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);

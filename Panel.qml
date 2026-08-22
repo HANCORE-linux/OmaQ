@@ -17,8 +17,13 @@ BarWidget {
   property bool showJoin: false
   property bool inviteOpen: false
   property bool moreOpen: false
+  property string moreSection: ""
   property bool themeOpen: false
   property bool copied: false
+  property bool avatarRestorePending: false
+  property bool avatarRestoreMore: false
+  property int avatarPickExitCode: -1
+  property bool avatarPickStreamDone: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
   property string systemThemeName: "System"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -30,6 +35,15 @@ BarWidget {
   readonly property int pad: Style.spacing.popupPadding
   readonly property int cardWidth: Style.space(340)
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
+  readonly property string avatarPickerScript:
+    "if command -v zenity >/dev/null 2>&1; then\n" +
+    "  exec zenity --file-selection --title='Set avatar' --file-filter='Images | *.png *.jpg *.jpeg *.webp'\n" +
+    "elif command -v kdialog >/dev/null 2>&1; then\n" +
+    "  exec kdialog --getopenfilename \"$HOME\" '*.png *.jpg *.jpeg *.webp|Images'\n" +
+    "elif command -v yad >/dev/null 2>&1; then\n" +
+    "  exec yad --file --title='Set avatar'\n" +
+    "fi\n" +
+    "exit 2\n"
   readonly property real barThickness: {
     var n = bar && bar.barSize !== undefined ? Number(bar.barSize) : NaN
     return isFinite(n) && n > 0 ? n : Style.bar.sizeHorizontal
@@ -60,7 +74,8 @@ BarWidget {
 
       Image {
         anchors.fill: parent
-        source: (!av.failed && av.path) ? ("file://" + av.path) : Qt.resolvedUrl("assets/avatar-fallback.svg")
+        visible: !av.failed && av.path !== ""
+        source: av.path !== "" ? root.localFileUrl(av.path) : ""
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: false
@@ -68,6 +83,18 @@ BarWidget {
         mipmap: true
         onStatusChanged: if (status === Image.Error)
           av.failed = true
+      }
+
+      Text {
+        anchors.centerIn: parent
+        visible: av.failed || av.path === ""
+        text: "person"
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.72)
+        font.family: "Material Symbols Rounded"
+        font.pixelSize: Math.round(av.px * 0.64)
+        font.variableAxes: ({ "FILL": 0, "wght": 500 })
+        renderType: Text.QtRendering
+        font.hintingPreference: Font.PreferNoHinting
       }
     }
 
@@ -116,6 +143,7 @@ BarWidget {
       return
     root.showJoin = false
     root.moreOpen = false
+    root.moreSection = ""
     root.themeOpen = false
     root.nospamConfirm = false
     root.opened = false
@@ -130,6 +158,12 @@ BarWidget {
       open()
   }
 
+  function toggleMoreSection(section) {
+    if (!root.moreOpen)
+      root.moreOpen = true
+    root.moreSection = root.moreSection === section ? "" : section
+  }
+
   function errorText(code) {
     if (code === "locked")
       return "Unlock your identity to continue."
@@ -139,6 +173,8 @@ BarWidget {
       return "OmaQ is restarting."
     if (code === "file_failed")
       return "File transfer failed."
+    if (code === "avatar_failed")
+      return "Avatar image is invalid or larger than 512 KiB."
     return code
   }
 
@@ -175,7 +211,41 @@ BarWidget {
     root.close()
   }
 
+  function localFileUrl(path) {
+    var parts = String(path || "").split("/")
+    var i
+    for (i = 0; i < parts.length; i++)
+      parts[i] = encodeURIComponent(parts[i])
+    return "file://" + parts.join("/")
+  }
+
+  function finishAvatarPicker() {
+    if (root.avatarPickExitCode < 0 || !root.avatarPickStreamDone)
+      return
+    var p = String(avatarPickOutput.text || "").trim()
+    var restore = root.avatarRestorePending
+    var restoreMore = root.avatarRestoreMore
+    if (root.avatarPickExitCode === 0 && p !== "")
+      omaq.setAvatar(p)
+    root.avatarPickExitCode = -1
+    root.avatarPickStreamDone = false
+    root.avatarRestorePending = false
+    if (restore) {
+      root.opened = false
+      if (bar && typeof bar.releasePopout === "function" && bar.activePopout === root)
+        bar.releasePopout(root)
+      Qt.callLater(function() {
+        root.open()
+        root.moreOpen = restoreMore
+      })
+    }
+  }
+
   function pickSelfAvatar() {
+    avatarRestorePending = root.opened
+    avatarRestoreMore = root.moreOpen
+    avatarPickExitCode = -1
+    avatarPickStreamDone = false
     avatarPick.running = false
     avatarPick.running = true
   }
@@ -184,6 +254,7 @@ BarWidget {
     if (!id)
       return
     omaq.lastConversation = String(id)
+    omaq.lastDirectId = String(id)
     if (chatSurface)
       chatSurface.ensureCard(String(id), name || "")
     root.close()
@@ -288,13 +359,18 @@ BarWidget {
   Process {
     id: avatarPick
     running: false
-    command: ["zenity", "--file-selection", "--title=Set avatar", "--file-filter=Images | *.png *.jpg *.jpeg *.webp"]
-    stdout: SplitParser {
-      onRead: function(line) {
-        var p = String(line).replace(/\s+$/, "")
-        if (p)
-          omaq.setAvatar(p)
+    command: ["bash", "-c", root.avatarPickerScript, "omaq-avatar-picker"]
+    stdout: StdioCollector {
+      id: avatarPickOutput
+      waitForEnd: true
+      onStreamFinished: {
+        root.avatarPickStreamDone = true
+        root.finishAvatarPicker()
       }
+    }
+    onExited: function(code) {
+      root.avatarPickExitCode = code
+      root.finishAvatarPicker()
     }
   }
 
@@ -381,11 +457,11 @@ BarWidget {
       Item {
         implicitWidth: 18
         implicitHeight: 18
+
         Image {
           anchors.fill: parent
           source: Qt.resolvedUrl("assets/mark.png")
           fillMode: Image.PreserveAspectFit
-          visible: omaq.unreadCount <= 0
           sourceSize.width: width * 2
           sourceSize.height: height * 2
           smooth: true
@@ -393,15 +469,31 @@ BarWidget {
           cache: false
           asynchronous: true
         }
-        Text {
-          anchors.fill: parent
+
+        Rectangle {
+          id: unreadBadge
           visible: omaq.unreadCount > 0
-          text: String(omaq.unreadCount)
-          color: root.barForeground
-          font.pixelSize: 12
-          font.family: root.fontFamily
-          horizontalAlignment: Text.AlignHCenter
-          verticalAlignment: Text.AlignVCenter
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenterOffset: -6
+          anchors.horizontalCenter: parent.horizontalCenter
+          anchors.horizontalCenterOffset: 7
+          width: Math.max(12, unreadBadgeText.implicitWidth + 6)
+          height: 12
+          radius: height / 2
+          color: root.urgent
+          border.width: 0
+          border.color: "transparent"
+          z: 10
+
+          Text {
+            id: unreadBadgeText
+            anchors.centerIn: parent
+            text: omaq.unreadCount > 99 ? "99+" : String(omaq.unreadCount)
+            color: root.bar && "background" in root.bar ? root.bar.background : Color.background
+            font.family: root.fontFamily
+            font.pixelSize: Math.max(7, Style.font.caption - 3)
+            font.bold: true
+          }
         }
       }
     }
@@ -462,7 +554,8 @@ BarWidget {
     BorderSurface {
       id: card
       width: root.cardWidth
-      height: column.implicitHeight + root.pad * 2
+      height: Math.min(column.implicitHeight + root.pad * 2,
+                       popup.screen ? Math.max(Style.space(260), popup.screen.height - Style.space(24)) : Style.space(720))
       color: Color.popups.background
       borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(1)))
       radius: Style.cornerRadius
@@ -480,95 +573,115 @@ BarWidget {
         focus: root.opened
         Keys.onEscapePressed: root.close()
 
-        Column {
-          id: column
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: parent.top
+        Flickable {
+          id: panelScroll
+          anchors.fill: parent
           anchors.margins: root.pad
-          spacing: Style.space(12)
+          contentWidth: width
+          contentHeight: column.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
 
-          Row {
-            width: parent.width
+          Column {
+            id: column
+            width: panelScroll.width
             spacing: Style.space(12)
 
-            Image {
-              id: heroMark
-              width: Style.font.display
-              height: Style.font.display
-              anchors.verticalCenter: parent.verticalCenter
-              source: Qt.resolvedUrl("assets/mark.png")
-              fillMode: Image.PreserveAspectFit
-              sourceSize.width: width * 2
-              sourceSize.height: height * 2
-              smooth: true
-              mipmap: true
-              cache: false
-              asynchronous: true
-            }
+          Item {
+            id: heroRow
+            width: parent.width
+            implicitHeight: heroVisual.height
 
-            Image {
-              id: heroLockup
-              width: parent.width - heroMark.width - parent.spacing
-              height: Math.round(Style.font.display * 2.4)
-              anchors.verticalCenter: parent.verticalCenter
-              source: Qt.resolvedUrl("assets/OmaQ_lockup.svg")
-              fillMode: Image.PreserveAspectFit
-              horizontalAlignment: Image.AlignLeft
-              sourceSize.width: 749
-              sourceSize.height: 322
-              smooth: true
-              mipmap: true
-              cache: false
-              asynchronous: true
-            }
+            Item {
+              id: heroVisual
+              width: parent.width
+              height: Style.space(48)
+              clip: true
+              property real logoPulse: 0
 
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.openRepo()
+              Image {
+                width: Math.min(parent.width - Style.space(32), Style.space(38) * 751 / 230)
+                height: width * 230 / 751
+                anchors.centerIn: parent
+                source: Qt.resolvedUrl("assets/OmaQ_Final-panel.png")
+                fillMode: Image.PreserveAspectFit
+                sourceSize.width: 1502
+                sourceSize.height: 460
+                opacity: 0.93 + heroVisual.logoPulse * 0.07
+                scale: 1 + heroVisual.logoPulse * 0.008
+                transformOrigin: Item.Center
+                smooth: true
+                mipmap: false
+                cache: false
+                asynchronous: true
+              }
+
+              SequentialAnimation on logoPulse {
+                loops: Animation.Infinite
+                NumberAnimation { to: 1; duration: 1400; easing.type: Easing.InOutSine }
+                NumberAnimation { to: 0; duration: 1400; easing.type: Easing.InOutSine }
+                PauseAnimation { duration: 1800 }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                focus: true
+                activeFocusOnTab: true
+                Keys.onReturnPressed: root.openRepo()
+                Keys.onEnterPressed: root.openRepo()
+                onClicked: root.openRepo()
+              }
             }
           }
 
-          Flow {
+          GridLayout {
             id: heroActions
             width: parent.width
-            spacing: Style.space(8)
+            columns: 2
+            columnSpacing: root.btnGap
+            rowSpacing: Style.space(6)
 
-              ActionButton {
-                visible: !omaq.locked
-                iconText: "󰐲"
-                text: "Invite"
-                selected: root.inviteOpen
-                onClicked: root.toggleInvite()
-              }
-              ActionButton {
-                visible: !omaq.locked
-                iconText: "󰌆"
-                text: "Join"
-                selected: root.showJoin
-                onClicked: root.showJoin = !root.showJoin
-              }
-              ActionButton {
-                visible: !omaq.locked
-                iconText: "󰍩"
-                text: "Chat"
-                onClicked: root.openChat()
-              }
-              ActionButton {
-                iconText: "󰙨"
-                text: "Demo"
-                selected: chatSurface && chatSurface.demoOpen
-                onClicked: root.openDemo()
-              }
-              ActionButton {
-                iconText: "󰏘"
-                text: "Theme"
-                selected: root.themeOpen
-                accent: root.chatTheme === "system" ? Color.accent : Model.themeFor(root.chatTheme).accent
-                onClicked: root.themeOpen = !root.themeOpen
-              }
+            ActionButton {
+              visible: !omaq.locked
+              Layout.fillWidth: true
+              iconText: "󰐲"
+              text: "Invite"
+              selected: root.inviteOpen
+              onClicked: root.toggleInvite()
             }
+            ActionButton {
+              visible: !omaq.locked
+              Layout.fillWidth: true
+              iconText: "󰌆"
+              text: "Join"
+              selected: root.showJoin
+              onClicked: root.showJoin = !root.showJoin
+            }
+            ActionButton {
+              visible: !omaq.locked
+              Layout.fillWidth: true
+              iconText: "󰍩"
+              text: "Chat"
+              onClicked: root.openChat()
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              iconText: "󰙨"
+              text: "Demo"
+              selected: chatSurface && chatSurface.demoOpen
+              onClicked: root.openDemo()
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              iconText: "󰏘"
+              text: "Theme"
+              selected: root.themeOpen
+              accent: root.chatTheme === "system" ? Color.accent : Model.themeFor(root.chatTheme).accent
+              onClicked: root.themeOpen = !root.themeOpen
+            }
+          }
 
           Column {
             width: parent.width
@@ -591,7 +704,7 @@ BarWidget {
                 onClicked: root.pickSelfAvatar()
               }
               Column {
-                anchors.verticalCenter: parent.verticalCenter
+                y: (parent.height - height) / 2
                 spacing: 0
                 Text {
                   text: omaq.selfOnline ? "Online" : "Offline"
@@ -806,14 +919,14 @@ BarWidget {
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: omaq.answerCall()
+                onClicked: omaq.answerCall(omaq.lastCallConv)
               }
               Button {
                 text: "Decline call"
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: omaq.stopCall()
+                onClicked: omaq.stopCall(omaq.lastCallConv)
               }
             }
 
@@ -939,21 +1052,66 @@ BarWidget {
               focusable: true
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onClicked: root.moreOpen = !root.moreOpen
+              onClicked: {
+                root.moreOpen = !root.moreOpen
+                if (root.moreOpen && root.moreSection === "")
+                  root.moreSection = "chat"
+                else if (!root.moreOpen)
+                  root.moreSection = ""
+              }
             }
 
             Column {
               visible: root.moreOpen
               width: parent.width
-              spacing: Style.space(10)
+              spacing: Style.space(8)
+
+              GridLayout {
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
+
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰍉"
+                  text: "Search"
+                  selected: root.moreSection === "chat"
+                  onClicked: root.toggleMoreSection("chat")
+                }
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰘉"
+                  text: "Groups"
+                  selected: root.moreSection === "groups"
+                  onClicked: root.toggleMoreSection("groups")
+                }
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰈙"
+                  text: "Identity"
+                  selected: root.moreSection === "identity"
+                  onClicked: root.toggleMoreSection("identity")
+                }
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰀦"
+                  text: "Danger"
+                  selected: root.moreSection === "danger"
+                  accent: root.urgent
+                  onClicked: root.toggleMoreSection("danger")
+                }
+              }
 
               PanelSectionHeader {
+                visible: root.moreSection === "chat"
                 text: "CHAT"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
               Row {
+                visible: root.moreSection === "chat"
                 width: parent.width
                 spacing: root.btnGap
                 TextField {
@@ -962,9 +1120,11 @@ BarWidget {
                   foreground: root.foreground
                   placeholderText: "Search this chat"
                   onAccepted: omaq.searchChat(searchField.text)
+                  onTextChanged: if (!text) omaq.searchItems = []
                 }
                 Button {
                   id: searchBtn
+                  iconText: "󰍉"
                   text: "Search"
                   bordered: true
                   focusable: true
@@ -974,28 +1134,55 @@ BarWidget {
                 }
               }
 
-              Button {
-                visible: omaq.safetyCode === "" && omaq.lastConversation !== ""
+              Column {
+                visible: root.moreSection === "chat" && omaq.searchItems && omaq.searchItems.length > 0
+                width: parent.width
+                spacing: Style.space(4)
+
+                Repeater {
+                  model: omaq.searchItems
+                  delegate: Text {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    text: modelData && modelData.text ? String(modelData.text) : ""
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                    maximumLineCount: 2
+                    wrapMode: Text.Wrap
+                  }
+                }
+              }
+
+              ActionButton {
+                visible: root.moreSection === "chat" && omaq.safetyCode === "" && omaq.lastConversation !== ""
+                width: parent.width
+                iconText: "󰌾"
                 text: "Show safety code"
-                focusable: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
                 onClicked: omaq.getSafety()
               }
 
               PanelSeparator {
+                visible: root.moreSection === "chat"
                 foreground: root.foreground
               }
 
               PanelSectionHeader {
+                visible: root.moreSection === "groups"
                 text: "GROUP"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              Row {
-                spacing: root.btnGap
+              GridLayout {
+                visible: root.moreSection === "groups"
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
                 Button {
+                  Layout.fillWidth: true
                   text: "Create group"
                   bordered: true
                   focusable: true
@@ -1004,17 +1191,59 @@ BarWidget {
                   onClicked: omaq.createGroup()
                 }
                 Button {
-                  visible: omaq.lastGroup !== ""
+                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
+                  Layout.fillWidth: true
                   text: "Invite last contact"
                   focusable: true
                   foreground: root.foreground
                   fontFamily: root.fontFamily
-                  onClicked: omaq.inviteToGroup()
+                  onClicked: {
+                    omaq.inviteUrl = ""
+                    omaq.qrPath = ""
+                    root.inviteOpen = true
+                    omaq.inviteToGroup()
+                  }
+                }
+                Button {
+                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
+                  Layout.fillWidth: true
+                  text: "Make admin"
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: omaq.setLastGroupMemberRole("admin")
+                }
+                Button {
+                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
+                  Layout.fillWidth: true
+                  text: "Make member"
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: omaq.setLastGroupMemberRole("member")
+                }
+                Button {
+                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
+                  Layout.fillWidth: true
+                  text: "Remove last member"
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: omaq.removeLastGroupMember()
+                }
+                Button {
+                  visible: omaq.lastGroup !== ""
+                  Layout.fillWidth: true
+                  text: "Leave group"
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: omaq.leaveGroup()
                 }
               }
 
               Text {
-                visible: omaq.lastGroup !== ""
+                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
                 width: parent.width
                 text: omaq.lastGroup
                 color: root.dim
@@ -1024,7 +1253,7 @@ BarWidget {
               }
 
               Button {
-                visible: omaq.lastGroup !== ""
+                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
                 text: "Dissolve group"
                 focusable: true
                 foreground: root.foreground
@@ -1033,27 +1262,46 @@ BarWidget {
               }
 
               PanelSeparator {
+                visible: root.moreSection === "groups"
                 foreground: root.foreground
               }
 
               PanelSectionHeader {
+                visible: root.moreSection === "identity"
                 text: "IDENTITY"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
+              Text {
+                visible: root.moreSection === "identity" && !omaq.saveProtected
+                width: parent.width
+                text: "Passphrase not set"
+                color: root.systemColors[1] || root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
               TextField {
                 id: passField
+                visible: root.moreSection === "identity"
                 width: parent.width
                 foreground: root.foreground
                 password: true
                 placeholderText: "Passphrase for identity file"
               }
 
-              Row {
-                spacing: root.btnGap
+              GridLayout {
+                visible: root.moreSection === "identity"
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
                 Button {
                   visible: !omaq.saveProtected
+                  Layout.fillWidth: true
+                  iconText: "󰌾"
                   text: "Protect"
                   bordered: true
                   focusable: true
@@ -1063,50 +1311,92 @@ BarWidget {
                 }
                 Button {
                   visible: omaq.saveProtected
+                  Layout.fillWidth: true
+                  iconText: "󰌿"
                   text: "Remove lock"
                   focusable: true
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   onClicked: omaq.unprotectIdentity(passField.text)
                 }
-                Button {
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰈉"
                   text: "Export"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
                   onClicked: omaq.exportIdentity()
                 }
               }
 
+              TextField {
+                id: importPath
+                visible: root.moreSection === "identity"
+                width: parent.width
+                foreground: root.foreground
+                placeholderText: "Path to identity file"
+              }
+
+              Row {
+                visible: root.moreSection === "identity"
+                width: parent.width
+                spacing: root.btnGap
+                ActionButton {
+                  width: (parent.width - root.btnGap) / 2
+                  iconText: "󰏘"
+                  text: "Import"
+                  onClicked: {
+                    if (importPath.text)
+                      omaq.importIdentity(importPath.text, false)
+                  }
+                }
+                ActionButton {
+                  width: (parent.width - root.btnGap) / 2
+                  iconText: "󰁨"
+                  text: "Replace"
+                  accent: root.urgent
+                  onClicked: {
+                    if (importPath.text)
+                      omaq.importIdentity(importPath.text, true)
+                  }
+                }
+              }
+
               PanelSeparator {
+                visible: root.moreSection === "identity"
                 foreground: root.foreground
               }
 
               PanelSectionHeader {
+                visible: root.moreSection === "danger"
                 text: "DANGER"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              Button {
-                text: "Remove contact"
-                focusable: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: omaq.removeContact()
-              }
+              GridLayout {
+                visible: root.moreSection === "danger"
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
 
-              Button {
-                visible: !root.nospamConfirm
-                text: "Rotate personal ID"
-                focusable: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.nospamConfirm = true
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰆴"
+                  text: "Remove contact"
+                  onClicked: omaq.removeContact()
+                }
+
+                ActionButton {
+                  visible: !root.nospamConfirm
+                  Layout.fillWidth: true
+                  iconText: "󰒭"
+                  text: "Rotate personal ID"
+                  onClicked: root.nospamConfirm = true
+                }
               }
 
               Text {
-                visible: root.nospamConfirm
+                visible: root.moreSection === "danger" && root.nospamConfirm
                 width: parent.width
                 text: "This voids every open invite."
                 color: root.urgent
@@ -1115,22 +1405,21 @@ BarWidget {
                 wrapMode: Text.WordWrap
               }
 
-              Row {
-                visible: root.nospamConfirm
-                spacing: root.btnGap
-                Button {
+              GridLayout {
+                visible: root.moreSection === "danger" && root.nospamConfirm
+                width: parent.width
+                columns: 2
+                columnSpacing: root.btnGap
+                rowSpacing: Style.space(4)
+                ActionButton {
+                  Layout.fillWidth: true
                   text: "Cancel"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
                   onClicked: root.nospamConfirm = false
                 }
-                Button {
+                ActionButton {
+                  Layout.fillWidth: true
+                  iconText: "󰒭"
                   text: "Rotate"
-                  bordered: true
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
                   onClicked: {
                     omaq.rotateNospam()
                     root.nospamConfirm = false

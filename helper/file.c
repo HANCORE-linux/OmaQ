@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "file.h"
+#include "avatar.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -238,7 +239,7 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 	if (!omaq_file_path_ok(path) || !file_id)
 		return -1;
 	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-	    (uint64_t)st.st_size > (64u * 1024u))
+	    (uint64_t)st.st_size > OMAQ_AVATAR_MAX)
 		return -1;
 	fp = fopen(path, "rb");
 	if (!fp)

@@ -14,9 +14,11 @@ typedef struct {
 	char id[80];
 	char conversation[80];
 	char text[OMAQ_JSON_STR_MAX];
+	char reply[80];
 	char group[80];
 	char member[80];
 	char role[16];
+	char state[16];
 	char path[OMAQ_JSON_STR_MAX];
 	char title[80];
 	char monitor[64];
@@ -26,12 +28,14 @@ typedef struct {
 	int accept;
 	int replace;
 	int pinned;
+	int typing;
 	int x, y;
 	int has_ttl;
 	int has_limit;
 	int has_accept;
 	int has_replace;
 	int has_pinned;
+	int has_typing;
 } omaq_op;
 
 int omaq_json_parse_op(const char *line, omaq_op *out);

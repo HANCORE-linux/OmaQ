@@ -3,6 +3,8 @@
 #define _DEFAULT_SOURCE
 #include "ratchet.h"
 
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -23,6 +25,7 @@
 
 #define SLOTS 16
 #define PREKEYS 8
+#define SESS_INITIAL 16
 
 struct rec {
 	int used;
@@ -39,11 +42,72 @@ struct omaq_ratchet {
 	uint32_t reg_id;
 	uint32_t spk_id;
 	char home[512];
-	struct rec sess[SLOTS];
+	struct rec *sess;
+	size_t sess_n;
+	size_t sess_cap;
 	struct rec pre[PREKEYS];
 	struct rec spk[4];
 	struct rec ident[SLOTS];
+	char bootstrap_peer[32];
+	uint8_t bootstrap_key[33];
+	size_t bootstrap_len;
 };
+
+static int write_blob(const char *path, const uint8_t *p, size_t n);
+static int read_blob(const char *path, uint8_t **out, size_t *n);
+static struct rec *rec_find(struct rec *a, int n, const char *name,
+				uint32_t id, int create);
+static struct rec *sess_find(struct omaq_ratchet *r, const char *name,
+				      uint32_t id, int create);
+
+static int session_path(struct omaq_ratchet *r, const char *name, uint32_t id,
+				char *path, size_t path_size)
+{
+	size_t i;
+
+	if (!r || !name || !name[0] || strlen(name) >= 32 || !path)
+		return -1;
+	for (i = 0; name[i]; i++) {
+		if (!isdigit((unsigned char)name[i]))
+			return -1;
+	}
+	if (snprintf(path, path_size, "%s/ratchet/sess/%s-%u", r->home, name, id) >=
+	    (int)path_size)
+		return -1;
+	return 0;
+}
+
+static int ensure_session_dir(struct omaq_ratchet *r)
+{
+	char dir[576];
+
+	if (!r || snprintf(dir, sizeof(dir), "%s/ratchet/sess", r->home) >= (int)sizeof(dir) ||
+	    (mkdir(dir, 0700) != 0 && errno != EEXIST))
+		return -1;
+	return 0;
+}
+
+static int session_load_disk(struct omaq_ratchet *r, const char *name, uint32_t id)
+{
+	char path[640];
+	uint8_t *buf = NULL;
+	size_t n = 0;
+	struct rec *s;
+
+	if (session_path(r, name, id, path, sizeof(path)) != 0 ||
+	    read_blob(path, &buf, &n) != 0)
+		return -1;
+	s = sess_find(r, name, id, 1);
+	if (!s) {
+		free(buf);
+		return -1;
+	}
+	if (s->buf)
+		signal_buffer_free(s->buf);
+	s->buf = signal_buffer_create(buf, n);
+	free(buf);
+	return s->buf ? 0 : -1;
+}
 
 static int hex_in(const char *hex, uint8_t *out, size_t n)
 {
@@ -249,6 +313,34 @@ static struct rec *rec_find(struct rec *a, int n, const char *name, uint32_t id,
 	return &a[free_i];
 }
 
+static struct rec *sess_find(struct omaq_ratchet *r, const char *name,
+				      uint32_t id, int create)
+{
+	struct rec *s;
+	size_t next;
+
+	if (!r)
+		return NULL;
+	s = rec_find(r->sess, (int)r->sess_n, name, id, 0);
+	if (s || !create)
+		return s;
+	if (r->sess_n == r->sess_cap) {
+		next = r->sess_cap ? r->sess_cap * 2 : SESS_INITIAL;
+		if (next > INT_MAX)
+			return NULL;
+		s = realloc(r->sess, next * sizeof(*r->sess));
+		if (!s)
+			return NULL;
+		memset(s + r->sess_cap, 0, (next - r->sess_cap) * sizeof(*r->sess));
+		r->sess = s;
+		r->sess_cap = next;
+	}
+	s = rec_find(r->sess, (int)r->sess_n + 1, name, id, 1);
+	if (s && (size_t)(s - r->sess) >= r->sess_n)
+		r->sess_n = (size_t)(s - r->sess) + 1;
+	return s;
+}
+
 static int sess_load(signal_buffer **record, signal_buffer **user_record,
 		     const signal_protocol_address *address, void *ud)
 {
@@ -260,8 +352,10 @@ static int sess_load(signal_buffer **record, signal_buffer **user_record,
 		return 0;
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
-	s = rec_find(r->sess, SLOTS, name, (uint32_t)address->device_id, 0);
-	if (!s)
+	s = sess_find(r, name, (uint32_t)address->device_id, 0);
+	if (!s && session_load_disk(r, name, (uint32_t)address->device_id) == 0)
+		s = sess_find(r, name, (uint32_t)address->device_id, 0);
+	if (!s || !s->buf)
 		return 0;
 	*record = signal_buffer_copy(s->buf);
 	return *record ? 1 : SG_ERR_NOMEM;
@@ -271,13 +365,19 @@ static int sess_sub(signal_int_list **sessions, const char *name, size_t name_le
 {
 	struct omaq_ratchet *r = ud;
 	signal_int_list *list = signal_int_list_alloc();
+	char peer[32];
 	int i;
-	(void)name;
-	(void)name_len;
+
 	if (!list)
 		return SG_ERR_NOMEM;
-	for (i = 0; i < SLOTS; i++) {
-		if (r->sess[i].used)
+	if (!name || name_len >= sizeof(peer)) {
+		signal_int_list_free(list);
+		return -1;
+	}
+	memcpy(peer, name, name_len);
+	peer[name_len] = '\0';
+	for (i = 0; i < (int)r->sess_n; i++) {
+		if (r->sess[i].used && strcmp(r->sess[i].name, peer) == 0)
 			signal_int_list_push_back(list, (int)r->sess[i].id);
 	}
 	*sessions = list;
@@ -288,7 +388,7 @@ static int sess_store(const signal_protocol_address *address, uint8_t *record, s
 		      uint8_t *user_record, size_t user_len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[32], path[640];
 	struct rec *s;
 	(void)user_record;
 	(void)user_len;
@@ -296,8 +396,9 @@ static int sess_store(const signal_protocol_address *address, uint8_t *record, s
 		return -1;
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
-	s = rec_find(r->sess, SLOTS, name, (uint32_t)address->device_id, 1);
-	if (!s)
+	s = sess_find(r, name, (uint32_t)address->device_id, 1);
+	if (!s || session_path(r, name, (uint32_t)address->device_id, path, sizeof(path)) != 0 ||
+	    ensure_session_dir(r) != 0 || write_blob(path, record, record_len) != 0)
 		return SG_ERR_NOMEM;
 	if (s->buf)
 		signal_buffer_free(s->buf);
@@ -313,32 +414,76 @@ static int sess_has(const signal_protocol_address *address, void *ud)
 		return 0;
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
-	return rec_find(r->sess, SLOTS, name, (uint32_t)address->device_id, 0) ? 1 : 0;
+	if (sess_find(r, name, (uint32_t)address->device_id, 0))
+		return 1;
+	return session_load_disk(r, name, (uint32_t)address->device_id) == 0 ? 1 : 0;
 }
 
 static int sess_del(const signal_protocol_address *address, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[32], path[640];
 	struct rec *s;
 	if (address->name_len >= sizeof(name))
 		return 0;
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
-	s = rec_find(r->sess, SLOTS, name, (uint32_t)address->device_id, 0);
+	s = sess_find(r, name, (uint32_t)address->device_id, 0);
+	if (!s && session_load_disk(r, name, (uint32_t)address->device_id) == 0)
+		s = sess_find(r, name, (uint32_t)address->device_id, 0);
 	if (!s)
 		return 0;
 	if (s->buf)
 		signal_buffer_free(s->buf);
 	memset(s, 0, sizeof(*s));
+	if (session_path(r, name, (uint32_t)address->device_id, path, sizeof(path)) == 0)
+		(void)unlink(path);
 	return 1;
 }
 
 static int sess_del_all(const char *name, size_t name_len, void *ud)
 {
-	(void)name;
-	(void)name_len;
-	(void)ud;
+	struct omaq_ratchet *r = ud;
+	char peer[32], dir[576], prefix[40];
+	DIR *d;
+	struct dirent *ent;
+	int i;
+
+	if (!r || !name || name_len >= sizeof(peer))
+		return -1;
+	memcpy(peer, name, name_len);
+	peer[name_len] = '\0';
+	for (i = 0; i < (int)r->sess_n; i++) {
+		if (r->sess[i].used && strcmp(r->sess[i].name, peer) == 0) {
+			if (r->sess[i].buf)
+				signal_buffer_free(r->sess[i].buf);
+			memset(&r->sess[i], 0, sizeof(r->sess[i]));
+		}
+	}
+	if (snprintf(dir, sizeof(dir), "%s/ratchet/sess", r->home) >= (int)sizeof(dir) ||
+	    snprintf(prefix, sizeof(prefix), "%s-", peer) >= (int)sizeof(prefix))
+		return 0;
+	d = opendir(dir);
+	if (!d)
+		return 0;
+	while ((ent = readdir(d)) != NULL) {
+		char path[640];
+		const char *suffix;
+		if (strncmp(ent->d_name, prefix, strlen(prefix)) != 0)
+			continue;
+		suffix = ent->d_name + strlen(prefix);
+		if (!suffix[0])
+			continue;
+		while (*suffix) {
+			if (!isdigit((unsigned char)*suffix))
+				break;
+			suffix++;
+		}
+		if (*suffix || snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >= (int)sizeof(path))
+			continue;
+		(void)unlink(path);
+	}
+	closedir(d);
 	return 0;
 }
 
@@ -432,6 +577,49 @@ static void spk_destroy(void *ud)
 	(void)ud;
 }
 
+static int identity_path(struct omaq_ratchet *r, const char *name,
+				char *path, size_t path_size)
+{
+	size_t i;
+
+	if (!r || !name || !name[0] || strlen(name) >= 32 || !path)
+		return -1;
+	for (i = 0; name[i]; i++) {
+		if (!isdigit((unsigned char)name[i]))
+			return -1;
+	}
+	if (snprintf(path, path_size, "%s/ratchet/ident/%s", r->home, name) >=
+	    (int)path_size)
+		return -1;
+	return 0;
+}
+
+static int id_load_disk(struct omaq_ratchet *r, const char *name)
+{
+	char path[640];
+	uint8_t *buf = NULL;
+	size_t n = 0;
+	struct rec *s;
+
+	if (identity_path(r, name, path, sizeof(path)) != 0 ||
+	    read_blob(path, &buf, &n) != 0)
+		return -1;
+	if (n == 0 || n > sizeof(r->bootstrap_key)) {
+		free(buf);
+		return -1;
+	}
+	s = rec_find(r->ident, SLOTS, name, 0, 1);
+	if (!s) {
+		free(buf);
+		return -1;
+	}
+	if (s->buf)
+		signal_buffer_free(s->buf);
+	s->buf = signal_buffer_create(buf, n);
+	free(buf);
+	return s->buf ? 0 : -1;
+}
+
 static int id_pair(signal_buffer **pub, signal_buffer **priv, void *ud)
 {
 	struct omaq_ratchet *r = ud;
@@ -450,19 +638,26 @@ static int id_reg(void *ud, uint32_t *reg)
 static int id_save(const signal_protocol_address *address, uint8_t *key, size_t len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[32], dir[576], path[640];
 	struct rec *s;
-	if (address->name_len >= sizeof(name))
+
+	if (!address || address->name_len >= sizeof(name) || !key || len == 0 ||
+		len > sizeof(r->bootstrap_key))
 		return -1;
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
+	if (identity_path(r, name, path, sizeof(path)) != 0 ||
+	    snprintf(dir, sizeof(dir), "%s/ratchet/ident", r->home) >= (int)sizeof(dir) ||
+	    (mkdir(dir, 0700) != 0 && errno != EEXIST) ||
+	    write_blob(path, key, len) != 0)
+		return -1;
 	s = rec_find(r->ident, SLOTS, name, 0, 1);
 	if (!s)
 		return SG_ERR_NOMEM;
 	if (s->buf)
 		signal_buffer_free(s->buf);
-	s->buf = (key && len) ? signal_buffer_create(key, len) : NULL;
-	return 0;
+	s->buf = signal_buffer_create(key, len);
+	return s->buf ? 0 : SG_ERR_NOMEM;
 }
 
 static int id_trust(const signal_protocol_address *address, uint8_t *key, size_t len, void *ud)
@@ -475,11 +670,19 @@ static int id_trust(const signal_protocol_address *address, uint8_t *key, size_t
 	memcpy(name, address->name, address->name_len);
 	name[address->name_len] = '\0';
 	s = rec_find(r->ident, SLOTS, name, 0, 0);
-	if (!s || !s->buf)
+	if (!s || !s->buf) {
+		if (id_load_disk(r, name) == 0)
+			s = rec_find(r->ident, SLOTS, name, 0, 0);
+	}
+	if (s && s->buf) {
+		if (signal_buffer_len(s->buf) != len)
+			return 0;
+		return memcmp(signal_buffer_data(s->buf), key, len) == 0 ? 1 : 0;
+	}
+	if (r->bootstrap_peer[0] && strcmp(r->bootstrap_peer, name) == 0 &&
+	    r->bootstrap_len == len && memcmp(r->bootstrap_key, key, len) == 0)
 		return 1;
-	if (signal_buffer_len(s->buf) != len)
-		return 0;
-	return memcmp(signal_buffer_data(s->buf), key, len) == 0 ? 1 : 0;
+	return 0;
 }
 
 static void id_destroy(void *ud)
@@ -586,8 +789,15 @@ static int write_blob(const char *path, const uint8_t *p, size_t n)
 		unlink(tmp);
 		return -1;
 	}
-	fchmod(fileno(f), 0600);
-	fclose(f);
+	if (fchmod(fileno(f), 0600) != 0) {
+		fclose(f);
+		unlink(tmp);
+		return -1;
+	}
+	if (fclose(f) != 0) {
+		unlink(tmp);
+		return -1;
+	}
 	if (rename(tmp, path) != 0) {
 		unlink(tmp);
 		return -1;
@@ -851,9 +1061,11 @@ void omaq_ratchet_close(struct omaq_ratchet *r)
 	int i;
 	if (!r)
 		return;
-	for (i = 0; i < SLOTS; i++) {
+	for (i = 0; i < (int)r->sess_n; i++) {
 		if (r->sess[i].buf)
 			signal_buffer_free(r->sess[i].buf);
+	}
+	for (i = 0; i < SLOTS; i++) {
 		if (r->ident[i].buf)
 			signal_buffer_free(r->ident[i].buf);
 	}
@@ -873,6 +1085,7 @@ void omaq_ratchet_close(struct omaq_ratchet *r)
 		signal_protocol_store_context_destroy(r->store);
 	if (r->ctx)
 		signal_context_destroy(r->ctx);
+	free(r->sess);
 	free(r);
 }
 
@@ -971,7 +1184,7 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 			       const char *hex, const char *expect_rk)
 {
 	uint8_t raw[256];
-	size_t n, off = 0, idlen, splen, plen;
+	size_t n, off = 0, idoff = 0, idlen, splen, plen;
 	uint32_t reg = 0, spkid = 0, pkid = 0;
 	ec_public_key *idk = NULL, *spk = NULL, *pk = NULL;
 	session_pre_key_bundle *bundle = NULL;
@@ -980,7 +1193,8 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 	const uint8_t *sig;
 	char got_rk[OMAQ_RK_HEX + 1];
 
-	if (!r || !peer || !hex || strlen(hex) < 80)
+	if (!r || !peer || strlen(peer) >= sizeof(r->bootstrap_peer) ||
+	    !hex || strlen(hex) < 80 || !omaq_rk_ok(expect_rk))
 		return -1;
 	n = strlen(hex);
 	if (n % 2 != 0 || n / 2 > sizeof(raw))
@@ -997,6 +1211,7 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 	memcpy(&pkid, raw + off, 4);
 	off += 4;
 	idlen = 33;
+	idoff = off;
 	if (curve_decode_point(&idk, raw + off, idlen, r->ctx) != 0)
 		return -1;
 	hex_of(raw + off + 1, 32, got_rk);
@@ -1026,7 +1241,12 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 		return -1;
 	}
 	addr_of(&addr, peer);
+	snprintf(r->bootstrap_peer, sizeof(r->bootstrap_peer), "%s", peer);
+	memcpy(r->bootstrap_key, raw + idoff, idlen);
+	r->bootstrap_len = idlen;
 	if (session_builder_create(&b, r->store, &addr, r->ctx) != 0) {
+		r->bootstrap_peer[0] = '\0';
+		r->bootstrap_len = 0;
 		SIGNAL_UNREF(bundle);
 		SIGNAL_UNREF(pk);
 		SIGNAL_UNREF(spk);
@@ -1034,6 +1254,8 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 		return -1;
 	}
 	if (session_builder_process_pre_key_bundle(b, bundle) != 0) {
+		r->bootstrap_peer[0] = '\0';
+		r->bootstrap_len = 0;
 		session_builder_free(b);
 		SIGNAL_UNREF(bundle);
 		SIGNAL_UNREF(pk);
@@ -1041,6 +1263,18 @@ int omaq_ratchet_accept_bundle(struct omaq_ratchet *r, const char *peer,
 		SIGNAL_UNREF(idk);
 		return -1;
 	}
+	if (id_save(&addr, raw + idoff, idlen, r) != 0) {
+		r->bootstrap_peer[0] = '\0';
+		r->bootstrap_len = 0;
+		session_builder_free(b);
+		SIGNAL_UNREF(bundle);
+		SIGNAL_UNREF(pk);
+		SIGNAL_UNREF(spk);
+		SIGNAL_UNREF(idk);
+		return -1;
+	}
+	r->bootstrap_peer[0] = '\0';
+	r->bootstrap_len = 0;
 	session_builder_free(b);
 	SIGNAL_UNREF(bundle);
 	SIGNAL_UNREF(pk);

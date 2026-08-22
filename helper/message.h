@@ -3,6 +3,23 @@
 
 #include <stddef.h>
 
+int omaq_message_id_new(char *out, size_t outn);
+int omaq_message_id_ok(const char *id);
+int omaq_message_append_id_reply(const char *home, const char *conv_id, const char *from,
+				  const char *text, const char *dir, const char *message_id,
+				  const char *reply_id);
+int omaq_message_append_id(const char *home, const char *conv_id, const char *from,
+			   const char *text, const char *dir, const char *message_id);
+int omaq_message_append_with_id(const char *home, const char *conv_id, const char *from,
+				const char *text, const char *dir, char *id_out, size_t id_outn);
+int omaq_message_edit(const char *home, const char *conv_id, const char *id, const char *text);
+int omaq_message_delete(const char *home, const char *conv_id, const char *id);
+int omaq_message_apply_edit_from(const char *home, const char *conv_id, const char *id,
+				 const char *text, const char *from);
+int omaq_message_apply_delete_from(const char *home, const char *conv_id, const char *id,
+				   const char *from);
+int omaq_message_apply_edit(const char *home, const char *conv_id, const char *id, const char *text);
+int omaq_message_apply_delete(const char *home, const char *conv_id, const char *id);
 int omaq_message_append(const char *home, const char *conv_id, const char *from,
 			const char *text, const char *dir);
 int omaq_message_history(const char *home, const char *conv_id, int limit,

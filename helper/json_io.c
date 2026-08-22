@@ -180,6 +180,9 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "text") == 0) {
 			if (parse_string(&p, out->text, sizeof(out->text)) != 0)
 				return -1;
+		} else if (strcmp(key, "reply") == 0) {
+			if (parse_string(&p, out->reply, sizeof(out->reply)) != 0)
+				return -1;
 		} else if (strcmp(key, "group") == 0) {
 			if (parse_string(&p, out->group, sizeof(out->group)) != 0)
 				return -1;
@@ -188,6 +191,9 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 				return -1;
 		} else if (strcmp(key, "role") == 0) {
 			if (parse_string(&p, out->role, sizeof(out->role)) != 0)
+				return -1;
+		} else if (strcmp(key, "state") == 0) {
+			if (parse_string(&p, out->state, sizeof(out->state)) != 0)
 				return -1;
 		} else if (strcmp(key, "path") == 0) {
 			if (parse_string(&p, out->path, sizeof(out->path)) != 0)
@@ -227,6 +233,10 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 			if (parse_bool(&p, &out->pinned) != 0)
 				return -1;
 			out->has_pinned = 1;
+		} else if (strcmp(key, "typing") == 0) {
+			if (parse_bool(&p, &out->typing) != 0)
+				return -1;
+			out->has_typing = 1;
 		} else {
 			return -1; /* unknown key */
 		}

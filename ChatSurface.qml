@@ -18,11 +18,12 @@ Item {
   readonly property bool notifyDesk: setting("notifyDesktop", false)
   readonly property bool animateUnread: setting("animateUnread", true)
   readonly property string surfaceMode: String(setting("surfaceMode", "separate"))
-  readonly property string soundName: String(setting("sound", "off"))
+  readonly property string soundName: String(setting("sound", "icq-message"))
   readonly property string soundCustom: String(setting("soundCustomPath", ""))
   readonly property string chatTheme: String(setting("chatTheme", "system"))
 
   property var openCards: []
+  property bool surfacesHydrated: false
   property string pulseConv: ""
   property bool demoOpen: false
 
@@ -56,7 +57,106 @@ Item {
     floatOmaQTimer.restart()
   }
 
-  Component.onCompleted: root.floatOmaQWindows()
+  function friendName(conv) {
+    var list = service ? (service.friends || []) : []
+    var i
+    for (i = 0; i < list.length; i++)
+      if (String(list[i].id) === String(conv))
+        return list[i].name || ""
+    return ""
+  }
+
+  function restoreSurfaces() {
+    var persisted = service ? (service.surfaces || []) : []
+    var current = openCards.slice()
+    var next = []
+    var i, j, saved, found
+    for (i = 0; i < current.length; i++) {
+      saved = null
+      for (j = 0; j < persisted.length; j++) {
+        if (String(persisted[j].conversation) === String(current[i].conversation)) {
+          saved = persisted[j]
+          break
+        }
+      }
+      next.push(saved ? {
+        conversation: current[i].conversation,
+        monitor: saved.monitor || "",
+        x: isFinite(Number(saved.x)) ? Number(saved.x) : 40,
+        y: isFinite(Number(saved.y)) ? Number(saved.y) : 80,
+        pinned: !!saved.pinned,
+        name: current[i].name || friendName(current[i].conversation)
+      } : current[i])
+    }
+    for (i = 0; i < persisted.length; i++) {
+      if (!persisted[i].pinned || !persisted[i].conversation)
+        continue
+      found = false
+      for (j = 0; j < next.length; j++)
+        if (String(next[j].conversation) === String(persisted[i].conversation))
+          found = true
+      if (!found)
+        next.push({
+          conversation: String(persisted[i].conversation),
+          monitor: persisted[i].monitor || "",
+          x: isFinite(Number(persisted[i].x)) ? Number(persisted[i].x) : 40,
+          y: isFinite(Number(persisted[i].y)) ? Number(persisted[i].y) : 80,
+          pinned: true,
+          name: friendName(persisted[i].conversation)
+        })
+    }
+    if (surfaceMode === "bundled" && next.length > 1)
+      next = [next[0]]
+    openCards = next
+    surfacesHydrated = true
+    root.floatOmaQWindows()
+  }
+
+  Component.onCompleted: {
+    root.floatOmaQWindows()
+    if (service)
+      service.sendOp({ op: "surface.list" })
+  }
+
+  component SurfaceBtn: Button {
+    foreground: root.theme().fg || Color.foreground
+    accent: root.theme().accent || Color.accent
+    fontFamily: Style.font.family
+    radius: Style.cornerRadius
+    iconSize: Style.font.icon
+    fontSize: Style.font.body
+    horizontalPadding: Style.space(6)
+    verticalPadding: Style.space(4)
+  }
+
+  component CallToolbar: Row {
+    id: toolbar
+    required property var page
+    spacing: Style.space(4)
+
+    SurfaceBtn {
+      visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming
+      iconText: "󰏲"
+      tooltipText: "Call"
+      onClicked: toolbar.page.startCall()
+    }
+    SurfaceBtn {
+      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
+      iconText: "󰏴"
+      tooltipText: "Answer"
+      bordered: true
+      selected: true
+      onClicked: toolbar.page.answerCall()
+    }
+    SurfaceBtn {
+      visible: toolbar.page && toolbar.page.inCall
+      iconText: "󰖂"
+      tooltipText: "Hang up"
+      bordered: true
+      selected: true
+      onClicked: toolbar.page.hangUp()
+    }
+  }
 
   function ensureCard(conv, name) {
     if (!conv)
@@ -83,29 +183,37 @@ Item {
     else
       next.push(card)
     openCards = next
-    service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: 40, y: 80, pinned: true })
+    if (surfacesHydrated)
+      service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: card.x, y: card.y, pinned: true })
     root.floatOmaQWindows()
   }
 
   function dismissCard(conv) {
-    var i, next = []
+    var i, next = [], removed = null
     for (i = 0; i < openCards.length; i++) {
       if (openCards[i].conversation !== conv)
         next.push(openCards[i])
+      else
+        removed = openCards[i]
     }
     openCards = next
+    if (removed)
+      service.setSurface(conv, removed.monitor, removed.x, removed.y, false)
   }
 
   function pin(conv, on) {
-    var i, next = []
+    var i, next = [], saved = null
     for (i = 0; i < openCards.length; i++) {
       var c = openCards[i]
-      if (c.conversation === conv)
-        c = { conversation: c.conversation, monitor: c.monitor, x: c.x, y: c.y, pinned: !!on }
+      if (c.conversation === conv) {
+        saved = c
+        c = { conversation: c.conversation, monitor: c.monitor, x: c.x, y: c.y, pinned: !!on, name: c.name || "" }
+      }
       next.push(c)
     }
     openCards = next
-    service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: 0, y: 0, pinned: !!on })
+    if (saved)
+      service.setSurface(conv, saved.monitor, saved.x, saved.y, !!on)
   }
 
   function savePos(conv, mon, x, y, pinned) {
@@ -116,11 +224,18 @@ Item {
     if (soundName === "off" || soundName === "")
       return
     var path = soundCustom
-    if (soundName !== "custom")
+    if (soundName === "icq-message")
+      path = String(Qt.resolvedUrl("sounds/icq-message.mp3")).replace(/^file:\/\//, "")
+    else if (soundName !== "custom")
       path = String(Qt.resolvedUrl("sounds/" + soundName + ".wav")).replace(/^file:\/\//, "")
     if (!path)
       return
-    sndProc.command = ["paplay", path]
+    sndProc.command = [
+      "bash", "-c",
+      "if command -v ffplay >/dev/null 2>&1; then exec ffplay -nodisp -autoexit -loglevel quiet \"$1\"; elif command -v mpv >/dev/null 2>&1; then exec mpv --no-video --really-quiet \"$1\"; elif command -v pw-play >/dev/null 2>&1; then exec pw-play \"$1\"; else exit 127; fi",
+      "omaq-message-sound", path
+    ]
+    sndProc.running = false
     sndProc.running = true
   }
 
@@ -141,10 +256,12 @@ Item {
 
   Connections {
     target: service
-    function onLastChatTextChanged() {
+    function handleIncoming() {
       if (service.lastChatDir === "in")
-        root.onIncoming(service.lastConversation)
+        root.onIncoming(service.lastChatConv || service.lastConversation)
     }
+    function onMessageTickChanged() { handleIncoming() }
+    function onSurfacesTickChanged() { root.restoreSurfaces() }
   }
 
   Process { id: sndProc }
@@ -152,11 +269,11 @@ Item {
   Process {
     id: floatOmaQProc
     command: [String(Qt.resolvedUrl("scripts/float-omaq.sh")).replace(/^file:\/\//, "")]
-    running: false
+    running: true
   }
   Timer {
     id: floatOmaQTimer
-    interval: 80
+    interval: 0
     repeat: false
     onTriggered: {
       floatOmaQProc.running = false
@@ -207,18 +324,27 @@ Item {
             height: Style.space(220)
 
             Pages.ChatPage {
+              id: cardPage
               anchors.fill: parent
+              anchors.topMargin: Style.space(30)
               service: root.service
               theme: root.theme()
               conversation: card.modelData.conversation
               pulseUnread: root.animateUnread && root.pulseConv === card.modelData.conversation
             }
 
-            Row {
-              anchors.top: parent.top
+            RowLayout {
+              anchors.left: parent.left
               anchors.right: parent.right
-              spacing: 4
-              Button { text: "Pin"; onClicked: root.pin(card.modelData.conversation, true) }
+              anchors.top: parent.top
+              spacing: Style.space(4)
+              z: 10
+              CallToolbar { page: cardPage }
+              Item { Layout.fillWidth: true }
+              SurfaceBtn {
+                text: "Pin"
+                onClicked: root.pin(card.modelData.conversation, true)
+              }
             }
 
             MouseArea {
@@ -246,33 +372,53 @@ Item {
     anchors { top: true; bottom: true; right: true }
     implicitWidth: Style.space(300)
 
-    Pages.ChatPage {
+    ColumnLayout {
       anchors.fill: parent
       anchors.margins: Style.space(8)
-      service: root.service
-      theme: root.theme()
-      conversation: service ? service.lastConversation : ""
+      spacing: Style.space(4)
+
+      RowLayout {
+        Layout.fillWidth: true
+        CallToolbar { page: rightDockPage }
+        Item { Layout.fillWidth: true }
+      }
+
+      Pages.ChatPage {
+        id: rightDockPage
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        service: root.service
+        theme: root.theme()
+        conversation: service ? service.lastConversation : ""
+      }
     }
   }
 
-  Repeater {
+  Instantiator {
     model: root.openCards
-    FloatingWindow {
+    delegate: FloatingWindow {
       id: pinWin
       required property var modelData
-      title: pinWin.modelData && pinWin.modelData.name ? ("OmaQ chat — " + pinWin.modelData.name) : "OmaQ chat"
+      // Keep the map-time title stable so Hyprland can apply the floating rule before map.
+      title: "OmaQ chat"
       implicitWidth: 420
       implicitHeight: 360
       color: root.theme().bg || Color.background
       property bool everShown: false
+      property bool closing: false
 
       onVisibleChanged: {
         if (visible) {
           pinWin.everShown = true
+          pinWin.closing = false
           root.floatOmaQWindows()
+          Qt.callLater(function() {
+            if (pinWin.visible)
+              root.floatOmaQWindows()
+          })
           return
         }
-        if (pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation)
+        if (!pinWin.closing && pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation)
           root.dismissCard(pinWin.modelData.conversation)
       }
 
@@ -281,12 +427,23 @@ Item {
         anchors.margins: Style.space(8)
         spacing: Style.space(6)
 
-        Button {
-          text: "Close"
-          onClicked: root.dismissCard(pinWin.modelData.conversation)
+        RowLayout {
+          Layout.fillWidth: true
+          CallToolbar { page: pinPage }
+          Item { Layout.fillWidth: true }
+          SurfaceBtn {
+            text: "Close"
+            onClicked: {
+              var conv = String(pinWin.modelData.conversation)
+              pinWin.closing = true
+              pinWin.visible = false
+              root.dismissCard(conv)
+            }
+          }
         }
 
         Pages.ChatPage {
+          id: pinPage
           Layout.fillWidth: true
           Layout.fillHeight: true
           service: root.service
@@ -343,14 +500,30 @@ Item {
       }
     }
 
-    Pages.ChatPage {
-      id: demoPage
+    ColumnLayout {
       anchors.fill: parent
       anchors.margins: Style.space(8)
-      demo: true
-      service: root.service
-      theme: root.theme()
-      conversation: "demo"
+      spacing: Style.space(4)
+
+      RowLayout {
+        Layout.fillWidth: true
+        CallToolbar { page: demoPage }
+        Item { Layout.fillWidth: true }
+        SurfaceBtn {
+          text: "Close"
+          onClicked: root.closeDemo()
+        }
+      }
+
+      Pages.ChatPage {
+        id: demoPage
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        demo: true
+        service: root.service
+        theme: root.theme()
+        conversation: "demo"
+      }
     }
   }
 }

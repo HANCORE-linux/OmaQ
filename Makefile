@@ -26,26 +26,35 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/qr.c helper/group.c helper/surface.c \
-	helper/file.c helper/avatar.c helper/av.c helper/ratchet.c helper/ratchet_adapt.c
+	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/surface.c helper/file.c helper/avatar.c helper/av.c \
+	helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/store.c helper/message.c helper/identity.c \
-	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/surface.c \
-	helper/file.c helper/avatar.c helper/ratchet.c
+	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/surface.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c \
+	helper/ratchet_pin.c
 
 BIN_TEST := tests/omaq_test
 BIN_HELP := helper/omaq
 
-.PHONY: all test helper arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
+.PHONY: all test helper check-signal arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
-all: $(BIN_TEST) $(BIN_HELP)
+all: $(BIN_TEST) helper
 
 $(BIN_TEST): $(TEST_SRC)
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -o $@ $(TEST_SRC)
 
-$(BIN_HELP): $(HELPER_SRC)
+check-signal:
+	@if [ "$(SIG_OK)" != "yes" ]; then \
+		echo "omaq: libsignal-protocol-c is required for direct-message encryption" >&2; \
+		echo "omaq: install it before running 'make helper'" >&2; \
+		exit 1; \
+	fi
+
+$(BIN_HELP): check-signal $(HELPER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 test: $(BIN_TEST)
@@ -62,6 +71,7 @@ verify:
 	$(MAKE) verify-$(PHASE)
 
 verify-0: test arch
+	sh tests/no-signal-build.sh
 	bash -n packaging/PKGBUILD
 	test -f LICENSE.MIT
 	test -f LICENSE.GPL-3
@@ -159,6 +169,7 @@ verify-8: test arch helper
 	sh tests/lock-elect.sh
 	omarchy plugin validate .
 	sh tests/phase8.sh
+	sh tests/ratchet-restart.sh
 	@echo "verify-8: ok"
 
 clean:

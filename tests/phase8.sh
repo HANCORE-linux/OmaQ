@@ -75,6 +75,51 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$sent" -eq 1 ] || { echo "phase8: no ratchet plaintext event" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
 
+message_id=$(grep -a '"event":"message"' "$fb" | grep -a 'secret-ratchet-ping' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+[ -n "$message_id" ] || { echo "phase8: no message id" >&2; exit 1; }
+printf '{"op":"receipt.send","conversation":"0","id":"%s","state":"read"}\n' "$message_id" >&4
+i=0
+while [ "$i" -lt 20 ]; do
+	if grep -a -q '"event":"receipt"' "$fa" && grep -a -q '"state":"read"' "$fa"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 20 ] || { echo "phase8: no read receipt" >&2; exit 1; }
+printf '{"op":"msg.send","conversation":"0","text":"semantic-reply","reply":"%s"}\n' "$message_id" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a -q '"reply":"'"$message_id"'"' "$fb" && grep -a -q 'semantic-reply' "$fb"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: no semantic reply" >&2; exit 1; }
+reply_id=$(grep -a '"event":"message"' "$fa" | grep -a 'semantic-reply' | tail -1 | sed -n 's/.*"id":"\([^" ]*\)".*/\1/p')
+[ -n "$reply_id" ] || { echo "phase8: no reply id" >&2; exit 1; }
+printf '{"op":"message.edit","conversation":"0","id":"%s","text":"semantic-edited"}\n' "$reply_id" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a -q '"event":"message.updated"' "$fb" && grep -a -q 'semantic-edited' "$fb"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: no message edit" >&2; exit 1; }
+printf '{"op":"message.delete","conversation":"0","id":"%s"}\n' "$reply_id" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a -q '"event":"message.updated"' "$fa" && grep -a -q '"deleted":true' "$fa"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: no message delete" >&2; exit 1; }
+
 if grep -a '"message"' "$fa" "$fb" | grep -E -q 'OQR1|OQB1'; then
 	echo "phase8: ciphertext leaked into message event" >&2
 	exit 1
@@ -92,6 +137,10 @@ while [ "$i" -lt 30 ]; do
 	i=$((i + 1))
 done
 [ "$sent2" -eq 1 ] || { echo "phase8: second ratchet message missing" >&2; exit 1; }
+if ! grep -a '"message"' "$fa" "$fb" | grep -q '"dir":"out"'; then
+	echo "phase8: no confirmed outgoing message event" >&2
+	exit 1
+fi
 
 rss=$(ps -o rss= -p "$pa" | tr -d ' ')
 if [ "$rss" -gt 51200 ]; then

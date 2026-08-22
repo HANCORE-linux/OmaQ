@@ -20,7 +20,7 @@ Chat with the owner is German. Repo, UI, and this file are English.
 | 2 Invite safety | QR, revoke, nospam, safety, rate | `verify-2` | done |
 | 3 Groups | owner > admin > member | `verify-3` | done |
 | 4 Surfaces | cards, pin, sounds, themes | `verify-4` | done (UI since rewritten) |
-| 5 Daily | export/import, search | `verify-5` | done |
+| 5 Daily | export/import IPC, search | `verify-5` | done |
 | 6 File + 1:1 audio | Tox file 8 MiB, ToxAV audio | `verify-6` | done |
 | 7 AUR package | PKGBUILD, namcap, enable path | `verify-7` | **halted** |
 | 8 Double Ratchet | Signal payload on 1:1, 50 MB cap | `verify-8` | **done** |
@@ -31,11 +31,12 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 
 **Panel**
 
-- Hero: `assets/mark.png` plus the 02_58_45 lockup (`assets/OmaQ_lockup.svg`, black punched). Click opens https://github.com/HANCORE-linux/OmaQ. Omarchy.org news is gone.
+- Hero: transparent trimmed panel render `assets/OmaQ_Final-panel.png` derived from `assets/OmaQ_Final.png`, with a subtle pulse animation. Click opens https://github.com/HANCORE-linux/OmaQ. Omarchy.org news is gone.
 - Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active.
+- More exposes the compact daily controls (chat/search, group create/invite/dissolve, group member roles/removal/leave, identity protection/export/import, and danger actions).
 - Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token.
 - Theme icon opens the list (not a permanent color bar). Palettes: **System** (live Omarchy `color0`–`color7` from `colors.toml` with `onFileChanged: reload()`, name from `~/.local/state/omarchy/current/theme.name`) then Traffic-Board **gruvbox**, **rose pine**, **everforest**, **gruvbox light**, **catppuccin latte**, **tokyo night light**. Default `chatTheme`: `system`.
-- **You** and **Friends** sit under Demo/Theme. Click a friend to open that 1:1. Avatars: self via zenity (`op: avatar.set`, 64 KiB, png/jpeg/webp); friends send `TOX_FILE_KIND_AVATAR`. Fallback `assets/avatar-fallback.svg`. Green/gray dot = Tox online/offline (`friend_connection_status`). Names from Tox; empty name → `Friend <id>`.
+- **You** and **Friends** sit under Demo/Theme. Click a friend to open that 1:1. Avatars: self via zenity (`op: avatar.set`, 512 KiB, png/jpeg/webp); friends send `TOX_FILE_KIND_AVATAR`. The fallback uses the Material Symbols Rounded `person` glyph. Green/gray dot = Tox online/offline (`friend_connection_status`). Names from Tox; empty name → `Friend <id>`.
 
 **Demo / Chat windows**
 
@@ -46,8 +47,8 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 **Chat chrome**
 
 - One composer row: attach, field, emoji, send. Call in the header. Hang up only while in a call. Call/file chrome is scoped to that window’s conversation. Header shows peer name, avatar, online/offline.
-- Live send appends an `out` bubble locally (helper `msg.send` only emits `snapshot`). Incoming lines match `lastChatConv`. On open, `op: history` seeds the last 50 lines (`conversation` on the event).
-- Recents sit **always** above the message field (no hover), left-aligned to the field, max 6, `›` pages when the window is too narrow. Smile button still opens the full set. PNGs from Noto Color Emoji CBDT (`scripts/extract-emoji.py` → `assets/emoji/`). In the field and in bubbles, smiles use `Style.font.body`. Recents persist at `$OMAQ_STATE/recent-emoji.json`.
+- Live send keeps an outgoing line pending until the helper emits the confirmed `message` event after ciphertext/group text is sent. Incoming lines match `lastChatConv`. On open and conversation change, `op: history` seeds the last 50 lines (`conversation` on the event).
+- The smile button opens the full emoji set. PNGs from Noto Color Emoji CBDT (`scripts/extract-emoji.py` → `assets/emoji/`). In the field and in bubbles, smiles use `Style.font.body`; emoji recents are not persisted.
 - Demo is local only (no Tox). Theme for demo follows the panel palette.
 
 **README**
@@ -59,9 +60,10 @@ Tagline is “no account, no phone, no user search” (not “directory”). Bod
 | File | Use |
 |---|---|
 | `ChatGPT Image Aug 21, 2026, 02_56_18 PM.png` | Bar + panel mark → `assets/mark.png` (black punched to alpha, trimmed) |
-| `OmaQ_Final.png` | README wordmark → `assets/OmaQ_Final.png` (tagline centered under the image) |
-| `ChatGPT Image Aug 21, 2026, 02_58_45 PM.png` | Panel lockup → `assets/OmaQ_lockup.png` + `assets/OmaQ_lockup.svg` |
-| (drawn) | Default avatar → `assets/avatar-fallback.svg` |
+| `OmaQ_Final.png` | README wordmark → `assets/OmaQ_Final.png` |
+| `OmaQ_Final-panel.png` | Transparent trimmed panel hero render |
+| `ChatGPT Image Aug 21, 2026, 02_58_45 PM.png` | Legacy panel lockup retained as an asset only |
+| (drawn) | Default avatar → Material Symbols Rounded `person` glyph |
 
 ## What works (helper, last `verify-8` plus `omaq_test` on 2026-08-22)
 
@@ -70,22 +72,22 @@ Tagline is “no account, no phone, no user search” (not “directory”). Bod
 - Optional `toxencryptsave` lock on `tox.save`
 - File send (paused until accept, dest `$OMAQ_HOME/files/<conv>/`)
 - 1:1 call **signaling** (start/answer/stop). No microphone PCM yet.
-- Direct messages: Double Ratchet over Tox (`OQB1` / `OQR1`, invite `rk=`)
+- Direct messages: Double Ratchet over Tox (`OQB1` / `OQR1`); invite `rk=` and the peer pin are persisted under `$OMAQ_HOME/ratchet/`
 - Two local helpers exchange a ratchet plaintext; `make verify-8` was green on 2026-08-19
 - `tests/omaq_test`: ok (includes avatar path/id gold)
-- Friend list `event:friends` (id, name, avatar path, online). `avatar.set` copies to `$OMAQ_HOME/avatars/self.png` (64 KiB cap) and sends `TOX_FILE_KIND_AVATAR`. Incoming avatars auto-accept to `avatars/<id>.png`.
+- Friend list `event:friends` (id, name, avatar path, online). `avatar.set` copies to `$OMAQ_HOME/avatars/self.png` (512 KiB cap) and sends `TOX_FILE_KIND_AVATAR`. Incoming avatars auto-accept to `avatars/<id>.png`.
 
 ## Security (honest)
 
 | Protected | Not this product |
 |---|---|
 | Tox E2E on the wire; relays do not read content | No SimpleX-style missing user id |
-| Direct text: Signal Double Ratchet; `rk=` in the QR | Groups / files / calls not ratcheted |
+| Direct text: Signal Double Ratchet; invite `rk=` plus the token-authenticated peer pin | Groups / files / calls not ratcheted |
 | `tox.save` optional passphrase (`toxencryptsave`) | History JSONL is `0600` plaintext |
 | Token + rate limit on a leaked QR | One durable Tox address; friends can see IP |
 | 50 MB RSS cap, measured | No Tor child (would blow the cap) |
 
-KCI on the Tox handshake does not decrypt ratchet text once `rk` came from the invite. That is not “as metadata-private as SimpleX”.
+KCI on the Tox handshake does not decrypt ratchet text once both direct-chat identity pins came from the token-authenticated friend-request exchange and are persisted. Direct setup without those pins is refused. That is not “as metadata-private as SimpleX”.
 
 ## Memory (measured 2026-08-19)
 
