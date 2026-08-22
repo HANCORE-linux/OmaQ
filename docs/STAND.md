@@ -2,7 +2,7 @@
 
 This file is the snapshot for a new session. Product contract (German): [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). How we build: [`PLAN.md`](PLAN.md).
 
-**Last pushed commit:** `62d3aab` on `main` (private `HANCORE-linux/OmaQ`).  
+**Last pushed commit:** `25bcd05` on `main` (private `HANCORE-linux/OmaQ`).  
 **`.phase`:** 8  
 **Plugin id:** `hancore.omaq`  
 **Manifest version:** `0.6.0`  
@@ -25,13 +25,13 @@ Chat with the owner is German. Repo, UI, and this file are English.
 | 7 AUR package | PKGBUILD, namcap, enable path | `verify-7` | **halted** |
 | 8 Double Ratchet | Signal payload on 1:1, 50 MB cap | `verify-8` | **done** |
 
-## Live UI (pushed `62d3aab`)
+## Live UI (pushed `25bcd05`)
 
-The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a `BarWidget` plus its own layer-shell popup (Shibumi bar is screen-sized; KeyboardPanel capped the card at 120 px).
+The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a `BarWidget` plus its own layer-shell popup (Shibumi bar is screen-sized; KeyboardPanel capped the card at 120 px). Demo and Chat share `pages/ChatPage.qml`.
 
 **Panel**
 
-- Hero: OmaQ `assets/mark.png` (speech bubble), then Omarchy wordmark **OMARCHY** + **Announcements** in JetBrainsMono Nerd Font, then one line: latest `omarchy.org/news` title (HTML scrape, no RSS). Title click opens that article; **Announcements** opens the news index.
+- Hero: `assets/mark.png` plus the 02_58_45 lockup (`assets/OmaQ_lockup.svg`, black punched). Click opens https://github.com/HANCORE-linux/OmaQ. Omarchy.org news is gone.
 - Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active.
 - Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token.
 - Theme icon opens the list (not a permanent color bar). Palettes: **System** (live Omarchy `color0`–`color7` from `colors.toml` with `onFileChanged: reload()`, name from `~/.local/state/omarchy/current/theme.name`) then Traffic-Board **gruvbox**, **rose pine**, **everforest**, **gruvbox light**, **catppuccin latte**, **tokyo night light**. Default `chatTheme`: `system`.
@@ -46,7 +46,7 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 
 - One composer row: attach, field, emoji, send. Call in the header. Hang up only while in a call. Call/file chrome is scoped to that window’s conversation.
 - Live send appends an `out` bubble locally (helper `msg.send` only emits `snapshot`). Incoming lines match `lastChatConv`. On open, `op: history` seeds the last 50 lines (`conversation` on the event).
-- Smilies: Noto Color Emoji at the 109 px CBDT strike, scaled to 28 px. Recent row (max 8) appears above the composer on hover; persisted at `$OMAQ_STATE/recent-emoji.json`.
+- Recents sit **always** above the message field (no hover), left-aligned to the field, max 6, `›` pages when the window is too narrow. Smile button still opens the full set. PNGs from Noto Color Emoji CBDT (`scripts/extract-emoji.py` → `assets/emoji/`). In the field and in bubbles, smiles use `Style.font.body`. Recents persist at `$OMAQ_STATE/recent-emoji.json`.
 - Demo is local only (no Tox). Theme for demo follows the panel palette.
 
 ## Logos (`~/omaq-logo/variants/final/`)
@@ -54,8 +54,8 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 | File | Use |
 |---|---|
 | `ChatGPT Image Aug 21, 2026, 02_56_18 PM.png` | Bar + panel mark → `assets/mark.png` (black punched to alpha, trimmed) |
-| `OmaQ_Final.png` | README wordmark → `assets/OmaQ_Final.png` |
-| `ChatGPT Image Aug 21, 2026, 02_58_45 PM.png` | Wordmark + tagline → `assets/OmaQ_lockup.png` (not in README) |
+| `OmaQ_Final.png` | README wordmark → `assets/OmaQ_Final.png` (tagline centered under the image) |
+| `ChatGPT Image Aug 21, 2026, 02_58_45 PM.png` | Panel lockup → `assets/OmaQ_lockup.png` + `assets/OmaQ_lockup.svg` |
 
 ## What works (helper, last `verify-8` plus `omaq_test` on 2026-08-22)
 
