@@ -3,12 +3,14 @@
 </p>
 
 <p align="center">
-  OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no directory.
+  OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no user search.
 </p>
+
+No signup and no email: the identity is created on this machine. No phone number is asked or stored. There is no people list and no search — the only way in is a one-time invite you send as a link or QR.
 
 ## Security
 
-Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. A one-time invite is the only way in — there is no user search. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
+Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
 
 ## How to chat
 
