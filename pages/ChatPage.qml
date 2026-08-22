@@ -985,42 +985,27 @@ Item {
         }
 
         Text {
-          visible: root.demo
           Layout.fillWidth: true
-          text: "DEMO"
-          color: root.peerNameColor
+          text: {
+            var name = root.escapeMarkup(root.demo ? "DEMO" : (root.peerName || root.conversation || "chat"))
+            if (root.demo)
+              return "<font color='" + String(root.peerNameColor) + "'><b>" + name + "</b></font>"
+            var status = root.peerTyping ? "typing…" : (root.peerOnline ? "online" : "offline")
+            return "<font color='" + String(root.peerNameColor) + "'><b>" + name +
+              "</b></font> <font color='" + String(root.peerStatusColor) + "'>· " +
+              root.escapeMarkup(status) + "</font>"
+          }
+          textFormat: Text.RichText
+          color: root.fg
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          font.bold: true
           font.letterSpacing: 1.2
-          elide: Text.ElideRight
-        }
-
-        Text {
-          visible: !root.demo
-          Layout.fillWidth: true
-          text: root.peerName || root.conversation || "chat"
-          color: root.peerNameColor
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 1.2
-          elide: Text.ElideRight
-        }
-
-        Text {
-          visible: !root.demo
-          text: root.peerTyping ? "typing…" : (root.peerOnline ? "online" : "offline")
-          color: root.peerStatusColor
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
           elide: Text.ElideRight
         }
 
         FormatBtn {
           visible: !root.demo && String(root.conversation || "").charAt(0) !== "g"
-          materialIcon: root.autoOpenEnabled ? "notifications" : "notifications_off"
+          materialIcon: root.autoOpenEnabled ? "open_in_new" : "open_in_new_off"
           tooltipText: root.autoOpenEnabled
             ? "Open automatically on new messages"
             : "Badge and sound only"
@@ -1054,7 +1039,7 @@ Item {
 
         FormatBtn {
           visible: !root.demo && !root.clearConfirm
-          materialIcon: "delete_sweep"
+          materialIcon: "delete"
           tooltipText: "Clear messages in this chat"
           onClicked: root.clearConfirm = true
         }
