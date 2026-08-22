@@ -1041,7 +1041,15 @@ static int handle_op(const omaq_op *op)
 			size_t left = sizeof(ev);
 			int first = 1;
 			char *line = out;
-			int wr = snprintf(p, left, "{\"event\":\"history\",\"items\":[");
+			char esc_cid[128];
+			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0) {
+				free(out);
+				emit("{\"event\":\"history\",\"conversation\":\"0\",\"items\":[]}");
+				return 0;
+			}
+			int wr = snprintf(p, left,
+					 "{\"event\":\"history\",\"conversation\":\"%s\",\"items\":[",
+					 esc_cid);
 			if (wr < 0 || (size_t)wr >= left) {
 				free(out);
 				emit_error("unsupported");
@@ -1068,7 +1076,10 @@ static int handle_op(const omaq_op *op)
 			}
 			if (left < 3) {
 				free(out);
-				emit("{\"event\":\"history\",\"items\":[]}");
+				snprintf(ev, sizeof(ev),
+					 "{\"event\":\"history\",\"conversation\":\"%s\",\"items\":[]}",
+					 esc_cid);
+				emit(ev);
 				return 0;
 			}
 			memcpy(p, "]}", 3);
@@ -1076,7 +1087,18 @@ static int handle_op(const omaq_op *op)
 			free(out);
 			return 0;
 		}
-		emit("{\"event\":\"history\",\"items\":[]}");
+		{
+			char esc_cid[128];
+			char ev[192];
+			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
+				emit("{\"event\":\"history\",\"conversation\":\"0\",\"items\":[]}");
+			else {
+				snprintf(ev, sizeof(ev),
+					 "{\"event\":\"history\",\"conversation\":\"%s\",\"items\":[]}",
+					 esc_cid);
+				emit(ev);
+			}
+		}
 		return 0;
 	}
 	if (strcmp(op->op, "search") == 0) {

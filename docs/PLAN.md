@@ -2,7 +2,7 @@
 
 **Authority:** This file is how we build. German product contract: [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). If they disagree, stop and fix both before writing code.
 
-**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is off the bar. Snapshot: [`STAND.md`](STAND.md).  
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is **on this machine** (copy under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`). Snapshot: [`STAND.md`](STAND.md).  
 **Tree:** `/home/hancore/Projects/omaq`  
 **Id:** `hancore.omaq`
 

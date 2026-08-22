@@ -5,6 +5,7 @@ import Quickshell.Wayland
 import qs.Ui
 import qs.Commons
 import "pages" as Pages
+import "Model.js" as Model
 
 Item {
   id: root
@@ -22,6 +23,7 @@ Item {
 
   property var openCards: []
   property string pulseConv: ""
+  property bool demoOpen: false
 
   function setting(name, fallback) {
     var s = settings || (service ? service.settings : {})
@@ -30,32 +32,61 @@ Item {
   }
 
   function theme() {
-    var m = {
-      paper: { bg: "#f4efe4", fg: "#2a241c", accent: "#8a6a3a", unread: "#c45c26" },
-      ink: { bg: "#12141a", fg: "#e8e6e1", accent: "#8aa0b8", unread: "#d4a017" },
-      moss: { bg: "#1b241c", fg: "#dce8d8", accent: "#6b8f71", unread: "#c4b14a" },
-      dusk: { bg: "#1a1524", fg: "#efe6f4", accent: "#a78bce", unread: "#e07a5f" },
-      ember: { bg: "#1c1410", fg: "#f3e6d8", accent: "#d4764e", unread: "#e8b86d" }
-    }
-    return m[chatTheme] || { bg: "", fg: "", accent: "", unread: "" }
+    if (chatTheme === "system" || chatTheme === "")
+      return { bg: "", fg: "", accent: "", unread: "", name: "System", colors: [] }
+    return Model.themeFor(chatTheme)
   }
+
+  function openDemo() {
+    if (!root.demoOpen) {
+      root.demoOpen = true
+      Qt.callLater(function() {
+        if (demoPage)
+          demoPage.resetDemo()
+      })
+    }
+  }
+
+  function closeDemo() {
+    root.demoOpen = false
+  }
+
+  function floatOmaQWindows() {
+    floatOmaQTimer.restart()
+  }
+
+  Component.onCompleted: root.floatOmaQWindows()
 
   function ensureCard(conv) {
     if (!conv)
       return
     var i
     for (i = 0; i < openCards.length; i++) {
-      if (openCards[i].conversation === conv)
+      if (openCards[i].conversation === conv) {
+        if (!openCards[i].pinned)
+          root.pin(conv, true)
+        root.floatOmaQWindows()
         return
+      }
     }
     var next = openCards.slice()
     if (surfaceMode === "bundled") {
-      next = [{ conversation: conv, monitor: "", x: 40, y: 80, pinned: false }]
+      next = [{ conversation: conv, monitor: "", x: 40, y: 80, pinned: true }]
     } else {
-      next.push({ conversation: conv, monitor: "", x: 40 + next.length * 16, y: 80 + next.length * 16, pinned: false })
+      next.push({ conversation: conv, monitor: "", x: 40 + next.length * 16, y: 80 + next.length * 16, pinned: true })
     }
     openCards = next
-    service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: 40, y: 80, pinned: false })
+    service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: 40, y: 80, pinned: true })
+    root.floatOmaQWindows()
+  }
+
+  function dismissCard(conv) {
+    var i, next = []
+    for (i = 0; i < openCards.length; i++) {
+      if (openCards[i].conversation !== conv)
+        next.push(openCards[i])
+    }
+    openCards = next
   }
 
   function pin(conv, on) {
@@ -111,6 +142,32 @@ Item {
 
   Process { id: sndProc }
   Process { id: noteProc }
+  Process {
+    id: floatOmaQProc
+    command: [String(Qt.resolvedUrl("scripts/float-omaq.sh")).replace(/^file:\/\//, "")]
+    running: false
+  }
+  Timer {
+    id: floatOmaQTimer
+    interval: 80
+    repeat: false
+    onTriggered: {
+      floatOmaQProc.running = false
+      floatOmaQProc.running = true
+    }
+  }
+
+  function overlayVisibleOn(screenName) {
+    var i, c
+    for (i = 0; i < openCards.length; i++) {
+      c = openCards[i]
+      if (c.pinned)
+        continue
+      if (c.monitor === "" || c.monitor === screenName)
+        return true
+    }
+    return false
+  }
 
   Variants {
     model: Quickshell.screens
@@ -118,7 +175,7 @@ Item {
       id: overlay
       required property var modelData
       screen: modelData
-      visible: true
+      visible: root.overlayVisibleOn(modelData.name)
       color: "transparent"
       exclusionMode: ExclusionMode.Ignore
       WlrLayershell.namespace: "omaq-card"
@@ -197,25 +254,67 @@ Item {
       id: pinWin
       required property var modelData
       visible: modelData.pinned
-      title: "OmaQ"
+      title: "OmaQ chat"
       implicitWidth: 420
       implicitHeight: 360
       color: root.theme().bg || Color.background
+      property bool everShown: false
+
+      onVisibleChanged: {
+        if (visible) {
+          pinWin.everShown = true
+          root.floatOmaQWindows()
+          return
+        }
+        if (pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation)
+          root.dismissCard(pinWin.modelData.conversation)
+      }
 
       Column {
         anchors.fill: parent
         anchors.margins: 8
         spacing: 6
-        Button { text: "Unpin"; onClicked: root.pin(pinWin.modelData.conversation, false) }
+        Button { text: "Close"; onClicked: root.dismissCard(pinWin.modelData.conversation) }
         Pages.ChatPage {
           width: parent.width
           height: parent.height - 36
           service: root.service
           theme: root.theme()
           conversation: pinWin.modelData.conversation
-          terminalLook: true
         }
       }
+    }
+  }
+
+  FloatingWindow {
+    id: demoWin
+    visible: root.demoOpen
+    title: "OmaQ demo"
+    implicitWidth: 420
+    implicitHeight: 480
+    minimumSize: Qt.size(320, 360)
+    color: root.theme().bg || Color.background
+
+    onVisibleChanged: {
+      if (visible) {
+        root.floatOmaQWindows()
+        Qt.callLater(function() {
+          if (demoPage)
+            demoPage.resetDemo()
+        })
+      } else if (root.demoOpen) {
+        root.demoOpen = false
+      }
+    }
+
+    Pages.ChatPage {
+      id: demoPage
+      anchors.fill: parent
+      anchors.margins: Style.space(8)
+      demo: true
+      service: root.service
+      theme: root.theme()
+      conversation: "demo"
     }
   }
 }

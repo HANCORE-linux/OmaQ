@@ -21,13 +21,19 @@ Item {
   property bool pendingGroup: false
   property string lastChatText: ""
   property string lastChatDir: ""
+  property string lastChatConv: ""
+  property var lastHistoryItems: []
+  property string lastHistoryConv: ""
+  property int historyTick: 0
   property var lastSurface: ({})
   property string lastFileId: ""
   property string lastFileName: ""
   property string lastFilePath: ""
+  property string lastFileConv: ""
   property bool pendingFile: false
   property bool incomingCall: false
   property string lastCallState: ""
+  property string lastCallConv: ""
   property bool locked: false
   property bool saveProtected: false
 
@@ -72,8 +78,14 @@ Item {
       root.unreadCount = root.unreadCount + 1
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      root.lastChatConv = ev.conversation || root.lastConversation
       root.lastChatText = ev.text || ""
       root.lastChatDir = "in"
+    }
+    if (ev.event === "history") {
+      root.lastHistoryConv = ev.conversation || ""
+      root.lastHistoryItems = ev.items || []
+      root.historyTick = root.historyTick + 1
     }
     if (ev.event === "surface")
       root.lastSurface = ev
@@ -105,12 +117,15 @@ Item {
       root.pendingFile = true
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      root.lastFileConv = ev.conversation || root.lastConversation
     }
     if (ev.event === "file.done") {
       root.pendingFile = false
       root.lastFilePath = ev.path || ""
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      if (ev.conversation)
+        root.lastFileConv = ev.conversation
     }
     if (ev.event === "file.failed") {
       root.pendingFile = false
@@ -121,6 +136,7 @@ Item {
       root.lastCallState = "incoming"
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      root.lastCallConv = ev.conversation || root.lastConversation
     }
     if (ev.event === "call.state") {
       root.lastCallState = ev.state || ""
@@ -128,6 +144,8 @@ Item {
         root.incomingCall = false
       if (ev.conversation)
         root.lastConversation = ev.conversation
+      if (ev.conversation)
+        root.lastCallConv = ev.conversation
     }
   }
 
@@ -140,7 +158,10 @@ Item {
   }
 
   function createInvite() { sendOp({ op: "invite.create", kind: "direct", ttlSec: 86400 }) }
-  function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = "" }
+  function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = ""; root.qrPath = "" }
+  function requestHistory(conv) {
+    sendOp({ op: "history", conversation: conv || root.lastConversation, limit: 50 })
+  }
   function saveQr() {
     var u = root.inviteUrl
     if (!u)
@@ -167,7 +188,7 @@ Item {
     sendOp({ op: "group.dissolve", group: root.lastGroup })
   }
   function openCard() {
-    sendOp({ op: "surface.set", conversation: root.lastConversation, monitor: "", x: 40, y: 80, pinned: false })
+    sendOp({ op: "surface.set", conversation: root.lastConversation, monitor: "", x: 40, y: 80, pinned: true })
   }
   function setSurface(conv, mon, x, y, pinned) {
     sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
@@ -193,8 +214,8 @@ Item {
   function unprotectIdentity(pass) {
     sendOp({ op: "identity.unprotect", passphrase: pass })
   }
-  function sendFile(path) {
-    sendOp({ op: "file.send", conversation: root.lastConversation, path: path })
+  function sendFile(path, conv) {
+    sendOp({ op: "file.send", conversation: conv || root.lastConversation, path: path })
   }
   function acceptFile() {
     if (!root.lastFileId)
@@ -208,15 +229,15 @@ Item {
     sendOp({ op: "file.cancel", id: root.lastFileId })
     root.pendingFile = false
   }
-  function startCall() {
-    sendOp({ op: "call.start", conversation: root.lastConversation })
+  function startCall(conv) {
+    sendOp({ op: "call.start", conversation: conv || root.lastConversation })
   }
-  function answerCall() {
-    sendOp({ op: "call.answer", conversation: root.lastConversation })
+  function answerCall(conv) {
+    sendOp({ op: "call.answer", conversation: conv || root.lastConversation })
     root.incomingCall = false
   }
-  function stopCall() {
-    sendOp({ op: "call.stop", conversation: root.lastConversation })
+  function stopCall(conv) {
+    sendOp({ op: "call.stop", conversation: conv || root.lastConversation })
     root.incomingCall = false
   }
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/markdownlogo.png" alt="OmaQ" width="420">
+  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
 </p>
 
 OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no directory.
