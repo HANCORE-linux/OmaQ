@@ -123,11 +123,15 @@ BarWidget {
     property int px: Math.round(Style.font.display * 1.2)
     property bool failed: false
     property bool online: false
+    property int unreadCount: 0
+    property bool badgeEnabled: true
+    property int revision: 0
     signal clicked()
 
     implicitWidth: px
     implicitHeight: px
     onPathChanged: av.failed = false
+    onRevisionChanged: av.failed = false
 
     Rectangle {
       anchors.fill: parent
@@ -140,7 +144,7 @@ BarWidget {
       Image {
         anchors.fill: parent
         visible: !av.failed && av.path !== ""
-        source: av.path !== "" ? root.localFileUrl(av.path) : ""
+        source: av.path !== "" ? root.localFileUrl(av.path) + "?v=" + av.revision : ""
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: false
@@ -178,6 +182,28 @@ BarWidget {
       color: av.online ? "#7dce6a" : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
       border.color: Color.popups.background
       border.width: 1
+    }
+
+    Rectangle {
+      visible: av.badgeEnabled && av.unreadCount > 0
+      width: Math.max(Style.space(14), unreadText.implicitWidth + Style.space(6))
+      height: Style.space(14)
+      radius: height / 2
+      anchors.right: parent.right
+      anchors.top: parent.top
+      color: root.urgent
+      border.color: Color.popups.background
+      border.width: 1
+
+      Text {
+        id: unreadText
+        anchors.centerIn: parent
+        text: av.unreadCount > 99 ? "99+" : String(av.unreadCount)
+        color: Color.popups.background
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
     }
   }
 
@@ -301,11 +327,16 @@ BarWidget {
       return
     root.showJoin = false
     root.chatPickerOpen = false
+    root.inviteOpen = false
     root.moreOpen = false
     root.moreSection = ""
     root.themeOpen = false
+    root.safetyCodeVisible = false
+    root.safetyCopied = false
+    root.copied = false
     root.nospamConfirm = false
     root.removeContactConfirm = false
+    root.nicknameEditOpen = false
     root.opened = false
     if (bar && typeof bar.releasePopout === "function") {
       var screenName = popup.screen ? String(popup.screen.name || "") : ""
@@ -451,6 +482,7 @@ BarWidget {
       return
     omaq.lastConversation = String(id)
     omaq.lastDirectId = String(id)
+    omaq.clearUnread(String(id))
     if (chatSurface)
       chatSurface.ensureCard(String(id), name || "")
     root.close()
@@ -687,7 +719,7 @@ BarWidget {
 
         Rectangle {
           id: unreadBadge
-          visible: omaq.unreadCount > 0
+          visible: omaq.unreadCount > 0 && (!root.settings || root.settings.notifyBadge !== false)
           anchors.verticalCenter: parent.verticalCenter
           anchors.verticalCenterOffset: -6
           anchors.horizontalCenter: parent.horizontalCenter
@@ -1075,6 +1107,15 @@ BarWidget {
               accent: root.chatTheme === "system" ? Color.accent : Model.themeFor(root.chatTheme).accent
               onClicked: root.themeOpen = !root.themeOpen
             }
+            ActionButton {
+              Layout.fillWidth: true
+              iconText: chatSurface && chatSurface.muted ? "notifications_off" : "notifications"
+              iconFontFamily: "Material Symbols Rounded"
+              text: chatSurface && chatSurface.muted ? "Unmute" : "Mute"
+              tooltipText: "Mute notification sound"
+              selected: chatSurface && chatSurface.muted
+              onClicked: if (chatSurface) chatSurface.toggleMute()
+            }
           }
 
           Column {
@@ -1136,6 +1177,7 @@ BarWidget {
               AvatarPic {
                 path: omaq.selfAvatar
                 online: omaq.selfOnline
+                revision: omaq.avatarTick
                 onClicked: root.pickSelfAvatar()
               }
               Column {
@@ -1237,6 +1279,9 @@ BarWidget {
                 AvatarPic {
                   path: modelData && modelData.avatar ? String(modelData.avatar) : ""
                   online: !!(modelData && modelData.online)
+                  unreadCount: omaq.unreadFor(modelData ? modelData.id : "")
+                  badgeEnabled: !root.settings || root.settings.notifyBadge !== false
+                  revision: omaq.avatarTick
                   onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
                 }
 

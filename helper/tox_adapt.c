@@ -429,7 +429,11 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 		return NULL;
 	}
 	tox_options_default(opt);
+	/* Prefer direct UDP, including LAN discovery/hole punching. TCP relays
+	 * remain available as a fallback when NAT or firewall policy requires it. */
+	tox_options_set_udp_enabled(opt, true);
 	tox_options_set_local_discovery_enabled(opt, true);
+	tox_options_set_hole_punching_enabled(opt, true);
 	save_path(home, path, sizeof(path));
 	f = fopen(path, "rb");
 	if (f && fstat(fileno(f), &st) == 0 && st.st_size > 0) {

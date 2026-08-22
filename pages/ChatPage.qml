@@ -15,8 +15,15 @@ Item {
   property string conversation: ""
   property string peerName: ""
   property string peerAvatar: ""
+  property int peerAvatarRevision: 0
   property bool peerAvatarFailed: false
   property bool peerOnline: false
+  onPeerAvatarRevisionChanged: root.peerAvatarFailed = false
+  property color peerNameColor: theme.accent || Color.accent
+  property color peerStatusColor: theme.accent || Color.accent
+  property bool autoOpenEnabled: true
+  property bool clearConfirm: false
+  signal autoOpenToggled()
   property bool terminalLook: false
   property bool pulseUnread: false
   property bool showFile: false
@@ -116,6 +123,64 @@ Item {
     fontSize: Style.font.body
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(4)
+  }
+
+  component ContextMenuItem: Controls.MenuItem {
+    id: contextItem
+    property string materialIcon: ""
+    implicitHeight: Style.space(32)
+    leftPadding: Style.space(8)
+    rightPadding: Style.space(8)
+    topPadding: Style.space(4)
+    bottomPadding: Style.space(4)
+
+    background: Rectangle {
+      radius: Style.cornerRadius
+      color: contextItem.highlighted
+        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+        : "transparent"
+      border.color: contextItem.highlighted
+        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
+        : "transparent"
+      border.width: contextItem.highlighted ? 1 : 0
+    }
+
+    contentItem: RowLayout {
+      spacing: Style.space(8)
+
+      Text {
+        Layout.preferredWidth: Style.font.icon
+        horizontalAlignment: Text.AlignHCenter
+        text: contextItem.materialIcon
+        visible: contextItem.materialIcon !== ""
+        color: !contextItem.enabled ? Qt.darker(root.fg, 1.6) :
+          (contextItem.highlighted ? root.accent : root.fg)
+        font.family: "Material Symbols Rounded"
+        font.pixelSize: Style.font.icon
+        font.variableAxes: ({ "FILL": 0, "wght": 500 })
+        renderType: Text.QtRendering
+      }
+
+      Text {
+        Layout.fillWidth: true
+        text: contextItem.text
+        color: !contextItem.enabled ? Qt.darker(root.fg, 1.6) :
+          (contextItem.highlighted ? root.accent : root.fg)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        elide: Text.ElideRight
+      }
+
+      Text {
+        visible: !!contextItem.subMenu
+        text: "chevron_right"
+        color: contextItem.highlighted ? root.accent : Qt.darker(root.fg, 1.35)
+        font.family: "Material Symbols Rounded"
+        font.pixelSize: Style.font.icon
+        font.variableAxes: ({ "FILL": 0, "wght": 500 })
+        renderType: Text.QtRendering
+      }
+    }
   }
 
   component FormatBtn: ChatBtn {
@@ -416,6 +481,13 @@ Item {
     input.text = ""
   }
 
+  function clearChat() {
+    if (!root.conversation || root.demo || !root.service)
+      return
+    root.clearConfirm = false
+    root.service.clearHistory(root.conversation)
+  }
+
   function forwardMessage(target, text) {
     var conversation = String(target || "")
     var value = String(text || "")
@@ -441,12 +513,12 @@ Item {
     return String(conv) === String(root.conversation)
   }
 
-  function applyHistory(items) {
+  function applyHistory(items, cleared) {
     var keep = []
     var i, j, it, dir, found
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
-      if (existing && existing.local)
+      if (!cleared && existing && existing.local)
         keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, deleted: !!existing.deleted, edited: !!existing.edited, local: true, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
@@ -488,7 +560,9 @@ Item {
     var longest = 0
     for (var i = 0; i < sourceLines.length; i++)
       longest = Math.max(longest, sourceLines[i].length)
-    var estimated = longest * root.smileTextPx * 0.62 + Style.space(16)
+    // Size from the complete logical line, not a single-word minimum. This
+    // keeps short three-word messages on one line when the window allows it.
+    var estimated = longest * root.smileTextPx * 0.72 + Style.space(24)
     if (withReceipt)
       estimated += Style.space(18)
     var minimum = hasCode ? Style.space(180) : Style.space(52)
@@ -544,8 +618,10 @@ Item {
       }
     }
     root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, deleted: false, edited: false, local: dir === "out", pending: false, ack: dir === "out" ? 1 : -1 })
-    if (dir === "in" && service.lastChatId)
+    if (dir === "in" && service.lastChatId) {
       service.sendReceipt(root.conversation, service.lastChatId, "read")
+      service.clearUnread(root.conversation)
+    }
     list.positionViewAtEnd()
   }
 
@@ -760,6 +836,43 @@ Item {
     }
   }
 
+  Controls.Menu {
+    id: composerMenu
+    padding: Style.space(4)
+    delegate: ContextMenuItem {}
+
+    background: Rectangle {
+      radius: Style.cornerRadius
+      color: Qt.darker(root.bg, 1.08)
+      border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+      border.width: 1
+    }
+
+    ContextMenuItem {
+      text: "Cut"
+      materialIcon: "content_cut"
+      enabled: input.selectedText !== ""
+      onTriggered: input.cut()
+    }
+    ContextMenuItem {
+      text: "Copy"
+      materialIcon: "content_copy"
+      enabled: input.selectedText !== ""
+      onTriggered: input.copy()
+    }
+    ContextMenuItem {
+      text: "Paste"
+      materialIcon: "content_paste"
+      onTriggered: input.paste()
+    }
+    ContextMenuItem {
+      text: "Select all"
+      materialIcon: "select_all"
+      enabled: input.text !== ""
+      onTriggered: input.selectAll()
+    }
+  }
+
   Connections {
     target: root.service
     enabled: !root.demo && root.service !== null
@@ -791,7 +904,7 @@ Item {
     function onHistoryTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastHistoryConv))
         return
-      root.applyHistory(root.service.lastHistoryItems)
+      root.applyHistory(root.service.lastHistoryItems, root.service.lastHistoryCleared)
     }
     function onLastErrorTickChanged() {
       root.failPending()
@@ -810,6 +923,7 @@ Item {
 
   onConversationChanged: {
     root.stopTyping()
+    root.clearConfirm = false
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
       root.service.requestHistory(root.conversation)
@@ -848,7 +962,7 @@ Item {
           Image {
             anchors.fill: parent
             visible: root.peerAvatar !== "" && !root.peerAvatarFailed
-            source: root.peerAvatar !== "" ? root.localFileUrl(root.peerAvatar) : ""
+            source: root.peerAvatar !== "" ? root.localFileUrl(root.peerAvatar) + "?v=" + root.peerAvatarRevision : ""
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
             cache: false
@@ -871,16 +985,10 @@ Item {
         }
 
         Text {
+          visible: root.demo
           Layout.fillWidth: true
-          text: {
-            if (root.demo)
-              return "DEMO"
-            var n = root.peerName || root.conversation || "chat"
-            if (root.peerTyping)
-              return n + " · typing…"
-            return n + (root.peerOnline ? " · online" : " · offline")
-          }
-          color: root.demo ? root.accent : Qt.darker(root.fg, 1.4)
+          text: "DEMO"
+          color: root.peerNameColor
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
@@ -888,6 +996,68 @@ Item {
           elide: Text.ElideRight
         }
 
+        Text {
+          visible: !root.demo
+          Layout.fillWidth: true
+          text: root.peerName || root.conversation || "chat"
+          color: root.peerNameColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.2
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: !root.demo
+          text: root.peerTyping ? "typing…" : (root.peerOnline ? "online" : "offline")
+          color: root.peerStatusColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        FormatBtn {
+          visible: !root.demo && String(root.conversation || "").charAt(0) !== "g"
+          materialIcon: root.autoOpenEnabled ? "notifications" : "notifications_off"
+          tooltipText: root.autoOpenEnabled
+            ? "Open automatically on new messages"
+            : "Badge and sound only"
+          selected: !root.autoOpenEnabled
+          onClicked: root.autoOpenToggled()
+        }
+
+        Text {
+          visible: root.clearConfirm
+          text: "Clear this chat?"
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        FormatBtn {
+          visible: !root.demo && root.clearConfirm
+          materialIcon: "close"
+          tooltipText: "Cancel"
+          onClicked: root.clearConfirm = false
+        }
+
+        FormatBtn {
+          visible: !root.demo && root.clearConfirm
+          materialIcon: "check"
+          tooltipText: "Clear this chat"
+          selected: true
+          onClicked: root.clearChat()
+        }
+
+        FormatBtn {
+          visible: !root.demo && !root.clearConfirm
+          materialIcon: "delete_sweep"
+          tooltipText: "Clear messages in this chat"
+          onClicked: root.clearConfirm = true
+        }
       }
 
       ListView {
@@ -1006,23 +1176,36 @@ Item {
 
             Controls.Menu {
               id: messageMenu
+              padding: Style.space(4)
+              delegate: ContextMenuItem {}
 
-              Controls.MenuItem {
+              background: Rectangle {
+                radius: Style.cornerRadius
+                color: Qt.darker(root.bg, 1.08)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+                border.width: 1
+              }
+
+              ContextMenuItem {
                 text: "Copy"
+                materialIcon: "content_copy"
                 onTriggered: root.copyText(line.contextText)
               }
-              Controls.MenuItem {
+              ContextMenuItem {
                 text: "Reply"
+                materialIcon: "reply"
                 enabled: !!line.contextId && !line.deleted
                 onTriggered: root.beginReply(line.contextId, line.contextText)
               }
-              Controls.MenuItem {
+              ContextMenuItem {
                 text: "Edit"
+                materialIcon: "edit"
                 visible: model.dir === "out" && !!line.contextId && !line.deleted
                 onTriggered: root.beginEdit(line.contextId, line.contextText)
               }
-              Controls.MenuItem {
+              ContextMenuItem {
                 text: "Delete"
+                materialIcon: "delete"
                 visible: model.dir === "out" && !!line.contextId && !line.deleted
                 onTriggered: {
                   if (root.service)
@@ -1032,10 +1215,21 @@ Item {
               Controls.Menu {
                 title: "Forward"
                 enabled: root.service && root.service.friends && root.service.friends.length > 0
+                padding: Style.space(4)
+                delegate: ContextMenuItem {
+                  materialIcon: "send"
+                }
+                background: Rectangle {
+                  radius: Style.cornerRadius
+                  color: Qt.darker(root.bg, 1.08)
+                  border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+                  border.width: 1
+                }
                 Repeater {
                   model: root.service ? root.service.friends : []
-                  delegate: Controls.MenuItem {
+                  delegate: ContextMenuItem {
                     required property var modelData
+                    materialIcon: "person"
                     text: modelData && modelData.name ? String(modelData.name) : ("Friend " + String(modelData ? modelData.id : ""))
                     onTriggered: {
                       if (modelData)
@@ -1333,32 +1527,47 @@ Item {
               onClicked: root.attachFile()
             }
 
-            Controls.TextArea {
-              id: input
+            Item {
+              id: inputBox
               Layout.fillWidth: true
               Layout.minimumHeight: Style.space(30)
-              Layout.preferredHeight: Math.min(Style.space(84), Math.max(Style.space(30), contentHeight + Style.space(12)))
-              color: root.fg
-              selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-              selectedTextColor: root.fg
-              placeholderTextColor: Qt.darker(root.fg, 1.6)
-              font.family: root.fontFamily
-              font.pixelSize: root.smileTextPx
-              font.hintingPreference: Font.PreferNoHinting
-              wrapMode: TextEdit.Wrap
-              placeholderText: root.demo ? "Demo message" : "Message (Ctrl+Enter to send)"
-              onTextChanged: root.updateTyping()
-              persistentSelection: true
-              background: BorderSurface {
-                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-                borderSpec: Border.controlSpec(input.activeFocus ? "focus" : "normal", root.fg, root.accent)
-                radius: Style.cornerRadius
+              Layout.preferredHeight: Math.min(Style.space(84), Math.max(Style.space(30), input.contentHeight + Style.space(12)))
+
+              Controls.TextArea {
+                id: input
+                anchors.fill: parent
+                color: root.fg
+                selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                selectedTextColor: root.fg
+                placeholderTextColor: Qt.darker(root.fg, 1.6)
+                font.family: root.fontFamily
+                font.pixelSize: root.smileTextPx
+                font.hintingPreference: Font.PreferNoHinting
+                wrapMode: TextEdit.Wrap
+                placeholderText: root.demo ? "Demo message" : "Message (Ctrl+Enter to send)"
+                onTextChanged: root.updateTyping()
+                persistentSelection: true
+                background: BorderSurface {
+                  color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
+                  borderSpec: Border.controlSpec(input.activeFocus ? "focus" : "normal", root.fg, root.accent)
+                  radius: Style.cornerRadius
+                }
+                Keys.onPressed: function(event) {
+                  if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
+                      (event.modifiers & Qt.ControlModifier)) {
+                    root.send()
+                    event.accepted = true
+                  }
+                }
               }
-              Keys.onPressed: function(event) {
-                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
-                    (event.modifiers & Qt.ControlModifier)) {
-                  root.send()
-                  event.accepted = true
+
+              MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.RightButton
+                z: 10
+                onPressed: {
+                  input.forceActiveFocus()
+                  composerMenu.popup()
                 }
               }
             }

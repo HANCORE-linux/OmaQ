@@ -310,6 +310,24 @@ int omaq_store_update_message(const char *home, const char *conv_id, const char 
 	return result > 0 ? 0 : -2;
 }
 
+int omaq_store_clear(const char *home, const char *conv_id)
+{
+	char dir[512], path[576], rot[580];
+	int rc = 0;
+
+	if (hist_dir(home, conv_id, dir, sizeof(dir)) != 0 ||
+	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	if (unlink(path) != 0 && errno != ENOENT)
+		rc = -1;
+	if (unlink(rot) != 0 && errno != ENOENT)
+		rc = -1;
+	if (rmdir(dir) != 0 && errno != ENOENT && errno != ENOTEMPTY)
+		rc = -1;
+	return rc;
+}
+
 int omaq_store_append(const char *home, const char *conv_id, const char *line)
 {
 	char dir[512], path[576], rot[580];

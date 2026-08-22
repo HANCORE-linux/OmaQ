@@ -6,6 +6,8 @@
 /* Only this module opens history files. */
 
 int omaq_store_append(const char *home, const char *conv_id, const char *line);
+/* Removes current and rotated history for exactly one conversation. */
+int omaq_store_clear(const char *home, const char *conv_id);
 /* Updates an outgoing message in place; returns -2 when id is not owned/found. */
 int omaq_store_update_message(const char *home, const char *conv_id, const char *id,
 			       const char *text, int deleted, const char *expected_from);

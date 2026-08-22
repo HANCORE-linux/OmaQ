@@ -5,7 +5,9 @@ import Quickshell.Io
 Item {
   id: root
   property var settings: ({})
+  property bool muted: false
   property int unreadCount: 0
+  property var unreadByConversation: ({})
   property string statusText: "OmaQ"
   property string lastError: ""
   property string lastErrorConv: ""
@@ -37,6 +39,7 @@ Item {
   property string lastChatConv: ""
   property int messageTick: 0
   property var lastHistoryItems: []
+  property bool lastHistoryCleared: false
   property string lastHistoryConv: ""
   property int historyTick: 0
   property bool peerTyping: false
@@ -68,6 +71,7 @@ Item {
   property var searchItems: []
   property int searchTick: 0
   property string selfAvatar: ""
+  property int avatarTick: 0
   property string selfNickname: ""
   property int nicknameTick: 0
   property bool selfOnline: false
@@ -83,12 +87,20 @@ Item {
     return d + "/omaq-invite.png"
   }
 
+  function localUnreadTotal() {
+    var total = 0
+    var key
+    for (key in root.unreadByConversation)
+      total += Number(root.unreadByConversation[key] || 0)
+    return total
+  }
+
   function handleLine(line) {
     var ev
     try { ev = JSON.parse(line) } catch (e) { return }
     if (ev.event === "snapshot") {
       if (ev.unread !== undefined)
-        root.unreadCount = ev.unread
+        root.unreadCount = root.localUnreadTotal() > 0 ? root.localUnreadTotal() : ev.unread
       if (ev.addr)
         root.lastAddr = ev.addr
       if (ev.locked !== undefined)
@@ -146,6 +158,7 @@ Item {
     if (ev.event === "avatar") {
       var id = ev.id || ""
       var path = ev.path || ""
+      root.avatarTick = root.avatarTick + 1
       if (id === "self") {
         root.selfAvatar = path
       } else if (id) {
@@ -173,8 +186,17 @@ Item {
       root.lastChatId = String(ev.id || "")
       root.lastChatReply = String(ev.reply || "")
       root.lastChatDir = ev.dir === "out" ? "out" : "in"
-      if (root.lastChatDir !== "out")
+      if (root.lastChatDir !== "out") {
         root.unreadCount = root.unreadCount + 1
+        var unreadNext = {}
+        var unreadKey
+        for (unreadKey in root.unreadByConversation)
+          unreadNext[unreadKey] = root.unreadByConversation[unreadKey]
+        var unreadConv = String(ev.conversation || root.lastConversation || "")
+        if (unreadConv)
+          unreadNext[unreadConv] = Number(unreadNext[unreadConv] || 0) + 1
+        root.unreadByConversation = unreadNext
+      }
       if (ev.conversation) {
         root.lastConversation = ev.conversation
         if (String(ev.conversation).charAt(0) !== "g")
@@ -199,6 +221,7 @@ Item {
       root.updateTick = root.updateTick + 1
     }
     if (ev.event === "history") {
+      root.lastHistoryCleared = !!ev.cleared
       root.lastHistoryConv = ev.conversation || ""
       root.lastHistoryItems = ev.items || []
       root.historyTick = root.historyTick + 1
@@ -375,8 +398,33 @@ Item {
     sendOp({ op: "nickname.set", nickname: nickname })
     return true
   }
+  function toggleMute() {
+    root.muted = !root.muted
+  }
+
+  function unreadFor(conv) {
+    var key = String(conv || "")
+    return Number(root.unreadByConversation[key] || 0)
+  }
+
+  function clearUnread(conv) {
+    var key = String(conv || "")
+    if (!key || !root.unreadByConversation[key])
+      return
+    var next = {}
+    var current
+    for (current in root.unreadByConversation) {
+      if (current !== key)
+        next[current] = root.unreadByConversation[current]
+    }
+    root.unreadCount = Math.max(0, root.unreadCount - Number(root.unreadByConversation[key] || 0))
+    root.unreadByConversation = next
+  }
+
   function requestHistory(conv) {
-    sendOp({ op: "history", conversation: conv || root.lastConversation, limit: 50 })
+    var c = String(conv || root.lastConversation || "")
+    root.clearUnread(c)
+    sendOp({ op: "history", conversation: c, limit: 50 })
   }
   function editMessage(conv, id, text) {
     var c = String(conv || root.lastConversation || "")
@@ -392,6 +440,12 @@ Item {
     if (!c || !messageId)
       return
     sendOp({ op: "message.delete", conversation: c, id: messageId })
+  }
+  function clearHistory(conv) {
+    var c = String(conv || root.lastConversation || "")
+    if (!c)
+      return
+    sendOp({ op: "history.clear", conversation: c })
   }
   function sendReceipt(conv, id, state) {
     var c = String(conv || root.lastConversation || "")

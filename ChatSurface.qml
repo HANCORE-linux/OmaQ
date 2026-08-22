@@ -26,6 +26,25 @@ Item {
   property bool surfacesHydrated: false
   property string pulseConv: ""
   property bool demoOpen: false
+  readonly property bool muted: service ? service.muted : false
+  property var autoOpenByConversation: ({})
+  property bool autoOpenLoaded: false
+  property var pendingIncoming: []
+  property bool autoOpenSavePending: false
+  property var pendingAutoOpenToggles: []
+  property var autoOpenPersisted: ({})
+  property var autoOpenSaveSnapshot: ({})
+
+  readonly property string autoOpenPath: service
+    ? service.stateDir + "/auto-open.json"
+    : (Quickshell.env("HOME") + "/.local/state/omaq/auto-open.json")
+  readonly property var visualTokens: root.bar && "visualTokens" in root.bar
+    ? root.bar.visualTokens : null
+  readonly property var paletteState: visualTokens ? visualTokens.stateService : null
+  readonly property string notificationConversation: service
+    ? String(service.lastChatConv || service.lastConversation || "") : ""
+  readonly property color headerNameColor: root.paletteColor("color03", root.theme().accent || Color.accent)
+  readonly property color headerStatusColor: root.paletteColor("color02", root.theme().accent || Color.accent)
 
   function setting(name, fallback) {
     var s = settings || (service ? service.settings : {})
@@ -57,13 +76,119 @@ Item {
     floatOmaQTimer.restart()
   }
 
-  function friendName(conv) {
+  function paletteColor(id, fallback) {
+    if (root.paletteState && typeof root.paletteState.paletteColor === "function")
+      return root.paletteState.paletteColor(id)
+    return fallback
+  }
+
+  function friendData(conv) {
     var list = service ? (service.friends || []) : []
     var i
-    for (i = 0; i < list.length; i++)
+    for (i = 0; i < list.length; i++) {
       if (String(list[i].id) === String(conv))
-        return list[i].name || ""
-    return ""
+        return list[i]
+    }
+    return null
+  }
+
+  function friendName(conv) {
+    var friend = root.friendData(conv)
+    return friend && friend.name ? String(friend.name) : ""
+  }
+
+  function friendLabel(conv, fallback) {
+    var key = String(conv || "")
+    var name = root.friendName(key)
+    if (name)
+      return name
+    if (fallback)
+      return String(fallback)
+    return key && key.charAt(0) !== "g" ? "Friend " + key : key
+  }
+
+  function friendAvatar(conv) {
+    var friend = root.friendData(conv)
+    return friend && friend.avatar ? String(friend.avatar) : ""
+  }
+
+  function friendOnline(conv) {
+    var friend = root.friendData(conv)
+    return !!(friend && friend.online)
+  }
+
+  function autoOpenFor(conv) {
+    var key = String(conv || "")
+    return key !== "" && key.charAt(0) !== "g"
+      ? root.autoOpenByConversation[key] !== false : true
+  }
+
+  function cloneAutoOpen(value) {
+    try { return JSON.parse(JSON.stringify(value || {})) } catch (e) { return ({}) }
+  }
+
+  function loadAutoOpen(raw) {
+    var parsed
+    try { parsed = JSON.parse(String(raw || "")) } catch (e) { parsed = null }
+    if (!parsed || typeof parsed !== "object") {
+      root.autoOpenByConversation = ({})
+      root.autoOpenPersisted = ({})
+      return
+    }
+    var users = parsed.users && typeof parsed.users === "object" ? parsed.users : parsed
+    root.autoOpenByConversation = users || ({})
+    root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenByConversation)
+  }
+
+  function queueAutoOpenSave() {
+    if (root.autoOpenSavePending)
+      return
+    root.autoOpenSavePending = true
+    root.autoOpenSaveSnapshot = root.cloneAutoOpen(root.autoOpenByConversation)
+    autoOpenFile.setText(JSON.stringify({ version: 1, users: root.autoOpenSaveSnapshot }, null, 2) + "\n")
+  }
+
+  function finishAutoOpenSave() {
+    root.autoOpenSavePending = false
+    root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenSaveSnapshot)
+    if (JSON.stringify(root.autoOpenByConversation) !== JSON.stringify(root.autoOpenSaveSnapshot))
+      root.queueAutoOpenSave()
+  }
+
+  function failAutoOpenSave() {
+    root.autoOpenSavePending = false
+    root.autoOpenByConversation = root.cloneAutoOpen(root.autoOpenPersisted)
+  }
+
+  function finishAutoOpenLoad(raw) {
+    root.loadAutoOpen(raw)
+    root.autoOpenLoaded = true
+    var toggles = root.pendingAutoOpenToggles.slice()
+    root.pendingAutoOpenToggles = []
+    for (var t = 0; t < toggles.length; t++)
+      root.toggleAutoOpen(toggles[t])
+    var queued = root.pendingIncoming.slice()
+    root.pendingIncoming = []
+    for (var i = 0; i < queued.length; i++)
+      root.onIncoming(queued[i])
+  }
+
+  function toggleAutoOpen(conv) {
+    var key = String(conv || "")
+    if (!key || key.charAt(0) === "g")
+      return
+    if (!root.autoOpenLoaded) {
+      if (root.pendingAutoOpenToggles.indexOf(key) === -1)
+        root.pendingAutoOpenToggles.push(key)
+      return
+    }
+    var next = {}
+    var current
+    for (current in root.autoOpenByConversation)
+      next[current] = root.autoOpenByConversation[current]
+    next[key] = !root.autoOpenFor(key)
+    root.autoOpenByConversation = next
+    root.queueAutoOpenSave()
   }
 
   function restoreSurfaces() {
@@ -220,8 +345,15 @@ Item {
     service.sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
   }
 
+  function toggleMute() {
+    if (root.service && typeof root.service.toggleMute === "function")
+      root.service.toggleMute()
+    if (root.muted)
+      sndProc.running = false
+  }
+
   function playSound() {
-    if (soundName === "off" || soundName === "")
+    if (root.muted || soundName === "off" || soundName === "")
       return
     var path = soundCustom
     if (soundName === "icq-message")
@@ -247,11 +379,19 @@ Item {
   }
 
   function onIncoming(conv) {
-    ensureCard(conv)
+    var key = String(conv || "")
+    if (!root.autoOpenLoaded) {
+      if (key && root.pendingIncoming.indexOf(key) === -1)
+        root.pendingIncoming.push(key)
+      return
+    }
+    if (root.autoOpenFor(key))
+      ensureCard(key)
     if (animateUnread)
       pulseConv = conv
     playSound()
-    desktopNotify()
+    if (root.autoOpenFor(conv))
+      desktopNotify()
   }
 
   Connections {
@@ -262,6 +402,22 @@ Item {
     }
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
+  }
+
+  FileView {
+    id: autoOpenFile
+    path: root.autoOpenPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onFileChanged: if (!root.autoOpenSavePending) reload()
+    onLoaded: if (!root.autoOpenSavePending) root.finishAutoOpenLoad(text())
+    onLoadFailed: if (!root.autoOpenSavePending) root.finishAutoOpenLoad("")
+    onSaved: root.finishAutoOpenSave()
+    onSaveFailed: {
+      console.warn("OmaQ: could not save per-contact auto-open settings")
+      root.failAutoOpenSave()
+    }
   }
 
   Process { id: sndProc }
@@ -330,6 +486,14 @@ Item {
               service: root.service
               theme: root.theme()
               conversation: card.modelData.conversation
+              peerName: root.friendLabel(card.modelData.conversation)
+              peerAvatar: root.friendAvatar(card.modelData.conversation)
+              peerAvatarRevision: root.service ? root.service.avatarTick : 0
+              peerOnline: root.friendOnline(card.modelData.conversation)
+              peerNameColor: root.headerNameColor
+              peerStatusColor: root.headerStatusColor
+              autoOpenEnabled: root.autoOpenFor(card.modelData.conversation)
+              onAutoOpenToggled: root.toggleAutoOpen(card.modelData.conversation)
               pulseUnread: root.animateUnread && root.pulseConv === card.modelData.conversation
             }
 
@@ -363,7 +527,8 @@ Item {
 
   PanelWindow {
     id: rightDock
-    visible: root.notifyRight && service && service.lastChatText !== ""
+    visible: root.notifyRight && service && service.lastChatText !== "" &&
+      root.autoOpenFor(root.notificationConversation)
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "omaq-dock"
@@ -389,7 +554,15 @@ Item {
         Layout.fillHeight: true
         service: root.service
         theme: root.theme()
-        conversation: service ? service.lastConversation : ""
+        conversation: root.notificationConversation
+        peerName: root.friendLabel(root.notificationConversation)
+        peerAvatar: root.friendAvatar(root.notificationConversation)
+        peerAvatarRevision: root.service ? root.service.avatarTick : 0
+        peerOnline: root.friendOnline(root.notificationConversation)
+        peerNameColor: root.headerNameColor
+        peerStatusColor: root.headerStatusColor
+        autoOpenEnabled: root.autoOpenFor(root.notificationConversation)
+        onAutoOpenToggled: root.toggleAutoOpen(root.notificationConversation)
       }
     }
   }
@@ -449,7 +622,9 @@ Item {
           service: root.service
           theme: root.theme()
           conversation: pinWin.modelData.conversation
-          peerName: pinWin.modelData && pinWin.modelData.name ? pinWin.modelData.name : ""
+          peerName: root.friendLabel(pinWin.modelData ? pinWin.modelData.conversation : "",
+            pinWin.modelData ? pinWin.modelData.name : "")
+          peerAvatarRevision: root.service ? root.service.avatarTick : 0
           peerAvatar: {
             var f = root.service && root.service.friends
             var id = pinWin.modelData ? String(pinWin.modelData.conversation) : ""
@@ -462,18 +637,11 @@ Item {
             }
             return ""
           }
-          peerOnline: {
-            var f = root.service && root.service.friends
-            var id = pinWin.modelData ? String(pinWin.modelData.conversation) : ""
-            var i
-            if (!f || !id)
-              return false
-            for (i = 0; i < f.length; i++) {
-              if (String(f[i].id) === id)
-                return !!f[i].online
-            }
-            return false
-          }
+          peerOnline: root.friendOnline(pinWin.modelData ? pinWin.modelData.conversation : "")
+          peerNameColor: root.headerNameColor
+          peerStatusColor: root.headerStatusColor
+          autoOpenEnabled: root.autoOpenFor(pinWin.modelData ? pinWin.modelData.conversation : "")
+          onAutoOpenToggled: root.toggleAutoOpen(pinWin.modelData ? pinWin.modelData.conversation : "")
         }
       }
     }
@@ -509,6 +677,11 @@ Item {
         Layout.fillWidth: true
         CallToolbar { page: demoPage }
         Item { Layout.fillWidth: true }
+        SurfaceBtn {
+          text: root.muted ? "Unmute" : "Mute"
+          tooltipText: "Mute notification sound"
+          onClicked: root.toggleMute()
+        }
         SurfaceBtn {
           text: "Close"
           onClicked: root.closeDemo()

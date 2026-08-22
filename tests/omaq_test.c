@@ -195,6 +195,8 @@ static void test_store(void)
 		if (omaq_store_append(dir, "c1", line) != 0)
 			fail("store append");
 	}
+	if (omaq_store_append(dir, "c2", "{\"keep\":true}") != 0)
+		fail("store second conversation");
 	if (omaq_store_tail(dir, "c1", 2, &out, &n) != 0)
 		fail("store tail");
 	else if (!out || !strstr(out, "\"n\":3") || !strstr(out, "\"n\":4") || strstr(out, "\"n\":2"))
@@ -241,6 +243,15 @@ static void test_store(void)
 		else if (!out2 || !strstr(out2, "\"n\":99") || !strstr(out2, "say \\\"hi\\\""))
 			fail("store tail rotated content");
 		free(out2);
+	}
+	if (omaq_store_clear(dir, "c1") != 0)
+		fail("store clear return");
+	else {
+		char c1[640], c2[640];
+		snprintf(c1, sizeof(c1), "%s/history/c1/messages.jsonl", dir);
+		snprintf(c2, sizeof(c2), "%s/history/c2/messages.jsonl", dir);
+		if (access(c1, F_OK) == 0 || access(c2, F_OK) != 0)
+			fail("store clear scope");
 	}
 }
 

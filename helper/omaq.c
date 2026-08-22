@@ -91,17 +91,46 @@ static const char *state_dir(void)
 	return h && h[0] ? h : NULL;
 }
 
-static int direct_id_ok(const char *id)
+static int decimal_u32(const char *text, uint32_t *out)
 {
+	uint64_t value = 0;
 	size_t i;
 
-	if (!id || !id[0])
+	if (!text || !text[0] || (text[0] == '0' && text[1]))
 		return 0;
-	for (i = 0; id[i]; i++) {
-		if (id[i] < '0' || id[i] > '9')
+	for (i = 0; text[i]; i++) {
+		uint32_t digit;
+		if (text[i] < '0' || text[i] > '9')
 			return 0;
+		digit = (uint32_t)(text[i] - '0');
+		if (value > (UINT32_MAX - digit) / 10u)
+			return 0;
+		value = value * 10u + digit;
 	}
+	if (out)
+		*out = (uint32_t)value;
 	return 1;
+}
+
+static int direct_id_ok(const char *id)
+{
+	return decimal_u32(id, NULL);
+}
+
+static uint32_t direct_id_number(const char *id)
+{
+	uint32_t value = 0;
+	(void)decimal_u32(id, &value);
+	return value;
+}
+
+static int conversation_id_ok(const char *id)
+{
+	uint32_t group_number;
+
+	if (direct_id_ok(id))
+		return 1;
+	return id && id[0] == 'g' && omaq_group_id_parse(id, &group_number) == 0;
 }
 
 static int take_lock(void)
@@ -891,6 +920,7 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 		snprintf(conv, sizeof(conv), "%u", friend);
 		if (omaq_avatar_is_dest(home_dir(), dest)) {
 			emit_avatar(conv, dest);
+			emit_friends();
 			return;
 		}
 		omaq_message_append(home_dir(), conv, "peer", dest, "in");
@@ -1116,7 +1146,7 @@ static int handle_op(const omaq_op *op)
 				}
 				if (op->id[0] &&
 				    omaq_group_invite_friend(g_tox, op->group,
-							     (uint32_t)atoi(op->id),
+							     direct_id_number(op->id),
 							     self, granted) != 0) {
 					emit_error("forbidden");
 					return 0;
@@ -1374,7 +1404,7 @@ static int handle_op(const omaq_op *op)
 				emit_error("unsupported");
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 			if (omaq_tox_friend_delete(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
@@ -1488,7 +1518,11 @@ static int handle_op(const omaq_op *op)
 			omaq_role self = ROLE_MEMBER;
 			omaq_role next = ROLE_MEMBER;
 			const char *gid = op->group[0] ? op->group : op->conversation;
-			uint32_t peer = (uint32_t)atoi(op->member[0] ? op->member : (op->id[0] ? op->id : "0"));
+			uint32_t peer;
+			if (!decimal_u32(op->member[0] ? op->member : (op->id[0] ? op->id : "0"), &peer)) {
+				emit_error("forbidden");
+				return 0;
+			}
 			if (op->role[0] && omaq_role_parse(op->role, &next) != 0) {
 				emit_error("unsupported");
 				return 0;
@@ -1511,7 +1545,11 @@ static int handle_op(const omaq_op *op)
 			omaq_role self = ROLE_MEMBER;
 			omaq_role victim = ROLE_MEMBER;
 			const char *gid = op->group[0] ? op->group : op->conversation;
-			uint32_t peer = (uint32_t)atoi(op->member[0] ? op->member : (op->id[0] ? op->id : "0"));
+			uint32_t peer;
+			if (!decimal_u32(op->member[0] ? op->member : (op->id[0] ? op->id : "0"), &peer)) {
+				emit_error("forbidden");
+				return 0;
+			}
 			uint32_t gnum;
 			if (omaq_group_self_role(g_tox, gid, &self) != 0)
 				self = ROLE_MEMBER;
@@ -1640,7 +1678,7 @@ static int handle_op(const omaq_op *op)
 				emit_error("forbidden");
 				return 0;
 			}
-			emit_safety((uint32_t)atoi(cid));
+			emit_safety(direct_id_number(cid));
 			return 0;
 		}
 #endif
@@ -1651,7 +1689,7 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		if (!g_tox || !direct_id_ok(cid) || !op->has_typing ||
-		    omaq_tox_set_typing(g_tox, (uint32_t)atoi(cid), op->typing) != 0) {
+		    omaq_tox_set_typing(g_tox, direct_id_number(cid), op->typing) != 0) {
 			emit_error_conv("forbidden", cid);
 			return 0;
 		}
@@ -1680,7 +1718,7 @@ static int handle_op(const omaq_op *op)
 				emit_error_conv("unsupported", cid);
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 #ifndef HAVE_SIGNAL
 			emit_error_conv("no_ratchet", cid);
 			return 0;
@@ -1714,7 +1752,7 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_SIGNAL
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		if (!g_tox || !direct_id_ok(cid) || !op->id[0] || !op->state[0] ||
-		    send_receipt_wire((uint32_t)atoi(cid), cid, op->id, op->state) != 0) {
+		    send_receipt_wire(direct_id_number(cid), cid, op->id, op->state) != 0) {
 			emit_error_conv("forbidden", cid);
 			return 0;
 		}
@@ -1749,7 +1787,7 @@ static int handle_op(const omaq_op *op)
 					emit_error_conv("unsupported", cid);
 					return 0;
 				}
-				fn = (uint32_t)atoi(cid);
+				fn = direct_id_number(cid);
 #ifdef HAVE_SIGNAL
 				if (!g_ratchet) {
 					emit_error_conv("no_ratchet", cid);
@@ -1811,6 +1849,23 @@ static int handle_op(const omaq_op *op)
 		}
 #endif
 		emit("{\"event\":\"snapshot\",\"unread\":0,\"conversations\":[]}");
+		return 0;
+	}
+	if (strcmp(op->op, "history.clear") == 0) {
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		char esc_cid[128], ev[192];
+		if (!conversation_id_ok(cid) || omaq_store_clear(home_dir(), cid) != 0) {
+			emit_error_conv("forbidden", cid);
+			return 0;
+		}
+		if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
+			emit("{\"event\":\"history\",\"conversation\":\"0\",\"cleared\":true,\"items\":[]}");
+		else {
+			snprintf(ev, sizeof(ev),
+				 "{\"event\":\"history\",\"conversation\":\"%s\",\"cleared\":true,\"items\":[]}",
+				 esc_cid);
+			emit(ev);
+		}
 		return 0;
 	}
 	if (strcmp(op->op, "history") == 0) {
@@ -1902,7 +1957,7 @@ static int handle_op(const omaq_op *op)
 				emit_error_conv("forbidden", cid);
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0) {
 				emit_file("failed", fn, 0, NULL, 0, NULL);
 				emit_error_conv("unsupported", cid);
@@ -1987,7 +2042,7 @@ static int handle_op(const omaq_op *op)
 				emit_error("forbidden");
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 			if (omaq_av_start(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
@@ -2013,7 +2068,7 @@ static int handle_op(const omaq_op *op)
 				emit_error("forbidden");
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 			if (omaq_av_answer(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
@@ -2039,7 +2094,7 @@ static int handle_op(const omaq_op *op)
 				emit_error("forbidden");
 				return 0;
 			}
-			fn = (uint32_t)atoi(cid);
+			fn = direct_id_number(cid);
 			(void)omaq_av_stop(g_tox, fn);
 			snprintf(ev, sizeof(ev),
 				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}",
