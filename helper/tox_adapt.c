@@ -148,6 +148,50 @@ void omaq_tox_save(struct omaq_tox *t)
 		unlink(tmp);
 }
 
+static int nickname_ok(const char *name)
+{
+	size_t i, n;
+
+	if (!name || !name[0])
+		return -1;
+	n = strlen(name);
+	if (n > TOX_MAX_NAME_LENGTH)
+		return -1;
+	for (i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)name[i];
+		if (c < 0x20 || c == 0x7f)
+			return -1;
+	}
+	return 0;
+}
+
+int omaq_tox_self_name(struct omaq_tox *t, char *out, size_t n)
+{
+	size_t len;
+
+	if (!t || !t->tox || !out || n == 0)
+		return -1;
+	len = tox_self_get_name_size(t->tox);
+	if (len + 1 > n)
+		return -1;
+	if (len > 0)
+		tox_self_get_name(t->tox, (uint8_t *)out);
+	out[len] = '\0';
+	return 0;
+}
+
+int omaq_tox_set_name(struct omaq_tox *t, const char *name)
+{
+	Tox_Err_Set_Info error = TOX_ERR_SET_INFO_OK;
+
+	if (!t || !t->tox || nickname_ok(name) != 0)
+		return -1;
+	if (!tox_self_set_name(t->tox, (const uint8_t *)name, strlen(name), &error))
+		return -1;
+	omaq_tox_save(t);
+	return 0;
+}
+
 static void on_status(Tox *tox, Tox_Connection st, void *ud)
 {
 	struct omaq_tox *t = ud;
@@ -483,10 +527,8 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 			toxav_callback_call_state(t->av, on_av_state, t);
 		}
 	}
-	{
-		static const uint8_t nick[] = "omaq";
-		tox_self_set_name(t->tox, nick, 4, NULL);
-	}
+	if (tox_self_get_name_size(t->tox) == 0)
+		(void)omaq_tox_set_name(t, "omaq");
 	{
 		/* Live nodes from nodes.tox.chat (status_udp+status_tcp).
 		 * TCP ports are outbound-only; no inbound listen required. */

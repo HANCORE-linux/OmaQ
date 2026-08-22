@@ -329,6 +329,8 @@ BarWidget {
       return "File transfer failed."
     if (code === "avatar_failed")
       return "Avatar image is invalid or larger than 512 KiB."
+    if (code === "nickname_invalid")
+      return "Nickname must be 1–128 bytes without control characters."
     return code
   }
 
@@ -1068,6 +1070,37 @@ BarWidget {
                     onClicked: root.pickSelfAvatar()
                   }
                 }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: root.btnGap
+              TokenTextField {
+                id: nicknameField
+                width: parent.width - nicknameButton.implicitWidth - root.btnGap
+                foreground: root.controlForeground
+                placeholderText: "Nickname"
+                maximumLength: 128
+                text: omaq.selfNickname
+                onAccepted: nicknameButton.clicked()
+              }
+              TokenButton {
+                id: nicknameButton
+                width: Style.space(104)
+                text: "Set nickname"
+                focusable: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: nicknameField.text.trim() !== ""
+                onClicked: omaq.setNickname(nicknameField.text)
+              }
+            }
+
+            Connections {
+              target: omaq
+              function onSelfNicknameChanged() {
+                nicknameField.text = omaq.selfNickname
               }
             }
 

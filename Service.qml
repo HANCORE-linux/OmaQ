@@ -68,6 +68,7 @@ Item {
   property var searchItems: []
   property int searchTick: 0
   property string selfAvatar: ""
+  property string selfNickname: ""
   property bool selfOnline: false
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
@@ -99,6 +100,13 @@ Item {
         root.lastError = ""
       if (ev.online !== undefined)
         root.selfOnline = !!ev.online
+      if (ev.nickname !== undefined)
+        root.selfNickname = String(ev.nickname || "")
+    }
+    if (ev.event === "nickname") {
+      root.selfNickname = String(ev.value || "")
+      if (root.lastError !== "helper_down")
+        root.lastError = ""
     }
     if (ev.event === "error") {
       root.lastError = ev.code || "error"
@@ -150,8 +158,10 @@ Item {
       }
     }
     if (ev.event === "identity") {
-      if (ev.op === "unlock")
+      if (ev.op === "unlock") {
         root.locked = false
+        root.sendOp({ op: "status" })
+      }
       if (ev.protected !== undefined)
         root.saveProtected = !!ev.protected
     }
@@ -354,6 +364,12 @@ Item {
   function createInvite() { sendOp({ op: "invite.create", kind: "direct", ttlSec: 86400 }) }
   function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = ""; root.qrPath = "" }
   function setAvatar(path) { sendOp({ op: "avatar.set", path: path }) }
+  function setNickname(value) {
+    var nickname = String(value || "").trim()
+    if (!nickname || nickname.length > 128)
+      return
+    sendOp({ op: "nickname.set", nickname: nickname })
+  }
   function requestHistory(conv) {
     sendOp({ op: "history", conversation: conv || root.lastConversation, limit: 50 })
   }

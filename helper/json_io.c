@@ -201,6 +201,9 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "title") == 0) {
 			if (parse_string(&p, out->title, sizeof(out->title)) != 0)
 				return -1;
+		} else if (strcmp(key, "nickname") == 0) {
+			if (parse_string(&p, out->nickname, sizeof(out->nickname)) != 0)
+				return -1;
 		} else if (strcmp(key, "monitor") == 0) {
 			if (parse_string(&p, out->monitor, sizeof(out->monitor)) != 0)
 				return -1;

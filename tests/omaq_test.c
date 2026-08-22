@@ -163,6 +163,9 @@ static void test_json(void)
 	if (omaq_json_parse_op("{\"op\":\"typing.set\",\"conversation\":\"7\",\"typing\":true}", &op) != 0 ||
 	    !op.has_typing || !op.typing || strcmp(op.conversation, "7") != 0)
 		fail("json typing");
+	if (omaq_json_parse_op("{\"op\":\"nickname.set\",\"nickname\":\"Alice\"}", &op) != 0 ||
+	    strcmp(op.nickname, "Alice") != 0)
+		fail("json nickname");
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
 	if (omaq_json_parse_op("{", &op) == 0)

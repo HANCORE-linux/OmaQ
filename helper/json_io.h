@@ -21,6 +21,7 @@ typedef struct {
 	char state[16];
 	char path[OMAQ_JSON_STR_MAX];
 	char title[80];
+	char nickname[129];
 	char monitor[64];
 	char passphrase[129];
 	int ttl_sec;

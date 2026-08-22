@@ -1008,17 +1008,20 @@ static int handle_op(const omaq_op *op)
 {
 	if (strcmp(op->op, "status") == 0) {
 #ifdef HAVE_TOX
-		char addr[77];
-		char ev[192];
+		char addr[77], nickname[129], escaped_nickname[260];
+		char ev[512];
 		if (g_locked && !g_tox) {
 			emit("{\"event\":\"snapshot\",\"unread\":0,\"locked\":true}");
 			return 0;
 		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
+			if (omaq_tox_self_name(g_tox, nickname, sizeof(nickname)) != 0 ||
+			    omaq_json_escape(nickname, escaped_nickname, sizeof(escaped_nickname)) != 0)
+				escaped_nickname[0] = '\0';
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"unread\":0,\"online\":%s,\"addr\":\"%s\",\"protected\":%s}",
+				 "{\"event\":\"snapshot\",\"unread\":0,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s}",
 				 omaq_tox_online(g_tox) ? "true" : "false", addr,
-				 omaq_identity_protected(g_tox) ? "true" : "false");
+				 escaped_nickname, omaq_identity_protected(g_tox) ? "true" : "false");
 			emit(ev);
 			emit_friends();
 			emit_self_avatar();
@@ -1382,6 +1385,25 @@ static int handle_op(const omaq_op *op)
 			emit_friends();
 			return 0;
 		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "nickname.set") == 0) {
+#ifdef HAVE_TOX
+		char escaped[260], ev[340];
+
+		if (!g_tox || omaq_tox_set_name(g_tox, op->nickname) != 0) {
+			emit_error("nickname_invalid");
+			return 0;
+		}
+		if (omaq_json_escape(op->nickname, escaped, sizeof(escaped)) != 0) {
+			emit_error("nickname_invalid");
+			return 0;
+		}
+		snprintf(ev, sizeof(ev), "{\"event\":\"nickname\",\"value\":\"%s\"}", escaped);
+		emit(ev);
+		return 0;
 #endif
 		emit_error("unsupported");
 		return 0;
