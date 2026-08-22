@@ -128,6 +128,7 @@ Item {
   component ContextMenuItem: Controls.MenuItem {
     id: contextItem
     property string materialIcon: ""
+    implicitWidth: Style.space(220)
     implicitHeight: Style.space(32)
     leftPadding: Style.space(8)
     rightPadding: Style.space(8)
@@ -836,42 +837,62 @@ Item {
     }
   }
 
-  Controls.Menu {
-    id: composerMenu
-    padding: Style.space(4)
-    delegate: ContextMenuItem {}
+    Controls.Menu {
+      id: composerMenu
+      padding: Style.space(4)
 
-    background: Rectangle {
-      radius: Style.cornerRadius
-      color: Qt.darker(root.bg, 1.08)
-      border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
-      border.width: 1
-    }
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Qt.darker(root.bg, 1.08)
+        border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+        border.width: 1
+      }
 
-    ContextMenuItem {
-      text: "Cut"
-      materialIcon: "content_cut"
-      enabled: input.selectedText !== ""
-      onTriggered: input.cut()
+      contentItem: Column {
+        width: parent.width
+        spacing: 0
+
+        ContextMenuItem {
+          width: parent.width
+          text: "Cut"
+          materialIcon: "content_cut"
+          enabled: input.selectedText !== ""
+          onTriggered: {
+            input.cut()
+            composerMenu.close()
+          }
+        }
+        ContextMenuItem {
+          width: parent.width
+          text: "Copy"
+          materialIcon: "content_copy"
+          enabled: input.selectedText !== ""
+          onTriggered: {
+            input.copy()
+            composerMenu.close()
+          }
+        }
+        ContextMenuItem {
+          width: parent.width
+          text: "Paste"
+          materialIcon: "content_paste"
+          onTriggered: {
+            input.paste()
+            composerMenu.close()
+          }
+        }
+        ContextMenuItem {
+          width: parent.width
+          text: "Select all"
+          materialIcon: "select_all"
+          enabled: input.text !== ""
+          onTriggered: {
+            input.selectAll()
+            composerMenu.close()
+          }
+        }
+      }
     }
-    ContextMenuItem {
-      text: "Copy"
-      materialIcon: "content_copy"
-      enabled: input.selectedText !== ""
-      onTriggered: input.copy()
-    }
-    ContextMenuItem {
-      text: "Paste"
-      materialIcon: "content_paste"
-      onTriggered: input.paste()
-    }
-    ContextMenuItem {
-      text: "Select all"
-      materialIcon: "select_all"
-      enabled: input.text !== ""
-      onTriggered: input.selectAll()
-    }
-  }
 
   Connections {
     target: root.service
@@ -1001,16 +1022,6 @@ Item {
           font.pixelSize: Style.font.caption
           font.letterSpacing: 1.2
           elide: Text.ElideRight
-        }
-
-        FormatBtn {
-          visible: !root.demo && String(root.conversation || "").charAt(0) !== "g"
-          materialIcon: root.autoOpenEnabled ? "open_in_new" : "open_in_new_off"
-          tooltipText: root.autoOpenEnabled
-            ? "Open automatically on new messages"
-            : "Badge and sound only"
-          selected: !root.autoOpenEnabled
-          onClicked: root.autoOpenToggled()
         }
 
         Text {
