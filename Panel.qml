@@ -1108,23 +1108,6 @@ BarWidget {
                     }
                   }
                 }
-                Text {
-                  text: omaq.selfOnline ? "Online" : "Offline"
-                  color: omaq.selfOnline ? root.foreground : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-                Text {
-                  text: "Set avatar"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.pickSelfAvatar()
-                  }
-                }
               }
             }
 
