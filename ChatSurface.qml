@@ -605,6 +605,11 @@ Item {
           CallToolbar { page: pinPage }
           Item { Layout.fillWidth: true }
           SurfaceBtn {
+            text: root.muted ? "Unmute" : "Mute"
+            tooltipText: "Mute notification sound"
+            onClicked: root.toggleMute()
+          }
+          SurfaceBtn {
             text: "Close"
             onClicked: {
               var conv = String(pinWin.modelData.conversation)
