@@ -1457,58 +1457,117 @@ Item {
           }
         }
 
-        Flow {
+        Item {
           id: formatFlow
           x: input.x
           width: input.width
-          height: visible ? implicitHeight : 0
-          spacing: Style.space(3)
+          height: visible ? Style.space(30) : 0
           visible: input.text.length > 0
+          clip: true
+          onVisibleChanged: if (!visible) formatFlick.contentX = 0
+
+          Flickable {
+            id: formatFlick
+            anchors.fill: parent
+            clip: true
+            contentWidth: formatRow.width
+            contentHeight: height
+            boundsBehavior: Flickable.StopAtBounds
+            interactive: true
+
+            Row {
+              id: formatRow
+              height: parent.height
+              spacing: Style.space(3)
+
+              FormatBtn {
+                materialIcon: "format_h1"
+                tooltipText: "Heading"
+                onClicked: root.prefixLine("# ")
+              }
+              FormatBtn {
+                materialIcon: "format_bold"
+                tooltipText: "Bold"
+                onClicked: root.wrapSelection("**", "**", "bold")
+              }
+              FormatBtn {
+                materialIcon: "format_italic"
+                tooltipText: "Italic"
+                onClicked: root.wrapSelection("*", "*", "italic")
+              }
+              FormatBtn {
+                materialIcon: "format_quote"
+                tooltipText: "Quote"
+                onClicked: root.prefixLine("> ")
+              }
+              FormatBtn {
+                materialIcon: "code"
+                tooltipText: "Code"
+                onClicked: root.formatCode()
+              }
+              FormatBtn {
+                materialIcon: "link"
+                tooltipText: "Link"
+                onClicked: root.insertLink()
+              }
+              FormatBtn {
+                materialIcon: "format_list_bulleted"
+                tooltipText: "Unordered list"
+                onClicked: root.prefixLine("- ")
+              }
+              FormatBtn {
+                materialIcon: "format_list_numbered"
+                tooltipText: "Numbered list"
+                onClicked: root.prefixLine("1. ")
+              }
+              FormatBtn {
+                materialIcon: "checklist"
+                tooltipText: "Task list"
+                onClicked: root.prefixLine("- [ ] ")
+              }
+            }
+          }
+
+          Rectangle {
+            visible: formatFlick.contentX > 0
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Style.space(34)
+            color: root.bg
+            z: 1
+          }
 
           FormatBtn {
-            materialIcon: "format_h1"
-            tooltipText: "Heading"
-            onClicked: root.prefixLine("# ")
+            visible: formatFlick.contentX > 0
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "chevron_left"
+            tooltipText: "Previous formatting tools"
+            z: 2
+            onClicked: formatFlick.contentX = Math.max(0, formatFlick.contentX - Style.space(90))
           }
-          FormatBtn {
-            materialIcon: "format_bold"
-            tooltipText: "Bold"
-            onClicked: root.wrapSelection("**", "**", "bold")
+
+          Rectangle {
+            visible: formatFlick.contentX < formatFlick.contentWidth - formatFlick.width - 1
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Style.space(34)
+            color: root.bg
+            z: 1
           }
+
           FormatBtn {
-            materialIcon: "format_italic"
-            tooltipText: "Italic"
-            onClicked: root.wrapSelection("*", "*", "italic")
-          }
-          FormatBtn {
-            materialIcon: "format_quote"
-            tooltipText: "Quote"
-            onClicked: root.prefixLine("> ")
-          }
-          FormatBtn {
-            materialIcon: "code"
-            tooltipText: "Code"
-            onClicked: root.formatCode()
-          }
-          FormatBtn {
-            materialIcon: "link"
-            tooltipText: "Link"
-            onClicked: root.insertLink()
-          }
-          FormatBtn {
-            materialIcon: "format_list_bulleted"
-            tooltipText: "Unordered list"
-            onClicked: root.prefixLine("- ")
-          }
-          FormatBtn {
-            materialIcon: "format_list_numbered"
-            tooltipText: "Numbered list"
-            onClicked: root.prefixLine("1. ")
-          }
-          FormatBtn {
-            materialIcon: "checklist"
-            tooltipText: "Task list"
-            onClicked: root.prefixLine("- [ ] ")
+            visible: formatFlick.contentX < formatFlick.contentWidth - formatFlick.width - 1
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "chevron_right"
+            tooltipText: "More formatting tools"
+            z: 2
+            onClicked: formatFlick.contentX = Math.min(
+              Math.max(0, formatFlick.contentWidth - formatFlick.width),
+              formatFlick.contentX + Style.space(90))
           }
         }
 
