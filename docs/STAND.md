@@ -1,11 +1,12 @@
-# Current stand — 2026-08-19
+# Current stand — 2026-08-22
 
 This file is the snapshot for a new session. Product contract (German): [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). How we build: [`PLAN.md`](PLAN.md).
 
-**Commit:** `dd403e3` on `main` (private `HANCORE-linux/OmaQ`). Reviewer + verifier 2026-08-19 on `852ba90`; confirmed bugs 1–8 and gate holes 9–11, 15 are fixed in this tree.  
+**Last pushed commit:** `62d3aab` on `main` (private `HANCORE-linux/OmaQ`).  
 **`.phase`:** 8  
 **Plugin id:** `hancore.omaq`  
-**Live bar:** off. Do not write `~/.config/omarchy/plugins/` except one announced install. No silent `omarchy restart shell`.  
+**Manifest version:** `0.6.0`  
+**Live bar:** **on this machine.** Real copy at `~/.config/omarchy/plugins/hancore.omaq` (not a symlink). Develop only in `/home/hancore/Projects/omaq`, then copy. No silent `omarchy restart shell`.  
 **AUR:** registration off — no `verify-7`, no upload.
 
 Chat with the owner is German. Repo, UI, and this file are English.
@@ -18,13 +19,45 @@ Chat with the owner is German. Repo, UI, and this file are English.
 | 1 1:1 chat | one helper, Tox, invite | `verify-1` | done |
 | 2 Invite safety | QR, revoke, nospam, safety, rate | `verify-2` | done |
 | 3 Groups | owner > admin > member | `verify-3` | done |
-| 4 Surfaces | cards, pin, sounds, themes | `verify-4` | done |
+| 4 Surfaces | cards, pin, sounds, themes | `verify-4` | done (UI since rewritten) |
 | 5 Daily | export/import, search | `verify-5` | done |
 | 6 File + 1:1 audio | Tox file 8 MiB, ToxAV audio | `verify-6` | done |
 | 7 AUR package | PKGBUILD, namcap, enable path | `verify-7` | **halted** |
 | 8 Double Ratchet | Signal payload on 1:1, 50 MB cap | `verify-8` | **done** |
 
-## What works (tested in temp homes)
+## Live UI (pushed `62d3aab`)
+
+The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a `BarWidget` plus its own layer-shell popup (Shibumi bar is screen-sized; KeyboardPanel capped the card at 120 px).
+
+**Panel**
+
+- Hero: OmaQ `assets/mark.png` (speech bubble), then Omarchy wordmark **OMARCHY** + **Announcements** in JetBrainsMono Nerd Font, then one line: latest `omarchy.org/news` title (HTML scrape, no RSS). Title click opens that article; **Announcements** opens the news index.
+- Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active.
+- Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token.
+- Theme icon opens the list (not a permanent color bar). Palettes: **System** (live Omarchy `color0`–`color7` from `colors.toml` with `onFileChanged: reload()`, name from `~/.local/state/omarchy/current/theme.name`) then Traffic-Board **gruvbox**, **rose pine**, **everforest**, **gruvbox light**, **catppuccin latte**, **tokyo night light**. Default `chatTheme`: `system`.
+
+**Demo / Chat windows**
+
+- Demo and Chat are Quickshell `FloatingWindow` xdg-toplevels (`OmaQ demo` / `OmaQ chat`), not layer-shell cards.
+- Always start floating, never tiled, never fullscreen. `scripts/float-omaq.sh` registers Hyprland window rules (`float = true`) and then `window.float({ action = "on" })` (Lua on this box; classic `fullscreenstate` + `setfloating` fallback; classic `windowrulev2` is applied once per session).
+- Compositor-close of Chat calls `dismissCard`. Demo close clears `demoOpen`.
+
+**Chat chrome**
+
+- One composer row: attach, field, emoji, send. Call in the header. Hang up only while in a call. Call/file chrome is scoped to that window’s conversation.
+- Live send appends an `out` bubble locally (helper `msg.send` only emits `snapshot`). Incoming lines match `lastChatConv`. On open, `op: history` seeds the last 50 lines (`conversation` on the event).
+- Smilies: Noto Color Emoji at the 109 px CBDT strike, scaled to 28 px. Recent row (max 8) appears above the composer on hover; persisted at `$OMAQ_STATE/recent-emoji.json`.
+- Demo is local only (no Tox). Theme for demo follows the panel palette.
+
+## Logos (`~/omaq-logo/variants/final/`)
+
+| File | Use |
+|---|---|
+| `ChatGPT Image Aug 21, 2026, 02_56_18 PM.png` | Bar + panel mark → `assets/mark.png` (black punched to alpha, trimmed) |
+| `OmaQ_Final.png` | README wordmark → `assets/OmaQ_Final.png` |
+| `ChatGPT Image Aug 21, 2026, 02_58_45 PM.png` | Wordmark + tagline → `assets/OmaQ_lockup.png` (not in README) |
+
+## What works (helper, last `verify-8` plus `omaq_test` on 2026-08-22)
 
 - Invite link + QR token, one-use, 24 h, revoke, nospam voids invites
 - 1:1 and group text (same chat page)
@@ -32,7 +65,8 @@ Chat with the owner is German. Repo, UI, and this file are English.
 - File send (paused until accept, dest `$OMAQ_HOME/files/<conv>/`)
 - 1:1 call **signaling** (start/answer/stop). No microphone PCM yet.
 - Direct messages: Double Ratchet over Tox (`OQB1` / `OQR1`, invite `rk=`)
-- Two local helpers exchange a ratchet plaintext; `make verify-8` green
+- Two local helpers exchange a ratchet plaintext; `make verify-8` was green on 2026-08-19
+- `tests/omaq_test`: ok after the history-event `conversation` field
 
 ## Security (honest)
 
@@ -46,7 +80,7 @@ Chat with the owner is German. Repo, UI, and this file are English.
 
 KCI on the Tox handshake does not decrypt ratchet text once `rk` came from the invite. That is not “as metadata-private as SimpleX”.
 
-## Memory (measured)
+## Memory (measured 2026-08-19)
 
 | Gate | kB |
 |---|---|
@@ -58,12 +92,23 @@ KCI on the Tox handshake does not decrypt ratchet text once `rk` came from the i
 ## Packages (Arch extra, owner-approved)
 
 - `toxcore` 1:0.2.22-2
-- `libsignal-protocol-c` 2.3.3-2 (2026-08-19)
+- `libsignal-protocol-c` 2.3.3-2
 - `libcrypto` (OpenSSL 3) already on the box, only in `ratchet_adapt.c`
+
+## Constraints still binding
+
+- Do not develop in `~/.config/omarchy/plugins/`
+- No silent Omarchy shell restart
+- toxcore / libsignal only after explicit package yes (already yes)
+- Live copy only after announced yes (this machine is installed)
+- Commit + push only in private `HANCORE-linux/OmaQ`
+- Verifier subagent only after explicit yes
+- Do not bind SUPER+T / SUPER+SHIFT+arrows
+- AUR off
 
 ## Next — only after an explicit go
 
-1. Live plugin on the bar
+1. Confirm Demo/Chat spawn floating on a cold open
 2. Two real machines over the internet
 3. Phase 7 AUR when registration is on
 4. Later extras (group ratchet, file/call ratchet, Tor) only if RSS still ≤ 50 MB
