@@ -605,6 +605,12 @@ Item {
           CallToolbar { page: pinPage }
           Item { Layout.fillWidth: true }
           SurfaceBtn {
+            text: "Auto-open"
+            selected: pinPage.autoOpenEnabled
+            tooltipText: "Open new messages automatically"
+            onClicked: pinPage.autoOpenToggled()
+          }
+          SurfaceBtn {
             text: root.muted ? "Unmute" : "Mute"
             tooltipText: "Mute notification sound"
             onClicked: root.toggleMute()
