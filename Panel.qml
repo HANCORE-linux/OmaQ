@@ -62,6 +62,7 @@ BarWidget {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property real btnGap: Style.space(8)
   readonly property int pad: Style.spacing.popupPadding
+  readonly property real nicknameControlHeight: Style.space(28)
   readonly property int cardWidth: Style.space(340)
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
   readonly property real caretDepth: 5
@@ -1054,14 +1055,18 @@ BarWidget {
                 onClicked: root.pickSelfAvatar()
               }
               Column {
+                width: Style.space(160)
                 y: (parent.height - height) / 2
                 spacing: 0
                 Text {
                   visible: omaq.selfNickname !== "" && !root.nicknameEditOpen
+                  width: parent.width
+                  height: root.nicknameControlHeight
                   text: omaq.selfNickname
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
+                  verticalAlignment: Text.AlignVCenter
                   elide: Text.ElideRight
                   MouseArea {
                     anchors.fill: parent
@@ -1069,6 +1074,37 @@ BarWidget {
                     onClicked: {
                       root.nicknameEditOpen = true
                       Qt.callLater(function() { nicknameField.forceActiveFocus() })
+                    }
+                  }
+                }
+                Row {
+                  visible: omaq.selfNickname === "" || root.nicknameEditOpen
+                  width: parent.width
+                  height: root.nicknameControlHeight
+                  spacing: root.btnGap
+                  TokenTextField {
+                    id: nicknameField
+                    width: parent.width - nicknameButton.implicitWidth - root.btnGap
+                    height: parent.height
+                    foreground: root.controlForeground
+                    placeholderText: "Set your Nickname"
+                    maximumLength: 128
+                    text: omaq.selfNickname
+                    onAccepted: nicknameButton.clicked()
+                  }
+                  TokenButton {
+                    id: nicknameButton
+                    iconText: "check"
+                    iconFontFamily: "Material Symbols Rounded"
+                    text: ""
+                    width: implicitWidth
+                    height: parent.height
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    enabled: nicknameField.text.trim() !== ""
+                    onClicked: {
+                      root.nicknameSubmitPending = omaq.setNickname(nicknameField.text)
                     }
                   }
                 }
@@ -1088,34 +1124,6 @@ BarWidget {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.pickSelfAvatar()
                   }
-                }
-              }
-            }
-
-            Row {
-              visible: omaq.selfNickname === "" || root.nicknameEditOpen
-              width: parent.width
-              spacing: root.btnGap
-              TokenTextField {
-                id: nicknameField
-                width: parent.width - nicknameButton.implicitWidth - root.btnGap
-                foreground: root.controlForeground
-                placeholderText: "Set your Nickname"
-                maximumLength: 128
-                text: omaq.selfNickname
-                onAccepted: nicknameButton.clicked()
-              }
-              TokenButton {
-                id: nicknameButton
-                iconText: "check"
-                iconFontFamily: "Material Symbols Rounded"
-                text: "Set"
-                focusable: true
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: nicknameField.text.trim() !== ""
-                onClicked: {
-                  root.nicknameSubmitPending = omaq.setNickname(nicknameField.text)
                 }
               }
             }
