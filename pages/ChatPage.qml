@@ -839,6 +839,7 @@ Item {
 
     Controls.Menu {
       id: composerMenu
+      width: Style.space(220)
       padding: Style.space(4)
 
       background: Rectangle {
@@ -1172,6 +1173,7 @@ Item {
 
             Controls.Menu {
               id: messageMenu
+              width: Style.space(220)
               padding: Style.space(4)
               delegate: ContextMenuItem {}
 
