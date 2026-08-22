@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -29,6 +30,11 @@ BarWidget {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color barForeground: bar && "barForeground" in bar ? bar.barForeground : foreground
   readonly property var shibumiTokens: bar && "visualTokens" in bar ? bar.visualTokens : null
+  readonly property string shellStyle: shibumiTokens && shibumiTokens.shellStyle !== undefined
+    ? String(shibumiTokens.shellStyle) : "shibumi"
+  readonly property bool connectedSurfaceEnabled: shellStyle !== "shibumi"
+    && (barPos === "top" || barPos === "bottom")
+  property real connectionReveal: 0
   readonly property color panelBackground: shibumiTokens && shibumiTokens.panelBackground !== undefined
     ? shibumiTokens.panelBackground : Color.popups.background
   readonly property color panelBorder: shibumiTokens && shibumiTokens.panelBorder !== undefined
@@ -56,6 +62,19 @@ BarWidget {
   readonly property int pad: Style.spacing.popupPadding
   readonly property int cardWidth: Style.space(340)
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
+  readonly property real caretDepth: 5
+  readonly property real caretHalfWidth: 6 * connectionReveal
+  readonly property real caretTangentControl: 3.75 * connectionReveal
+  readonly property real caretTipControl: 1.75 * connectionReveal
+  readonly property real anchorCenterX: {
+    var win = button && button.QsWindow ? button.QsWindow.window : null
+    if (!win || !button)
+      return card.width / 2
+    var p = button.mapToItem(win.contentItem, 0, 0)
+    return p.x + button.width / 2 - card.x
+  }
+  readonly property real caretCenterX: Math.max(10, Math.min(card.width - 10,
+    Math.round(anchorCenterX)))
   readonly property string avatarPickerScript:
     "if command -v zenity >/dev/null 2>&1; then\n" +
     "  exec zenity --file-selection --title='Set avatar' --file-filter='Images | *.png *.jpg *.jpeg *.webp'\n" +
@@ -72,6 +91,24 @@ BarWidget {
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
+
+  Behavior on connectionReveal {
+    NumberAnimation {
+      duration: root.opened ? 160 : 120
+      easing.type: root.opened ? Easing.OutCubic : Easing.InCubic
+    }
+  }
+
+  onOpenedChanged: {
+    root.connectionReveal = root.opened ? 1 : 0
+    Qt.callLater(root.publishConnectedGeometry)
+  }
+  onConnectionRevealChanged: root.publishConnectedGeometry()
+
+  Component.onDestruction: {
+    if (bar && typeof bar.clearConnectedPanel === "function")
+      bar.clearConnectedPanel(root)
+  }
 
   component AvatarPic: Item {
     id: av
@@ -245,8 +282,10 @@ BarWidget {
       return
     root.opened = true
     omaq.sendOp({ op: "status" })
-    if (bar && typeof bar.requestPopout === "function")
-      bar.requestPopout(root)
+    if (bar && typeof bar.requestPopout === "function") {
+      var screenName = popup.screen ? String(popup.screen.name || "") : ""
+      bar.requestPopout(root, screenName)
+    }
   }
 
   function close() {
@@ -258,8 +297,12 @@ BarWidget {
     root.themeOpen = false
     root.nospamConfirm = false
     root.opened = false
-    if (bar && typeof bar.releasePopout === "function" && bar.activePopout === root)
-      bar.releasePopout(root)
+    if (bar && typeof bar.releasePopout === "function") {
+      var screenName = popup.screen ? String(popup.screen.name || "") : ""
+      bar.releasePopout(root, screenName)
+    }
+    if (bar && typeof bar.clearConnectedPanel === "function")
+      bar.clearConnectedPanel(root)
   }
 
   function toggle() {
@@ -436,12 +479,25 @@ BarWidget {
     return Model.themeName(id)
   }
 
+  function publishConnectedGeometry() {
+    if (!bar || typeof bar.publishConnectedPanel !== "function")
+      return
+    var screen = popup.screen
+    var name = screen ? String(screen.name || "") : ""
+    if (!connectedSurfaceEnabled || !opened || !screen || !name) {
+      if (typeof bar.clearConnectedPanel === "function")
+        bar.clearConnectedPanel(root, name)
+      return
+    }
+    bar.publishConnectedPanel(root, name, card.x + caretCenterX, connectionReveal)
+  }
+
   function placeCard() {
     var win = button.QsWindow ? button.QsWindow.window : null
     if (!win || !button || !popup.screen)
       return
     var p = button.mapToItem(win.contentItem, 0, 0)
-    var gap = Style.gapsOut
+    var gap = connectedSurfaceEnabled ? Style.space(6) : Style.gapsOut
     var x = p.x + button.width / 2 - card.width / 2
     var y = p.y + button.height + gap
     if (root.barPos === "bottom")
@@ -651,6 +707,7 @@ BarWidget {
     onVisibleChanged: if (visible) {
       Qt.callLater(function() {
         root.placeCard()
+        root.publishConnectedGeometry()
         panelFocus.forceActiveFocus()
       })
     }
@@ -662,16 +719,193 @@ BarWidget {
       onClicked: root.close()
     }
 
+    Item {
+      id: connectedSurface
+      x: card.x
+      y: root.barPos === "bottom" ? card.y : card.y - root.caretDepth
+      width: card.width
+      height: card.height
+      visible: root.connectedSurfaceEnabled && root.opened && root.connectionReveal > 0
+      z: 0
+
+      Shape {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        width: parent.width
+        height: parent.height + root.caretDepth
+        visible: root.barPos !== "bottom"
+        antialiasing: true
+        preferredRendererType: Shape.CurveRenderer
+
+        ShapePath {
+          strokeColor: root.panelBorder
+          strokeWidth: root.panelBorderWidth
+          fillColor: root.panelBackground
+          capStyle: ShapePath.FlatCap
+          joinStyle: ShapePath.MiterJoin
+          startX: root.panelRadius
+          startY: root.caretDepth + 0.5
+          PathLine {
+            x: root.caretCenterX - root.caretHalfWidth
+            y: root.caretDepth + 0.5
+          }
+          PathCubic {
+            x: root.caretCenterX
+            y: root.caretDepth - root.caretDepth * root.connectionReveal + 0.5
+            control1X: root.caretCenterX - root.caretTangentControl
+            control1Y: root.caretDepth + 0.5
+            control2X: root.caretCenterX - root.caretTipControl
+            control2Y: root.caretDepth - root.caretDepth * root.connectionReveal + 0.5
+          }
+          PathCubic {
+            x: root.caretCenterX + root.caretHalfWidth
+            y: root.caretDepth + 0.5
+            control1X: root.caretCenterX + root.caretTipControl
+            control1Y: root.caretDepth - root.caretDepth * root.connectionReveal + 0.5
+            control2X: root.caretCenterX + root.caretTangentControl
+            control2Y: root.caretDepth + 0.5
+          }
+          PathLine {
+            x: connectedSurface.width - root.panelRadius
+            y: root.caretDepth + 0.5
+          }
+          PathArc {
+            x: connectedSurface.width - 0.5
+            y: root.panelRadius + root.caretDepth
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: connectedSurface.width - 0.5
+            y: connectedSurface.height + root.caretDepth - 0.5 - root.panelRadius
+          }
+          PathArc {
+            x: connectedSurface.width - root.panelRadius
+            y: connectedSurface.height + root.caretDepth - 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: root.panelRadius
+            y: connectedSurface.height + root.caretDepth - 0.5
+          }
+          PathArc {
+            x: 0.5
+            y: connectedSurface.height + root.caretDepth - 0.5 - root.panelRadius
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: 0.5
+            y: root.panelRadius + root.caretDepth
+          }
+          PathArc {
+            x: root.panelRadius
+            y: root.caretDepth + 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+        }
+      }
+
+      Shape {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        width: parent.width
+        height: parent.height + root.caretDepth
+        visible: root.barPos === "bottom"
+        antialiasing: true
+        preferredRendererType: Shape.CurveRenderer
+
+        ShapePath {
+          strokeColor: root.panelBorder
+          strokeWidth: root.panelBorderWidth
+          fillColor: root.panelBackground
+          capStyle: ShapePath.FlatCap
+          joinStyle: ShapePath.MiterJoin
+          startX: root.panelRadius
+          startY: 0.5
+          PathLine {
+            x: connectedSurface.width - root.panelRadius
+            y: 0.5
+          }
+          PathArc {
+            x: connectedSurface.width - 0.5
+            y: root.panelRadius + 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: connectedSurface.width - 0.5
+            y: connectedSurface.height - root.panelRadius - 0.5
+          }
+          PathArc {
+            x: connectedSurface.width - root.panelRadius
+            y: connectedSurface.height - 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: root.caretCenterX + root.caretHalfWidth
+            y: connectedSurface.height - 0.5
+          }
+          PathCubic {
+            x: root.caretCenterX
+            y: connectedSurface.height - 0.5 + root.caretDepth * root.connectionReveal
+            control1X: root.caretCenterX + root.caretTangentControl
+            control1Y: connectedSurface.height - 0.5
+            control2X: root.caretCenterX + root.caretTipControl
+            control2Y: connectedSurface.height - 0.5 + root.caretDepth * root.connectionReveal
+          }
+          PathCubic {
+            x: root.caretCenterX - root.caretHalfWidth
+            y: connectedSurface.height - 0.5
+            control1X: root.caretCenterX - root.caretTipControl
+            control1Y: connectedSurface.height - 0.5 + root.caretDepth * root.connectionReveal
+            control2X: root.caretCenterX - root.caretTangentControl
+            control2Y: connectedSurface.height - 0.5
+          }
+          PathLine {
+            x: root.panelRadius
+            y: connectedSurface.height - 0.5
+          }
+          PathArc {
+            x: 0.5
+            y: connectedSurface.height - root.panelRadius - 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+          PathLine {
+            x: 0.5
+            y: root.panelRadius + 0.5
+          }
+          PathArc {
+            x: root.panelRadius
+            y: 0.5
+            radiusX: root.panelRadius
+            radiusY: root.panelRadius
+          }
+        }
+      }
+    }
+
     BorderSurface {
       id: card
       width: root.cardWidth
       height: Math.min(column.implicitHeight + root.pad * 2,
                        popup.screen ? Math.max(Style.space(260), popup.screen.height - Style.space(24)) : Style.space(720))
-      color: root.panelBackground
-      borderSpec: Border.flat(root.panelBorder, root.panelBorderWidth)
+      color: root.connectedSurfaceEnabled ? "transparent" : root.panelBackground
+      borderSpec: root.connectedSurfaceEnabled
+        ? Border.flat("transparent", 0) : Border.flat(root.panelBorder, root.panelBorderWidth)
       radius: root.panelRadius
 
-      onHeightChanged: if (root.opened) root.placeCard()
+      onXChanged: root.publishConnectedGeometry()
+      onWidthChanged: root.publishConnectedGeometry()
+      onHeightChanged: {
+        if (root.opened)
+          root.placeCard()
+        root.publishConnectedGeometry()
+      }
 
       MouseArea {
         anchors.fill: parent
@@ -1155,6 +1389,7 @@ BarWidget {
             }
 
             PanelSeparator {
+              visible: omaq.safetyCode !== ""
               foreground: root.foreground
             }
 
@@ -1267,7 +1502,7 @@ BarWidget {
               }
 
               ActionButton {
-                visible: root.moreSection === "chat" && omaq.safetyCode === "" && omaq.lastConversation !== ""
+                visible: root.moreSection === "chat" && omaq.safetyCode === "" && omaq.lastDirectId !== ""
                 width: parent.width
                 iconText: "󰌾"
                 text: "Show safety code"
@@ -1275,7 +1510,8 @@ BarWidget {
               }
 
               PanelSeparator {
-                visible: root.moreSection === "chat"
+                visible: root.moreSection === "chat" &&
+                  (omaq.safetyCode !== "" || omaq.lastDirectId !== "")
                 foreground: root.foreground
               }
 
