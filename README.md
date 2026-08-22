@@ -2,7 +2,9 @@
   <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
 </p>
 
-OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no directory.
+<p align="center">
+  OmaQ is invite-only chat for the Omarchy bar — no account, no phone, no directory.
+</p>
 
 ## Security
 

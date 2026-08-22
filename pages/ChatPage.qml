@@ -57,11 +57,12 @@ Item {
   property int demoReplyIndex: 0
   property var recentEmojis: []
 
-  readonly property int recentLimit: 8
-  readonly property int smilePx: Style.font.displayLarge
-  // Noto Color Emoji ships a single 109px CBDT strike on this box.
-  readonly property int smileStrike: 109
-  readonly property string smileFont: "Noto Color Emoji"
+  readonly property int recentLimit: 6
+  readonly property int smilePx: 24
+  readonly property int smileTextPx: Style.font.body
+  readonly property int smilePad: Style.space(6)
+  readonly property int smileGap: Style.space(2)
+  readonly property int smileCell: root.smilePx + root.smilePad
   readonly property string recentsDir: {
     if (service && service.stateDir)
       return service.stateDir
@@ -96,35 +97,29 @@ Item {
     property int px: root.smilePx
     signal clicked()
 
-    implicitWidth: px + Style.space(12)
-    implicitHeight: px + Style.space(12)
+    implicitWidth: root.smileCell
+    implicitHeight: root.smileCell
 
     Rectangle {
       anchors.fill: parent
       radius: Style.cornerRadius
-      color: cellMouse.containsMouse ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22) : "transparent"
+      color: cellMouse.containsMouse ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10)
+      border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.16)
+      border.width: 1
     }
 
-    Item {
+    Image {
+      anchors.centerIn: parent
       width: cell.px
       height: cell.px
-      anchors.centerIn: parent
-      clip: true
-
-      Text {
-        text: cell.glyph
-        font.family: root.smileFont
-        font.pixelSize: root.smileStrike
-        font.hintingPreference: Font.PreferNoHinting
-        renderType: Text.NativeRendering
-        width: root.smileStrike
-        height: root.smileStrike
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-        anchors.centerIn: parent
-        scale: cell.px / root.smileStrike
-        transformOrigin: Item.Center
-      }
+      source: root.smileSrc(cell.glyph)
+      fillMode: Image.PreserveAspectFit
+      sourceSize.width: 64
+      sourceSize.height: 64
+      smooth: true
+      mipmap: true
+      asynchronous: true
+      cache: true
     }
 
     MouseArea {
@@ -134,6 +129,55 @@ Item {
       cursorShape: Qt.PointingHandCursor
       onClicked: cell.clicked()
     }
+  }
+
+  function splitSmiles(t) {
+    var s = String(t || "")
+    var out = []
+    var i = 0
+    while (i < s.length) {
+      var code = s.charCodeAt(i)
+      if (code === 32 || code === 9 || code === 10 || code === 13) {
+        i++
+        continue
+      }
+      var matched = ""
+      var k
+      for (k = 0; k < root.emojiSet.length; k++) {
+        var g = root.emojiSet[k]
+        if (s.indexOf(g, i) === i && g.length >= matched.length)
+          matched = g
+      }
+      if (!matched)
+        return []
+      out.push(matched)
+      i += matched.length
+    }
+    return out
+  }
+
+  function isSmileOnly(t) {
+    var s = String(t || "").replace(/\s+/g, "")
+    if (!s)
+      return false
+    var glyphs = root.splitSmiles(t)
+    if (!glyphs.length)
+      return false
+    return glyphs.join("") === s
+  }
+
+  function smileSrc(glyph) {
+    if (!glyph)
+      return ""
+    var cps = []
+    var i = 0
+    while (i < glyph.length) {
+      var c = glyph.codePointAt(i)
+      if (c !== 0xFE0F)
+        cps.push(c.toString(16))
+      i += c > 0xFFFF ? 2 : 1
+    }
+    return Qt.resolvedUrl("../assets/emoji/" + cps.join("-") + ".png")
   }
 
   function sameConv(conv) {
@@ -424,33 +468,63 @@ Item {
         model: lines
 
         delegate: Item {
+          id: line
           width: list.width
           height: Math.max(bubble.implicitHeight, sysLine.implicitHeight)
+          readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
+          readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
 
           Rectangle {
             id: bubble
             anchors.left: model.dir === "out" ? undefined : parent.left
             anchors.right: model.dir === "out" ? parent.right : undefined
-            width: Math.min(label.implicitWidth + Style.space(16), parent.width * 0.82)
-            implicitHeight: label.implicitHeight + Style.space(12)
+            width: Math.min((line.smileOnly ? smileRow.implicitWidth : label.implicitWidth) + Style.space(16), parent.width * 0.82)
+            implicitHeight: (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight) + Style.space(12)
             radius: Style.cornerRadius
             color: root.bubbleColor(model.dir)
             visible: model.dir !== "sys"
 
             Text {
               id: label
+              visible: !line.smileOnly
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(8)
               anchors.rightMargin: Style.space(8)
-              text: model.dir !== "sys" ? model.text : ""
+              text: !line.smileOnly && model.dir !== "sys" ? model.text : ""
               color: root.fg
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: root.smileTextPx
               font.hintingPreference: Font.PreferNoHinting
-              renderType: Text.NativeRendering
+              renderType: Text.QtRendering
               wrapMode: Text.Wrap
+            }
+
+            Row {
+              id: smileRow
+              visible: line.smileOnly
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(8)
+              spacing: Style.space(2)
+
+              Repeater {
+                model: line.smileGlyphs
+                Image {
+                  required property string modelData
+                  width: root.smileTextPx
+                  height: root.smileTextPx
+                  source: root.smileSrc(modelData)
+                  fillMode: Image.PreserveAspectFit
+                  sourceSize.width: 64
+                  sourceSize.height: 64
+                  smooth: true
+                  mipmap: true
+                  asynchronous: true
+                  cache: true
+                }
+              }
             }
           }
 
@@ -524,22 +598,6 @@ Item {
         }
       }
 
-      Flow {
-        visible: root.emojiOpen
-        Layout.fillWidth: true
-        spacing: Style.space(2)
-
-        Repeater {
-          model: root.emojiSet
-          Smile {
-            required property string modelData
-            glyph: modelData
-            px: root.smilePx
-            onClicked: root.insertEmoji(modelData)
-          }
-        }
-      }
-
       Row {
         visible: !root.demo && root.showFile
         Layout.fillWidth: true
@@ -563,42 +621,85 @@ Item {
         }
       }
 
-      Item {
-        id: composerBlock
+      Column {
+        id: composerCol
         Layout.fillWidth: true
-        implicitHeight: composerCol.implicitHeight
+        spacing: Style.space(4)
         z: 2
 
-        HoverHandler {
-          id: composerHover
+        Flow {
+          id: pickerFlow
+          width: parent.width
+          spacing: root.smileGap
+          visible: root.emojiOpen
+
+          Repeater {
+            model: root.emojiSet
+            Smile {
+              required property string modelData
+              glyph: modelData
+              px: root.smilePx
+              onClicked: root.insertEmoji(modelData)
+            }
+          }
         }
 
-        readonly property bool recentsVisible: composerHover.hovered && !root.emojiOpen
-
-        Column {
-          id: composerCol
+        Item {
+          id: recentsDock
           width: parent.width
-          spacing: Style.space(4)
+          implicitHeight: root.smileCell + Style.space(8)
+          visible: !root.emojiOpen
 
-          Rectangle {
-            visible: composerBlock.recentsVisible
-            width: parent.width
-            implicitHeight: recentsRow.implicitHeight + Style.space(6)
-            radius: Style.cornerRadius
-            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-            border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
-            border.width: 1
-            clip: true
+          Item {
+            id: recentsBar
+            x: input.x
+            width: Math.max(root.smileCell, input.width)
+            height: parent.height
+
+            property int page: 0
+            readonly property int arrowSlot: root.smileCell + root.smileGap
+            readonly property int fitCount: {
+              var inner = width
+              var cell = root.smileCell + root.smileGap
+              var nAll = Math.floor((inner + root.smileGap) / cell)
+              if (nAll < 1)
+                nAll = 1
+              var more = root.recentEmojis.length > nAll
+              var inner2 = more ? inner - recentsBar.arrowSlot : inner
+              var n = Math.floor((inner2 + root.smileGap) / cell)
+              if (n < 1)
+                n = 1
+              if (n > root.recentLimit)
+                n = root.recentLimit
+              return n
+            }
+            readonly property int pageCount: Math.max(1, Math.ceil(root.recentEmojis.length / Math.max(1, recentsBar.fitCount)))
+            readonly property bool hasMore: recentsBar.pageCount > 1
+            readonly property var visibleRecents: {
+              var src = root.recentEmojis
+              var n = recentsBar.fitCount
+              var start = recentsBar.page * n
+              if (!src || n <= 0)
+                return []
+              if (start >= src.length)
+                return src.slice(0, n)
+              return src.slice(start, start + n)
+            }
+
+            function nextPage() {
+              recentsBar.page = (recentsBar.page + 1) % recentsBar.pageCount
+            }
+
+            onFitCountChanged: recentsBar.page = 0
 
             Row {
               id: recentsRow
-              anchors.verticalCenter: parent.verticalCenter
               anchors.left: parent.left
-              anchors.leftMargin: Style.space(4)
-              spacing: Style.space(2)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: root.smileGap
 
               Repeater {
-                model: root.recentEmojis
+                model: recentsBar.visibleRecents
                 Smile {
                   required property string modelData
                   glyph: modelData
@@ -607,11 +708,46 @@ Item {
                 }
               }
             }
-          }
 
-          RowLayout {
-            width: parent.width
-            spacing: Style.space(4)
+            Item {
+              visible: recentsBar.hasMore
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: root.smileCell
+              height: root.smileCell
+
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: moreMouse.containsMouse ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.28) : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.16)
+                border.width: 1
+              }
+
+              Text {
+                anchors.centerIn: parent
+                text: "›"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: root.smilePx
+                font.bold: true
+                renderType: Text.NativeRendering
+              }
+
+              MouseArea {
+                id: moreMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: recentsBar.nextPage()
+              }
+            }
+          }
+        }
+
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(4)
 
             ChatBtn {
               iconText: "󰁦"
@@ -625,6 +761,9 @@ Item {
               Layout.fillWidth: true
               foreground: root.fg
               accent: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: root.smileTextPx
+              font.hintingPreference: Font.PreferNoHinting
               placeholderText: root.demo ? "Demo message" : "Message"
               onAccepted: root.send()
             }
@@ -642,7 +781,6 @@ Item {
               bordered: true
               onClicked: root.send()
             }
-          }
         }
       }
     }

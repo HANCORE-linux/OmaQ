@@ -21,16 +21,11 @@ BarWidget {
   property bool copied: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
   property string systemThemeName: "System"
-  property var newsItems: []
-  property double newsFetchedAt: 0
-
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color barForeground: bar && "barForeground" in bar ? bar.barForeground : foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property string omarchyTypeface: "JetBrainsMono Nerd Font"
-  readonly property var latestNews: root.newsItems.length > 0 ? root.newsItems[0] : null
   readonly property real btnGap: Style.space(8)
   readonly property int pad: Style.spacing.popupPadding
   readonly property int cardWidth: Style.space(340)
@@ -61,7 +56,6 @@ BarWidget {
       return
     root.opened = true
     omaq.sendOp({ op: "status" })
-    root.refreshNews()
     if (bar && typeof bar.requestPopout === "function")
       bar.requestPopout(root)
   }
@@ -159,16 +153,8 @@ BarWidget {
     root.persistSettings({ chatTheme: name })
   }
 
-  function refreshNews() {
-    if (root.newsItems.length > 0 && (Date.now() - root.newsFetchedAt) < 30 * 60 * 1000)
-      return
-    newsProc.running = false
-    newsProc.running = true
-  }
-
-  function openNews(href) {
-    var u = href || "https://omarchy.org/news"
-    Quickshell.execDetached(["xdg-open", u])
+  function openRepo() {
+    Quickshell.execDetached(["xdg-open", "https://github.com/HANCORE-linux/OmaQ"])
   }
 
   function parseSystemColors(raw) {
@@ -263,21 +249,6 @@ BarWidget {
         var name = parts.length ? parts[parts.length - 1] : ""
         if (name && name !== "theme" && root.systemThemeName === "System")
           root.systemThemeName = name
-      }
-    }
-  }
-
-  Process {
-    id: newsProc
-    command: ["curl", "-fsSL", "--max-time", "8", "-A", "OmaQ/0.6", "https://omarchy.org/news"]
-    running: false
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var items = Model.parseOmarchyNews(text)
-        root.newsItems = items
-        if (items.length > 0)
-          root.newsFetchedAt = Date.now()
       }
     }
   }
@@ -458,68 +429,26 @@ BarWidget {
               asynchronous: true
             }
 
-            Column {
+            Image {
+              id: heroLockup
               width: parent.width - heroMark.width - parent.spacing
-              spacing: Style.space(2)
+              height: Math.round(Style.font.display * 2.4)
+              anchors.verticalCenter: parent.verticalCenter
+              source: Qt.resolvedUrl("assets/OmaQ_lockup.svg")
+              fillMode: Image.PreserveAspectFit
+              horizontalAlignment: Image.AlignLeft
+              sourceSize.width: 749
+              sourceSize.height: 322
+              smooth: true
+              mipmap: true
+              cache: false
+              asynchronous: true
+            }
 
-              Row {
-                spacing: Style.space(8)
-
-                Text {
-                  text: "OMARCHY"
-                  color: root.foreground
-                  font.family: root.omarchyTypeface
-                  font.pixelSize: Style.font.title
-                  font.weight: Font.DemiBold
-                  font.letterSpacing: 1.2
-                  font.hintingPreference: Font.PreferNoHinting
-                  renderType: Text.NativeRendering
-                }
-
-                Text {
-                  text: "Announcements"
-                  color: labelHover.hovered ? Color.accent : root.dim
-                  font.family: root.omarchyTypeface
-                  font.pixelSize: Style.font.title
-                  font.hintingPreference: Font.PreferNoHinting
-                  renderType: Text.NativeRendering
-                  verticalAlignment: Text.AlignVCenter
-
-                  HoverHandler {
-                    id: labelHover
-                  }
-
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openNews("https://omarchy.org/news")
-                  }
-                }
-              }
-
-              Text {
-                id: newsHead
-                width: parent.width
-                text: root.latestNews ? root.latestNews.title : "omarchy.org/news"
-                color: newsHover.hovered ? Color.accent : root.foreground
-                font.family: root.omarchyTypeface
-                font.pixelSize: Style.font.body
-                font.hintingPreference: Font.PreferNoHinting
-                renderType: Text.NativeRendering
-                elide: Text.ElideRight
-                wrapMode: Text.NoWrap
-                maximumLineCount: 1
-
-                HoverHandler {
-                  id: newsHover
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.openNews(root.latestNews ? root.latestNews.href : "https://omarchy.org/news")
-                }
-              }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.openRepo()
             }
           }
 
