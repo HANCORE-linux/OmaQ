@@ -38,6 +38,57 @@ BarWidget {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  component AvatarPic: Item {
+    id: av
+    property string path: ""
+    property int px: Math.round(Style.font.display * 1.2)
+    property bool failed: false
+    property bool online: false
+    signal clicked()
+
+    implicitWidth: px
+    implicitHeight: px
+    onPathChanged: av.failed = false
+
+    Rectangle {
+      anchors.fill: parent
+      radius: width / 2
+      clip: true
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+      border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+      border.width: 1
+
+      Image {
+        anchors.fill: parent
+        source: (!av.failed && av.path) ? ("file://" + av.path) : Qt.resolvedUrl("assets/avatar-fallback.svg")
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+        cache: false
+        smooth: true
+        mipmap: true
+        onStatusChanged: if (status === Image.Error)
+          av.failed = true
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: av.clicked()
+    }
+
+    Rectangle {
+      width: Math.max(8, Math.round(av.px * 0.28))
+      height: width
+      radius: width / 2
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      color: av.online ? "#7dce6a" : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
+      border.color: Color.popups.background
+      border.width: 1
+    }
+  }
+
   component ActionButton: Button {
     foreground: root.foreground
     accent: Color.accent
@@ -121,6 +172,20 @@ BarWidget {
   function openChat() {
     if (chatSurface)
       chatSurface.ensureCard(omaq.lastConversation)
+    root.close()
+  }
+
+  function pickSelfAvatar() {
+    avatarPick.running = false
+    avatarPick.running = true
+  }
+
+  function openFriend(id, name) {
+    if (!id)
+      return
+    omaq.lastConversation = String(id)
+    if (chatSurface)
+      chatSurface.ensureCard(String(id), name || "")
     root.close()
   }
 
@@ -218,6 +283,19 @@ BarWidget {
   Service {
     id: omaq
     settings: root.settings
+  }
+
+  Process {
+    id: avatarPick
+    running: false
+    command: ["zenity", "--file-selection", "--title=Set avatar", "--file-filter=Images | *.png *.jpg *.jpeg *.webp"]
+    stdout: SplitParser {
+      onRead: function(line) {
+        var p = String(line).replace(/\s+$/, "")
+        if (p)
+          omaq.setAvatar(p)
+      }
+    }
   }
 
   FileView {
@@ -491,6 +569,83 @@ BarWidget {
                 onClicked: root.themeOpen = !root.themeOpen
               }
             }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: "YOU"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+
+            Row {
+              spacing: Style.space(8)
+              AvatarPic {
+                path: omaq.selfAvatar
+                online: omaq.selfOnline
+                onClicked: root.pickSelfAvatar()
+              }
+              Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 0
+                Text {
+                  text: omaq.selfOnline ? "Online" : "Offline"
+                  color: omaq.selfOnline ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                Text {
+                  text: "Set avatar"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.pickSelfAvatar()
+                  }
+                }
+              }
+            }
+
+            Text {
+              visible: omaq.friends && omaq.friends.length > 0
+              text: "FRIENDS"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+
+            Repeater {
+              model: omaq.friends
+              Row {
+                required property var modelData
+                spacing: Style.space(8)
+                width: parent ? parent.width : 0
+
+                AvatarPic {
+                  path: modelData && modelData.avatar ? String(modelData.avatar) : ""
+                  online: !!(modelData && modelData.online)
+                  onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
+                }
+
+                ActionButton {
+                  text: {
+                    var name = (modelData && modelData.name) ? String(modelData.name) : ("Friend " + (modelData ? modelData.id : ""))
+                    return name + (modelData && modelData.online ? " · online" : " · offline")
+                  }
+                  onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
+                }
+              }
+            }
+          }
 
           Column {
             visible: root.themeOpen

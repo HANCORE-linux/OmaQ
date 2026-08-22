@@ -21,6 +21,8 @@ int omaq_file_offer_lookup(uint32_t friend, uint32_t fnum, char *name, size_t n,
 void omaq_file_offer_drop(uint32_t friend, uint32_t fnum);
 
 int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, uint32_t *fnum_out);
+int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char *path,
+				const uint8_t file_id[32], uint32_t *fnum_out);
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
 			 const char *dest_override, char *dest, size_t destn);

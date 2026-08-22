@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "../helper/conversation.h"
+#include "../helper/avatar.h"
 #include "../helper/file.h"
 #include "../helper/group.h"
 #include "../helper/identity.h"
@@ -650,6 +651,31 @@ static void test_file(void)
 		fail("file path ok");
 }
 
+static void test_avatar(void)
+{
+	if (!omaq_avatar_id_ok("self") || !omaq_avatar_id_ok("0") || !omaq_avatar_id_ok("12"))
+		fail("avatar id ok");
+	if (omaq_avatar_id_ok("") || omaq_avatar_id_ok("../x") || omaq_avatar_id_ok("a/b") ||
+	    omaq_avatar_id_ok("self/../x"))
+		fail("avatar id bad");
+	if (!omaq_avatar_src_ok("/tmp/face.png") || !omaq_avatar_src_ok("/tmp/face.JPG"))
+		fail("avatar src ok");
+	if (omaq_avatar_src_ok("face.png") || omaq_avatar_src_ok("/tmp/../etc/x.png") ||
+	    omaq_avatar_src_ok("/tmp/x.bin"))
+		fail("avatar src bad");
+	{
+		char d[256];
+
+		if (omaq_avatar_dest("/tmp/omaq-av", "self", d, sizeof(d)) != 0 ||
+		    strcmp(d, "/tmp/omaq-av/avatars/self.png") != 0)
+			fail("avatar dest self");
+		if (omaq_avatar_is_dest("/tmp/omaq-av", "/tmp/omaq-av/avatars/self.png") != 1)
+			fail("avatar is dest");
+		if (omaq_avatar_is_dest("/tmp/omaq-av", "/tmp/omaq-av/files/0/x.png") != 0)
+			fail("avatar is dest other");
+	}
+}
+
 int main(void)
 {
 	test_invites();
@@ -674,6 +700,7 @@ int main(void)
 	test_surface();
 	test_qr_path();
 	test_file();
+	test_avatar();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);
 		return 1;

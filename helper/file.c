@@ -227,6 +227,45 @@ int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, 
 	return 0;
 }
 
+int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char *path,
+				const uint8_t file_id[32], uint32_t *fnum_out)
+{
+	struct stat st;
+	uint32_t fnum;
+	int i;
+	FILE *fp;
+
+	if (!omaq_file_path_ok(path) || !file_id)
+		return -1;
+	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+	    (uint64_t)st.st_size > (64u * 1024u))
+		return -1;
+	fp = fopen(path, "rb");
+	if (!fp)
+		return -1;
+	if (omaq_tox_file_send_avatar(t, friend, (uint64_t)st.st_size, file_id, &fnum) != 0) {
+		fclose(fp);
+		return -1;
+	}
+	i = xf_find(friend, fnum, 1);
+	if (i < 0) {
+		(void)omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		fclose(fp);
+		return -1;
+	}
+	xf[i].sending = 1;
+	xf[i].fp = fp;
+	xf[i].size = (uint64_t)st.st_size;
+	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", path) >= (int)sizeof(xf[i].path)) {
+		(void)omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		xf_drop(i);
+		return -1;
+	}
+	if (fnum_out)
+		*fnum_out = fnum;
+	return 0;
+}
+
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
 			 const char *dest_override, char *dest, size_t destn)

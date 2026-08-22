@@ -36,6 +36,9 @@ Item {
   property string lastCallConv: ""
   property bool locked: false
   property bool saveProtected: false
+  property var friends: []
+  property string selfAvatar: ""
+  property bool selfOnline: false
 
   readonly property string helperPath: String(Qt.resolvedUrl("helper/omaq")).replace(/^file:\/\//, "")
   readonly property string homeDir: Quickshell.env("OMAQ_HOME") || (Quickshell.env("HOME") + "/.local/share/omaq")
@@ -62,11 +65,33 @@ Item {
         root.saveProtected = !!ev.protected
       if (ev.locked === true)
         root.lastError = "locked"
+      if (ev.online !== undefined)
+        root.selfOnline = !!ev.online
     }
     if (ev.event === "error") {
       root.lastError = ev.code || "error"
       if (ev.code === "locked")
         root.locked = true
+    }
+    if (ev.event === "friends")
+      root.friends = ev.items || []
+    if (ev.event === "avatar") {
+      var id = ev.id || ""
+      var path = ev.path || ""
+      if (id === "self") {
+        root.selfAvatar = path
+      } else if (id) {
+        var next = (root.friends || []).slice()
+        var i, found = false
+        for (i = 0; i < next.length; i++) {
+          if (String(next[i].id) === String(id)) {
+            next[i] = { id: next[i].id, name: next[i].name, avatar: path, online: !!next[i].online }
+            found = true
+          }
+        }
+        if (found)
+          root.friends = next
+      }
     }
     if (ev.event === "identity") {
       if (ev.op === "unlock")
@@ -159,6 +184,7 @@ Item {
 
   function createInvite() { sendOp({ op: "invite.create", kind: "direct", ttlSec: 86400 }) }
   function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = ""; root.qrPath = "" }
+  function setAvatar(path) { sendOp({ op: "avatar.set", path: path }) }
   function requestHistory(conv) {
     sendOp({ op: "history", conversation: conv || root.lastConversation, limit: 50 })
   }

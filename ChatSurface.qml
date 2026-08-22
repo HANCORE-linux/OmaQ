@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -57,12 +58,18 @@ Item {
 
   Component.onCompleted: root.floatOmaQWindows()
 
-  function ensureCard(conv) {
+  function ensureCard(conv, name) {
     if (!conv)
       return
     var i
+    var label = name ? String(name) : ""
     for (i = 0; i < openCards.length; i++) {
       if (openCards[i].conversation === conv) {
+        if (label && openCards[i].name !== label) {
+          var upd = openCards.slice()
+          upd[i] = { conversation: conv, monitor: openCards[i].monitor, x: openCards[i].x, y: openCards[i].y, pinned: true, name: label }
+          openCards = upd
+        }
         if (!openCards[i].pinned)
           root.pin(conv, true)
         root.floatOmaQWindows()
@@ -70,11 +77,11 @@ Item {
       }
     }
     var next = openCards.slice()
-    if (surfaceMode === "bundled") {
-      next = [{ conversation: conv, monitor: "", x: 40, y: 80, pinned: true }]
-    } else {
-      next.push({ conversation: conv, monitor: "", x: 40 + next.length * 16, y: 80 + next.length * 16, pinned: true })
-    }
+    var card = { conversation: conv, monitor: "", x: 40 + next.length * 16, y: 80 + next.length * 16, pinned: true, name: label }
+    if (surfaceMode === "bundled")
+      next = [{ conversation: conv, monitor: "", x: 40, y: 80, pinned: true, name: label }]
+    else
+      next.push(card)
     openCards = next
     service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: 40, y: 80, pinned: true })
     root.floatOmaQWindows()
@@ -253,8 +260,7 @@ Item {
     FloatingWindow {
       id: pinWin
       required property var modelData
-      visible: modelData.pinned
-      title: "OmaQ chat"
+      title: pinWin.modelData && pinWin.modelData.name ? ("OmaQ chat — " + pinWin.modelData.name) : "OmaQ chat"
       implicitWidth: 420
       implicitHeight: 360
       color: root.theme().bg || Color.background
@@ -270,17 +276,47 @@ Item {
           root.dismissCard(pinWin.modelData.conversation)
       }
 
-      Column {
+      ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 6
-        Button { text: "Close"; onClicked: root.dismissCard(pinWin.modelData.conversation) }
+        anchors.margins: Style.space(8)
+        spacing: Style.space(6)
+
+        Button {
+          text: "Close"
+          onClicked: root.dismissCard(pinWin.modelData.conversation)
+        }
+
         Pages.ChatPage {
-          width: parent.width
-          height: parent.height - 36
+          Layout.fillWidth: true
+          Layout.fillHeight: true
           service: root.service
           theme: root.theme()
           conversation: pinWin.modelData.conversation
+          peerName: pinWin.modelData && pinWin.modelData.name ? pinWin.modelData.name : ""
+          peerAvatar: {
+            var f = root.service && root.service.friends
+            var id = pinWin.modelData ? String(pinWin.modelData.conversation) : ""
+            var i
+            if (!f || !id)
+              return ""
+            for (i = 0; i < f.length; i++) {
+              if (String(f[i].id) === id)
+                return f[i].avatar || ""
+            }
+            return ""
+          }
+          peerOnline: {
+            var f = root.service && root.service.friends
+            var id = pinWin.modelData ? String(pinWin.modelData.conversation) : ""
+            var i
+            if (!f || !id)
+              return false
+            for (i = 0; i < f.length; i++) {
+              if (String(f[i].id) === id)
+                return !!f[i].online
+            }
+            return false
+          }
         }
       }
     }

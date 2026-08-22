@@ -25,17 +25,22 @@ void omaq_tox_discard(struct omaq_tox *t);
 int omaq_tox_friend_accept(struct omaq_tox *t, const uint8_t *pk32);
 int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number);
 uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32);
+int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max);
+int omaq_tox_friend_name(struct omaq_tox *t, uint32_t friend_number, char *out, size_t n);
+int omaq_tox_friend_online(struct omaq_tox *t, uint32_t friend_number);
 int omaq_tox_nospam_rotate(struct omaq_tox *t);
 int omaq_tox_send(struct omaq_tox *t, uint32_t friend_number, const char *text);
 void omaq_tox_save(struct omaq_tox *t);
 int omaq_tox_online(const struct omaq_tox *t);
 
 typedef void (*omaq_on_request)(void *ud, const uint8_t *pk32, const char *msg);
+typedef void (*omaq_on_presence)(void *ud, uint32_t friend, int online);
 typedef void (*omaq_on_message)(void *ud, uint32_t friend, const char *text);
 typedef void (*omaq_on_group_invite)(void *ud, uint32_t friend, const uint8_t *data, size_t len);
 typedef void (*omaq_on_group_message)(void *ud, uint32_t gnum, uint32_t peer, const char *text);
 typedef void (*omaq_on_group_peer)(void *ud, uint32_t gnum, uint32_t peer, int joined);
 void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message msg, void *ud);
+void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *ud);
 void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
 			      omaq_on_group_message msg, omaq_on_group_peer peer, void *ud);
 
@@ -57,6 +62,9 @@ int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer);
 
 int omaq_tox_file_send(struct omaq_tox *t, uint32_t friend, uint64_t size,
 		       const char *name, uint32_t *fnum);
+int omaq_tox_hash(const uint8_t *data, size_t n, uint8_t out32[32]);
+int omaq_tox_file_send_avatar(struct omaq_tox *t, uint32_t friend, uint64_t size,
+			      const uint8_t file_id[32], uint32_t *fnum);
 int omaq_tox_file_chunk(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, const uint8_t *data, size_t len);
 int omaq_tox_file_control(struct omaq_tox *t, uint32_t friend, uint32_t fnum, int control);
@@ -68,9 +76,11 @@ typedef void (*omaq_on_file_chunk_req)(void *ud, uint32_t friend, uint32_t fnum,
 typedef void (*omaq_on_file_chunk)(void *ud, uint32_t friend, uint32_t fnum,
 				   uint64_t pos, const uint8_t *data, size_t len);
 typedef void (*omaq_on_file_ctrl)(void *ud, uint32_t friend, uint32_t fnum, int control);
+typedef void (*omaq_on_avatar)(void *ud, uint32_t friend, uint32_t fnum, uint64_t size);
 void omaq_tox_set_file_hooks(struct omaq_tox *t, omaq_on_file_recv recv,
 			     omaq_on_file_chunk_req req, omaq_on_file_chunk chunk,
 			     omaq_on_file_ctrl ctrl, void *ud);
+void omaq_tox_set_avatar_hook(struct omaq_tox *t, omaq_on_avatar cb, void *ud);
 
 int omaq_tox_av_call(struct omaq_tox *t, uint32_t friend);
 int omaq_tox_av_answer(struct omaq_tox *t, uint32_t friend);

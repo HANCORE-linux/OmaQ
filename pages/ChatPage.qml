@@ -10,6 +10,9 @@ Item {
   property var service: null
   property var theme: ({ bg: "", fg: "", accent: "", unread: "" })
   property string conversation: ""
+  property string peerName: ""
+  property string peerAvatar: ""
+  property bool peerOnline: false
   property bool terminalLook: false
   property bool pulseUnread: false
   property bool showFile: false
@@ -421,9 +424,25 @@ Item {
         Layout.fillWidth: true
         spacing: Style.space(4)
 
+        Image {
+          visible: !root.demo
+          Layout.preferredWidth: Style.font.display
+          Layout.preferredHeight: Style.font.display
+          source: root.peerAvatar ? ("file://" + root.peerAvatar) : Qt.resolvedUrl("../assets/avatar-fallback.svg")
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+          cache: false
+          smooth: true
+        }
+
         Text {
           Layout.fillWidth: true
-          text: root.demo ? "DEMO" : (root.conversation || "chat").toUpperCase()
+          text: {
+            if (root.demo)
+              return "DEMO"
+            var n = root.peerName || root.conversation || "chat"
+            return n + (root.peerOnline ? " · online" : " · offline")
+          }
           color: root.demo ? root.accent : Qt.darker(root.fg, 1.4)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

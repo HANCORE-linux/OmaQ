@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include "av.h"
+#include "avatar.h"
 #include "file.h"
 #include "group.h"
 #include "invite.h"
@@ -263,6 +264,134 @@ static void emit_safety(uint32_t friend)
 	emit(ev);
 }
 
+static void emit_friends(void)
+{
+	uint32_t list[64];
+	int n, i, wr, first = 1;
+	char ev[OMAQ_JSON_LINE_MAX];
+	char *p = ev;
+	size_t left = sizeof(ev);
+
+	if (!g_tox) {
+		emit("{\"event\":\"friends\",\"items\":[]}");
+		return;
+	}
+	n = omaq_tox_friend_list(g_tox, list, 64);
+	wr = snprintf(p, left, "{\"event\":\"friends\",\"items\":[");
+	if (wr < 0 || (size_t)wr >= left) {
+		emit("{\"event\":\"friends\",\"items\":[]}");
+		return;
+	}
+	p += wr;
+	left -= (size_t)wr;
+	for (i = 0; i < n; i++) {
+		char name[129], esc[280], id[16], adest[512], apath[600];
+		const char *on;
+
+		if (omaq_tox_friend_name(g_tox, list[i], name, sizeof(name)) != 0)
+			snprintf(name, sizeof(name), "Friend %u", list[i]);
+		if (omaq_json_escape(name, esc, sizeof(esc)) != 0)
+			continue;
+		snprintf(id, sizeof(id), "%u", list[i]);
+		on = omaq_tox_friend_online(g_tox, list[i]) ? "true" : "false";
+		if (omaq_avatar_dest(home_dir(), id, adest, sizeof(adest)) == 0 &&
+		    access(adest, R_OK) == 0 &&
+		    omaq_json_escape(adest, apath, sizeof(apath)) == 0)
+			wr = snprintf(p, left,
+				      "%s{\"id\":\"%s\",\"name\":\"%s\",\"avatar\":\"%s\",\"online\":%s}",
+				      first ? "" : ",", id, esc, apath, on);
+		else
+			wr = snprintf(p, left,
+				      "%s{\"id\":\"%s\",\"name\":\"%s\",\"online\":%s}",
+				      first ? "" : ",", id, esc, on);
+		if (wr < 0 || (size_t)wr >= left)
+			break;
+		p += wr;
+		left -= (size_t)wr;
+		first = 0;
+	}
+	if (left < 3) {
+		emit("{\"event\":\"friends\",\"items\":[]}");
+		return;
+	}
+	memcpy(p, "]}", 3);
+	emit(ev);
+}
+
+static void emit_avatar(const char *id, const char *path)
+{
+	char eid[32], epath[600], ev[700];
+
+	if (!id || omaq_json_escape(id, eid, sizeof(eid)) != 0)
+		return;
+	if (path && path[0]) {
+		if (omaq_json_escape(path, epath, sizeof(epath)) != 0)
+			return;
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"avatar\",\"id\":\"%s\",\"path\":\"%s\"}", eid, epath);
+	} else {
+		snprintf(ev, sizeof(ev), "{\"event\":\"avatar\",\"id\":\"%s\",\"path\":\"\"}", eid);
+	}
+	emit(ev);
+}
+
+static void emit_self_avatar(void)
+{
+	char dest[512];
+
+	if (omaq_avatar_dest(home_dir(), "self", dest, sizeof(dest)) == 0 &&
+	    access(dest, R_OK) == 0)
+		emit_avatar("self", dest);
+	else
+		emit_avatar("self", "");
+}
+
+static int avatar_hash_file(const char *path, uint8_t out[32])
+{
+	unsigned char buf[OMAQ_AVATAR_MAX];
+	FILE *f;
+	size_t n;
+
+	f = fopen(path, "rb");
+	if (!f)
+		return -1;
+	n = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	if (!n)
+		return -1;
+	return omaq_tox_hash(buf, n, out);
+}
+
+static void avatar_broadcast(const char *path)
+{
+	uint32_t list[64];
+	uint8_t hid[32];
+	int n, i;
+
+	if (!g_tox || !path || !path[0])
+		return;
+	if (avatar_hash_file(path, hid) != 0)
+		return;
+	n = omaq_tox_friend_list(g_tox, list, 64);
+	for (i = 0; i < n; i++)
+		(void)omaq_file_send_avatar_begin(g_tox, list[i], path, hid, NULL);
+}
+
+static void hook_presence(void *ud, uint32_t friend, int online)
+{
+	char selfav[512];
+	uint8_t hid[32];
+
+	(void)ud;
+	emit_friends();
+	if (!online || !g_tox)
+		return;
+	if (omaq_avatar_dest(home_dir(), "self", selfav, sizeof(selfav)) == 0 &&
+	    access(selfav, R_OK) == 0 &&
+	    avatar_hash_file(selfav, hid) == 0)
+		(void)omaq_file_send_avatar_begin(g_tox, friend, selfav, hid, NULL);
+}
+
 static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 {
 	char key[65];
@@ -436,9 +565,45 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 	if (rc == 1) {
 		char conv[16];
 		snprintf(conv, sizeof(conv), "%u", friend);
+		if (omaq_avatar_is_dest(home_dir(), dest)) {
+			emit_avatar(conv, dest);
+			return;
+		}
 		omaq_message_append(home_dir(), conv, "peer", dest, "in");
 		emit_file("done", friend, fnum, NULL, 0, dest);
 	}
+}
+
+static void hook_avatar(void *ud, uint32_t friend, uint32_t fnum, uint64_t size)
+{
+	char dest[512], id[16], dir[512], got[512];
+
+	(void)ud;
+	snprintf(id, sizeof(id), "%u", friend);
+	if (size == 0) {
+		if (omaq_avatar_dest(home_dir(), id, dest, sizeof(dest)) == 0)
+			unlink(dest);
+		emit_avatar(id, "");
+		(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		return;
+	}
+	if (size > OMAQ_AVATAR_MAX) {
+		(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		return;
+	}
+	if (snprintf(dir, sizeof(dir), "%s/avatars", home_dir()) >= (int)sizeof(dir))
+		return;
+	(void)mkdir(dir, 0700);
+	if (omaq_avatar_dest(home_dir(), id, dest, sizeof(dest)) != 0) {
+		(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		return;
+	}
+	if (omaq_file_recv_begin(home_dir(), id, friend, fnum, "avatar.png", size,
+				 dest, got, sizeof(got)) != 0) {
+		(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_CANCEL);
+		return;
+	}
+	(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_RESUME);
 }
 
 static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control)
@@ -489,9 +654,11 @@ static void attach_hooks(void)
 	if (!g_tox)
 		return;
 	omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
+	omaq_tox_set_presence_hook(g_tox, hook_presence, NULL);
 	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
 	omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
 				hook_file_ctrl, NULL);
+	omaq_tox_set_avatar_hook(g_tox, hook_avatar, NULL);
 	omaq_tox_set_call_hook(g_tox, hook_call, NULL);
 }
 
@@ -528,6 +695,8 @@ static int handle_op(const omaq_op *op)
 				 omaq_tox_online(g_tox) ? "true" : "false", addr,
 				 omaq_identity_protected(g_tox) ? "true" : "false");
 			emit(ev);
+			emit_friends();
+			emit_self_avatar();
 			return 0;
 		}
 #endif
@@ -704,6 +873,7 @@ static int handle_op(const omaq_op *op)
 			}
 #endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			emit_friends();
 			emit_safety(fn);
 			return 0;
 		}
@@ -780,8 +950,17 @@ static int handle_op(const omaq_op *op)
 								       ROLE_OWNER, g_issued_grole);
 				clear_invite();
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
-				if (fn != UINT32_MAX)
+				emit_friends();
+				if (fn != UINT32_MAX) {
+					char selfav[512];
+					uint8_t hid[32];
+
 					emit_safety(fn);
+					if (omaq_avatar_dest(home_dir(), "self", selfav, sizeof(selfav)) == 0 &&
+					    access(selfav, R_OK) == 0 &&
+					    avatar_hash_file(selfav, hid) == 0)
+						(void)omaq_file_send_avatar_begin(g_tox, fn, selfav, hid, NULL);
+				}
 				return 0;
 			}
 			g_have_pending = 0;
@@ -802,8 +981,28 @@ static int handle_op(const omaq_op *op)
 				return 0;
 			}
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
+			emit_friends();
 			return 0;
 		}
+#endif
+		emit_error("unsupported");
+		return 0;
+	}
+	if (strcmp(op->op, "avatar.set") == 0) {
+#ifdef HAVE_TOX
+		char dest[512];
+
+		if (!g_tox) {
+			emit_error("unsupported");
+			return 0;
+		}
+		if (omaq_avatar_install(home_dir(), "self", op->path, dest, sizeof(dest)) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		emit_avatar("self", dest);
+		avatar_broadcast(dest);
+		return 0;
 #endif
 		emit_error("unsupported");
 		return 0;

@@ -27,6 +27,8 @@ struct omaq_tox {
 	omaq_on_file_chunk_req on_fcreq;
 	omaq_on_file_chunk on_fchunk;
 	omaq_on_file_ctrl on_fctrl;
+	omaq_on_avatar on_avatar;
+	omaq_on_presence on_presence;
 	omaq_on_call on_call;
 	void *ud;
 	int online;
@@ -152,6 +154,15 @@ static void on_status(Tox *tox, Tox_Connection st, void *ud)
 	t->online = (st != TOX_CONNECTION_NONE);
 }
 
+static void on_friend_conn(Tox *tox, uint32_t friend_number, Tox_Connection st, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	if (t->on_presence)
+		t->on_presence(t->ud, friend_number, st != TOX_CONNECTION_NONE);
+}
+
 static void on_req(Tox *tox, const uint8_t *pk, const uint8_t *msg, size_t len, void *ud)
 {
 	struct omaq_tox *t = ud;
@@ -254,6 +265,13 @@ static void on_file_recv(Tox *tox, uint32_t friend, uint32_t fnum, uint32_t kind
 	char name[129];
 
 	(void)tox;
+	if (kind == TOX_FILE_KIND_AVATAR) {
+		if (t->on_avatar)
+			t->on_avatar(t->ud, friend, fnum, size);
+		else
+			tox_file_control(t->tox, friend, fnum, TOX_FILE_CONTROL_CANCEL, NULL);
+		return;
+	}
 	if (kind != TOX_FILE_KIND_DATA) {
 		tox_file_control(t->tox, friend, fnum, TOX_FILE_CONTROL_CANCEL, NULL);
 		return;
@@ -434,6 +452,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 		return NULL;
 	}
 	tox_callback_self_connection_status(t->tox, on_status);
+	tox_callback_friend_connection_status(t->tox, on_friend_conn);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
 	tox_callback_group_invite(t->tox, on_ginv);
@@ -599,6 +618,66 @@ int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number)
 	return 0;
 }
 
+int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max)
+{
+	size_t n;
+	uint32_t *all;
+
+	if (!t || !t->tox || !out || max == 0)
+		return 0;
+	n = tox_self_get_friend_list_size(t->tox);
+	if (n == 0)
+		return 0;
+	all = calloc(n, sizeof(*all));
+	if (!all)
+		return 0;
+	tox_self_get_friend_list(t->tox, all);
+	if (n > max)
+		n = max;
+	memcpy(out, all, n * sizeof(*all));
+	free(all);
+	return (int)n;
+}
+
+int omaq_tox_friend_online(struct omaq_tox *t, uint32_t friend_number)
+{
+	Tox_Err_Friend_Query err = TOX_ERR_FRIEND_QUERY_OK;
+	Tox_Connection st;
+
+	if (!t || !t->tox)
+		return 0;
+	st = tox_friend_get_connection_status(t->tox, friend_number, &err);
+	if (err != TOX_ERR_FRIEND_QUERY_OK)
+		return 0;
+	return st != TOX_CONNECTION_NONE;
+}
+
+int omaq_tox_friend_name(struct omaq_tox *t, uint32_t friend_number, char *out, size_t n)
+{
+	Tox_Err_Friend_Query err = TOX_ERR_FRIEND_QUERY_OK;
+	uint8_t raw[TOX_MAX_NAME_LENGTH];
+	size_t sz, i;
+
+	if (!t || !t->tox || !out || n < 2)
+		return -1;
+	sz = tox_friend_get_name_size(t->tox, friend_number, &err);
+	if (err != TOX_ERR_FRIEND_QUERY_OK || sz == 0 ||
+	    !tox_friend_get_name(t->tox, friend_number, raw, &err)) {
+		if (snprintf(out, n, "Friend %u", friend_number) >= (int)n)
+			return -1;
+		return 0;
+	}
+	if (sz >= n)
+		sz = n - 1;
+	memcpy(out, raw, sz);
+	out[sz] = '\0';
+	for (i = 0; out[i]; i++) {
+		if (out[i] == '\n' || out[i] == '\r')
+			out[i] = ' ';
+	}
+	return 0;
+}
+
 uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32)
 {
 	Tox_Err_Friend_By_Public_Key err = TOX_ERR_FRIEND_BY_PUBLIC_KEY_OK;
@@ -673,6 +752,15 @@ void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message
 	t->on_req = req;
 	t->on_msg = msg;
 	t->ud = ud;
+}
+
+void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *ud)
+{
+	if (!t)
+		return;
+	t->on_presence = cb;
+	if (ud)
+		t->ud = ud;
 }
 
 int omaq_tox_online(const struct omaq_tox *t)
@@ -841,6 +929,31 @@ int omaq_tox_file_send(struct omaq_tox *t, uint32_t friend, uint64_t size,
 	return 0;
 }
 
+int omaq_tox_hash(const uint8_t *data, size_t n, uint8_t out32[32])
+{
+	if (!data || !out32)
+		return -1;
+	tox_hash(out32, data, n);
+	return 0;
+}
+
+int omaq_tox_file_send_avatar(struct omaq_tox *t, uint32_t friend, uint64_t size,
+			      const uint8_t file_id[32], uint32_t *fnum)
+{
+	Tox_Err_File_Send err = TOX_ERR_FILE_SEND_OK;
+	uint32_t n;
+	static const uint8_t name[] = "avatar.png";
+
+	if (!t || !t->tox || !fnum)
+		return -1;
+	n = tox_file_send(t->tox, friend, TOX_FILE_KIND_AVATAR, size, file_id,
+			  name, sizeof(name) - 1, &err);
+	if (err != TOX_ERR_FILE_SEND_OK)
+		return -1;
+	*fnum = n;
+	return 0;
+}
+
 int omaq_tox_file_chunk(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, const uint8_t *data, size_t len)
 {
@@ -883,6 +996,15 @@ void omaq_tox_set_file_hooks(struct omaq_tox *t, omaq_on_file_recv recv,
 	t->on_fcreq = req;
 	t->on_fchunk = chunk;
 	t->on_fctrl = ctrl;
+	if (ud)
+		t->ud = ud;
+}
+
+void omaq_tox_set_avatar_hook(struct omaq_tox *t, omaq_on_avatar cb, void *ud)
+{
+	if (!t)
+		return;
+	t->on_avatar = cb;
 	if (ud)
 		t->ud = ud;
 }

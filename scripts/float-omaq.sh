@@ -1,6 +1,7 @@
 #!/bin/bash
 # Keep OmaQ chat/demo as floating windows from the first map.
 # Dual-mode: Lua window_rule + dsp, or classic windowrulev2 + setfloating.
+# Friend chats are titled "OmaQ chat" or "OmaQ chat — <name>".
 set -u
 
 LUA=0
@@ -12,17 +13,17 @@ RULE_FLAG="${XDG_RUNTIME_DIR:-/tmp}/omaq-hypr-float-rules"
 
 if (( LUA )); then
   hyprctl eval 'hl.window_rule({ name = "omaq-float-demo", match = { title = "^OmaQ demo$" }, float = true })' >/dev/null || true
-  hyprctl eval 'hl.window_rule({ name = "omaq-float-chat", match = { title = "^OmaQ chat$" }, float = true })' >/dev/null || true
+  hyprctl eval 'hl.window_rule({ name = "omaq-float-chat", match = { title = "^OmaQ chat" }, float = true })' >/dev/null || true
 elif [[ ! -f "$RULE_FLAG" ]]; then
   hyprctl keyword 'windowrulev2 = float, title:^(OmaQ demo)$' >/dev/null || true
-  hyprctl keyword 'windowrulev2 = float, title:^(OmaQ chat)$' >/dev/null || true
+  hyprctl keyword 'windowrulev2 = float, title:^(OmaQ chat)' >/dev/null || true
   : > "$RULE_FLAG"
 fi
 
 found=0
 i=0
 while (( i < 25 )); do
-  if hyprctl -j clients 2>/dev/null | grep -Eq 'OmaQ (demo|chat)'; then
+  if hyprctl -j clients 2>/dev/null | grep -Eq '"title": "OmaQ (demo|chat)'; then
     found=1
     break
   fi
@@ -31,17 +32,17 @@ while (( i < 25 )); do
 done
 (( found )) || exit 0
 
-float_one() {
-  local title="$1"
+float_match() {
+  local re="$1"
   if (( LUA )); then
-    hyprctl dispatch "hl.dsp.window.fullscreen({ action = \"unset\", window = \"title:^${title}$\" })" >/dev/null || true
-    hyprctl dispatch "hl.dsp.window.float({ action = \"on\", window = \"title:^${title}$\" })" >/dev/null || true
+    hyprctl dispatch "hl.dsp.window.fullscreen({ action = \"unset\", window = \"title:${re}\" })" >/dev/null || true
+    hyprctl dispatch "hl.dsp.window.float({ action = \"on\", window = \"title:${re}\" })" >/dev/null || true
   else
-    hyprctl dispatch "fullscreenstate" "0 0,title:^${title}$" >/dev/null || true
-    hyprctl dispatch "setfloating" "title:^${title}$" >/dev/null || true
+    hyprctl dispatch "fullscreenstate" "0 0,title:${re}" >/dev/null || true
+    hyprctl dispatch "setfloating" "title:${re}" >/dev/null || true
   fi
 }
 
-float_one "OmaQ demo"
-float_one "OmaQ chat"
+float_match "^OmaQ demo$"
+float_match "^OmaQ chat"
 exit 0
