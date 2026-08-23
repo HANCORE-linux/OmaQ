@@ -35,7 +35,7 @@ printf 'omaq-file-probe\n' >"$src"
 mkfifo "$holda" "$holdb"
 OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
 pa=$!
-OMAQ_HOME="$hb" OMAQ_STATE="$sb" "$bin" >"$fb" 2>"$fb.err" <"$holdb" &
+OMAQ_HOME="$hb" OMAQ_STATE="$sb" OMAQ_DOWNLOAD_DIR="$hb/Downloads" "$bin" >"$fb" 2>"$fb.err" <"$holdb" &
 pb=$!
 exec 3>"$holda"
 exec 4>"$holdb"
@@ -108,7 +108,7 @@ while [ "$i" -lt 40 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no file.done" >&2; tail -20 "$fb" >&2; exit 1; }
 
-got=$(find "$hb/files" -type f 2>/dev/null | head -1)
+got=$(find "$hb/Downloads/omaq" -type f 2>/dev/null | head -1)
 [ -n "$got" ] || { echo "phase6: no dest file" >&2; exit 1; }
 grep -a -q 'omaq-file-probe' "$got" || { echo "phase6: dest mismatch" >&2; exit 1; }
 

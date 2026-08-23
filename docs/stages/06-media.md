@@ -6,7 +6,7 @@
 ## Landed
 
 - `file.send` / `file.accept` / `file.cancel` over Tox `TOX_FILE_KIND_DATA`
-- Incoming transfer stays paused until `file.accept`; dest `$OMAQ_HOME/files/<conv>/<name>`, `0600`, cap 8 MiB
+- Incoming transfer stays paused until `file.accept`; default dest `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported.
 - `call.start` / `call.answer` / `call.stop`: 1:1 ToxAV signaling (48 kbit, video 0). PCM capture/playback is not wired; `verify-6` asserts start/stop, not audible audio.
 - Empty audio receive callback registered so `toxav_answer` can init the codec
 - Groups (`g…`) return `forbidden` for file and call

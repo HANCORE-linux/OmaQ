@@ -30,6 +30,7 @@ Item {
   property bool emojiOpen: false
   property bool demo: false
   property string fileStatus: ""
+  property bool filePickerClosing: false
   property int filePickerExitCode: -1
   property bool filePickerStreamDone: false
   property string replyToId: ""
@@ -92,7 +93,7 @@ Item {
   property bool typingSent: false
   property string typingConversation: ""
 
-  readonly property int smilePx: 24
+  readonly property int smilePx: Math.max(56, Style.font.display * 2)
   readonly property int smileTextPx: Style.font.body
   readonly property string filePickerScript:
     "if command -v zenity >/dev/null 2>&1; then\n" +
@@ -325,6 +326,42 @@ Item {
     ])
   }
 
+  function defaultDownloadDir() {
+    var base = Quickshell.env("OMAQ_DOWNLOAD_DIR")
+    if (!base || base.charAt(0) !== "/")
+      base = Quickshell.env("XDG_DOWNLOAD_DIR")
+    if (!base || base.charAt(0) !== "/")
+      base = (Quickshell.env("HOME") || "") + "/Downloads"
+    return base + "/omaq"
+  }
+
+  function filePathForConversation() {
+    if (!service || !conversation)
+      return ""
+    return String(service.filePathFor(conversation) || "")
+  }
+
+  function fileFolderForConversation() {
+    var path = filePathForConversation()
+    var slash = path.lastIndexOf("/")
+    return slash >= 0 ? path.slice(0, slash) : defaultDownloadDir()
+  }
+
+  function openFileFolder() {
+    var folder = fileFolderForConversation()
+    if (folder)
+      Quickshell.execDetached(["xdg-open", folder])
+  }
+
+  function copyFilePath() {
+    var path = filePathForConversation()
+    if (!path)
+      return
+    root.copyText(path)
+    root.fileStatus = "Path copied"
+    fileStatusTimer.restart()
+  }
+
   function copyCode(value) {
     var code = root.codeToCopy(value)
     if (!code)
@@ -503,6 +540,10 @@ Item {
     var entry = item || {}
     if (entry.ack === undefined)
       entry.ack = -1
+    if (entry.newMarker === undefined)
+      entry.newMarker = false
+    if (entry.live === undefined)
+      entry.live = false
     lines.append(entry)
   }
 
@@ -516,18 +557,35 @@ Item {
 
   function applyHistory(items, cleared) {
     var keep = []
+    var unreadCount = 0
+    var incomingIndexes = []
+    var markerAt = -1
     var i, j, it, dir, found
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
-      if (!cleared && existing && existing.local)
-        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, deleted: !!existing.deleted, edited: !!existing.edited, local: true, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
+      if (!cleared && existing && (existing.local || existing.live))
+        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
+    if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
+      unreadCount = Math.max(0, Number(service.lastHistoryUnreadCount || 0))
     for (i = 0; items && i < items.length; i++) {
       it = items[i]
       if (!it || (!it.text && !it.deleted))
         continue
       dir = it.dir === "out" ? "out" : (it.dir === "sys" ? "sys" : "in")
+      if (dir === "in")
+        incomingIndexes.push(i)
+    }
+    if (unreadCount > 0 && incomingIndexes.length > 0)
+      markerAt = incomingIndexes[Math.max(0, incomingIndexes.length - unreadCount)]
+    for (i = 0; items && i < items.length; i++) {
+      it = items[i]
+      if (!it || (!it.text && !it.deleted))
+        continue
+      dir = it.dir === "out" ? "out" : (it.dir === "sys" ? "sys" : "in")
+      if (i === markerAt)
+        root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
       var historyAck = -1
       if (dir === "out")
         historyAck = it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1)
@@ -605,6 +663,14 @@ Item {
       return
     var dir = service.lastChatDir === "out" ? "out" : "in"
     var i
+    var hasNewMarker = false
+    for (i = 0; i < lines.count; i++) {
+      var existingMarker = lines.get(i)
+      if (existingMarker && existingMarker.newMarker) {
+        hasNewMarker = true
+        break
+      }
+    }
     for (i = lines.count - 1; i >= 0; i--) {
       var pending = lines.get(i)
       if (pending && pending.local && pending.text === t && pending.dir === dir) {
@@ -618,7 +684,9 @@ Item {
         return
       }
     }
-    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, deleted: false, edited: false, local: dir === "out", pending: false, ack: dir === "out" ? 1 : -1 })
+    if (dir === "in" && !hasNewMarker)
+      root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
+    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, deleted: false, edited: false, local: dir === "out", live: dir === "in", pending: false, ack: dir === "out" ? 1 : -1 })
     if (dir === "in" && service.lastChatId) {
       service.sendReceipt(root.conversation, service.lastChatId, "read")
       service.clearUnread(root.conversation)
@@ -752,6 +820,12 @@ Item {
   }
 
   function finishFilePicker() {
+    if (root.filePickerClosing) {
+      root.filePickerClosing = false
+      root.filePickerExitCode = -1
+      root.filePickerStreamDone = false
+      return
+    }
     if (root.filePickerExitCode < 0 || !root.filePickerStreamDone)
       return
     if (root.filePickerExitCode === 0) {
@@ -769,10 +843,23 @@ Item {
 
   function openFilePicker() {
     if (!filePicker.running) {
+      root.filePickerClosing = false
       root.filePickerExitCode = -1
       root.filePickerStreamDone = false
       filePicker.running = true
     }
+  }
+
+  function closeFileChooser() {
+    root.filePickerClosing = filePicker.running
+    if (filePicker.running)
+      filePicker.running = false
+    root.showFile = false
+    root.filePickerExitCode = -1
+    root.filePickerStreamDone = false
+    filePath.text = ""
+    if (!root.filePickerClosing)
+      root.fileStatus = ""
   }
 
   function insertEmoji(glyph) {
@@ -791,6 +878,7 @@ Item {
       root.fileStatus = "No conversation selected"
       return
     }
+    root.closeFileChooser()
     root.fileStatus = "Sending…"
     service.sendFile(path, root.conversation)
   }
@@ -800,6 +888,13 @@ Item {
     interval: 3500
     repeat: false
     onTriggered: root.stopTyping()
+  }
+
+  Timer {
+    id: fileStatusTimer
+    interval: 1800
+    repeat: false
+    onTriggered: if (root.fileStatus === "Path copied") root.fileStatus = ""
   }
 
   Process {
@@ -936,16 +1031,23 @@ Item {
     function onLastFileTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastFileConv))
         return
-      if (root.service.lastFileState === "done")
-        root.fileStatus = "File sent"
-      else if (root.service.lastFileState === "failed")
+      if (root.service.lastFileState === "offer") {
+        root.closeFileChooser()
+        root.fileStatus = ""
+      } else if (root.service.lastFileState === "done") {
+        root.closeFileChooser()
+        root.fileStatus = root.service.lastFilePath !== "" ? "File received" : "File sent"
+      } else if (root.service.lastFileState === "failed") {
+        root.closeFileChooser()
         root.fileStatus = "File could not be sent: " + (root.service.lastFileError || "file_failed")
+      }
     }
   }
 
   onConversationChanged: {
     root.stopTyping()
     root.clearConfirm = false
+    root.fileStatus = ""
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
       root.service.requestHistory(root.conversation)
@@ -955,8 +1057,6 @@ Item {
   Component.onCompleted: {
     if (root.demo)
       root.resetDemo()
-    else if (service)
-      service.requestHistory(root.conversation || service.lastConversation)
   }
 
   Rectangle {
@@ -1065,7 +1165,183 @@ Item {
         spacing: Style.space(6)
         boundsBehavior: Flickable.StopAtBounds
         model: lines
+        footer: Column {
+          id: fileFooter
+          width: list.width
+          spacing: Style.space(6)
+
+          Row {
+            visible: root.fileForThis
+            height: visible ? implicitHeight : 0
+            spacing: Style.space(8)
+            ChatBtn {
+              text: "Accept file"
+              bordered: true
+              onClicked: {
+                if (root.demo) {
+                  root.demoIncomingFile = false
+                  root.appendLine({ dir: "sys", text: "Accepted notes.png (demo)", ack: -1 })
+                  list.positionViewAtEnd()
+                } else if (service) {
+                  service.acceptFile(root.conversation)
+                }
+              }
+            }
+            ChatBtn {
+              text: "Decline"
+              onClicked: {
+                if (root.demo) {
+                  root.demoIncomingFile = false
+                  root.appendLine({ dir: "sys", text: "Declined file (demo)", ack: -1 })
+                  list.positionViewAtEnd()
+                } else if (service) {
+                  service.cancelFile(root.conversation)
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: !root.demo && root.fileForThis && service && service.fileNameFor(root.conversation) !== ""
+            width: parent.width
+            text: service ? service.fileNameFor(root.conversation) : ""
+            color: Qt.darker(root.fg, 1.35)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WrapAnywhere
+          }
+
+          Item {
+            id: filePathLink
+            visible: !root.demo && service && service.filePathFor(root.conversation) !== ""
+            width: parent.width
+            implicitHeight: visible ? filePathText.implicitHeight : 0
+            height: implicitHeight
+
+            Text {
+              id: filePathText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              text: root.filePathForConversation()
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.underline: true
+              wrapMode: Text.WrapAnywhere
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: filePathMenu.open()
+            }
+
+            Controls.Menu {
+              id: filePathMenu
+              width: Style.space(250)
+              padding: Style.space(4)
+
+              function placeMenu() {
+                var target = filePathMenu.parent
+                if (!target)
+                  return
+                var point = filePathLink.mapToItem(target, 0, filePathLink.height + Style.space(4))
+                var nextX = point.x
+                var nextY = point.y
+                if (target.width > 0)
+                  nextX = Math.max(Style.space(4), Math.min(nextX, target.width - width - Style.space(4)))
+                if (target.height > 0)
+                  nextY = Math.max(Style.space(4), Math.min(nextY, target.height - height - Style.space(4)))
+                x = nextX
+                y = nextY
+              }
+
+              onOpened: placeMenu()
+
+              background: Rectangle {
+                radius: Style.cornerRadius
+                color: Qt.darker(root.bg, 1.08)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+                border.width: 1
+              }
+
+              contentItem: Column {
+                width: parent.width
+                spacing: 0
+
+                ContextMenuItem {
+                  width: parent.width
+                  text: "Open containing folder"
+                  materialIcon: "folder_open"
+                  onTriggered: {
+                    root.openFileFolder()
+                    filePathMenu.close()
+                  }
+                }
+                ContextMenuItem {
+                  width: parent.width
+                  text: "Copy full path"
+                  materialIcon: "content_copy"
+                  onTriggered: {
+                    root.copyFilePath()
+                    filePathMenu.close()
+                  }
+                }
+              }
+            }
+          }
+
+          Image {
+            visible: !root.demo && root.imageFile
+            width: visible ? Math.min(root.width, 160) : 0
+            height: visible ? 80 : 0
+            fillMode: Image.PreserveAspectFit
+            source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
+          }
+
+          MediaPlayer {
+            id: mediaPlayer
+            source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
+            audioOutput: AudioOutput {
+              volume: 1.0
+            }
+            videoOutput: videoOutput
+            onSourceChanged: stop()
+          }
+
+          Row {
+            visible: !root.demo && root.audioFile
+            height: visible ? implicitHeight : 0
+            spacing: Style.space(8)
+            ChatBtn {
+              text: mediaPlayer.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
+              bordered: true
+              onClicked: mediaPlayer.playbackState === MediaPlayer.PlayingState ? mediaPlayer.pause() : mediaPlayer.play()
+            }
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.mediaPath
+              color: Qt.darker(root.fg, 1.5)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideMiddle
+              width: Math.max(0, root.width - Style.space(90))
+            }
+          }
+
+          VideoOutput {
+            id: videoOutput
+            visible: !root.demo && root.videoFile
+            width: visible ? Math.min(root.width, 280) : 0
+            height: visible ? 158 : 0
+            fillMode: VideoOutput.PreserveAspectFit
+          }
+        }
         onHeightChanged: Qt.callLater(function() {
+          if (list.count)
+            list.positionViewAtEnd()
+        })
+        onContentHeightChanged: Qt.callLater(function() {
           if (list.count)
             list.positionViewAtEnd()
         })
@@ -1073,10 +1349,15 @@ Item {
         delegate: Item {
           id: line
           width: list.width
-          height: Math.max(bubble.implicitHeight, sysLine.implicitHeight)
+          height: model.newMarker ? newDivider.implicitHeight : Math.max(bubble.implicitHeight, sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
           readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
+          readonly property real smileMaxWidth: Math.max(root.smilePx + Style.space(16), list.width * 0.82)
+          readonly property int smileColumns: Math.max(1, Math.floor((line.smileMaxWidth - Style.space(16) + Style.space(2)) / (root.smilePx + Style.space(2))))
+          readonly property real smileWidth: Math.min(line.smileMaxWidth,
+            Math.max(root.smilePx + Style.space(16),
+              Math.min(line.smileGlyphs.length, line.smileColumns) * (root.smilePx + Style.space(2)) + Style.space(16)))
           readonly property string contextText: String(model.text || "")
           readonly property string contextId: String(model.id || "")
           readonly property bool deleted: !!model.deleted
@@ -1086,11 +1367,11 @@ Item {
             id: bubble
             anchors.left: model.dir === "out" ? undefined : parent.left
             anchors.right: model.dir === "out" ? parent.right : undefined
-            width: line.smileOnly ? Math.min(smileRow.implicitWidth + Style.space(16), parent.width * 0.82) : root.bubbleWidth(model.text, line.hasCode, model.dir === "out" && model.ack !== undefined, parent.width)
+            width: line.smileOnly ? line.smileWidth : root.bubbleWidth(model.text, line.hasCode, model.dir === "out" && model.ack !== undefined, parent.width)
             implicitHeight: Math.max(line.smileOnly ? smileRow.implicitHeight : label.implicitHeight, line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) + Style.space(12)
             radius: Style.cornerRadius
             color: root.bubbleColor(model.dir)
-            visible: model.dir !== "sys"
+            visible: model.dir !== "sys" && !model.newMarker
 
             Text {
               id: label
@@ -1238,9 +1519,11 @@ Item {
               }
             }
 
-            Row {
+            Flow {
               id: smileRow
               visible: line.smileOnly
+              width: Math.max(root.smilePx, line.smileWidth - Style.space(16))
+              height: implicitHeight
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(8)
@@ -1248,26 +1531,74 @@ Item {
 
               Repeater {
                 model: line.smileGlyphs
-                Image {
+                delegate: Item {
                   required property string modelData
-                  width: root.smileTextPx
-                  height: root.smileTextPx
-                  source: root.smileSrc(modelData)
-                  fillMode: Image.PreserveAspectFit
-                  sourceSize.width: 64
-                  sourceSize.height: 64
-                  smooth: true
-                  mipmap: true
-                  asynchronous: true
-                  cache: true
+                  width: root.smilePx
+                  height: root.smilePx
+
+                  Image {
+                    id: smileImage
+                    anchors.fill: parent
+                    source: root.smileSrc(modelData)
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize.width: root.smilePx * 2
+                    sourceSize.height: root.smilePx * 2
+                    smooth: true
+                    mipmap: true
+                    asynchronous: true
+                    cache: true
+                  }
+
+                  Text {
+                    anchors.fill: parent
+                    visible: smileImage.status === Image.Error || smileImage.status === Image.Null
+                    text: modelData
+                    color: root.fg
+                    font.family: "Noto Color Emoji"
+                    font.pixelSize: root.smilePx
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    renderType: Text.QtRendering
+                  }
                 }
               }
             }
           }
 
+          RowLayout {
+            id: newDivider
+            visible: !!model.newMarker
+            anchors.left: parent.left
+            anchors.right: parent.right
+            implicitHeight: Style.space(24)
+            spacing: Style.space(8)
+
+            Rectangle {
+              Layout.fillWidth: true
+              Layout.alignment: Qt.AlignVCenter
+              height: 1
+              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
+            }
+
+            Text {
+              text: "New messages"
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Rectangle {
+              Layout.fillWidth: true
+              Layout.alignment: Qt.AlignVCenter
+              height: 1
+              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
+            }
+          }
+
           Text {
             id: sysLine
-            visible: model.dir === "sys"
+            visible: model.dir === "sys" && !model.newMarker
             width: parent.width
             text: model.dir === "sys" ? model.text : ""
             color: Qt.darker(root.fg, 1.5)
@@ -1276,95 +1607,6 @@ Item {
             wrapMode: Text.Wrap
           }
         }
-      }
-
-      Row {
-        visible: root.fileForThis
-        spacing: Style.space(8)
-        ChatBtn {
-          text: "Accept file"
-          bordered: true
-          onClicked: {
-            if (root.demo) {
-              root.demoIncomingFile = false
-              root.appendLine({ dir: "sys", text: "Accepted notes.png (demo)", ack: -1 })
-              list.positionViewAtEnd()
-            } else if (service) {
-              service.acceptFile(root.conversation)
-            }
-          }
-        }
-        ChatBtn {
-          text: "Decline"
-          onClicked: {
-            if (root.demo) {
-              root.demoIncomingFile = false
-              root.appendLine({ dir: "sys", text: "Declined file (demo)", ack: -1 })
-              list.positionViewAtEnd()
-            } else if (service) {
-              service.cancelFile(root.conversation)
-            }
-          }
-        }
-      }
-
-      Text {
-        visible: !root.demo && service && service.fileNameFor(root.conversation) !== ""
-        Layout.fillWidth: true
-        text: {
-          if (!service)
-            return ""
-          return service.filePathFor(root.conversation) || service.fileNameFor(root.conversation) || ""
-        }
-        color: Qt.darker(root.fg, 1.5)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WrapAnywhere
-      }
-
-          Image {
-        visible: !root.demo && root.imageFile
-        Layout.preferredWidth: Math.min(root.width, 160)
-        Layout.preferredHeight: visible ? 80 : 0
-        fillMode: Image.PreserveAspectFit
-        source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
-      }
-
-      MediaPlayer {
-        id: mediaPlayer
-        source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
-        audioOutput: AudioOutput {
-          volume: 1.0
-        }
-        videoOutput: videoOutput
-        onSourceChanged: stop()
-      }
-
-      Row {
-        visible: !root.demo && root.audioFile
-        spacing: Style.space(8)
-        ChatBtn {
-          text: mediaPlayer.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
-          bordered: true
-          onClicked: mediaPlayer.playbackState === MediaPlayer.PlayingState ? mediaPlayer.pause() : mediaPlayer.play()
-        }
-        Text {
-          anchors.verticalCenter: parent.verticalCenter
-          text: root.mediaPath
-          color: Qt.darker(root.fg, 1.5)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          elide: Text.ElideMiddle
-          width: Math.max(0, root.width - Style.space(90))
-        }
-      }
-
-      VideoOutput {
-        id: videoOutput
-        visible: !root.demo && root.videoFile
-        Layout.preferredWidth: Math.min(root.width, 280)
-        Layout.preferredHeight: visible ? 158 : 0
-        fillMode: VideoOutput.PreserveAspectFit
       }
 
       RowLayout {

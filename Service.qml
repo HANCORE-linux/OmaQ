@@ -41,7 +41,10 @@ Item {
   property var lastHistoryItems: []
   property bool lastHistoryCleared: false
   property string lastHistoryConv: ""
+  property int lastHistoryUnreadCount: 0
+  property string lastHistoryUnreadConv: ""
   property int historyTick: 0
+  property var pendingHistoryUnread: ({})
   property bool peerTyping: false
   property string lastTypingConv: ""
   property string lastReceiptConv: ""
@@ -221,8 +224,22 @@ Item {
       root.updateTick = root.updateTick + 1
     }
     if (ev.event === "history") {
+      var historyConv = String(ev.conversation || "")
+      var historyQueue = root.pendingHistoryUnread[historyConv] || []
+      var historyUnread = historyQueue.length > 0 ? Number(historyQueue[0] || 0) : 0
+      var historyPendingNext = {}
+      var historyPendingKey
+      for (historyPendingKey in root.pendingHistoryUnread) {
+        if (historyPendingKey !== historyConv)
+          historyPendingNext[historyPendingKey] = root.pendingHistoryUnread[historyPendingKey]
+      }
+      if (historyQueue.length > 1)
+        historyPendingNext[historyConv] = historyQueue.slice(1)
+      root.pendingHistoryUnread = historyPendingNext
+      root.lastHistoryUnreadConv = historyConv
+      root.lastHistoryUnreadCount = historyUnread
       root.lastHistoryCleared = !!ev.cleared
-      root.lastHistoryConv = ev.conversation || ""
+      root.lastHistoryConv = historyConv
       root.lastHistoryItems = ev.items || []
       root.historyTick = root.historyTick + 1
     }
@@ -284,7 +301,6 @@ Item {
     if (ev.event === "file.offer") {
       root.lastFileState = "offer"
       root.lastFileError = ""
-      root.lastFileTick = root.lastFileTick + 1
       var offerConv = String(ev.conversation || root.lastConversation)
       root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "", pending: true })
       root.lastFileId = ev.id || ""
@@ -294,11 +310,11 @@ Item {
       root.lastFileConv = offerConv
       if (offerConv.charAt(0) !== "g")
         root.lastDirectId = offerConv
+      root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.done") {
       root.lastFileState = "done"
       root.lastFileError = ""
-      root.lastFileTick = root.lastFileTick + 1
       var doneConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var doneOld = root.fileOffer(doneConv)
       root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", pending: false })
@@ -306,11 +322,11 @@ Item {
       root.lastFilePath = ev.path || ""
       root.lastConversation = doneConv
       root.lastFileConv = doneConv
+      root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.failed") {
       root.lastFileState = "failed"
       root.lastFileError = ev.code || "file_failed"
-      root.lastFileTick = root.lastFileTick + 1
       var failedConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var failedOld = root.fileOffer(failedConv)
       root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", pending: false })
@@ -318,6 +334,8 @@ Item {
       root.lastError = "file_failed"
       root.lastErrorConv = failedConv
       root.lastErrorTick = root.lastErrorTick + 1
+      root.lastFileConv = failedConv
+      root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "call.incoming") {
       root.incomingCall = true
@@ -423,6 +441,16 @@ Item {
 
   function requestHistory(conv) {
     var c = String(conv || root.lastConversation || "")
+    if ((root.pendingHistoryUnread[c] || []).length > 0)
+      return
+    var next = {}
+    var key
+    var queue = (root.pendingHistoryUnread[c] || []).slice()
+    for (key in root.pendingHistoryUnread)
+      next[key] = root.pendingHistoryUnread[key]
+    queue.push(root.unreadFor(c))
+    next[c] = queue
+    root.pendingHistoryUnread = next
     root.clearUnread(c)
     sendOp({ op: "history", conversation: c, limit: 50 })
   }
@@ -601,6 +629,9 @@ Item {
 
   function scheduleRestart() {
     root.lastError = "helper_down"
+    root.pendingHistoryUnread = ({})
+    root.lastHistoryUnreadConv = ""
+    root.lastHistoryUnreadCount = 0
     restartTimer.interval = root.backoffMs
     if (root.backoffMs < 1000)
       root.backoffMs = 1000

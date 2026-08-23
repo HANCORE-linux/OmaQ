@@ -33,6 +33,7 @@ struct omaq_tox {
 	omaq_on_call on_call;
 	void *ud;
 	int online;
+	time_t next_bootstrap;
 	char pass[129];
 };
 
@@ -76,6 +77,39 @@ static int hex_in(const char *hex, uint8_t *out, size_t n)
 		out[i] = (uint8_t)v;
 	}
 	return 0;
+}
+
+struct bootstrap_node {
+	const char *host;
+	uint16_t udp_port;
+	uint16_t tcp_port;
+	const char *key_hex;
+};
+
+static const struct bootstrap_node bootstrap_nodes[] = {
+	{ "144.217.167.73", 33445, 3389,
+	  "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C" },
+	{ "tox1.mf-net.eu", 33445, 33445,
+	  "B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506" },
+	{ "139.162.110.188", 33445, 443,
+	  "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
+};
+
+static void bootstrap_tox(struct omaq_tox *t, int add_relays)
+{
+	if (!t || !t->tox)
+		return;
+	for (size_t i = 0; i < sizeof(bootstrap_nodes) / sizeof(bootstrap_nodes[0]); i++) {
+		uint8_t key[TOX_PUBLIC_KEY_SIZE];
+		Tox_Err_Bootstrap berr = TOX_ERR_BOOTSTRAP_OK;
+		if (hex_in(bootstrap_nodes[i].key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
+			continue;
+		(void)tox_bootstrap(t->tox, bootstrap_nodes[i].host,
+				    bootstrap_nodes[i].udp_port, key, &berr);
+		if (add_relays)
+			(void)tox_add_tcp_relay(t->tox, bootstrap_nodes[i].host,
+					bootstrap_nodes[i].tcp_port, key, &berr);
+	}
 }
 
 static void save_path(const char *home, char *buf, size_t n)
@@ -197,6 +231,8 @@ static void on_status(Tox *tox, Tox_Connection st, void *ud)
 	struct omaq_tox *t = ud;
 	(void)tox;
 	t->online = (st != TOX_CONNECTION_NONE);
+	if (st == TOX_CONNECTION_NONE)
+		t->next_bootstrap = time(NULL) + 5;
 }
 
 static void on_friend_conn(Tox *tox, uint32_t friend_number, Tox_Connection st, void *ud)
@@ -533,31 +569,8 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	}
 	if (tox_self_get_name_size(t->tox) == 0)
 		(void)omaq_tox_set_name(t, "omaq");
-	{
-		/* Live nodes from nodes.tox.chat (status_udp+status_tcp).
-		 * TCP ports are outbound-only; no inbound listen required. */
-		static const struct {
-			const char *host;
-			uint16_t udp_port;
-			uint16_t tcp_port;
-			const char *key_hex;
-		} nodes[] = {
-			{ "144.217.167.73", 33445, 3389,
-			  "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C" },
-			{ "tox1.mf-net.eu", 33445, 33445,
-			  "B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506" },
-			{ "139.162.110.188", 33445, 443,
-			  "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
-		};
-		for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
-			uint8_t key[TOX_PUBLIC_KEY_SIZE];
-			Tox_Err_Bootstrap berr = TOX_ERR_BOOTSTRAP_OK;
-			if (hex_in(nodes[i].key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
-				continue;
-			tox_bootstrap(t->tox, nodes[i].host, nodes[i].udp_port, key, &berr);
-			tox_add_tcp_relay(t->tox, nodes[i].host, nodes[i].tcp_port, key, &berr);
-		}
-	}
+	bootstrap_tox(t, 1);
+	t->next_bootstrap = time(NULL) + 10;
 	omaq_tox_save(t);
 	return t;
 }
@@ -614,11 +627,21 @@ int omaq_tox_protected(const struct omaq_tox *t)
 
 void omaq_tox_iterate(struct omaq_tox *t)
 {
+	time_t now;
+
 	if (!t || !t->tox)
 		return;
 	tox_iterate(t->tox, t);
 	if (t->av)
 		toxav_iterate(t->av);
+	now = time(NULL);
+	if (t->next_bootstrap != 0 && now >= t->next_bootstrap) {
+		/* toxcore recommends waiting after a disconnect before bootstrapping.
+		 * Retry more often while offline, and periodically while online so a
+		 * live interface/NAT change is recovered without restarting OmaQ. */
+		bootstrap_tox(t, 0);
+		t->next_bootstrap = now + (t->online ? 60 : 10);
+	}
 }
 
 uint32_t omaq_tox_interval_ms(const struct omaq_tox *t)
@@ -799,7 +822,11 @@ int omaq_tox_send(struct omaq_tox *t, uint32_t friend_number, const char *text)
 		return -1;
 	tox_friend_send_message(t->tox, friend_number, TOX_MESSAGE_TYPE_NORMAL,
 				(const uint8_t *)text, strlen(text), &err);
-	return err == TOX_ERR_FRIEND_SEND_MESSAGE_OK ? 0 : -1;
+	if (err == TOX_ERR_FRIEND_SEND_MESSAGE_OK)
+		return 0;
+	if (err == TOX_ERR_FRIEND_SEND_MESSAGE_FRIEND_NOT_CONNECTED)
+		return -2;
+	return -1;
 }
 
 void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message msg, void *ud)
@@ -946,7 +973,11 @@ int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text)
 		return -1;
 	tox_group_send_message(t->tox, gnum, TOX_MESSAGE_TYPE_NORMAL,
 			       (const uint8_t *)text, strlen(text), &err);
-	return err == TOX_ERR_GROUP_SEND_MESSAGE_OK ? 0 : -1;
+	if (err == TOX_ERR_GROUP_SEND_MESSAGE_OK)
+		return 0;
+	if (err == TOX_ERR_GROUP_SEND_MESSAGE_DISCONNECTED)
+		return -2;
+	return -1;
 }
 
 int omaq_tox_group_self_role(struct omaq_tox *t, uint32_t gnum, int *omaq_role)

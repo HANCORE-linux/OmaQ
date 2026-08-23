@@ -37,10 +37,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
 #define MAX_CLIENTS 8
+#define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
@@ -78,6 +80,20 @@ static int g_clients[MAX_CLIENTS];
 static size_t g_ncli;
 static char g_cbuf[MAX_CLIENTS][OMAQ_JSON_LINE_MAX];
 static size_t g_clen[MAX_CLIENTS];
+static char g_obuf[MAX_CLIENTS][CLIENT_OUT_MAX];
+static size_t g_olen[MAX_CLIENTS];
+static size_t g_ooff[MAX_CLIENTS];
+static int g_drop[MAX_CLIENTS];
+static char g_stdout_buf[CLIENT_OUT_MAX];
+static size_t g_stdout_len;
+static size_t g_stdout_off;
+static int g_stdout_closed;
+static char g_stdin_buf[OMAQ_JSON_LINE_MAX];
+static size_t g_stdin_len;
+static int g_stdin_discard;
+static int g_stdin_closed;
+
+static void drop_client(size_t i);
 
 static const char *home_dir(void)
 {
@@ -210,18 +226,96 @@ static int write_pid(void)
 	return 0;
 }
 
-static void emit_fd(int fd, const char *s)
+static int queue_output(char *buf, size_t *len, size_t *off, const char *s)
 {
-	if (fd < 0)
+	size_t n;
+
+	if (!buf || !len || !off || !s)
+		return -1;
+	n = strlen(s) + 1;
+	if (n > CLIENT_OUT_MAX)
+		return -1;
+	if (*off > 0) {
+		if (*off == *len) {
+			*off = 0;
+			*len = 0;
+		} else {
+			memmove(buf, buf + *off, *len - *off);
+			*len -= *off;
+			*off = 0;
+		}
+	}
+	if (*len > CLIENT_OUT_MAX - n)
+		return -1;
+	memcpy(buf + *len, s, n - 1);
+	buf[*len + n - 1] = '\n';
+	*len += n;
+	return 0;
+}
+
+static int flush_output(int fd, char *buf, size_t *len, size_t *off)
+{
+	ssize_t wr;
+
+	if (*off >= *len) {
+		*off = *len = 0;
+		return 0;
+	}
+	wr = write(fd, buf + *off, *len - *off);
+	if (wr > 0) {
+		*off += (size_t)wr;
+		if (*off == *len)
+			*off = *len = 0;
+		return 0;
+	}
+	if (wr < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		return 0;
+	return -1;
+}
+
+static int queue_client(size_t i, const char *s)
+{
+	if (i >= g_ncli)
+		return -1;
+	return queue_output(g_obuf[i], &g_olen[i], &g_ooff[i], s);
+}
+
+static void flush_client(size_t i)
+{
+	if (i >= g_ncli)
 		return;
-	dprintf(fd, "%s\n", s);
+	if (flush_output(g_clients[i], g_obuf[i], &g_olen[i], &g_ooff[i]) != 0)
+		g_drop[i] = 1;
+}
+
+static void queue_stdout(const char *s)
+{
+	if (g_stdout_closed || queue_output(g_stdout_buf, &g_stdout_len, &g_stdout_off, s) == 0)
+		return;
+	/* Drop stale queued UI events rather than blocking the Tox loop. */
+	g_stdout_len = 0;
+	g_stdout_off = 0;
+	if (queue_output(g_stdout_buf, &g_stdout_len, &g_stdout_off, s) != 0)
+		g_stdout_closed = 1;
+}
+
+static void flush_stdout(void)
+{
+	if (!g_stdout_closed && flush_output(STDOUT_FILENO, g_stdout_buf,
+					     &g_stdout_len, &g_stdout_off) != 0) {
+		g_stdout_closed = 1;
+		g_stdout_len = 0;
+		g_stdout_off = 0;
+	}
 }
 
 static void emit(const char *s)
 {
-	emit_fd(1, s);
-	for (size_t i = 0; i < g_ncli; i++)
-		emit_fd(g_clients[i], s);
+	queue_stdout(s);
+	for (size_t i = 0; i < g_ncli; i++) {
+		if (queue_client(i, s) != 0)
+			g_drop[i] = 1;
+	}
 }
 
 static void emit_error(const char *code)
@@ -379,10 +473,9 @@ static int send_message_action_wire(uint32_t friend, const char *conversation,
 	} else if (omaq_message_edit_wire_pack(plain, sizeof(plain), id, text) != 0) {
 		return -1;
 	}
-	if (omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0 ||
-	    omaq_tox_send(g_tox, friend, wire) != 0)
+	if (omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0)
 		return -1;
-	return 0;
+	return omaq_tox_send(g_tox, friend, wire);
 }
 
 static int send_receipt_wire(uint32_t friend, const char *conversation,
@@ -392,10 +485,9 @@ static int send_receipt_wire(uint32_t friend, const char *conversation,
 
 	if (!g_tox || !g_ratchet || !conversation || !id ||
 	    omaq_receipt_wire_pack(plain, sizeof(plain), id, state) != 0 ||
-	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0 ||
-	    omaq_tox_send(g_tox, friend, wire) != 0)
+	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0)
 		return -1;
-	return 0;
+	return omaq_tox_send(g_tox, friend, wire);
 }
 #endif
 
@@ -892,13 +984,15 @@ static void hook_file_recv(void *ud, uint32_t friend, uint32_t fnum,
 
 static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t pos, size_t len)
 {
+	int avatar = omaq_file_is_avatar(friend, fnum);
 	(void)ud;
 	if (omaq_file_chunk_out(g_tox, friend, fnum, pos, len) != 0) {
 		omaq_file_cancel(g_tox, friend, fnum);
-		emit_file("failed", friend, fnum, NULL, 0, NULL);
+		if (!avatar)
+			emit_file("failed", friend, fnum, NULL, 0, NULL);
 		return;
 	}
-	if (len == 0)
+	if (len == 0 && !avatar)
 		emit_file("done", friend, fnum, NULL, 0, NULL);
 }
 
@@ -1709,8 +1803,9 @@ static int handle_op(const omaq_op *op)
 			return 0;
 		}
 		if (cid[0] == 'g') {
-			if (send_message_action(UINT32_MAX, cid, op->id, deleted ? "" : op->text, deleted) != 0) {
-				emit_error_conv("forbidden", cid);
+			int action_rc = send_message_action(UINT32_MAX, cid, op->id, deleted ? "" : op->text, deleted);
+			if (action_rc != 0) {
+				emit_error_conv(action_rc == -2 ? "offline" : "forbidden", cid);
 				return 0;
 			}
 		} else {
@@ -1719,6 +1814,10 @@ static int handle_op(const omaq_op *op)
 				return 0;
 			}
 			fn = direct_id_number(cid);
+			if (!omaq_tox_online(g_tox) || !omaq_tox_friend_online(g_tox, fn)) {
+				emit_error_conv("offline", cid);
+				return 0;
+			}
 #ifndef HAVE_SIGNAL
 			emit_error_conv("no_ratchet", cid);
 			return 0;
@@ -1727,9 +1826,12 @@ static int handle_op(const omaq_op *op)
 				emit_error_conv("ratchet_pending", cid);
 				return 0;
 			}
-			if (send_message_action(fn, cid, op->id, deleted ? "" : op->text, deleted) != 0) {
-				emit_error_conv("forbidden", cid);
-				return 0;
+			{
+				int action_rc = send_message_action(fn, cid, op->id, deleted ? "" : op->text, deleted);
+				if (action_rc != 0) {
+					emit_error_conv(action_rc == -2 ? "offline" : "forbidden", cid);
+					return 0;
+				}
 			}
 #endif
 		}
@@ -1751,10 +1853,22 @@ static int handle_op(const omaq_op *op)
 #ifdef HAVE_TOX
 #ifdef HAVE_SIGNAL
 		const char *cid = op->conversation[0] ? op->conversation : "0";
-		if (!g_tox || !direct_id_ok(cid) || !op->id[0] || !op->state[0] ||
-		    send_receipt_wire(direct_id_number(cid), cid, op->id, op->state) != 0) {
+		uint32_t fn;
+		if (!g_tox || !direct_id_ok(cid) || !op->id[0] || !op->state[0]) {
 			emit_error_conv("forbidden", cid);
 			return 0;
+		}
+		fn = direct_id_number(cid);
+		if (!omaq_tox_online(g_tox) || !omaq_tox_friend_online(g_tox, fn)) {
+			emit_error_conv("offline", cid);
+			return 0;
+		}
+		{
+			int receipt_rc = send_receipt_wire(fn, cid, op->id, op->state);
+			if (receipt_rc != 0) {
+				emit_error_conv(receipt_rc == -2 ? "offline" : "forbidden", cid);
+				return 0;
+			}
 		}
 		return 0;
 #else
@@ -1771,10 +1885,18 @@ static int handle_op(const omaq_op *op)
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			if (cid[0] == 'g') {
 				char mid[64], packed[3200];
+				int group_rc;
 				if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
-				    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0 ||
-				    omaq_group_send(g_tox, cid, packed) != 0 ||
-				    omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
+				    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0) {
+					emit_error_conv("forbidden", cid);
+					return 0;
+				}
+				group_rc = omaq_group_send(g_tox, cid, packed);
+				if (group_rc != 0) {
+					emit_error_conv(group_rc == -2 ? "offline" : "forbidden", cid);
+					return 0;
+				}
+				if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
 					emit_error_conv("forbidden", cid);
 					return 0;
 				}
@@ -1788,6 +1910,10 @@ static int handle_op(const omaq_op *op)
 					return 0;
 				}
 				fn = direct_id_number(cid);
+				if (!omaq_tox_online(g_tox) || !omaq_tox_friend_online(g_tox, fn)) {
+					emit_error_conv("offline", cid);
+					return 0;
+				}
 #ifdef HAVE_SIGNAL
 				if (!g_ratchet) {
 					emit_error_conv("no_ratchet", cid);
@@ -1802,9 +1928,12 @@ static int handle_op(const omaq_op *op)
 							return 0;
 						}
 						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
-						if (omaq_tox_send(g_tox, fn, bmsg) != 0) {
-							emit_error_conv("forbidden", cid);
-							return 0;
+						{
+							int send_rc = omaq_tox_send(g_tox, fn, bmsg);
+							if (send_rc != 0) {
+								emit_error_conv(send_rc == -2 ? "offline" : "forbidden", cid);
+								return 0;
+							}
 						}
 						emit_error_conv("ratchet_pending", cid);
 						return 0;
@@ -1816,9 +1945,12 @@ static int handle_op(const omaq_op *op)
 						emit_error_conv("forbidden", cid);
 						return 0;
 					}
-					if (omaq_tox_send(g_tox, fn, wire) != 0) {
-						emit_error_conv("forbidden", cid);
-						return 0;
+					{
+						int send_rc = omaq_tox_send(g_tox, fn, wire);
+						if (send_rc != 0) {
+							emit_error_conv(send_rc == -2 ? "offline" : "forbidden", cid);
+							return 0;
+						}
 					}
 					{
 						if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
@@ -2163,6 +2295,13 @@ static void accept_client(void)
 	if (c < 0)
 		return;
 	fcntl(c, F_SETFD, FD_CLOEXEC);
+	{
+		int flags = fcntl(c, F_GETFL, 0);
+		if (flags < 0 || fcntl(c, F_SETFL, flags | O_NONBLOCK) != 0) {
+			close(c);
+			return;
+		}
+	}
 	if (g_ncli >= MAX_CLIENTS) {
 		close(c);
 		return;
@@ -2170,6 +2309,9 @@ static void accept_client(void)
 	g_clients[g_ncli] = c;
 	g_cbuf[g_ncli][0] = '\0';
 	g_clen[g_ncli] = 0;
+	g_olen[g_ncli] = 0;
+	g_ooff[g_ncli] = 0;
+	g_drop[g_ncli] = 0;
 	g_ncli++;
 }
 
@@ -2180,6 +2322,10 @@ static void drop_client(size_t i)
 		g_clients[i] = g_clients[g_ncli - 1];
 		g_clen[i] = g_clen[g_ncli - 1];
 		memcpy(g_cbuf[i], g_cbuf[g_ncli - 1], g_clen[i] + 1);
+		g_olen[i] = g_olen[g_ncli - 1];
+		g_ooff[i] = g_ooff[g_ncli - 1];
+		memcpy(g_obuf[i], g_obuf[g_ncli - 1], g_olen[i]);
+		g_drop[i] = g_drop[g_ncli - 1];
 	}
 	g_ncli--;
 }
@@ -2189,6 +2335,8 @@ static void read_client(size_t i)
 	char tmp[512];
 	ssize_t r = read(g_clients[i], tmp, sizeof(tmp));
 	size_t k;
+	if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		return;
 	if (r <= 0) {
 		drop_client(i);
 		return;
@@ -2207,11 +2355,60 @@ static void read_client(size_t i)
 	}
 }
 
+static int read_stdin_lines(void)
+{
+	char tmp[512];
+
+	for (;;) {
+		ssize_t r = read(STDIN_FILENO, tmp, sizeof(tmp));
+		if (r > 0) {
+			for (ssize_t k = 0; k < r; k++) {
+				if (g_stdin_discard) {
+					if (tmp[k] == '\n') {
+						g_stdin_discard = 0;
+						g_stdin_len = 0;
+					}
+					continue;
+				}
+				if (g_stdin_len + 1 >= sizeof(g_stdin_buf)) {
+					g_stdin_len = 0;
+					g_stdin_discard = 1;
+					continue;
+				}
+				if (tmp[k] == '\n') {
+					g_stdin_buf[g_stdin_len] = '\0';
+					serve_line(g_stdin_buf);
+					g_stdin_len = 0;
+				} else if (tmp[k] != '\r') {
+					g_stdin_buf[g_stdin_len++] = tmp[k];
+				}
+			}
+			continue;
+		}
+		if (r == 0)
+			return -1;
+		if (errno == EINTR)
+			continue;
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return 0;
+		return -1;
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int hold = 0;
+
+	signal(SIGPIPE, SIG_IGN);
+	{
+		int flags = fcntl(STDOUT_FILENO, F_GETFL, 0);
+		if (flags >= 0)
+			(void)fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK);
+		flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+		if (flags >= 0)
+			(void)fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+	}
 	int rc;
-	char line[OMAQ_JSON_LINE_MAX];
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--hold") == 0)
@@ -2253,8 +2450,11 @@ int main(int argc, char **argv)
 	}
 
 	while (1) {
-		struct pollfd pf[2 + MAX_CLIENTS];
+		struct pollfd pf[3 + MAX_CLIENTS];
 		int nf = 0;
+		int stdin_idx = -1;
+		int stdout_idx;
+		int listen_idx = -1;
 		int ms = 250;
 		int pr;
 
@@ -2262,17 +2462,28 @@ int main(int argc, char **argv)
 		if (g_tox)
 			ms = (int)omaq_tox_interval_ms(g_tox);
 #endif
-		pf[nf].fd = 0;
-		pf[nf].events = POLLIN;
-		nf++;
+		if (!g_stdin_closed) {
+			stdin_idx = nf;
+			pf[nf].fd = STDIN_FILENO;
+			pf[nf].events = POLLIN;
+			nf++;
+		}
+		stdout_idx = -1;
+		if (!g_stdout_closed) {
+			stdout_idx = nf;
+			pf[nf].fd = STDOUT_FILENO;
+			pf[nf].events = g_stdout_len > g_stdout_off ? POLLOUT : 0;
+			nf++;
+		}
 		if (g_listen >= 0) {
+			listen_idx = nf;
 			pf[nf].fd = g_listen;
 			pf[nf].events = POLLIN;
 			nf++;
 		}
 		for (size_t i = 0; i < g_ncli; i++) {
 			pf[nf].fd = g_clients[i];
-			pf[nf].events = POLLIN;
+			pf[nf].events = POLLIN | (g_olen[i] > g_ooff[i] ? POLLOUT : 0);
 			nf++;
 		}
 		pr = poll(pf, (nfds_t)nf, ms);
@@ -2284,22 +2495,44 @@ int main(int argc, char **argv)
 			break;
 		if (pr <= 0)
 			continue;
-		if (pf[0].revents & POLLIN) {
-			if (!fgets(line, sizeof(line), stdin))
-				break;
-			serve_line(line);
+		if (stdin_idx >= 0 &&
+		    (pf[stdin_idx].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) {
+			if (read_stdin_lines() != 0)
+				g_stdin_closed = 1;
 		}
-		if (g_listen >= 0 && pf[1].revents & POLLIN)
+		if (stdout_idx >= 0 && (pf[stdout_idx].revents & (POLLOUT | POLLERR | POLLHUP | POLLNVAL))) {
+			if (pf[stdout_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				g_stdout_closed = 1;
+				g_stdout_len = 0;
+				g_stdout_off = 0;
+			} else {
+				flush_stdout();
+			}
+		}
+		if (listen_idx >= 0 && (pf[listen_idx].revents & POLLIN))
 			accept_client();
 		for (size_t i = 0; i < g_ncli; ) {
-			int hit = 0;
+			int fd = g_clients[i];
+			short revents = 0;
 			for (int k = 0; k < nf; k++) {
-				if (pf[k].fd == g_clients[i] &&
-				    (pf[k].revents & (POLLIN | POLLHUP | POLLERR)))
-					hit = 1;
+				if (pf[k].fd == fd)
+					revents |= pf[k].revents;
 			}
-			if (hit)
+			if (revents & (POLLIN | POLLHUP | POLLERR))
 				read_client(i);
+			if (i >= g_ncli || g_clients[i] != fd)
+				continue;
+			if (revents & POLLOUT)
+				flush_client(i);
+			if (g_drop[i]) {
+				drop_client(i);
+				continue;
+			}
+			i++;
+		}
+		for (size_t i = 0; i < g_ncli; ) {
+			if (g_drop[i])
+				drop_client(i);
 			else
 				i++;
 		}

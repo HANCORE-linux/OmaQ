@@ -3,6 +3,8 @@
 #include "avatar.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@ static struct {
 	char path[512];
 	uint64_t size;
 	uint64_t got;
+	int avatar;
 } xf[XFERS];
 
 static struct {
@@ -144,9 +147,72 @@ int omaq_file_id_parse(const char *id, uint32_t *friend, uint32_t *fnum)
 
 static int mkdir_p(const char *path)
 {
-	if (mkdir(path, 0700) == 0 || errno == EEXIST)
-		return 0;
-	return -1;
+	char tmp[512];
+	char *p;
+
+	if (!path || !path[0] || strlen(path) >= sizeof(tmp))
+		return -1;
+	strcpy(tmp, path);
+	for (p = tmp + 1; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (mkdir(tmp, 0700) != 0 && errno != EEXIST)
+			return -1;
+		*p = '/';
+	}
+	if (mkdir(tmp, 0700) != 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
+static int download_dir(const char *home, char *out, size_t n)
+{
+	const char *base = getenv("OMAQ_DOWNLOAD_DIR");
+	const char *user_home;
+	struct passwd *pw;
+
+	if (!base || base[0] != '/')
+		base = getenv("XDG_DOWNLOAD_DIR");
+	if (base && base[0] == '/')
+		return snprintf(out, n, "%s/omaq", base) < (int)n ? 0 : -1;
+	user_home = getenv("HOME");
+	if (!user_home || user_home[0] != '/') {
+		pw = getpwuid(getuid());
+		user_home = pw ? pw->pw_dir : NULL;
+	}
+	if (!user_home || user_home[0] != '/')
+		return -1;
+	return snprintf(out, n, "%s/Downloads/omaq", user_home) < (int)n ? 0 : -1;
+}
+
+static FILE *open_download_file(const char *dir, const char *name,
+				char *dest, size_t destn)
+{
+	unsigned int suffix;
+
+	for (suffix = 0; suffix < 10000; suffix++) {
+		int fd;
+		int wr;
+
+		wr = suffix == 0
+			? snprintf(dest, destn, "%s/%s", dir, name)
+			: snprintf(dest, destn, "%s/%s.%u", dir, name, suffix);
+		if (wr < 0 || (size_t)wr >= destn)
+			return NULL;
+		fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0600);
+		if (fd >= 0) {
+			FILE *fp = fdopen(fd, "wb");
+			if (fp)
+				return fp;
+			close(fd);
+			unlink(dest);
+			return NULL;
+		}
+		if (errno != EEXIST)
+			return NULL;
+	}
+	return NULL;
 }
 
 int omaq_file_offer_store(uint32_t friend, uint32_t fnum, const char *name, uint64_t size)
@@ -216,6 +282,7 @@ int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, 
 		return -1;
 	}
 	xf[i].sending = 1;
+	xf[i].avatar = 0;
 	xf[i].fp = fp;
 	xf[i].size = (uint64_t)st.st_size;
 	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", path) >= (int)sizeof(xf[i].path)) {
@@ -255,6 +322,7 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 		return -1;
 	}
 	xf[i].sending = 1;
+	xf[i].avatar = 1;
 	xf[i].fp = fp;
 	xf[i].size = (uint64_t)st.st_size;
 	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", path) >= (int)sizeof(xf[i].path)) {
@@ -273,7 +341,7 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 {
 	char dir[512], safe[OMAQ_FILE_NAME_MAX + 1];
 	int i;
-	FILE *fp;
+	FILE *fp = NULL;
 
 	if (!home || !conv || !name || size == 0 || size > OMAQ_FILE_MAX)
 		return -1;
@@ -287,20 +355,17 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 		if (snprintf(dest, destn, "%s", dest_override) >= (int)destn)
 			return -1;
 	} else {
-		char root[512];
-
-		if (snprintf(root, sizeof(root), "%s/files", home) >= (int)sizeof(root))
+		if (download_dir(home, dir, sizeof(dir)) != 0 || mkdir_p(dir) != 0)
 			return -1;
-		if (snprintf(dir, sizeof(dir), "%s/files/%s", home, conv) >= (int)sizeof(dir))
-			return -1;
-		if (mkdir_p(root) != 0 || mkdir_p(dir) != 0)
-			return -1;
-		if (snprintf(dest, destn, "%s/%s", dir, safe) >= (int)destn)
+		fp = open_download_file(dir, safe, dest, destn);
+		if (!fp)
 			return -1;
 	}
-	fp = fopen(dest, "wb");
-	if (!fp)
-		return -1;
+	if (dest_override && dest_override[0]) {
+		fp = fopen(dest, "wb");
+		if (!fp)
+			return -1;
+	}
 	if (fchmod(fileno(fp), 0600) != 0) {
 		fclose(fp);
 		unlink(dest);
@@ -322,6 +387,12 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 	}
 	omaq_file_offer_drop(friend, fnum);
 	return 0;
+}
+
+int omaq_file_is_avatar(uint32_t friend, uint32_t fnum)
+{
+	int i = xf_find(friend, fnum, 0);
+	return i >= 0 && xf[i].avatar;
 }
 
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,

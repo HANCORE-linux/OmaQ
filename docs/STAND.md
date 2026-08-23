@@ -70,7 +70,7 @@ Tagline is “no account, no phone, no user search” (not “directory”). Bod
 - Invite link + QR token, one-use, 24 h, revoke, nospam voids invites
 - 1:1 and group text (same chat page)
 - Optional `toxencryptsave` lock on `tox.save`
-- File send (paused until accept, dest `$OMAQ_HOME/files/<conv>/`)
+- File send (paused until accept, default dest `~/Downloads/omaq/`; explicit destination overrides remain supported)
 - 1:1 call **signaling** (start/answer/stop). No microphone PCM yet.
 - Direct messages: Double Ratchet over Tox (`OQB1` / `OQR1`); invite `rk=` and the peer pin are persisted under `$OMAQ_HOME/ratchet/`
 - Two local helpers exchange a ratchet plaintext; `make verify-8` was green on 2026-08-19

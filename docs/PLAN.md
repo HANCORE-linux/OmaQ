@@ -285,7 +285,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 
 Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited` | `locked` | `no_ratchet` | `ratchet_pending`).
 
-`file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `$OMAQ_HOME/files/<conv>/<name>`, `0600`, cap 8 MiB. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
+`file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
 
 `identity.import` without `replace` **refuses** if `tox.save` already exists (`identity_exists`). `replace:true` is an irreversible overwrite and needs an explicit UI confirm. Never default to replace.
 

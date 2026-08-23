@@ -32,6 +32,7 @@ Do not manually edit generated binaries as source. Build `helper/omaq` with the 
 - Conversation with the maintainer: German by default.
 - Code, comments, documentation, helper events, and UI labels: English.
 - UI labels are short and functional. Use established wording rather than synonyms.
+- Messages containing only emoji render as an intentionally large, high-quality emoji row. Keep normal text size for mixed text/emoji messages and retain a readable fallback when an emoji asset is unavailable.
 - The per-contact floating-window toggle is labelled exactly `Auto-open`.
 - Sound control is labelled `Mute` / `Unmute` and means notification sound only.
 - Destructive confirmations must state the affected scope, e.g. `Clear this chat?`.
@@ -60,7 +61,9 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - The composer right-click menu must be OmaQ-styled, not the native platform menu. It must render a fixed usable width, visible labels, Material Symbols Rounded icons, token colors, project font, hover/focus states, and enabled/disabled states.
 - A context menu must never degrade to an empty panel or a narrow icon-only strip.
 - The message-bubble context menu follows the same styling rules.
+- A received file path is clickable. Its menu offers `Open containing folder` and `Copy full path`; use the actual stored path, not a guessed state path.
 - Copy/cut/paste/select actions must provide visible feedback where applicable and retain keyboard accessibility.
+- The file chooser row closes after starting a send and when an incoming or completed transfer is handled. The file icon can reopen it.
 
 ## Panel and notification UX
 
@@ -69,7 +72,8 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Avatar badges must not replace the online/offline status dot.
 - Avatar images use safe local file URLs, a `person` Material fallback, and a revision/cache refresh when a file is replaced.
 - Self and friend avatars are transferred only through the helper's validated avatar protocol. Never fake a friend avatar from a local identity.
-- Panel buttons such as Invite, Join, Chat, Theme, More, safety display, and confirmations are transient UI state. Reset them when the panel closes so reopening does not leave stale `selected` states.
+- Panel buttons such as Invite, Add, Chat, Theme, More, safety display, and confirmations are transient UI state. Reset them when the panel closes so reopening does not leave stale `selected` states.
+- The hero action grid uses stable per-column widths. Changing a label such as `Mute` ↔ `Unmute` must not move or resize neighboring buttons.
 - Current functional state such as global Mute may remain selected after reopening; that is not a stale transient selection.
 - Every destructive or privacy-impacting action requires an explicit confirmation immediately before execution, including contact removal, personal-ID/nospam rotation, clearing chat history, and equivalent future actions.
 - Safety codes are opt-in display information for identity comparison, not setup secrets. Keep them hidden until requested; copying must show confirmation.
@@ -88,8 +92,10 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Direct messages stay Signal-Ratchet encrypted and fail closed when no session exists. Never send or accept plaintext as a fallback.
 - Tox carries transport; local discovery, UDP, and hole punching may be enabled, with relays as fallback. An `online` state does not guarantee a direct LAN path; do not claim LAN latency is solved without measuring both directions.
 - Keep helper protocol and domain validation in C. Validate canonical decimal friend IDs and bounded conversation IDs before conversion.
+- Incoming files are paused until acceptance and default to `~/Downloads/omaq/`; explicit destination overrides remain supported. Never use `$OMAQ_HOME` as the user-facing default download directory.
 - Local history clear must remove only the requested conversation and its rotated history; never clear all conversations.
 - Escape all JSON fields and reject path traversal, invalid IDs, unsupported actions, and malformed payloads.
+- Helper event fan-out must not block Tox iteration on a stale or slow IPC client. Prefer non-blocking client sockets and drop clients that cannot accept an event; persisted history remains the recovery source.
 - Never commit credentials, private keys, Tox saves, Ratchet state, local chat history, temporary screenshots, or downloaded audit data.
 
 ## Change workflow

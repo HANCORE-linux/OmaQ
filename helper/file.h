@@ -26,6 +26,7 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
 			 const char *dest_override, char *dest, size_t destn);
+int omaq_file_is_avatar(uint32_t friend, uint32_t fnum);
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, size_t len);
 int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,

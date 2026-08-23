@@ -482,9 +482,9 @@ BarWidget {
       return
     omaq.lastConversation = String(id)
     omaq.lastDirectId = String(id)
-    omaq.clearUnread(String(id))
-    if (chatSurface)
-      chatSurface.ensureCard(String(id), name || "")
+    var created = chatSurface ? chatSurface.ensureCard(String(id), name || "") : true
+    if (!created)
+      omaq.clearUnread(String(id))
     root.close()
   }
 
@@ -720,12 +720,10 @@ BarWidget {
         Rectangle {
           id: unreadBadge
           visible: omaq.unreadCount > 0 && (!root.settings || root.settings.notifyBadge !== false)
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.verticalCenterOffset: -6
-          anchors.horizontalCenter: parent.horizontalCenter
-          anchors.horizontalCenterOffset: 7
-          width: Math.max(12, unreadBadgeText.implicitWidth + 6)
-          height: 12
+          anchors.right: parent.right
+          anchors.top: parent.top
+          width: Math.max(14, unreadBadgeText.implicitWidth + 6)
+          height: 14
           radius: height / 2
           color: root.urgent
           border.width: 0
@@ -1067,10 +1065,12 @@ BarWidget {
             columns: 2
             columnSpacing: root.btnGap
             rowSpacing: Style.space(6)
+            readonly property real actionWidth: Math.max(0, (width - columnSpacing) / columns)
 
             ActionButton {
               visible: !omaq.locked
               Layout.fillWidth: true
+              Layout.preferredWidth: heroActions.actionWidth
               iconText: "󰐲"
               text: "Invite"
               selected: root.inviteOpen
@@ -1079,14 +1079,17 @@ BarWidget {
             ActionButton {
               visible: !omaq.locked
               Layout.fillWidth: true
-              iconText: "󰌆"
-              text: "Join"
+              Layout.preferredWidth: heroActions.actionWidth
+              iconText: "person_add"
+              iconFontFamily: "Material Symbols Rounded"
+              text: "Add"
               selected: root.showJoin
               onClicked: root.showJoin = !root.showJoin
             }
             ActionButton {
               visible: !omaq.locked
               Layout.fillWidth: true
+              Layout.preferredWidth: heroActions.actionWidth
               iconText: "󰍩"
               text: "Chat"
               selected: root.chatPickerOpen
@@ -1094,6 +1097,7 @@ BarWidget {
             }
             ActionButton {
               Layout.fillWidth: true
+              Layout.preferredWidth: heroActions.actionWidth
               iconText: "󰙨"
               text: "Demo"
               selected: chatSurface && chatSurface.demoOpen
@@ -1101,6 +1105,7 @@ BarWidget {
             }
             ActionButton {
               Layout.fillWidth: true
+              Layout.preferredWidth: heroActions.actionWidth
               iconText: "󰏘"
               text: "Theme"
               selected: root.themeOpen
@@ -1109,6 +1114,7 @@ BarWidget {
             }
             ActionButton {
               Layout.fillWidth: true
+              Layout.preferredWidth: heroActions.actionWidth
               iconText: chatSurface && chatSurface.muted ? "notifications_off" : "notifications"
               iconFontFamily: "Material Symbols Rounded"
               text: chatSurface && chatSurface.muted ? "Unmute" : "Mute"

@@ -26,6 +26,7 @@ Item {
   property bool surfacesHydrated: false
   property string pulseConv: ""
   property bool demoOpen: false
+  property string lastNotifiedMessageId: ""
   readonly property bool muted: service ? service.muted : false
   property var autoOpenByConversation: ({})
   property bool autoOpenLoaded: false
@@ -170,7 +171,7 @@ Item {
     var queued = root.pendingIncoming.slice()
     root.pendingIncoming = []
     for (var i = 0; i < queued.length; i++)
-      root.onIncoming(queued[i])
+      root.onIncoming(queued[i].conversation, queued[i])
   }
 
   function toggleAutoOpen(conv) {
@@ -298,7 +299,7 @@ Item {
         if (!openCards[i].pinned)
           root.pin(conv, true)
         root.floatOmaQWindows()
-        return
+        return false
       }
     }
     var next = openCards.slice()
@@ -311,6 +312,7 @@ Item {
     if (surfacesHydrated)
       service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: card.x, y: card.y, pinned: true })
     root.floatOmaQWindows()
+    return true
   }
 
   function dismissCard(conv) {
@@ -378,27 +380,49 @@ Item {
     noteProc.running = true
   }
 
-  function onIncoming(conv) {
-    var key = String(conv || "")
+  function onIncoming(conv, snapshot) {
+    var event = snapshot || ({})
+    var key = String(event.conversation || conv || "")
+    var messageId = event.id !== undefined
+      ? String(event.id || "") : (service ? String(service.lastChatId || "") : "")
+    var messageDir = event.dir !== undefined
+      ? String(event.dir || "") : (service ? String(service.lastChatDir || "") : "")
+    var messageText = event.text !== undefined
+      ? String(event.text || "") : (service ? String(service.lastChatText || "") : "")
+    if (!service || !key || messageDir !== "in" || !messageText)
+      return
     if (!root.autoOpenLoaded) {
-      if (key && root.pendingIncoming.indexOf(key) === -1)
-        root.pendingIncoming.push(key)
+      if (messageId) {
+        var queuedIndex
+        for (queuedIndex = 0; queuedIndex < root.pendingIncoming.length; queuedIndex++) {
+          if (root.pendingIncoming[queuedIndex].id === messageId)
+            return
+        }
+        root.pendingIncoming.push({ conversation: key, id: messageId, text: messageText, dir: messageDir })
+      }
       return
     }
+    if (!messageId || key + "|" + messageId === root.lastNotifiedMessageId)
+      return
+    root.lastNotifiedMessageId = key + "|" + messageId
     if (root.autoOpenFor(key))
       ensureCard(key)
     if (animateUnread)
-      pulseConv = conv
+      pulseConv = key
     playSound()
-    if (root.autoOpenFor(conv))
+    if (root.autoOpenFor(key))
       desktopNotify()
   }
 
   Connections {
     target: service
     function handleIncoming() {
-      if (service.lastChatDir === "in")
-        root.onIncoming(service.lastChatConv || service.lastConversation)
+      root.onIncoming(service.lastChatConv || service.lastConversation, {
+        conversation: service.lastChatConv || service.lastConversation,
+        id: service.lastChatId,
+        text: service.lastChatText,
+        dir: service.lastChatDir
+      })
     }
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
@@ -612,6 +636,7 @@ Item {
           }
           SurfaceBtn {
             text: root.muted ? "Unmute" : "Mute"
+            selected: root.muted
             tooltipText: "Mute notification sound"
             onClicked: root.toggleMute()
           }
@@ -690,6 +715,7 @@ Item {
         Item { Layout.fillWidth: true }
         SurfaceBtn {
           text: root.muted ? "Unmute" : "Mute"
+          selected: root.muted
           tooltipText: "Mute notification sound"
           onClicked: root.toggleMute()
         }
