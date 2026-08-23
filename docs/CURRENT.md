@@ -1,8 +1,8 @@
-# Current stand — 2026-08-22
+# Current status — 2026-08-23
 
 This file is the snapshot for a new session. Product contract (German): [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). How we build: [`PLAN.md`](PLAN.md).
 
-**Last pushed commit:** `6a9503c` on `main` (private `HANCORE-linux/OmaQ`).
+**Last pushed commit:** `aef0665` on `main` (private `HANCORE-linux/OmaQ`).
 **`.phase`:** 8  
 **Plugin id:** `hancore.omaq`  
 **Manifest version:** `0.6.0`  
@@ -10,6 +10,27 @@ This file is the snapshot for a new session. Product contract (German): [`../../
 **AUR:** registration off — no `verify-7`, no upload.
 
 Chat with the owner is German. Repo, UI, and this file are English.
+
+## Current status
+
+- Repository: clean, `main` is synchronized with `origin/main`.
+- Latest change: the illustrated guide was reduced to the working flows only: Join, Chat, Files, Notifications, and local Identity transfer.
+- Guide: [`USER-GUIDE.md`](USER-GUIDE.md). Calls are intentionally not documented because the current call implementation is not product-ready.
+
+### Open points
+
+1. Avatar-transfer errors can still emit a normal `file.failed` event.
+2. stdout queue overflow can drop critical events instead of applying backpressure.
+3. Regression coverage is still missing for fragmented stdin, stdout overflow, and avatar events.
+4. A complete 1:1 test over separate networks is still missing; verify presence, typing, delivery, unread badge, and the `New messages` divider.
+5. Native Quickshell/Wayland end-to-end validation has not been completed.
+6. `qmlcachegen Panel.qml` still fails with the known parser/import errors; `qmllint` can exit with code 255 without diagnostics in this environment.
+7. Phase 7/AUR remains halted until registration and an explicit go.
+
+### Not product-ready
+
+- Calls currently provide signaling work only; microphone/media behavior is not reliable enough for the user guide.
+- Group role-management and broader cross-network behavior still need dedicated acceptance testing.
 
 ## Phases
 
@@ -21,7 +42,7 @@ Chat with the owner is German. Repo, UI, and this file are English.
 | 3 Groups | owner > admin > member | `verify-3` | done |
 | 4 Surfaces | cards, pin, sounds, themes | `verify-4` | done (UI since rewritten) |
 | 5 Daily | export/import IPC, search | `verify-5` | done |
-| 6 File + 1:1 audio | Tox file 8 MiB, ToxAV audio | `verify-6` | done |
+| 6 File + 1:1 audio | Tox file 8 MiB, ToxAV prototype | `verify-6` | done; calls not product-ready |
 | 7 AUR package | PKGBUILD, namcap, enable path | `verify-7` | **halted** |
 | 8 Double Ratchet | Signal payload on 1:1, 50 MB cap | `verify-8` | **done** |
 
@@ -32,7 +53,7 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 **Panel**
 
 - Hero: transparent trimmed panel render `assets/OmaQ_Final-panel.png` derived from `assets/OmaQ_Final.png`, with a subtle pulse animation. Click opens https://github.com/HANCORE-linux/OmaQ. Omarchy.org news is gone.
-- Actions: Invite, Join, Chat, Demo, Theme — icon + label, same size, `Style.cornerRadius`, selected fill while active. Chat opens a contact picker before opening a conversation.
+- Actions: Invite, Add, Chat, Demo, Theme, Mute — icon + label, same size, `Style.cornerRadius`, selected fill while active. Chat opens a contact picker before opening a conversation.
 - More exposes the compact daily controls (chat/search, group create/invite/dissolve, group member roles/removal/leave, identity protection/export/import, and danger actions). Contact removal and personal-ID rotation require explicit confirmation.
 - Invite is a **toggle** (`inviteOpen`): first click creates/shows QR, second click hides it. Revoke also closes the QR so the next Invite click mints a new token. Safety codes are only shown on demand under More → Chat and can be copied or hidden.
 - Theme icon opens the list (not a permanent color bar). Palettes: **System** (live Omarchy `color0`–`color7` from `colors.toml` with `onFileChanged: reload()`, name from `~/.local/state/omarchy/current/theme.name`) then Traffic-Board **gruvbox**, **rose pine**, **everforest**, **gruvbox light**, **catppuccin latte**, **tokyo night light**. Default `chatTheme`: `system`.
@@ -46,7 +67,7 @@ The bar widget does not use Omarchy `Panel` / `KeyboardPanel`. `Panel.qml` is a 
 
 **Chat chrome**
 
-- One composer row: attach, field, emoji, send. Call in the header. Hang up only while in a call. Call/file chrome is scoped to that window’s conversation. Header shows peer name, avatar, online/offline.
+- One composer row: attach, field, emoji, send. The call control remains experimental signaling UI and is not part of the user guide. File chrome is scoped to that window’s conversation. Header shows peer name, avatar, online/offline.
 - Live send keeps an outgoing line pending until the helper emits the confirmed `message` event after ciphertext/group text is sent. Incoming lines match `lastChatConv`. On open and conversation change, `op: history` seeds the last 50 lines (`conversation` on the event).
 - The smile button opens the full emoji set. PNGs from Noto Color Emoji CBDT (`scripts/extract-emoji.py` → `assets/emoji/`). In the field and in bubbles, smiles use `Style.font.body`; emoji recents are not persisted.
 - Demo is local only (no Tox). Theme for demo follows the panel palette.
@@ -117,7 +138,9 @@ KCI on the Tox handshake does not decrypt ratchet text once both direct-chat ide
 
 ## Next — only after an explicit go
 
-1. Confirm Demo/Chat/friend windows spawn floating on a cold open
-2. Two real machines over the internet (avatars + presence)
-3. Phase 7 AUR when registration is on
-4. Later extras (group ratchet, file/call ratchet, Tor) only if RSS still ≤ 50 MB
+1. Add the missing avatar/IPC regression tests and harden overflow handling.
+2. Run the separate-network 1:1 acceptance test, including unread and typing behavior.
+3. Complete native Quickshell/Wayland cold-open and floating-window validation.
+4. Investigate the `qmlcachegen`/`qmllint` toolchain failures.
+5. Resume Phase 7/AUR only after registration and a new explicit go.
+6. Keep group ratchet, file ratchet, call media, and Tor out of scope until the current gates are green.

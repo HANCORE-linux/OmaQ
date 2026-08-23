@@ -2,7 +2,7 @@
 
 This folder **is** the progress log. One English file per finished phase, after `make verify-N` exits 0.
 
-The live snapshot across all phases is [`../STAND.md`](../STAND.md).
+The live snapshot across all phases is [`../CURRENT.md`](../CURRENT.md).
 
 | File | Phase |
 |---|---|

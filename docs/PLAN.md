@@ -2,7 +2,7 @@
 
 **Authority:** This file is how we build. German product contract: [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). If they disagree, stop and fix both before writing code.
 
-**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is **on this machine** (copy under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`). Snapshot: [`STAND.md`](STAND.md).  
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is **on this machine** (copy under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`). Snapshot: [`CURRENT.md`](CURRENT.md).
 **Tree:** `/home/hancore/Projects/omaq`  
 **Id:** `hancore.omaq`
 
@@ -538,4 +538,4 @@ After a phase is **tested and accepted** (`make verify-N` green + `docs/stages/0
 
 `.gitignore` must keep `helper/omaq`, `tests/omaq_test`, `*.pkg.tar*`. History files never belong in the tree.
 
-Phase 1 tox is not a snapshot until `verify-1-tox` is green. Offline-only may be committed as `phase 1 offline` if the owner wants that stand on the remote before toxcore.
+Phase 1 tox is not a snapshot until `verify-1-tox` is green. Offline-only may be committed as `phase 1 offline` if the owner wants that snapshot on the remote before toxcore.
