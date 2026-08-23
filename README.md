@@ -45,4 +45,4 @@ omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/ha
 omarchy plugin remove hancore.omaq
 ```
 
-[Documentation](docs/README.md)
+[Documentation](docs/README.md) · [Illustrated user guide](docs/USER-GUIDE.md)
