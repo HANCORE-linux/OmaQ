@@ -7,6 +7,7 @@
 #include "group_invite.h"
 #include "invite.h"
 #include "json_io.h"
+#include "line_reader.h"
 #include "message.h"
 #include "message_action.h"
 #include "qr.h"
@@ -17,6 +18,7 @@
 #include "rate.h"
 #include "safety.h"
 #include "store.h"
+#include "stdout_spool.h"
 #include "surface.h"
 
 #include "identity.h"
@@ -43,6 +45,9 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
+#ifdef OMAQ_IPC_TEST
+#define OMAQ_IPC_TEST_EVENT_SIZE 65500u
+#endif
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
@@ -75,11 +80,11 @@ static char g_gauth_group[OMAQ_GROUP_ID_MAX];
 static omaq_rate g_rate;
 
 static int g_lockfd = -1;
+static int g_state_lockfd = -1;
 static int g_listen = -1;
 static int g_clients[MAX_CLIENTS];
 static size_t g_ncli;
-static char g_cbuf[MAX_CLIENTS][OMAQ_JSON_LINE_MAX];
-static size_t g_clen[MAX_CLIENTS];
+static omaq_line_reader g_creader[MAX_CLIENTS];
 static char g_obuf[MAX_CLIENTS][CLIENT_OUT_MAX];
 static size_t g_olen[MAX_CLIENTS];
 static size_t g_ooff[MAX_CLIENTS];
@@ -87,11 +92,13 @@ static int g_drop[MAX_CLIENTS];
 static char g_stdout_buf[CLIENT_OUT_MAX];
 static size_t g_stdout_len;
 static size_t g_stdout_off;
+static omaq_stdout_spool *g_stdout_spool;
 static int g_stdout_closed;
-static char g_stdin_buf[OMAQ_JSON_LINE_MAX];
-static size_t g_stdin_len;
-static int g_stdin_discard;
+static omaq_line_reader g_stdin_reader;
 static int g_stdin_closed;
+static int g_fatal_io;
+static int g_replay_mode;
+static int g_backend_started;
 
 static void drop_client(size_t i);
 
@@ -149,6 +156,41 @@ static int conversation_id_ok(const char *id)
 	return id && id[0] == 'g' && omaq_group_id_parse(id, &group_number) == 0;
 }
 
+static int ensure_state_dir(void)
+{
+	const char *state = state_dir();
+	char parent[512];
+	char *slash;
+	size_t len;
+	int fd;
+
+	if (!state || strlen(state) >= sizeof(parent))
+		return -1;
+	if (mkdir(state, 0700) != 0 && errno != EEXIST)
+		return -1;
+	memcpy(parent, state, strlen(state) + 1);
+	len = strlen(parent);
+	while (len > 1 && parent[len - 1] == '/')
+		parent[--len] = '\0';
+	slash = strrchr(parent, '/');
+	if (!slash) {
+		memcpy(parent, ".", 2);
+	} else if (slash == parent) {
+		parent[1] = '\0';
+	} else {
+		*slash = '\0';
+	}
+	fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
+		return -1;
+	if (fsync(fd) != 0) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
 static int take_lock(void)
 {
 	const char *home = home_dir();
@@ -169,6 +211,31 @@ static int take_lock(void)
 		return 2;
 	}
 	g_lockfd = fd;
+	return 0;
+}
+
+static int take_state_lock(void)
+{
+	char path[512];
+	struct stat st;
+	int fd;
+
+	if (snprintf(path, sizeof(path), "%s/omaq-state.lock", state_dir()) >=
+	    (int)sizeof(path))
+		return -1;
+	fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || fchmod(fd, 0600) != 0) {
+		close(fd);
+		return -1;
+	}
+	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+		close(fd);
+		return 2;
+	}
+	g_state_lockfd = fd;
 	return 0;
 }
 
@@ -226,14 +293,15 @@ static int write_pid(void)
 	return 0;
 }
 
-static int queue_output(char *buf, size_t *len, size_t *off, const char *s)
+static int queue_output(char *buf, size_t *len, size_t *off, size_t cap,
+			const char *s)
 {
 	size_t n;
 
 	if (!buf || !len || !off || !s)
 		return -1;
 	n = strlen(s) + 1;
-	if (n > CLIENT_OUT_MAX)
+	if (n > cap)
 		return -1;
 	if (*off > 0) {
 		if (*off == *len) {
@@ -245,7 +313,7 @@ static int queue_output(char *buf, size_t *len, size_t *off, const char *s)
 			*off = 0;
 		}
 	}
-	if (*len > CLIENT_OUT_MAX - n)
+	if (*len > cap - n)
 		return -1;
 	memcpy(buf + *len, s, n - 1);
 	buf[*len + n - 1] = '\n';
@@ -277,7 +345,7 @@ static int queue_client(size_t i, const char *s)
 {
 	if (i >= g_ncli)
 		return -1;
-	return queue_output(g_obuf[i], &g_olen[i], &g_ooff[i], s);
+	return queue_output(g_obuf[i], &g_olen[i], &g_ooff[i], CLIENT_OUT_MAX, s);
 }
 
 static void flush_client(size_t i)
@@ -288,25 +356,61 @@ static void flush_client(size_t i)
 		g_drop[i] = 1;
 }
 
+static int stdout_event_transient(const char *s)
+{
+	static const char prefix[] = "{\"event\":\"typing\",";
+
+	return s && strncmp(s, prefix, sizeof(prefix) - 1) == 0;
+}
+
 static void queue_stdout(const char *s)
 {
-	if (g_stdout_closed || queue_output(g_stdout_buf, &g_stdout_len, &g_stdout_off, s) == 0)
+	if (!s)
 		return;
-	/* Drop stale queued UI events rather than blocking the Tox loop. */
-	g_stdout_len = 0;
-	g_stdout_off = 0;
-	if (queue_output(g_stdout_buf, &g_stdout_len, &g_stdout_off, s) != 0)
-		g_stdout_closed = 1;
+	/* Typing is transient, RAM-only, and may be dropped while stdout is stalled. */
+	if (stdout_event_transient(s)) {
+		/* Do not compact a record after any prefix has reached the pipe. */
+		if (!g_stdout_closed && g_stdout_off == 0)
+			(void)queue_output(g_stdout_buf, &g_stdout_len, &g_stdout_off,
+						CLIENT_OUT_MAX, s);
+		return;
+	}
+	/* Critical events remain durable even after the current stdout pipe closes. */
+	if (!g_stdout_spool || omaq_stdout_spool_append(g_stdout_spool, s) != 0) {
+		fprintf(stderr, "omaq: critical stdout spool append failed: %s\n",
+			strerror(errno));
+		g_fatal_io = 1;
+	}
 }
 
 static void flush_stdout(void)
 {
-	if (!g_stdout_closed && flush_output(STDOUT_FILENO, g_stdout_buf,
-					     &g_stdout_len, &g_stdout_off) != 0) {
-		g_stdout_closed = 1;
-		g_stdout_len = 0;
-		g_stdout_off = 0;
+	int rc;
+
+	if (g_stdout_closed)
+		return;
+	/* Never interleave a critical record into a partially written typing record. */
+	if (g_stdout_off > 0) {
+		if (flush_output(STDOUT_FILENO, g_stdout_buf,
+				 &g_stdout_len, &g_stdout_off) != 0)
+			g_stdout_closed = 1;
+		return;
 	}
+	if (omaq_stdout_spool_pending(g_stdout_spool)) {
+		rc = omaq_stdout_spool_flush(g_stdout_spool);
+		if (rc == OMAQ_STDOUT_FLUSH_OUTPUT_ERROR)
+			g_stdout_closed = 1;
+		else if (rc == OMAQ_STDOUT_FLUSH_SPOOL_ERROR) {
+			fprintf(stderr, "omaq: critical stdout spool read failed: %s\n",
+				strerror(errno));
+			g_fatal_io = 1;
+		}
+		return;
+	}
+	if (g_stdout_len > g_stdout_off &&
+	    flush_output(STDOUT_FILENO, g_stdout_buf,
+				  &g_stdout_len, &g_stdout_off) != 0)
+		g_stdout_closed = 1;
 }
 
 static void emit(const char *s)
@@ -985,14 +1089,18 @@ static void hook_file_recv(void *ud, uint32_t friend, uint32_t fnum,
 static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t pos, size_t len)
 {
 	int avatar = omaq_file_is_avatar(friend, fnum);
+	omaq_file_event event;
+
 	(void)ud;
 	if (omaq_file_chunk_out(g_tox, friend, fnum, pos, len) != 0) {
+		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_ERROR);
 		omaq_file_cancel(g_tox, friend, fnum);
-		if (!avatar)
+		if (event == OMAQ_FILE_EVENT_FAILED)
 			emit_file("failed", friend, fnum, NULL, 0, NULL);
 		return;
 	}
-	if (len == 0 && !avatar)
+	event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
+	if (len == 0 && event == OMAQ_FILE_EVENT_DONE)
 		emit_file("done", friend, fnum, NULL, 0, NULL);
 }
 
@@ -1000,19 +1108,25 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 			    const uint8_t *data, size_t len)
 {
 	char dest[512];
+	int avatar;
 	int rc;
+	omaq_file_event event;
 
 	(void)ud;
+	avatar = omaq_file_is_avatar(friend, fnum);
 	rc = omaq_file_chunk_in(friend, fnum, pos, data, len, dest, sizeof(dest));
 	if (rc < 0) {
+		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_ERROR);
 		omaq_file_cancel(g_tox, friend, fnum);
-		emit_file("failed", friend, fnum, NULL, 0, NULL);
+		if (event == OMAQ_FILE_EVENT_FAILED)
+			emit_file("failed", friend, fnum, NULL, 0, NULL);
 		return;
 	}
 	if (rc == 1) {
 		char conv[16];
+		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
 		snprintf(conv, sizeof(conv), "%u", friend);
-		if (omaq_avatar_is_dest(home_dir(), dest)) {
+		if (event == OMAQ_FILE_EVENT_AVATAR) {
 			emit_avatar(conv, dest);
 			emit_friends();
 			return;
@@ -1047,7 +1161,7 @@ static void hook_avatar(void *ud, uint32_t friend, uint32_t fnum, uint64_t size)
 		return;
 	}
 	if (omaq_file_recv_begin(home_dir(), id, friend, fnum, "avatar.png", size,
-				 dest, got, sizeof(got)) != 0) {
+				 dest, got, sizeof(got), 1) != 0) {
 		(void)omaq_tox_file_control(g_tox, friend, fnum, OMAQ_TOX_FILE_CANCEL);
 		return;
 	}
@@ -1056,12 +1170,17 @@ static void hook_avatar(void *ud, uint32_t friend, uint32_t fnum, uint64_t size)
 
 static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control)
 {
+	omaq_file_event event;
+
 	(void)ud;
 	if (control != OMAQ_TOX_FILE_CANCEL)
 		return;
+	event = omaq_file_event_for(omaq_file_is_avatar(friend, fnum),
+				    OMAQ_FILE_OUTCOME_CANCEL);
 	omaq_file_offer_drop(friend, fnum);
 	omaq_file_cancel(g_tox, friend, fnum);
-	emit_file("failed", friend, fnum, NULL, 0, NULL);
+	if (event == OMAQ_FILE_EVENT_FAILED)
+		emit_file("failed", friend, fnum, NULL, 0, NULL);
 }
 
 static void hook_call(void *ud, uint32_t friend, int incoming)
@@ -1130,6 +1249,31 @@ static int load_tox(const char *pass)
 
 static int handle_op(const omaq_op *op)
 {
+#ifdef OMAQ_IPC_TEST
+	if (strcmp(op->op, "test.emit") == 0) {
+		char *ev = malloc(OMAQ_IPC_TEST_EVENT_SIZE + 1u);
+		int prefix;
+
+		if (!ev) {
+			emit_error("unsupported");
+			return 0;
+		}
+		prefix = snprintf(ev, OMAQ_IPC_TEST_EVENT_SIZE + 1u,
+				  "{\"event\":\"test\",\"id\":\"%s\",\"padding\":\"", op->id);
+		if (prefix < 0 || (size_t)prefix + 2u > OMAQ_IPC_TEST_EVENT_SIZE) {
+			free(ev);
+			emit_error("unsupported");
+			return 0;
+		}
+		memset(ev + prefix, 'x', OMAQ_IPC_TEST_EVENT_SIZE - (size_t)prefix - 2u);
+		ev[OMAQ_IPC_TEST_EVENT_SIZE - 2u] = '"';
+		ev[OMAQ_IPC_TEST_EVENT_SIZE - 1u] = '}';
+		ev[OMAQ_IPC_TEST_EVENT_SIZE] = '\0';
+		emit(ev);
+		free(ev);
+		return 0;
+	}
+#endif
 	if (strcmp(op->op, "status") == 0) {
 #ifdef HAVE_TOX
 		char addr[77], nickname[129], escaped_nickname[260];
@@ -2129,7 +2273,7 @@ static int handle_op(const omaq_op *op)
 			}
 			snprintf(conv, sizeof(conv), "%u", fn);
 			if (omaq_file_recv_begin(home_dir(), conv, fn, fnum, name, size,
-						 over, dest, sizeof(dest)) != 0) {
+						 over, dest, sizeof(dest), 0) != 0) {
 				omaq_file_cancel(g_tox, fn, fnum);
 				emit_error("forbidden");
 				return 0;
@@ -2155,8 +2299,11 @@ static int handle_op(const omaq_op *op)
 				emit_error("unsupported");
 				return 0;
 			}
+			omaq_file_event event = omaq_file_event_for(
+				omaq_file_is_avatar(fn, fnum), OMAQ_FILE_OUTCOME_CANCEL);
 			omaq_file_cancel(g_tox, fn, fnum);
-			emit_file("failed", fn, fnum, NULL, 0, NULL);
+			if (event == OMAQ_FILE_EVENT_FAILED)
+				emit_file("failed", fn, fnum, NULL, 0, NULL);
 			return 0;
 		}
 #endif
@@ -2289,6 +2436,12 @@ static int serve_line(char *line)
 	}
 }
 
+static int serve_input_line(char *line, void *ctx)
+{
+	(void)ctx;
+	return serve_line(line);
+}
+
 static void accept_client(void)
 {
 	int c = accept(g_listen, NULL, NULL);
@@ -2307,8 +2460,7 @@ static void accept_client(void)
 		return;
 	}
 	g_clients[g_ncli] = c;
-	g_cbuf[g_ncli][0] = '\0';
-	g_clen[g_ncli] = 0;
+	omaq_line_reader_init(&g_creader[g_ncli]);
 	g_olen[g_ncli] = 0;
 	g_ooff[g_ncli] = 0;
 	g_drop[g_ncli] = 0;
@@ -2320,8 +2472,7 @@ static void drop_client(size_t i)
 	close(g_clients[i]);
 	if (i + 1 < g_ncli) {
 		g_clients[i] = g_clients[g_ncli - 1];
-		g_clen[i] = g_clen[g_ncli - 1];
-		memcpy(g_cbuf[i], g_cbuf[g_ncli - 1], g_clen[i] + 1);
+		g_creader[i] = g_creader[g_ncli - 1];
 		g_olen[i] = g_olen[g_ncli - 1];
 		g_ooff[i] = g_ooff[g_ncli - 1];
 		memcpy(g_obuf[i], g_obuf[g_ncli - 1], g_olen[i]);
@@ -2334,25 +2485,16 @@ static void read_client(size_t i)
 {
 	char tmp[512];
 	ssize_t r = read(g_clients[i], tmp, sizeof(tmp));
-	size_t k;
+
 	if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 		return;
 	if (r <= 0) {
 		drop_client(i);
 		return;
 	}
-	for (k = 0; k < (size_t)r; k++) {
-		if (g_clen[i] + 1 >= OMAQ_JSON_LINE_MAX) {
-			g_clen[i] = 0;
-			continue;
-		}
-		g_cbuf[i][g_clen[i]++] = tmp[k];
-		if (tmp[k] == '\n') {
-			g_cbuf[i][g_clen[i]] = '\0';
-			serve_line(g_cbuf[i]);
-			g_clen[i] = 0;
-		}
-	}
+	if (omaq_line_reader_feed(&g_creader[i], tmp, (size_t)r,
+				  serve_input_line, NULL) != 0)
+		drop_client(i);
 }
 
 static int read_stdin_lines(void)
@@ -2362,27 +2504,9 @@ static int read_stdin_lines(void)
 	for (;;) {
 		ssize_t r = read(STDIN_FILENO, tmp, sizeof(tmp));
 		if (r > 0) {
-			for (ssize_t k = 0; k < r; k++) {
-				if (g_stdin_discard) {
-					if (tmp[k] == '\n') {
-						g_stdin_discard = 0;
-						g_stdin_len = 0;
-					}
-					continue;
-				}
-				if (g_stdin_len + 1 >= sizeof(g_stdin_buf)) {
-					g_stdin_len = 0;
-					g_stdin_discard = 1;
-					continue;
-				}
-				if (tmp[k] == '\n') {
-					g_stdin_buf[g_stdin_len] = '\0';
-					serve_line(g_stdin_buf);
-					g_stdin_len = 0;
-				} else if (tmp[k] != '\r') {
-					g_stdin_buf[g_stdin_len++] = tmp[k];
-				}
-			}
+			if (omaq_line_reader_feed(&g_stdin_reader, tmp, (size_t)r,
+						  serve_input_line, NULL) != 0)
+				return -1;
 			continue;
 		}
 		if (r == 0)
@@ -2393,6 +2517,19 @@ static int read_stdin_lines(void)
 			return 0;
 		return -1;
 	}
+}
+
+static void start_backend(void)
+{
+	if (g_backend_started)
+		return;
+#ifdef HAVE_TOX
+	(void)load_tox(NULL);
+#endif
+#ifdef HAVE_SIGNAL
+	g_ratchet = omaq_ratchet_open(home_dir());
+#endif
+	g_backend_started = 1;
 }
 
 int main(int argc, char **argv)
@@ -2419,7 +2556,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	omaq_rate_init(&g_rate);
-	if (mkdir(state_dir(), 0700) != 0 && errno != EEXIST)
+	omaq_line_reader_init(&g_stdin_reader);
+	if (ensure_state_dir() != 0)
+		return 1;
+	rc = take_state_lock();
+	if (rc == 2)
+		return 2;
+	if (rc != 0)
 		return 1;
 	rc = take_lock();
 	if (rc == 2)
@@ -2430,12 +2573,15 @@ int main(int argc, char **argv)
 		return 1;
 	if (write_pid() != 0)
 		return 1;
-#ifdef HAVE_TOX
-	(void)load_tox(NULL);
-#endif
-#ifdef HAVE_SIGNAL
-	g_ratchet = omaq_ratchet_open(home_dir());
-#endif
+	g_stdout_spool = omaq_stdout_spool_open(state_dir(), STDOUT_FILENO);
+	if (!g_stdout_spool) {
+		fprintf(stderr, "omaq: critical stdout spool open failed: %s\n",
+			strerror(errno));
+		return 1;
+	}
+	g_replay_mode = omaq_stdout_spool_pending(g_stdout_spool);
+	if (!g_replay_mode)
+		start_backend();
 	if (hold) {
 		for (;;) {
 #ifdef HAVE_TOX
@@ -2449,7 +2595,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	while (1) {
+	while (!g_fatal_io) {
 		struct pollfd pf[3 + MAX_CLIENTS];
 		int nf = 0;
 		int stdin_idx = -1;
@@ -2458,11 +2604,15 @@ int main(int argc, char **argv)
 		int ms = 250;
 		int pr;
 
+		if (g_replay_mode && !omaq_stdout_spool_pending(g_stdout_spool)) {
+			g_replay_mode = 0;
+			start_backend();
+		}
 #ifdef HAVE_TOX
 		if (g_tox)
 			ms = (int)omaq_tox_interval_ms(g_tox);
 #endif
-		if (!g_stdin_closed) {
+		if (!g_replay_mode && !g_stdin_closed) {
 			stdin_idx = nf;
 			pf[nf].fd = STDIN_FILENO;
 			pf[nf].events = POLLIN;
@@ -2472,10 +2622,11 @@ int main(int argc, char **argv)
 		if (!g_stdout_closed) {
 			stdout_idx = nf;
 			pf[nf].fd = STDOUT_FILENO;
-			pf[nf].events = g_stdout_len > g_stdout_off ? POLLOUT : 0;
+			pf[nf].events = (omaq_stdout_spool_pending(g_stdout_spool) ||
+					g_stdout_len > g_stdout_off) ? POLLOUT : 0;
 			nf++;
 		}
-		if (g_listen >= 0) {
+		if (!g_replay_mode && g_listen >= 0) {
 			listen_idx = nf;
 			pf[nf].fd = g_listen;
 			pf[nf].events = POLLIN;
@@ -2508,6 +2659,8 @@ int main(int argc, char **argv)
 			} else {
 				flush_stdout();
 			}
+			if (g_replay_mode && g_stdout_closed)
+				g_fatal_io = 1;
 		}
 		if (listen_idx >= 0 && (pf[listen_idx].revents & POLLIN))
 			accept_client();
@@ -2545,7 +2698,10 @@ int main(int argc, char **argv)
 	if (g_ratchet)
 		omaq_ratchet_close(g_ratchet);
 #endif
+	omaq_stdout_spool_close(g_stdout_spool);
 	if (g_lockfd >= 0)
 		close(g_lockfd);
-	return 0;
+	if (g_state_lockfd >= 0)
+		close(g_state_lockfd);
+	return g_fatal_io ? 1 : 0;
 }

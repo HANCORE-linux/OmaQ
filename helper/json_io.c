@@ -35,6 +35,8 @@ static int parse_string(const char **pp, char *dst, size_t dstlen)
 				return -1;
 			p++;
 		} else {
+			if ((unsigned char)*p < 0x20)
+				return -1;
 			c = *p++;
 		}
 		if (n + 1 >= dstlen)

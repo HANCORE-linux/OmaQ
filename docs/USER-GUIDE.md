@@ -4,6 +4,15 @@ A short, visual guide. Follow the steps in order and use the labels shown in the
 
 To begin, you need a private `omaq://` invite from the other person.
 
+## How messages travel
+
+![How OmaQ messages travel](images/omaq-message-flow.png)
+
+- The chat UI sends through `Service.qml` to the local `helper/omaq` process.
+- Toxcore transports the packet between devices.
+- Direct message content is protected by the Signal Double Ratchet.
+- The identity and chat history remain local; there is no central chat server.
+
 ## 1. Join and accept
 
 ![Join and accept](images/01-join-and-accept.png)

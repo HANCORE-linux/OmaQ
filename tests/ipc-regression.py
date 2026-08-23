@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Integration coverage for fragmented stdin and a blocked helper stdout pipe."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+OLD_URGENT_LIMIT = 4096 * 1024
+BATCH_EVENTS = 80
+TEST_EVENT_SIZE = 65_500
+COMMAND = b'{"op":"status"}\n'
+EVENT = b'{"event":"snapshot","unread":0,"conversations":[]}\n'
+
+
+def test_command(index: int) -> bytes:
+    return f'{{"op":"test.emit","id":"{index:06d}"}}\n'.encode()
+
+
+def test_event(index: int) -> bytes:
+    prefix = f'{{"event":"test","id":"{index:06d}","padding":"'.encode()
+    return prefix + b"x" * (TEST_EVENT_SIZE - len(prefix) - 2) + b'"}\n'
+
+
+def wait_for(predicate, timeout: float, message: str) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise RuntimeError(message)
+
+
+def stop(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    stdout = process.stdout.read() if process.stdout else b""
+    stderr = process.stderr.read() if process.stderr else b""
+    return stdout, stderr
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: ipc-regression.py HELPER", file=sys.stderr)
+        return 2
+    helper = str(Path(sys.argv[1]).resolve())
+    home = tempfile.mkdtemp(prefix="omaq-ipc-home-")
+    other_home = tempfile.mkdtemp(prefix="omaq-ipc-other-home-")
+    state = tempfile.mkdtemp(prefix="omaq-ipc-state-")
+    replay_path = Path(tempfile.mkstemp(prefix="omaq-ipc-replay-")[1])
+    env = os.environ.copy()
+    env.update(OMAQ_HOME=home, OMAQ_STATE=state)
+    first: subprocess.Popen[bytes] | None = None
+    second: subprocess.Popen[bytes] | None = None
+
+    try:
+        first = subprocess.Popen(
+            [helper],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        socket_path = Path(state) / "omaq.sock"
+        spool_path = Path(state) / "stdout-critical.spool"
+        wait_for(socket_path.exists, 5, "helper socket was not created")
+        assert first.stdin is not None
+
+        # A second home must not become a concurrent writer for the same state/spool.
+        second_env = env.copy()
+        second_env["OMAQ_HOME"] = other_home
+        contender = subprocess.run(
+            [helper],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=second_env,
+            timeout=5,
+            check=False,
+        )
+        if contender.returncode != 2:
+            raise RuntimeError(
+                f"same-state contender returned {contender.returncode}, expected 2: "
+                f"{contender.stderr.decode(errors='replace')}"
+            )
+
+        # Socket and stdin use the same fail-closed framing for oversize and NUL lines.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as framing_client:
+            framing_client.settimeout(0.25)
+            framing_client.connect(str(socket_path))
+            framing_client.sendall(b"x" * 4096 + COMMAND)
+            framing_client.sendall(COMMAND[:-1] + b"\0garbage\n")
+            try:
+                unexpected = framing_client.recv(4096)
+            except socket.timeout:
+                unexpected = b""
+            if unexpected:
+                raise RuntimeError(f"malformed socket line produced output: {unexpected!r}")
+            framing_client.settimeout(5)
+            framing_client.sendall(COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != EVENT:
+                raise RuntimeError(f"socket framing recovery mismatch: {response!r}")
+
+        # The first command deliberately crosses separate stdin reads.
+        first.stdin.write(b'{"op":"sta')
+        first.stdin.flush()
+        time.sleep(0.05)
+        if first.poll() is not None:
+            raise RuntimeError("helper exited on a fragmented stdin prefix")
+        first.stdin.write(b'tus"}\r\n')
+        first.stdin.flush()
+
+        writer_error: list[BaseException] = []
+
+        def produce() -> None:
+            try:
+                assert first is not None and first.stdin is not None
+                first.stdin.write(b"".join(test_command(i) for i in range(BATCH_EVENTS)))
+                first.stdin.flush()
+            except BaseException as error:  # propagated to the test thread
+                writer_error.append(error)
+
+        writer = threading.Thread(target=produce, daemon=True)
+        writer.start()
+        writer.join(timeout=45)
+        if writer.is_alive():
+            raise RuntimeError("stdin producer blocked behind the stalled stdout client")
+        if writer_error:
+            raise RuntimeError(f"stdin producer failed: {writer_error[0]}")
+        if first.poll() is not None:
+            raise RuntimeError("helper exited while stdout was blocked")
+        wait_for(
+            lambda: spool_path.exists() and spool_path.stat().st_size > OLD_URGENT_LIMIT,
+            10,
+            "critical stdout spool did not exceed the former 4 MiB limit",
+        )
+        if spool_path.stat().st_mode & 0o777 != 0o600:
+            raise RuntimeError("critical stdout spool mode is not 0600")
+
+        # A separate IPC client must still receive responses while stdout is stalled.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(socket_path))
+            client.sendall(COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != EVENT:
+                raise RuntimeError(f"socket client response mismatch: {response!r}")
+
+        first_stdout, first_stderr = stop(first)
+        first = None
+        if first_stderr:
+            raise RuntimeError(f"first helper diagnostics: {first_stderr.decode(errors='replace')}")
+
+        # Restart with a writable stdout and require replay of the complete FIFO.
+        with replay_path.open("wb") as replay:
+            second = subprocess.Popen(
+                [helper],
+                stdin=subprocess.PIPE,
+                stdout=replay,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            # Queue a command immediately; replay mode must defer it until old FIFO drain.
+            replay_client: socket.socket | None = None
+            deadline = time.monotonic() + 5
+            while replay_client is None:
+                candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                candidate.settimeout(30)
+                try:
+                    candidate.connect(str(socket_path))
+                    replay_client = candidate
+                except (ConnectionRefusedError, FileNotFoundError):
+                    candidate.close()
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("could not connect during helper replay startup")
+                    time.sleep(0.02)
+            with replay_client:
+                replay_client.sendall(COMMAND)
+                response = b""
+                while b"\n" not in response:
+                    chunk = replay_client.recv(4096)
+                    if not chunk:
+                        break
+                    response += chunk
+                if response != EVENT:
+                    raise RuntimeError(f"post-replay socket response mismatch: {response!r}")
+            wait_for(
+                lambda: spool_path.exists() and spool_path.stat().st_size == 0,
+                30,
+                "restarted helper did not drain the critical stdout spool",
+            )
+            second_stdout, second_stderr = stop(second)
+            second = None
+            if second_stdout:
+                raise RuntimeError("unexpected captured stdout for file-backed replay")
+            if second_stderr:
+                raise RuntimeError(
+                    f"restarted helper diagnostics: {second_stderr.decode(errors='replace')}"
+                )
+
+        replayed = replay_path.read_bytes()
+        expected = (
+            EVENT
+            + EVENT
+            + b"".join(test_event(i) for i in range(BATCH_EVENTS))
+            + EVENT
+            + EVENT
+        )
+        boundary = first_stdout.rfind(b"\n") + 1
+        first_complete = first_stdout[:boundary]
+        partial = first_stdout[boundary:]
+        if partial and not expected[len(first_complete) :].startswith(partial):
+            raise RuntimeError("old stdout ended with an invalid partial critical record")
+        # A fresh helper stdout stream discards the old stream's incomplete JSONL tail.
+        combined = first_complete + replayed
+        if combined != expected:
+            raise RuntimeError(
+                f"critical FIFO mismatch: got {len(combined)} bytes, expected {len(expected)}"
+            )
+        print("ipc-regression: ok")
+        return 0
+    except Exception as error:
+        print(f"ipc-regression: FAIL: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if first is not None:
+            stop(first)
+        if second is not None:
+            stop(second)
+        replay_path.unlink(missing_ok=True)
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(other_home, ignore_errors=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

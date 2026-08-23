@@ -88,6 +88,15 @@ static int of_find(uint32_t friend, uint32_t fnum, int create)
 }
 #endif
 
+omaq_file_event omaq_file_event_for(int avatar, omaq_file_outcome outcome)
+{
+	if (avatar)
+		return outcome == OMAQ_FILE_OUTCOME_DONE ? OMAQ_FILE_EVENT_AVATAR :
+			OMAQ_FILE_EVENT_NONE;
+	return outcome == OMAQ_FILE_OUTCOME_DONE ? OMAQ_FILE_EVENT_DONE :
+		OMAQ_FILE_EVENT_FAILED;
+}
+
 int omaq_file_path_ok(const char *path)
 {
 	if (!path || path[0] != '/')
@@ -337,7 +346,8 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
-			 const char *dest_override, char *dest, size_t destn)
+			 const char *dest_override, char *dest, size_t destn,
+			 int avatar)
 {
 	char dir[512], safe[OMAQ_FILE_NAME_MAX + 1];
 	int i;
@@ -378,6 +388,7 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 		return -1;
 	}
 	xf[i].sending = 0;
+	xf[i].avatar = avatar != 0;
 	xf[i].fp = fp;
 	xf[i].size = size;
 	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", dest) >= (int)sizeof(xf[i].path)) {
@@ -392,6 +403,7 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 int omaq_file_is_avatar(uint32_t friend, uint32_t fnum)
 {
 	int i = xf_find(friend, fnum, 0);
+
 	return i >= 0 && xf[i].avatar;
 }
 

@@ -7,6 +7,7 @@
 #include "../helper/identity.h"
 #include "../helper/invite.h"
 #include "../helper/json_io.h"
+#include "../helper/line_reader.h"
 #include "../helper/message_action.h"
 #include "../helper/message.h"
 #include "../helper/qr.h"
@@ -176,6 +177,72 @@ static void test_json(void)
 		fail("json ttl overflow");
 	if (omaq_json_parse_op("{\"op\":\"x\",\"limit\":2147483648}", &op) == 0)
 		fail("json limit overflow");
+	if (omaq_json_parse_op("{\"op\":\"sta\rtus\"}", &op) == 0)
+		fail("json embedded carriage return");
+}
+
+struct line_capture {
+	char lines[4][128];
+	int count;
+};
+
+static int capture_line(char *line, void *ctx)
+{
+	struct line_capture *capture = ctx;
+
+	if (capture->count >= 4 || strlen(line) >= sizeof(capture->lines[0]))
+		return -1;
+	snprintf(capture->lines[capture->count], sizeof(capture->lines[0]), "%s", line);
+	capture->count++;
+	return 0;
+}
+
+static void test_fragmented_stdin(void)
+{
+	omaq_line_reader reader;
+	struct line_capture capture = { 0 };
+	char oversized[OMAQ_JSON_LINE_MAX + 32];
+
+	omaq_line_reader_init(&reader);
+	if (omaq_line_reader_feed(&reader, "{\"op\":\"sta", sizeof("{\"op\":\"sta") - 1,
+				  capture_line, &capture) != 0 ||
+	    capture.count != 0 ||
+	    omaq_line_reader_feed(&reader, "tus\"}\r", sizeof("tus\"}\r") - 1,
+				  capture_line, &capture) != 0 ||
+	    capture.count != 0 ||
+	    omaq_line_reader_feed(&reader, "\n{\"op\":\"his", sizeof("\n{\"op\":\"his") - 1,
+				  capture_line, &capture) != 0 ||
+	    omaq_line_reader_feed(&reader, "tory\"}\n", sizeof("tory\"}\n") - 1,
+				  capture_line, &capture) != 0 ||
+	    capture.count != 2 || strcmp(capture.lines[0], "{\"op\":\"status\"}") != 0 ||
+	    strcmp(capture.lines[1], "{\"op\":\"history\"}") != 0)
+		fail("fragmented stdin lines");
+
+	memset(oversized, 'x', sizeof(oversized));
+	oversized[sizeof(oversized) - 2] = '\n';
+	oversized[sizeof(oversized) - 1] = '\0';
+	if (omaq_line_reader_feed(&reader, "{\"op\":\"sta\rtus\"}\n",
+				  sizeof("{\"op\":\"sta\rtus\"}\n") - 1,
+				  capture_line, &capture) != 0 ||
+	    capture.count != 3 || strchr(capture.lines[2], '\r') == NULL)
+		fail("embedded stdin carriage return preserved");
+	capture.count = 2;
+	if (omaq_line_reader_feed(&reader, oversized, sizeof(oversized) - 1,
+				  capture_line, &capture) != 0 ||
+	    omaq_line_reader_feed(&reader, "{\"op\":\"status\"}\n",
+				  sizeof("{\"op\":\"status\"}\n") - 1,
+				  capture_line, &capture) != 0 ||
+	    capture.count != 3 || strcmp(capture.lines[2], "{\"op\":\"status\"}") != 0)
+		fail("oversized fragmented stdin recovery");
+	{
+		static const char nul_line[] = "{\"op\":\"status\"}\0garbage\n";
+		if (omaq_line_reader_feed(&reader, nul_line, sizeof(nul_line) - 1,
+					  capture_line, &capture) != 0 || capture.count != 3 ||
+		    omaq_line_reader_feed(&reader, "{\"op\":\"status\"}\n",
+					  sizeof("{\"op\":\"status\"}\n") - 1,
+					  capture_line, &capture) != 0 || capture.count != 4)
+			fail("stdin NUL line discarded and recovered");
+	}
 }
 
 static void test_store(void)
@@ -859,6 +926,7 @@ int main(void)
 	test_invites();
 	test_roles();
 	test_json();
+	test_fragmented_stdin();
 	test_store();
 	test_search();
 	test_identity_files();

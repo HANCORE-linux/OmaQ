@@ -24,19 +24,22 @@ ifeq ($(SIG_OK),yes)
 endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
-	helper/json_io.c helper/store.c helper/message.c \
+	helper/json_io.c helper/line_reader.c helper/stdout_spool.c helper/store.c helper/message.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
 	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/file.c helper/avatar.c helper/av.c \
 	helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
-	helper/json_io.c helper/store.c helper/message.c helper/identity.c \
+	helper/json_io.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
 	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c \
 	helper/ratchet_pin.c
 
 BIN_TEST := tests/omaq_test
+BIN_SPOOL_TEST := tests/stdout_spool_test
+BIN_FILE_TRANSFER_TEST := tests/file_transfer_test
+BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
 BIN_HELP := helper/omaq
 
 .PHONY: all test helper check-signal arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
@@ -46,6 +49,18 @@ all: $(BIN_TEST) helper
 
 $(BIN_TEST): $(TEST_SRC)
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -o $@ $(TEST_SRC)
+
+$(BIN_SPOOL_TEST): tests/stdout_spool_test.c helper/stdout_spool.c helper/stdout_spool.h
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DOMAQ_STDOUT_SPOOL_MAX=5242880u \
+		-o $@ tests/stdout_spool_test.c helper/stdout_spool.c
+
+$(BIN_FILE_TRANSFER_TEST): tests/file_transfer_test.c helper/file.c helper/file.h helper/avatar.c helper/avatar.h helper/tox_adapt.h
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX -o $@ \
+		tests/file_transfer_test.c helper/file.c helper/avatar.c
+
+$(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
+	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
+		-DOMAQ_STDOUT_SPOOL_MAX=5242880u -o $@ $(HELPER_SRC)
 
 check-signal:
 	@if [ "$(SIG_OK)" != "yes" ]; then \
@@ -57,8 +72,11 @@ check-signal:
 $(BIN_HELP): check-signal $(HELPER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
-test: $(BIN_TEST)
+test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_IPC_TEST_HELPER)
 	./$(BIN_TEST)
+	./$(BIN_SPOOL_TEST)
+	./$(BIN_FILE_TRANSFER_TEST)
+	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 
 helper: $(BIN_HELP)
 
@@ -173,4 +191,5 @@ verify-8: test arch helper
 	@echo "verify-8: ok"
 
 clean:
-	rm -f $(BIN_TEST) $(BIN_HELP)
+	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) \
+		$(BIN_IPC_TEST_HELPER) $(BIN_HELP)
