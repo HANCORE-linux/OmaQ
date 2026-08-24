@@ -21,6 +21,8 @@ Item {
   readonly property string soundName: String(setting("sound", "icq-message"))
   readonly property string soundCustom: String(setting("soundCustomPath", ""))
   readonly property string chatTheme: String(setting("chatTheme", "system"))
+  readonly property bool formatToolbarEnabled: !!setting("formatToolbar", false)
+  signal formatToolbarToggled(bool enabled)
 
   property var openCards: []
   property bool surfacesHydrated: false
@@ -51,6 +53,9 @@ Item {
   readonly property var visualTokens: root.bar && "visualTokens" in root.bar
     ? root.bar.visualTokens : null
   readonly property var paletteState: visualTokens ? visualTokens.stateService : null
+  readonly property color receiptSentColor: root.paletteColor("color05", root.theme().accent || Color.accent)
+  readonly property color receiptDeliveredColor: root.paletteColor("color04", root.theme().fg || Color.foreground)
+  readonly property color receiptReadColor: root.paletteColor("color03", root.theme().accent || Color.accent)
   readonly property string notificationConversation: service
     ? String(service.lastChatConv || service.lastConversation || "") : ""
   readonly property color headerNameColor: root.paletteColor("color03", root.theme().accent || Color.accent)
@@ -650,8 +655,13 @@ Item {
               peerOnline: root.friendOnline(card.modelData.conversation)
               peerNameColor: root.headerNameColor
               peerStatusColor: root.headerStatusColor
+              receiptSentColor: root.receiptSentColor
+              receiptDeliveredColor: root.receiptDeliveredColor
+              receiptReadColor: root.receiptReadColor
               autoOpenEnabled: root.autoOpenFor(card.modelData.conversation)
               onAutoOpenToggled: root.toggleAutoOpen(card.modelData.conversation)
+              formatToolbarEnabled: root.formatToolbarEnabled
+              onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
               pulseUnread: root.animateUnread && root.pulseConv === card.modelData.conversation
             }
 
@@ -719,8 +729,13 @@ Item {
         peerOnline: root.friendOnline(root.notificationConversation)
         peerNameColor: root.headerNameColor
         peerStatusColor: root.headerStatusColor
+        receiptSentColor: root.receiptSentColor
+        receiptDeliveredColor: root.receiptDeliveredColor
+        receiptReadColor: root.receiptReadColor
         autoOpenEnabled: root.autoOpenFor(root.notificationConversation)
         onAutoOpenToggled: root.toggleAutoOpen(root.notificationConversation)
+        formatToolbarEnabled: root.formatToolbarEnabled
+        onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
       }
     }
   }
@@ -733,7 +748,8 @@ Item {
       // Keep the map-time title stable so Hyprland can apply the floating rule before map.
       title: "OmaQ chat"
       implicitWidth: 420
-      implicitHeight: 360
+      implicitHeight: 420
+      minimumSize: Qt.size(360, 420)
       color: root.theme().bg || Color.background
       property bool everShown: false
       property bool closing: false
@@ -840,8 +856,13 @@ Item {
           peerOnline: root.friendOnline(pinWin.modelData ? pinWin.modelData.conversation : "")
           peerNameColor: root.headerNameColor
           peerStatusColor: root.headerStatusColor
+          receiptSentColor: root.receiptSentColor
+          receiptDeliveredColor: root.receiptDeliveredColor
+          receiptReadColor: root.receiptReadColor
           autoOpenEnabled: root.autoOpenFor(pinWin.modelData ? pinWin.modelData.conversation : "")
           onAutoOpenToggled: root.toggleAutoOpen(pinWin.modelData ? pinWin.modelData.conversation : "")
+          formatToolbarEnabled: root.formatToolbarEnabled
+          onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
           readActive: {
             var win = pinPage.QsWindow.window
             return !!(win && win.active && pinFocus.activeFocus)
@@ -863,7 +884,7 @@ Item {
     title: "OmaQ demo"
     implicitWidth: 420
     implicitHeight: 480
-    minimumSize: Qt.size(320, 360)
+    minimumSize: Qt.size(360, 420)
     color: root.theme().bg || Color.background
 
     onVisibleChanged: {
@@ -907,6 +928,11 @@ Item {
         service: root.service
         theme: root.theme()
         conversation: "demo"
+        receiptSentColor: root.receiptSentColor
+        receiptDeliveredColor: root.receiptDeliveredColor
+        receiptReadColor: root.receiptReadColor
+        formatToolbarEnabled: root.formatToolbarEnabled
+        onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
       }
     }
   }

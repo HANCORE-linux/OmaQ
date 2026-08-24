@@ -64,8 +64,8 @@ echo '{"op":"contact.decide","id":"x","accept":true}' >&3
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do
-	echo '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping"}' >&3
-	echo '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping"}' >&4
+	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping","id":"phase8-ping-a-%s"}\n' "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping","id":"phase8-ping-b-%s"}\n' "$i" >&4
 	sleep 1
 	if grep -a -q 'secret-ratchet-ping' "$fb"; then
 		sent=1
@@ -87,7 +87,7 @@ while [ "$i" -lt 20 ]; do
 	sleep 0.2
 done
 [ "$i" -lt 20 ] || { echo "phase8: no read receipt" >&2; exit 1; }
-printf '{"op":"msg.send","conversation":"0","text":"semantic-reply","reply":"%s"}\n' "$message_id" >&3
+printf '{"op":"msg.send","conversation":"0","text":"semantic-reply","reply":"%s","id":"phase8-reply-1"}\n' "$message_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q '"reply":"'"$message_id"'"' "$fb" && grep -a -q 'semantic-reply' "$fb"; then
@@ -97,6 +97,10 @@ while [ "$i" -lt 30 ]; do
 	sleep 0.2
 done
 [ "$i" -lt 30 ] || { echo "phase8: no semantic reply" >&2; exit 1; }
+grep -a '"event":"message"' "$fa" | grep -a 'semantic-reply' | grep -a -q '"request":"phase8-reply-1"' || {
+	echo "phase8: outgoing message request correlation missing" >&2
+	exit 1
+}
 reply_id=$(grep -a '"event":"message"' "$fa" | grep -a 'semantic-reply' | tail -1 | sed -n 's/.*"id":"\([^" ]*\)".*/\1/p')
 [ -n "$reply_id" ] || { echo "phase8: no reply id" >&2; exit 1; }
 printf '{"op":"message.edit","conversation":"0","id":"%s","text":"semantic-edited"}\n' "$reply_id" >&3
@@ -125,10 +129,43 @@ if grep -a '"message"' "$fa" "$fb" | grep -E -q 'OQR1|OQB1'; then
 	exit 1
 fi
 
+# Parallel identical texts must remain correlated when one request fails and the other succeeds.
+printf '{"op":"msg.send","conversation":"999999","text":"parallel-identical","reply":"missing","id":"phase8-parallel-fail"}\n' >&3
+printf '{"op":"msg.send","conversation":"0","text":"parallel-identical","reply":"%s","id":"phase8-parallel-ok"}\n' "$message_id" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"message.failed"' "$fa" | grep -a -q '"request":"phase8-parallel-fail"' &&
+	   grep -a '"event":"message"' "$fa" | grep -a '"request":"phase8-parallel-ok"' |
+	   grep -a -q '"reply":"'"$message_id"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: parallel message correlation missing" >&2; exit 1; }
+
+# Transport success followed by a local history failure must not invite a duplicate resend.
+history_file="$ha/history/0/messages.jsonl"
+[ -f "$history_file" ] || { echo "phase8: sender history missing" >&2; exit 1; }
+chmod 400 "$history_file"
+echo '{"op":"msg.send","conversation":"0","text":"delivered-history-failure","id":"phase8-store-fail"}' >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"message.failed"' "$fa" | grep -a '"request":"phase8-store-fail"' |
+	   grep -a -q '"code":"history_failed","delivered":true' &&
+	   grep -a -q 'delivered-history-failure' "$fb"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+chmod 600 "$history_file"
+[ "$i" -lt 30 ] || { echo "phase8: post-delivery history failure semantics missing" >&2; exit 1; }
+
 sent2=0
 i=0
 while [ "$i" -lt 30 ]; do
-	echo '{"op":"msg.send","conversation":"0","text":"secret-ratchet-pong"}' >&3
+	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-pong","id":"phase8-pong-%s"}\n' "$i" >&3
 	sleep 1
 	if grep -a -q 'secret-ratchet-pong' "$fb"; then
 		sent2=1

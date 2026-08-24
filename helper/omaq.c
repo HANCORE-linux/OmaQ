@@ -47,6 +47,7 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
+#define OMAQ_PROTOCOL_VERSION 3
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -367,9 +368,9 @@ static int write_protocol_marker(void)
 	if (!f)
 		return -1;
 	if (fchmod(fileno(f), 0600) != 0 ||
-	    fprintf(f, "{\"pid\":%ld,\"version\":2,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
-		    (long)getpid(), g_instance_id, nonce) < 0 || fflush(f) != 0 ||
-	    fsync(fileno(f)) != 0 || fclose(f) != 0) {
+	    fprintf(f, "{\"pid\":%ld,\"version\":%d,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
+		    (long)getpid(), OMAQ_PROTOCOL_VERSION, g_instance_id, nonce) < 0 ||
+	    fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
 		unlink(tmp);
 		return -1;
 	}
@@ -548,8 +549,8 @@ static void emit_locked_status(void)
 	char ev[320];
 
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"snapshot\",\"unread\":%u,\"locked\":true,\"instance\":\"%s\"}",
-		 omaq_unread_total(&g_unread), g_instance_id);
+		 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\"}",
+		 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id);
 	emit(ev);
 	emit_all_unread();
 }
@@ -711,10 +712,11 @@ static void emit_unread_failed(const char *conversation, const char *code)
 
 static void emit_message_event_kind(const char *conversation, const char *id,
 				     const char *reply, const char *text, const char *dir,
-				     const char *kind)
+				     const char *kind, const char *request)
 {
-	char esc_conv[128], esc_id[128], esc_reply[128], esc_text[2800], ev[3400];
-	int has_id, has_reply, is_file;
+	char esc_conv[128], esc_id[128], esc_reply[128], esc_request[512],
+		esc_text[2800], ev[3800];
+	int has_id, has_reply, has_request, is_file;
 
 	if (!conversation || !text || !dir ||
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
@@ -722,8 +724,18 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 		return;
 	has_id = id && id[0] && omaq_json_escape(id, esc_id, sizeof(esc_id)) == 0;
 	has_reply = reply && reply[0] && omaq_json_escape(reply, esc_reply, sizeof(esc_reply)) == 0;
+	has_request = request && request[0] &&
+		omaq_json_escape(request, esc_request, sizeof(esc_request)) == 0;
 	is_file = kind && strcmp(kind, "file") == 0;
-	if (has_id && has_reply) {
+	if (has_id && has_reply && has_request) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, esc_id, esc_reply, esc_request, esc_text, dir);
+	} else if (has_id && has_request) {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, esc_id, esc_request, esc_text, dir);
+	} else if (has_id && has_reply) {
 		snprintf(ev, sizeof(ev),
 			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
 			 esc_conv, esc_id, esc_reply, esc_text, dir);
@@ -746,7 +758,30 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 static void emit_message_event(const char *conversation, const char *id,
 				const char *reply, const char *text, const char *dir)
 {
-	emit_message_event_kind(conversation, id, reply, text, dir, NULL);
+	emit_message_event_kind(conversation, id, reply, text, dir, NULL, NULL);
+}
+
+static void emit_message_event_request(const char *conversation, const char *id,
+				       const char *reply, const char *text,
+				       const char *request)
+{
+	emit_message_event_kind(conversation, id, reply, text, "out", NULL, request);
+}
+
+static void emit_message_failed(const char *conversation, const char *request,
+				const char *code, int delivered)
+{
+	char esc_conv[80 * 6 + 1], esc_request[80 * 6 + 1], esc_code[128], ev[1280];
+
+	if (!conversation || !request || !code ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    omaq_json_escape(request, esc_request, sizeof(esc_request)) != 0 ||
+	    omaq_json_escape(code, esc_code, sizeof(esc_code)) != 0)
+		return;
+	snprintf(ev, sizeof(ev),
+		 "{\"event\":\"message.failed\",\"conversation\":\"%s\",\"request\":\"%s\",\"code\":\"%s\",\"delivered\":%s}",
+		 esc_conv, esc_request, esc_code, delivered ? "true" : "false");
+	emit(ev);
 }
 
 static void emit_file_rejected(const char *conversation, const char *request,
@@ -1930,7 +1965,7 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 						  mid, sizeof(mid)) == 0;
 		if (stored) {
 			(void)note_unread(conv);
-			emit_message_event_kind(conv, mid, "", dest, "in", "file");
+			emit_message_event_kind(conv, mid, "", dest, "in", "file", NULL);
 		}
 		emit_file("done", friend, fnum, NULL, 0, dest, "in", NULL);
 		if (!stored)
@@ -2102,8 +2137,9 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		char ev[1024];
 		if (g_locked && !g_tox) {
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"unread\":%u,\"locked\":true,\"instance\":\"%s\"%s}",
-				 omaq_unread_total(&g_unread), g_instance_id, request_field);
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\"%s}",
+				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id,
+				 request_field);
 			emit(ev);
 			emit_all_unread();
 			return 0;
@@ -2113,8 +2149,9 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			    omaq_json_escape(nickname, escaped_nickname, sizeof(escaped_nickname)) != 0)
 				escaped_nickname[0] = '\0';
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s}",
-				 omaq_unread_total(&g_unread), omaq_tox_online(g_tox) ? "true" : "false", addr,
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s}",
+				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread),
+				 omaq_tox_online(g_tox) ? "true" : "false", addr,
 				 escaped_nickname, omaq_identity_protected(g_tox) ? "true" : "false",
 				 g_instance_id, request_field);
 			emit(ev);
@@ -2127,11 +2164,17 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		{
 			char ev[640];
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"unread\":%u,\"conversations\":[],\"instance\":\"%s\"%s}",
-				 omaq_unread_total(&g_unread), g_instance_id, request_field);
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"conversations\":[],\"instance\":\"%s\"%s}",
+				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id,
+				 request_field);
 			emit(ev);
 			emit_all_unread();
 		}
+		return 0;
+	}
+	if (strcmp(op->op, "msg.send") == 0 && !op->id[0]) {
+		emit_error_conv("request_required",
+				op->conversation[0] ? op->conversation : "0");
 		return 0;
 	}
 #ifdef HAVE_TOX
@@ -2144,13 +2187,18 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		return 0;
 	}
 	if (g_identity_requires_ready && (!identity_ready || !*identity_ready)) {
-		emit_error("identity_changed");
+		if (strcmp(op->op, "msg.send") == 0)
+			emit_message_failed(op->conversation, op->id, "identity_changed", 0);
+		else
+			emit_error("identity_changed");
 		return 0;
 	}
 	if (g_locked && !g_tox &&
 	    strcmp(op->op, "identity.unlock") != 0) {
 		if (strcmp(op->op, "file.send") == 0)
 			emit_file_rejected(op->conversation, op->id, "locked");
+		else if (strcmp(op->op, "msg.send") == 0)
+			emit_message_failed(op->conversation, op->id, "locked", 0);
 		else
 			emit_error("locked");
 		return 0;
@@ -2981,35 +3029,37 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				int group_rc;
 				if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
 				    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0) {
-					emit_error_conv("forbidden", cid);
+					emit_message_failed(cid, op->id, "forbidden", 0);
 					return 0;
 				}
 				group_rc = omaq_group_send(g_tox, cid, packed);
 				if (group_rc != 0) {
-					emit_error_conv(group_rc == -2 ? "offline" : "forbidden", cid);
+					emit_message_failed(cid, op->id,
+						group_rc == -2 ? "offline" : "forbidden", 0);
 					return 0;
 				}
 				if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
-					emit_error_conv("forbidden", cid);
+					emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+					emit_message_failed(cid, op->id, "history_failed", 1);
 					return 0;
 				}
-				emit_message_event(cid, mid, op->reply, op->text, "out");
+				emit_message_event_request(cid, mid, op->reply, op->text, op->id);
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
 				return 0;
 			} else {
 				uint32_t fn;
 				if (!direct_id_ok(cid)) {
-					emit_error_conv("unsupported", cid);
+					emit_message_failed(cid, op->id, "unsupported", 0);
 					return 0;
 				}
 				fn = direct_id_number(cid);
 				if (!omaq_tox_online(g_tox) || !omaq_tox_friend_online(g_tox, fn)) {
-					emit_error_conv("offline", cid);
+					emit_message_failed(cid, op->id, "offline", 0);
 					return 0;
 				}
 #ifdef HAVE_SIGNAL
 				if (!g_ratchet) {
-					emit_error_conv("no_ratchet", cid);
+					emit_message_failed(cid, op->id, "no_ratchet", 0);
 					return 0;
 				}
 				{
@@ -3017,63 +3067,67 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					if (!omaq_ratchet_has_session(g_ratchet, cid)) {
 						char bmsg[920];
 						if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) != 0) {
-							emit_error_conv("no_ratchet", cid);
+							emit_message_failed(cid, op->id, "no_ratchet", 0);
 							return 0;
 						}
 						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
 						{
 							int send_rc = omaq_tox_send(g_tox, fn, bmsg);
 							if (send_rc != 0) {
-								emit_error_conv(send_rc == -2 ? "offline" : "forbidden", cid);
+								emit_message_failed(cid, op->id,
+									send_rc == -2 ? "offline" : "forbidden", 0);
 								return 0;
 							}
 						}
-						emit_error_conv("ratchet_pending", cid);
+						emit_message_failed(cid, op->id, "ratchet_pending", 0);
 						return 0;
 					}
 					if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
 					    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0 ||
 					    omaq_ratchet_encrypt(g_ratchet, cid, packed,
 								wire, sizeof(wire)) != 0) {
-						emit_error_conv("forbidden", cid);
+						emit_message_failed(cid, op->id, "forbidden", 0);
 						return 0;
 					}
 					{
 						int send_rc = omaq_tox_send(g_tox, fn, wire);
 						if (send_rc != 0) {
-							emit_error_conv(send_rc == -2 ? "offline" : "forbidden", cid);
+							emit_message_failed(cid, op->id,
+								send_rc == -2 ? "offline" : "forbidden", 0);
 							return 0;
 						}
 					}
 					{
 						if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
-							emit_error_conv("forbidden", cid);
+							emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+							emit_message_failed(cid, op->id, "history_failed", 1);
 							return 0;
 						}
-						emit_message_event(cid, mid, op->reply, op->text, "out");
+						emit_message_event_request(cid, mid, op->reply, op->text, op->id);
 					}
 					emit("{\"event\":\"snapshot\",\"unread\":0}");
 					return 0;
 				}
 #endif
 #ifndef HAVE_SIGNAL
-				emit_error_conv("no_ratchet", cid);
+				emit_message_failed(cid, op->id, "no_ratchet", 0);
 				return 0;
 #endif
 			}
 			{
 				char mid[64];
 				if (omaq_message_append_with_id(home_dir(), cid, "me", op->text, "out", mid, sizeof(mid)) != 0) {
-					emit_error_conv("forbidden", cid);
+					emit_message_failed(cid, op->id, "history_failed", 0);
 					return 0;
 				}
-				emit_message_event(cid, mid, op->reply, op->text, "out");
+				emit_message_event_request(cid, mid, op->reply, op->text, op->id);
 			}
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
 #endif
-		emit("{\"event\":\"snapshot\",\"unread\":0,\"conversations\":[]}");
+		emit_message_failed(op->conversation[0] ? op->conversation : "0",
+				    op->id, "unsupported", 0);
 		return 0;
 	}
 	if (strcmp(op->op, "unread.clear") == 0) {

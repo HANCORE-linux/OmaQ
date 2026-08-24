@@ -19,6 +19,7 @@ Item {
   property bool attached: false
   property bool procReady: false
   property var pendingOps: []
+  property var inFlightMessages: ({})
   property int backoffMs: 200
   property string helperInstance: ""
   property bool awaitingHelperInstance: false
@@ -38,8 +39,10 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
+  readonly property int requiredHelperProtocol: 3
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
-    root.helperProtocolPid === proc.processId && root.helperProtocolVersion >= 2 &&
+    root.helperProtocolPid === proc.processId &&
+    root.helperProtocolVersion >= root.requiredHelperProtocol &&
     root.helperProtocolNonce === root.helperLaunchNonce &&
     /^[0-9a-f]{32}$/.test(root.helperProtocolInstance)
   property string identityFingerprint: ""
@@ -58,6 +61,12 @@ Item {
   property string lastChatReply: ""
   property string lastChatDir: ""
   property string lastChatKind: ""
+  property string lastChatRequest: ""
+  property string lastMessageFailedConv: ""
+  property string lastMessageFailedRequest: ""
+  property string lastMessageFailedCode: ""
+  property bool lastMessageFailedDelivered: false
+  property int messageFailedTick: 0
   property string lastUpdateConv: ""
   property string lastUpdateId: ""
   property string lastUpdateText: ""
@@ -195,6 +204,12 @@ Item {
         return
       }
       if (handshakeMatches) {
+        var snapshotProtocol = Number(ev.protocol)
+        if (!Number.isInteger(snapshotProtocol) ||
+            snapshotProtocol < root.requiredHelperProtocol) {
+          root.markHelperIncompatible()
+          return
+        }
         var nextInstance = String(ev.instance)
         var previousInstance = root.helperInstance
         var processChanged = previousInstance && previousInstance !== nextInstance
@@ -397,11 +412,22 @@ Item {
       root.unreadWarning = ""
       root.unreadTick = root.unreadTick + 1
     }
+    if (ev.event === "message.failed") {
+      root.finishInFlightMessage(ev.request)
+      root.lastMessageFailedConv = String(ev.conversation || "")
+      root.lastMessageFailedRequest = String(ev.request || "")
+      root.lastMessageFailedCode = String(ev.code || "error")
+      root.lastMessageFailedDelivered = !!ev.delivered
+      root.messageFailedTick = root.messageFailedTick + 1
+    }
     if (ev.event === "message") {
+      if (ev.dir === "out")
+        root.finishInFlightMessage(ev.request)
       root.lastChatId = String(ev.id || "")
       root.lastChatReply = String(ev.reply || "")
       root.lastChatDir = ev.dir === "out" ? "out" : "in"
       root.lastChatKind = String(ev.kind || "")
+      root.lastChatRequest = String(ev.request || "")
       if (root.lastChatDir !== "out" &&
           (!root.authoritativeUnreadSeen || root.helperCompatibility === "incompatible")) {
         root.unreadCount = root.unreadCount + 1
@@ -748,20 +774,99 @@ Item {
     }
   }
 
+  function trackInFlightMessage(op) {
+    if (!op || op.op !== "msg.send" || !op.id)
+      return
+    var next = {}
+    var key
+    for (key in root.inFlightMessages)
+      next[key] = root.inFlightMessages[key]
+    next[String(op.id)] = { conversation: String(op.conversation || "") }
+    root.inFlightMessages = next
+  }
+
+  function trackSerializedMessage(line) {
+    var op
+    try { op = JSON.parse(line) } catch (e) { return }
+    root.trackInFlightMessage(op)
+  }
+
+  function finishInFlightMessage(request) {
+    var requestKey = String(request || "")
+    if (!requestKey || !root.inFlightMessages[requestKey])
+      return
+    var next = {}
+    var key
+    for (key in root.inFlightMessages)
+      if (key !== requestKey)
+        next[key] = root.inFlightMessages[key]
+    root.inFlightMessages = next
+  }
+
+  function failInFlightMessages(reason) {
+    var outstanding = root.inFlightMessages
+    root.inFlightMessages = ({})
+    var key
+    for (key in outstanding) {
+      root.lastMessageFailedConv = String(outstanding[key].conversation || "")
+      root.lastMessageFailedRequest = String(key)
+      root.lastMessageFailedCode = String(reason || "delivery_unknown")
+      root.lastMessageFailedDelivered = false
+      root.messageFailedTick = root.messageFailedTick + 1
+    }
+  }
+
   function flushOps() {
     if (root.awaitingHelperInstance || !root.pendingOps.length)
       return
     if (sock.connected) {
       var queued = root.pendingOps
       root.pendingOps = []
-      for (var i = 0; i < queued.length; i++)
+      for (var i = 0; i < queued.length; i++) {
+        root.trackSerializedMessage(queued[i])
         sock.write(queued[i])
+      }
     } else if (root.procReady) {
       var pending = root.pendingOps
       root.pendingOps = []
-      for (var j = 0; j < pending.length; j++)
+      for (var j = 0; j < pending.length; j++) {
+        root.trackSerializedMessage(pending[j])
         proc.write(pending[j])
+      }
     }
+  }
+
+  function failQueuedMessages(reason) {
+    var code = String(reason || "helper_down")
+    for (var i = 0; i < root.pendingOps.length; i++) {
+      var queued
+      try { queued = JSON.parse(root.pendingOps[i]) } catch (e) { continue }
+      if (!queued || queued.op !== "msg.send" || !queued.id)
+        continue
+      root.lastMessageFailedConv = String(queued.conversation || "")
+      root.lastMessageFailedRequest = String(queued.id)
+      root.lastMessageFailedCode = code
+      root.lastMessageFailedDelivered = false
+      root.messageFailedTick = root.messageFailedTick + 1
+    }
+  }
+
+  function markHelperIncompatible() {
+    helperStatusTimer.stop()
+    root.awaitingHelperInstance = false
+    root.helperStatusNonce = ""
+    root.failActiveOutgoingFiles("helper_incompatible")
+    root.failQueuedMessages("helper_incompatible")
+    root.pendingOps = []
+    root.pendingHandshakeEvents = []
+    root.pendingHandshakeBytes = 0
+    root.handshakeEventOverflow = false
+    root.helperCompatibility = "incompatible"
+    root.connectionState = "reconnecting"
+    root.selfOnline = false
+    root.lastError = "helper_incompatible"
+    root.lastErrorConv = ""
+    root.lastErrorTick = root.lastErrorTick + 1
   }
 
   function requestHelperStatus() {
@@ -788,10 +893,12 @@ Item {
     }
     var line = JSON.stringify(obj) + "\n"
     if (!root.awaitingHelperInstance && sock.connected) {
+      root.trackInFlightMessage(obj)
       sock.write(line)
       return true
     }
     if (!root.awaitingHelperInstance && root.procReady) {
+      root.trackInFlightMessage(obj)
       proc.write(line)
       return true
     }
@@ -1130,18 +1237,7 @@ Item {
       root.legacyHandshakeAttempts = root.legacyHandshakeAttempts + 1
       var legacyAttemptLimit = root.attached ? 3 : 12
       if (root.legacyHandshakeAttempts >= legacyAttemptLimit) {
-        root.awaitingHelperInstance = false
-        root.helperStatusNonce = ""
-        root.failActiveOutgoingFiles("helper_incompatible")
-        root.pendingOps = []
-        root.pendingHandshakeEvents = []
-        root.pendingHandshakeBytes = 0
-        root.handshakeEventOverflow = false
-        root.helperCompatibility = "incompatible"
-        root.connectionState = "reconnecting"
-        root.lastError = "helper_incompatible"
-        root.lastErrorConv = ""
-        root.lastErrorTick = root.lastErrorTick + 1
+        root.markHelperIncompatible()
         return
       }
     }
@@ -1154,6 +1250,8 @@ Item {
 
   function resetStateForIdentity() {
     root.failActiveOutgoingFiles("identity_replaced")
+    root.failInFlightMessages("delivery_unknown")
+    root.failQueuedMessages("identity_changed")
     root.pendingOps = []
     root.pendingHandshakeEvents = []
     root.pendingHandshakeBytes = 0
@@ -1174,7 +1272,12 @@ Item {
     root.lastChatReply = ""
     root.lastChatDir = ""
     root.lastChatKind = ""
+    root.lastChatRequest = ""
     root.lastChatConv = ""
+    root.lastMessageFailedConv = ""
+    root.lastMessageFailedRequest = ""
+    root.lastMessageFailedCode = ""
+    root.lastMessageFailedDelivered = false
     root.lastUpdateConv = ""
     root.lastUpdateId = ""
     root.lastUpdateText = ""
@@ -1276,6 +1379,7 @@ Item {
 
   function scheduleRestart() {
     helperStatusTimer.stop()
+    root.failInFlightMessages("delivery_unknown")
     root.reconnectGeneration = root.reconnectGeneration + 1
     root.helperCompatibility = "unknown"
     root.legacyHandshakeAttempts = 0

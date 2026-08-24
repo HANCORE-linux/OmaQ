@@ -22,6 +22,9 @@ FocusScope {
   onPeerAvatarRevisionChanged: root.peerAvatarFailed = false
   property color peerNameColor: theme.accent || Color.accent
   property color peerStatusColor: theme.accent || Color.accent
+  property color receiptSentColor: theme.accent || Color.accent
+  property color receiptDeliveredColor: theme.fg || Color.foreground
+  property color receiptReadColor: theme.accent || Color.accent
   property bool autoOpenEnabled: true
   property bool readActive: false
   property bool clearConfirm: false
@@ -34,6 +37,8 @@ FocusScope {
   onFileStatusChanged: root.restoreLatestPosition()
   onFileStatusPathChanged: root.restoreLatestPosition()
   property bool emojiOpen: false
+  property bool formatToolbarEnabled: false
+  signal formatToolbarToggled(bool enabled)
   property bool demo: false
   property string fileStatus: ""
   property string fileStatusPath: ""
@@ -51,6 +56,7 @@ FocusScope {
   property var readReceiptIds: []
   property var pendingReceiptIds: []
   property var failedReceiptIds: []
+  property int localMessageSequence: 0
   onPeerAvatarChanged: root.peerAvatarFailed = false
 
   readonly property color fg: theme.fg || Color.foreground
@@ -298,6 +304,64 @@ FocusScope {
     OmaqTooltip {
       visible: reactionHover.hovered && reactionAction.tooltipText !== ""
       text: reactionAction.tooltipText
+    }
+  }
+
+  component ReceiptMark: Item {
+    id: receiptMark
+    property int acknowledgement: 0
+    property bool failed: false
+    property bool uncertain: false
+    property string failureCode: ""
+    readonly property bool read: !failed && !uncertain && acknowledgement >= 3
+    readonly property string label: failed || uncertain
+      ? root.messageFailureText(failureCode)
+      : (acknowledgement >= 3 ? "Read" :
+         (acknowledgement >= 2 ? "Delivered" :
+          (acknowledgement >= 1 ? "Sent" : "Sending")))
+    readonly property color markColor: failed ? (root.theme.unread || root.accent) :
+      (uncertain ? root.receiptDeliveredColor :
+       (acknowledgement >= 3 ? root.receiptReadColor :
+        (acknowledgement >= 2 ? root.receiptDeliveredColor :
+         (acknowledgement >= 1 ? root.receiptSentColor : root.fg))))
+    implicitWidth: Math.max(Style.space(18), receiptText.implicitWidth + (read ? Style.space(8) : 0))
+    implicitHeight: Math.max(Style.space(18), receiptText.implicitHeight + (read ? Style.space(4) : 0))
+    Accessible.role: Accessible.StaticText
+    Accessible.name: label
+
+    Rectangle {
+      visible: receiptMark.read
+      anchors.centerIn: parent
+      width: receiptText.implicitWidth + Style.space(8)
+      height: receiptText.implicitHeight + Style.space(3)
+      radius: height / 2
+      color: "transparent"
+      border.color: root.receiptReadColor
+      border.width: 1
+    }
+
+    Text {
+      id: receiptText
+      anchors.centerIn: parent
+      text: receiptMark.failed ? "error" : (receiptMark.uncertain ? "help" :
+        (receiptMark.acknowledgement >= 2 ? "✓✓" :
+         (receiptMark.acknowledgement >= 1 ? "✓" : "·")))
+      color: receiptMark.markColor
+      opacity: receiptMark.failed || receiptMark.uncertain ||
+        receiptMark.acknowledgement >= 1 ? 1.0 : 0.72
+      font.family: receiptMark.failed || receiptMark.uncertain
+        ? "Material Symbols Rounded" : root.fontFamily
+      font.pixelSize: receiptMark.failed || receiptMark.uncertain
+        ? Style.font.body : Style.font.caption
+      font.variableAxes: receiptMark.failed || receiptMark.uncertain
+        ? ({ "FILL": 0, "wght": 500 }) : ({})
+      font.bold: !receiptMark.failed && !receiptMark.uncertain
+    }
+
+    HoverHandler { id: receiptHover }
+    OmaqTooltip {
+      visible: receiptHover.hovered
+      text: receiptMark.label
     }
   }
 
@@ -715,6 +779,14 @@ FocusScope {
     root.service.clearHistory(root.conversation)
   }
 
+  function newLocalMessageKey() {
+    root.localMessageSequence += 1
+    return Date.now().toString(36) + "-local-" +
+      root.localMessageSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+  }
+
   function appendLine(item) {
     var entry = item || {}
     if (entry.ack === undefined)
@@ -731,7 +803,43 @@ FocusScope {
       entry.reactionPeer = ""
     if (entry.needsReadReceipt === undefined)
       entry.needsReadReceipt = false
+    if (entry.failed === undefined)
+      entry.failed = false
+    if (entry.failureCode === undefined)
+      entry.failureCode = ""
+    if (entry.clientKey === undefined || entry.clientKey === "")
+      entry.clientKey = entry.local ? root.newLocalMessageKey() : ""
     lines.append(entry)
+  }
+
+  function resendMessage(clientKey) {
+    if (root.demo || !root.service || !clientKey)
+      return
+    var index = -1
+    for (var i = 0; i < lines.count; i++) {
+      if (String(lines.get(i).clientKey || "") === String(clientKey)) {
+        index = i
+        break
+      }
+    }
+    if (index < 0)
+      return
+    var item = lines.get(index)
+    if (!item || item.dir !== "out" || !item.local || !item.failed || !item.text)
+      return
+    var queued = root.service.sendOp({
+      op: "msg.send",
+      conversation: root.conversation || root.service.lastConversation,
+      text: String(item.text),
+      reply: String(item.reply || ""),
+      id: String(clientKey)
+    })
+    if (!queued)
+      return
+    lines.setProperty(index, "failed", false)
+    lines.setProperty(index, "failureCode", "")
+    lines.setProperty(index, "pending", true)
+    lines.setProperty(index, "ack", 0)
   }
 
   function reactToMessage(id, currentEmoji, emoji) {
@@ -914,7 +1022,7 @@ FocusScope {
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
       if (!cleared && existing && (existing.local || existing.live))
-        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
+        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
     if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
@@ -951,8 +1059,7 @@ FocusScope {
       found = false
       for (j = 0; j < lines.count; j++) {
         var historyLine = lines.get(j)
-        if (historyLine && ((keep[i].id && historyLine.id === keep[i].id) ||
-                    (keep[i].pending && !keep[i].id && historyLine.dir === keep[i].dir && historyLine.text === keep[i].text))) {
+        if (historyLine && keep[i].id && historyLine.id === keep[i].id) {
           found = true
           break
         }
@@ -972,7 +1079,7 @@ FocusScope {
     // keeps short three-word messages on one line when the window allows it.
     var estimated = longest * root.smileTextPx * 0.72 + Style.space(24)
     if (withReceipt)
-      estimated += Style.space(18)
+      estimated += Style.space(28)
     var minimum = hasCode ? Style.space(180) : Style.space(52)
     return Math.min(Math.max(minimum, estimated), availableWidth * 0.82)
   }
@@ -1004,7 +1111,7 @@ FocusScope {
     root.appendLine({ dir: "sys", text: "Local demo. Nothing is sent.", ack: -1 })
     root.appendLine({ dir: "in", text: "Invite-only chat. This window is how a 1:1 looks.", ack: -1 })
     root.appendLine({ dir: "out", text: "Can I type here?", ack: 1 })
-    root.appendLine({ dir: "in", text: "Yes. Type below. Paperclip attaches, the formatting buttons appear while you type, and the handset is a call. Long wrap should stay inside the bubble.", ack: -1 })
+    root.appendLine({ dir: "in", text: "Yes. Type below. Paperclip attaches, the formatting toggle reveals extra tools, and the handset is a call. Long wrap should stay inside the bubble.", ack: -1 })
     root.appendLine({ dir: "in", text: "Safety-looking sample\n8A2F 91C0 44BE 110D", ack: -1 })
     root.appendLine({ dir: "in", text: "# Markdown preview\n**bold** and *italic* with `code`\n> quoted text\n- unordered item\n1. numbered item\n- [ ] task item", ack: -1 })
     list.positionViewAtEnd()
@@ -1019,6 +1126,7 @@ FocusScope {
     if (!t)
       return
     var dir = service.lastChatDir === "out" ? "out" : "in"
+    var request = String(service.lastChatRequest || "")
     var followLatest = root.followLatest
     var i
     var hasNewMarker = false
@@ -1031,42 +1139,76 @@ FocusScope {
     }
     for (i = lines.count - 1; i >= 0; i--) {
       var pending = lines.get(i)
-      if (pending && pending.local && pending.text === t && pending.dir === dir) {
+      var requestMatches = !!pending && dir === "out" && request !== "" &&
+        String(pending.clientKey || "") === request
+      if (pending && pending.local && requestMatches) {
         lines.setProperty(i, "pending", false)
+        lines.setProperty(i, "failed", false)
+        lines.setProperty(i, "failureCode", "")
         if (service.lastChatId)
           lines.setProperty(i, "id", service.lastChatId)
         lines.setProperty(i, "reply", service.lastChatReply || "")
-        if (dir === "out")
-          lines.setProperty(i, "ack", 1)
+        lines.setProperty(i, "ack", 1)
         return
       }
     }
     if (dir === "in" && !hasNewMarker)
       root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
-    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: dir === "out", live: dir === "in", pending: false, ack: dir === "out" ? 1 : -1 })
+    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: false, live: true, pending: false, failed: false, failureCode: "", clientKey: dir === "out" ? request : "", ack: dir === "out" ? 1 : -1 })
     if (root.readActive && dir === "in" && service.lastChatId)
       root.markRead()
     if (followLatest)
       root.restoreLatestPosition()
   }
 
-  function failPending() {
-    if (!service || !service.lastErrorConv || !root.sameConv(service.lastErrorConv))
+  function messageFailureText(code) {
+    var failure = String(code || "error")
+    if (failure === "offline")
+      return "Contact is offline"
+    if (failure === "ratchet_pending")
+      return "Secure session is being established"
+    if (failure === "no_ratchet")
+      return "Secure session unavailable; pair this contact again"
+    if (failure === "history_failed")
+      return "Message could not be saved or sent"
+    if (failure === "busy")
+      return "Helper is busy"
+    if (failure === "helper_incompatible")
+      return "Helper update required"
+    if (failure === "locked")
+      return "Identity is locked"
+    if (failure === "identity_changed")
+      return "Identity changed; try again"
+    if (failure === "delivery_unknown")
+      return "Delivery status unknown; check with the recipient"
+    if (failure === "forbidden")
+      return "Message was rejected"
+    return "Message was not sent"
+  }
+
+  function applyMessageFailure(request, code, delivered) {
+    var requestKey = String(request || "")
+    if (!requestKey)
       return
-    var code = String(service.lastError || "error")
-    var message = code === "ratchet_pending"
-      ? "Secure session is being established. Send again in a moment."
-      : code === "no_ratchet"
-        ? "Secure session unavailable. Re-pair this contact with a fresh invite."
-        : "Message failed: " + code
-    for (var i = lines.count - 1; i >= 0; i--) {
+    var uncertain = String(code || "") === "delivery_unknown"
+    for (var i = 0; i < lines.count; i++) {
       var item = lines.get(i)
-      if (item && item.local && item.pending) {
-        lines.remove(i)
-        root.appendLine({ dir: "sys", text: message, ack: -1 })
+      if (!item || String(item.clientKey || "") !== requestKey)
+        continue
+      lines.setProperty(i, "pending", false)
+      lines.setProperty(i, "failed", !delivered && !uncertain)
+      lines.setProperty(i, "failureCode", delivered ? "" : String(code || "error"))
+      lines.setProperty(i, "ack", delivered ? 1 : 0)
+      if (delivered) {
+        root.appendLine({
+          dir: "sys",
+          text: "Message sent, but could not be saved locally.",
+          live: true,
+          ack: -1
+        })
         root.restoreLatestPosition()
-        return
       }
+      return
     }
   }
 
@@ -1117,7 +1259,8 @@ FocusScope {
     root.emojiOpen = false
     var replyId = root.replyToId
     root.clearReply()
-    root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, ack: root.demo ? 1 : 0 })
+    var clientKey = root.newLocalMessageKey()
+    root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, failed: false, failureCode: "", clientKey: clientKey, ack: root.demo ? 1 : 0 })
     root.restoreLatestPosition()
     if (root.demo) {
       demoReply.restart()
@@ -1125,7 +1268,8 @@ FocusScope {
     }
     if (!service)
       return
-    service.sendOp({ op: "msg.send", conversation: root.conversation || service.lastConversation, text: t, reply: replyId })
+    if (!service.sendOp({ op: "msg.send", conversation: root.conversation || service.lastConversation, text: t, reply: replyId, id: clientKey }))
+      root.applyMessageFailure(clientKey, service.lastError || "helper_incompatible", false)
   }
 
   function startCall() {
@@ -1423,6 +1567,12 @@ FocusScope {
     target: root.service
     enabled: !root.demo && root.service !== null
     function onMessageTickChanged() { root.pushLive() }
+    function onMessageFailedTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastMessageFailedConv))
+        return
+      root.applyMessageFailure(root.service.lastMessageFailedRequest,
+        root.service.lastMessageFailedCode, root.service.lastMessageFailedDelivered)
+    }
     function onIdentityTickChanged() {
       root.stopTyping()
       root.clearReply()
@@ -1507,9 +1657,6 @@ FocusScope {
       root.applyHistory(root.service.lastHistoryItems, root.service.lastHistoryCleared)
     }
     function onLastErrorTickChanged() {
-      if (!root.service || (root.service.lastError !== "history_failed" &&
-                            root.service.lastError !== "file_failed"))
-        root.failPending()
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
           root.service.lastError === "history_failed") {
         root.restoreOutgoingFileStatus()
@@ -1747,6 +1894,10 @@ FocusScope {
             for (var up = 0; up < 5; up++) root.selectMessage(-1, "")
           } else if (event.key === Qt.Key_PageDown) {
             for (var down = 0; down < 5; down++) root.selectMessage(1, "")
+          } else if (item && item.failed &&
+                     (event.key === Qt.Key_R || event.key === Qt.Key_Return ||
+                      event.key === Qt.Key_Enter)) {
+            root.resendMessage(item.clientKey)
           } else if (item && event.key === Qt.Key_R) {
             root.beginReply(item.id, item.text)
           } else if (item && event.key === Qt.Key_E && item.dir === "out" && !item.deleted) {
@@ -1918,10 +2069,15 @@ FocusScope {
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
           readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
           readonly property real smileMaxWidth: Math.max(root.smilePx + Style.space(16), list.width * 0.82)
-          readonly property int smileColumns: Math.max(1, Math.floor((line.smileMaxWidth - Style.space(16) + Style.space(2)) / (root.smilePx + Style.space(2))))
+          readonly property real smileReceiptReserve: model.dir === "out" && model.ack !== undefined
+            ? Style.space(28) : 0
+          readonly property int smileColumns: Math.max(1, Math.floor(
+            (line.smileMaxWidth - Style.space(16) - line.smileReceiptReserve + Style.space(2)) /
+            (root.smilePx + Style.space(2))))
           readonly property real smileWidth: Math.min(line.smileMaxWidth,
-            Math.max(root.smilePx + Style.space(16),
-              Math.min(line.smileGlyphs.length, line.smileColumns) * (root.smilePx + Style.space(2)) + Style.space(16)))
+            Math.max(root.smilePx + Style.space(16) + line.smileReceiptReserve,
+              Math.min(line.smileGlyphs.length, line.smileColumns) *
+                (root.smilePx + Style.space(2)) + Style.space(16) + line.smileReceiptReserve))
           readonly property string contextText: String(model.text || "")
           readonly property string contextId: String(model.id || "")
           readonly property string messageKind: String(model.kind || "")
@@ -1930,6 +2086,10 @@ FocusScope {
           readonly property bool audioMessage: line.fileMessage && root.isAudioPath(line.contextText)
           readonly property bool deleted: !!model.deleted
           readonly property bool edited: !!model.edited
+          readonly property bool failed: !!model.failed
+          readonly property string failureCode: String(model.failureCode || "")
+          readonly property bool uncertain: line.failureCode === "delivery_unknown"
+          readonly property string clientKey: String(model.clientKey || "")
           readonly property bool keyboardSelected: line.ListView.isCurrentItem && list.activeFocus
           readonly property string reactionMe: String(model.reactionMe || "")
           readonly property string reactionPeer: String(model.reactionPeer || "")
@@ -1938,10 +2098,10 @@ FocusScope {
           readonly property bool hasReaction: !line.deleted &&
             (line.reactionMe !== "" || line.reactionPeer !== "")
           property bool reactionPickerOpen: false
-          readonly property bool actionControlsVisible: line.contextId !== "" && !line.deleted &&
-            !line.fileMessage &&
-            (lineHover.hovered || line.keyboardSelected || line.activeFocus ||
-             line.reactionPickerOpen)
+          readonly property bool actionControlsVisible: line.failed ||
+            (line.contextId !== "" && !line.deleted && !line.fileMessage &&
+             (lineHover.hovered || line.keyboardSelected || line.activeFocus ||
+              line.reactionPickerOpen))
           Keys.onEscapePressed: {
             reactionPicker.close()
             line.reactionPickerOpen = false
@@ -1965,8 +2125,10 @@ FocusScope {
               line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) + Style.space(12)
             radius: Style.cornerRadius
             color: root.bubbleColor(model.dir)
-            border.color: line.keyboardSelected ? root.accent : "transparent"
-            border.width: line.keyboardSelected ? 1 : 0
+            border.color: line.failed ? (root.theme.unread || root.accent) :
+              (line.uncertain ? root.receiptDeliveredColor :
+               (line.keyboardSelected ? root.accent : "transparent"))
+            border.width: line.failed || line.uncertain || line.keyboardSelected ? 1 : 0
             visible: model.dir !== "sys" && !model.newMarker
 
             Text {
@@ -2103,17 +2265,17 @@ FocusScope {
               }
             }
 
-            Text {
+            ReceiptMark {
               visible: model.dir === "out" && model.ack !== undefined && !line.hasCode
               anchors.right: parent.right
               anchors.bottom: parent.bottom
-              anchors.rightMargin: Style.space(8)
-              anchors.bottomMargin: Style.space(4)
-              text: model.ack >= 3 ? "✓✓" : (model.ack >= 2 ? "✓✓" : (model.ack >= 1 ? "✓" : "·"))
-              color: model.ack >= 3 ? root.accent : Qt.darker(root.fg, 1.25)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
+              anchors.rightMargin: Style.space(6)
+              anchors.bottomMargin: Style.space(2)
+              acknowledgement: Number(model.ack || 0)
+              failed: line.failed
+              uncertain: line.uncertain
+              failureCode: line.failureCode
+              z: 2
             }
 
             FormatBtn {
@@ -2144,13 +2306,12 @@ FocusScope {
                 onClicked: root.copyCode(model.text)
               }
 
-              Text {
+              ReceiptMark {
                 anchors.verticalCenter: parent.verticalCenter
-                text: model.ack >= 3 ? "✓✓" : (model.ack >= 2 ? "✓✓" : (model.ack >= 1 ? "✓" : "·"))
-                color: model.ack >= 3 ? root.accent : Qt.darker(root.fg, 1.25)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
+                acknowledgement: Number(model.ack || 0)
+                failed: line.failed
+                uncertain: line.uncertain
+                failureCode: line.failureCode
               }
             }
 
@@ -2178,6 +2339,12 @@ FocusScope {
               }
 
               ContextMenuItem {
+                visible: line.failed
+                text: "Resend"
+                materialIcon: "refresh"
+                onTriggered: root.resendMessage(line.clientKey)
+              }
+              ContextMenuItem {
                 text: "Copy"
                 materialIcon: "content_copy"
                 onTriggered: root.copyText(line.contextText)
@@ -2199,7 +2366,8 @@ FocusScope {
             Flow {
               id: smileRow
               visible: line.smileOnly
-              width: Math.max(root.smilePx, line.smileWidth - Style.space(16))
+              width: Math.max(root.smilePx,
+                line.smileWidth - Style.space(16) - line.smileReceiptReserve)
               height: implicitHeight
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
@@ -2291,6 +2459,13 @@ FocusScope {
             z: 5
 
             ReactionAction {
+              visible: line.failed
+              compact: true
+              materialIcon: "refresh"
+              tooltipText: "Resend — " + root.messageFailureText(line.failureCode)
+              onClicked: root.resendMessage(line.clientKey)
+            }
+            ReactionAction {
               id: moreReactionAction
               visible: line.directReactions
               compact: true
@@ -2305,7 +2480,7 @@ FocusScope {
               }
             }
             ReactionAction {
-              visible: model.dir === "out"
+              visible: model.dir === "out" && line.contextId !== "" && !line.failed
               compact: true
               materialIcon: "edit"
               tooltipText: "Edit message"
@@ -2618,7 +2793,7 @@ FocusScope {
           x: inputBox.x
           width: inputBox.width
           height: visible ? Style.space(30) : 0
-          visible: input.text.length > 0
+          visible: root.formatToolbarEnabled
           clip: true
           onVisibleChanged: if (!visible) formatFlick.contentX = 0
 
@@ -2791,6 +2966,16 @@ FocusScope {
                   composerMenu.popup()
                 }
               }
+            }
+
+            FormatBtn {
+              materialIcon: "text_format"
+              helpText: root.formatToolbarEnabled
+                ? "Hide formatting tools" : "Show formatting tools"
+              selected: root.formatToolbarEnabled
+              Accessible.role: Accessible.CheckBox
+              Accessible.checked: root.formatToolbarEnabled
+              onClicked: root.formatToolbarToggled(!root.formatToolbarEnabled)
             }
 
             FormatBtn {

@@ -4,7 +4,7 @@
   "name": "OmaQ",
   "version": "0.6.0",
   "author": "hancore",
-  "license": "MIT AND CC-BY-SA-4.0",
+  "license": "MIT AND CC-BY-SA-4.0 AND CC-BY-4.0 AND CC0-1.0",
   "description": "Invite-only 1:1 and group chat for the Omarchy bar.",
   "kinds": ["bar-widget"],
   "entryPoints": {
@@ -24,7 +24,8 @@
       "sound": "icq-message",
       "soundCustomPath": "",
       "chatTheme": "system",
-      "animateUnread": true
+      "animateUnread": true,
+      "formatToolbar": false
     },
     "schema": [
       { "key": "notifyBadge", "type": "boolean", "label": "Badge", "defaultValue": true },
@@ -34,7 +35,8 @@
       { "key": "sound", "type": "enum", "label": "Sound", "options": ["off", "icq-message", "qq", "wechat", "skype", "msn", "aurora", "crystal", "ripple", "glow", "halo", "click", "pop", "bell", "soft", "knock", "custom"], "defaultValue": "icq-message" },
       { "key": "soundCustomPath", "type": "path", "label": "Custom sound", "defaultValue": "" },
       { "key": "chatTheme", "type": "enum", "label": "Chat theme", "options": ["system", "gruvbox", "rose-pine", "everforest", "gruvbox-light", "catppuccin-latte", "tokyo-night-light"], "defaultValue": "system" },
-      { "key": "animateUnread", "type": "boolean", "label": "Unread motion", "defaultValue": true }
+      { "key": "animateUnread", "type": "boolean", "label": "Unread motion", "defaultValue": true },
+      { "key": "formatToolbar", "type": "boolean", "label": "Formatting toolbar", "defaultValue": false }
     ]
   }
 }

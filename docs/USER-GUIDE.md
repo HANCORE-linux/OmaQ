@@ -39,10 +39,12 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 
 1. Move the pointer into the message field or focus it with the keyboard, then type.
 2. Press **Send** or `Ctrl+Enter`.
-3. Use the formatting buttons above the field when needed.
+3. The formatting toolbar is hidden by default. Use the formatting toggle immediately left of the emoji button to show or hide it. OmaQ saves this preference globally instead of resetting it for each chat window.
 4. Hover over a direct message to use the compact reaction controls beside it. Applied reactions overlap the message's lower-left edge without covering its contents.
 5. Hover over your own message and click the edit icon, or select it with the keyboard and press `E`.
 6. The right-click menu provides **Copy**, **Reply**, and confirmed **Delete** actions.
+7. A message that could not be delivered stays visible with an error marker. Use its **Resend** action, or select it with the keyboard and press `R` or `Enter`.
+8. Receipt markers use the active system palette: `·` in the foreground while sending, `✓` in `color05` when sent, `✓✓` in `color04` when delivered, and circled `✓✓` in `color03` when read. Hover a marker for its text status.
 
 Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallback.
 

@@ -785,6 +785,9 @@ BarWidget {
     service: omaq
     bar: root.bar
     settings: root.settings
+    onFormatToolbarToggled: function(enabled) {
+      root.persistSettings({ formatToolbar: enabled })
+    }
   }
 
   Timer {
@@ -833,24 +836,8 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    iconComponent: Component {
-      Item {
-        implicitWidth: 18
-        implicitHeight: 18
-
-        Image {
-          anchors.fill: parent
-          source: Qt.resolvedUrl("assets/mark.png")
-          fillMode: Image.PreserveAspectFit
-          sourceSize.width: width * 2
-          sourceSize.height: height * 2
-          smooth: true
-          mipmap: true
-          cache: false
-          asynchronous: true
-        }
-      }
-    }
+    text: "󰭹"
+    fontFamily: "monospace"
     onPressed: function(b) {
       if (b === Qt.RightButton)
         return
@@ -1828,7 +1815,8 @@ BarWidget {
                 }
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "󰘉"
+                  iconText: "󰡉"
+                  iconFontFamily: "monospace"
                   text: "Groups"
                   selected: root.moreSection === "groups"
                   onClicked: root.toggleMoreSection("groups")
@@ -2111,7 +2099,8 @@ BarWidget {
                 }
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "󰈉"
+                  iconText: "󰈝"
+                  iconFontFamily: "monospace"
                   text: "Export"
                   onClicked: omaq.exportIdentity()
                 }
@@ -2149,8 +2138,8 @@ BarWidget {
                 }
                 ActionButton {
                   width: (parent.width - root.btnGap) / 2
-                  iconText: "switch_account"
-                  iconFontFamily: "Material Symbols Rounded"
+                  iconText: "󰬲"
+                  iconFontFamily: "monospace"
                   text: "Replace"
                   accent: root.urgent
                   onClicked: {
@@ -2188,8 +2177,8 @@ BarWidget {
                 }
                 ActionButton {
                   width: (parent.width - root.btnGap) / 2
-                  iconText: "switch_account"
-                  iconFontFamily: "Material Symbols Rounded"
+                  iconText: "󰬲"
+                  iconFontFamily: "monospace"
                   text: "Replace now"
                   accent: root.urgent
                   onClicked: {

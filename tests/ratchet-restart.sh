@@ -56,7 +56,7 @@ echo '{"op":"contact.decide","accept":true}' >&3
 # Bootstrap A -> B, then exchange one encrypted message in each direction.
 i=0
 while [ "$i" -lt 60 ]; do
-	echo '{"op":"msg.send","conversation":"0","text":"restart-seed"}' >&3
+	printf '{"op":"msg.send","conversation":"0","text":"restart-seed","id":"restart-seed-%s"}\n' "$i" >&3
 	sleep 1
 	if grep -a -q 'restart-seed' "$fb"; then
 		break
@@ -65,7 +65,7 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$i" -lt 60 ] || { echo "ratchet-restart: no seed" >&2; exit 1; }
 
-echo '{"op":"msg.send","conversation":"0","text":"restart-before"}' >&4
+echo '{"op":"msg.send","conversation":"0","text":"restart-before","id":"restart-before-1"}' >&4
 sleep 1
 [ -f "$hb/ratchet/sess/0-1" ] || { echo "ratchet-restart: no persisted session" >&2; exit 1; }
 
@@ -91,7 +91,7 @@ done
 [ "$i" -lt 60 ] || { echo "ratchet-restart: friend did not reconnect" >&2; exit 1; }
 sleep 1
 
-echo '{"op":"msg.send","conversation":"0","text":"restart-after"}' >&3
+echo '{"op":"msg.send","conversation":"0","text":"restart-after","id":"restart-after-1"}' >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q 'restart-after' "$fb2"; then

@@ -16,7 +16,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 - **Pairing:** `Invite` creates a one-use, time-limited QR/link. The recipient uses `Add`; the sender explicitly accepts the request.
 - **Direct chat:** floating chat window, Signal Double Ratchet, no plaintext fallback.
-- **Messages:** send, inline hover reactions, hover and keyboard editing, confirmed deletion, formatting, emoji, keyboard navigation, unread badges, and `New messages` divider.
+- **Messages:** send, request-correlated delivery failures with safe Resend, compact hover reactions, hover and keyboard editing, confirmed deletion, formatting, emoji, keyboard navigation, unread badges, and `New messages` divider.
 - **Files:** paused offer, explicit Accept/Decline, cancelable outgoing transfers, default downloads under `~/Downloads/omaq/`, and in-chat playback for received audio files without image or video previews.
 - **Notifications:** `Auto-open` is per conversation; Settings groups Mute, Demo, Theme, and licensed sound presets; unread counts remain until the relevant chat is actively opened.
 - **Connection state:** Panel and chat distinguish `Connecting…`/`Reconnecting…` from an online service with an offline contact.

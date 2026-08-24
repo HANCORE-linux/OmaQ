@@ -66,7 +66,15 @@ while [ "$i" -lt 90 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase3: no 1:1 request" >&2; exit 1; }
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
-sleep 1
+i=0
+while [ "$i" -lt 90 ]; do
+	if grep -a -q '"online":true' "$fa" && grep -a -q '"online":true' "$fb"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+[ "$i" -lt 90 ] || { echo "phase3: direct contacts did not come online" >&2; exit 1; }
 
 echo '{"op":"group.create","title":"room"}' >&3
 i=0
@@ -130,20 +138,33 @@ if [ "$ok" -ne 1 ]; then
 	exit 1
 fi
 echo '{"op":"contact.decide","accept":true}' >&4
-sleep 1
-
-echo "{\"op\":\"msg.send\",\"conversation\":\"$gid\",\"text\":\"hi\"}" >&3
-ok=0
 i=0
-while [ "$i" -lt 60 ]; do
-	if grep -a -q '"hi"' "$fb"; then
-		ok=1
+while [ "$i" -lt 90 ]; do
+	if grep -a '"event":"group.changed"' "$fa" | grep -a '"action":"join"' |
+	   grep -a -q '"peer":"1"'; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 1
 done
+[ "$i" -lt 90 ] || { echo "phase3: accepted member did not join" >&2; exit 1; }
+
+ok=0
+i=0
+while [ "$i" -lt 60 ]; do
+	printf '{"op":"msg.send","conversation":"%s","text":"hi","id":"phase3-group-hi-%s"}\n' "$gid" "$i" >&3
+	sleep 1
+	if grep -a -q '"hi"' "$fb"; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+done
 [ "$ok" -eq 1 ] || { echo "phase3: no group message" >&2; exit 1; }
+grep -a '"event":"message"' "$fa" | grep -a -q '"request":"phase3-group-hi-' || {
+	echo "phase3: group message request correlation missing" >&2
+	exit 1
+}
 
 peer=$(grep -a '"action":"join"' "$fa" | tail -1 | sed -n 's/.*"peer":"\([^"]*\)".*/\1/p')
 if [ -n "$peer" ]; then

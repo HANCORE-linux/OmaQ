@@ -72,7 +72,7 @@ echo '{"op":"contact.decide","id":"x","accept":true}' >&3
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do
-	echo '{"op":"msg.send","conversation":"0","text":"ping"}' >&3
+	printf '{"op":"msg.send","conversation":"0","text":"ping","id":"two-homes-ping-%s"}\n' "$i" >&3
 	sleep 1
 	if grep -q '"message"' "$fb"; then
 		sent=1

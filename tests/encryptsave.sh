@@ -74,12 +74,17 @@ done
 [ "$ok" -eq 1 ] || { echo "encryptsave: expected locked" >&2; cat "$out2" >&2; exit 1; }
 
 before=$(wc -l <"$out2")
-echo '{"op":"msg.send","conversation":"0","text":"no"}' >&3
+echo '{"op":"msg.send","conversation":"0","text":"same-while-locked","id":"locked-message-1"}' >&3
+echo '{"op":"msg.send","conversation":"0","text":"same-while-locked","id":"locked-message-2"}' >&3
 sleep 0.2
-tail -n +"$((before + 1))" "$out2" | grep -a -q '"code":"locked"' || {
-	echo "encryptsave: send should error locked" >&2
-	exit 1
-}
+for request in locked-message-1 locked-message-2; do
+	tail -n +"$((before + 1))" "$out2" | grep -a '"event":"message.failed"' |
+		grep -a '"code":"locked","delivered":false' |
+		grep -a -q '"request":"'"$request"'"' || {
+		echo "encryptsave: locked message correlation missing for $request" >&2
+		exit 1
+	}
+done
 
 before=$(wc -l <"$out2")
 echo '{"op":"identity.unlock","passphrase":"wrong-pass"}' >&3

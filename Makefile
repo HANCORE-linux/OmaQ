@@ -159,8 +159,17 @@ verify-4: test arch helper
 	test -f sounds/halo.oga
 	test -f sounds/ATTRIBUTION.md
 	test -f sounds/LICENSES/CC-BY-SA-4.0.txt
+	test -f sounds/LICENSES/CC-BY-4.0.txt
+	test -f sounds/LICENSES/CC0-1.0.txt
 	printf '%s\n' \
 		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \
+		'd557539df68e771cc1eedcc91d13f70fca930e508d11eedcafa4b15db49e3744  sounds/LICENSES/CC-BY-4.0.txt' \
+		'a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  sounds/LICENSES/CC0-1.0.txt' \
+		'868716bbd51231a9f1be986f94cc441e2fd5ba61877a10abad8cbde356505a11  sounds/bell.wav' \
+		'fa13f711d61b01a6db2f9097159019606e14d0ef8075a00def7bb97ae8bdd332  sounds/click.wav' \
+		'8b54813baa31e51324e865aed8c5dfd6ecd674bab87236a8fb1df301cb92a7ae  sounds/knock.wav' \
+		'566d8941cdb6e40188de940e95075c38df2ea4dc3ce27dbca8cffdf534ef9f3f  sounds/pop.wav' \
+		'a9ab74fc6c2ef116628bb370017cd4d1641c33a56ffee8c11788a7014953dd75  sounds/soft.wav' \
 		'0e283f3de90a2cc52a4239430bd5cdd82c6e7df4d69af00abae6d07c6e4f0933  sounds/aurora.oga' \
 		'c72acf3bfcbe6f46bd2a91376ee561ef8ed2dfa41b9fecbdf51b78b58a868b40  sounds/crystal.oga' \
 		'4a75ec07365aee8dded5a65125b8540d5913ff659083e7f02360ba78b6680b20  sounds/glow.oga' \
