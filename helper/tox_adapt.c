@@ -34,6 +34,7 @@ struct omaq_tox {
 	omaq_on_file_ctrl on_fctrl;
 	omaq_on_avatar on_avatar;
 	omaq_on_presence on_presence;
+	omaq_on_presence on_friend_status;
 	omaq_on_typing on_typing;
 	omaq_on_call on_call;
 	omaq_on_audio on_audio;
@@ -291,6 +292,21 @@ static void on_friend_conn(Tox *tox, uint32_t friend_number, Tox_Connection st, 
 	(void)tox;
 	if (t->on_presence)
 		t->on_presence(t->ud, friend_number, st != TOX_CONNECTION_NONE);
+}
+
+static void on_friend_status(Tox *tox, uint32_t friend_number,
+			     Tox_User_Status status, void *ud)
+{
+	struct omaq_tox *t = ud;
+	Tox_Err_Friend_Query err = TOX_ERR_FRIEND_QUERY_OK;
+	Tox_Connection connection;
+
+	(void)status;
+	connection = tox_friend_get_connection_status(tox, friend_number, &err);
+	if (t->on_friend_status)
+		t->on_friend_status(t->ud, friend_number,
+				    err == TOX_ERR_FRIEND_QUERY_OK &&
+				    connection != TOX_CONNECTION_NONE);
 }
 
 static void on_friend_typing(Tox *tox, uint32_t friend_number, bool typing, void *ud)
@@ -559,11 +575,11 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 		return NULL;
 	}
 	tox_options_default(opt);
-	/* Prefer direct UDP, including LAN discovery/hole punching. TCP relays
-	 * remain available as a fallback when NAT or firewall policy requires it. */
-	tox_options_set_udp_enabled(opt, true);
-	tox_options_set_local_discovery_enabled(opt, true);
-	tox_options_set_hole_punching_enabled(opt, true);
+	/* Privacy mode: TCP relays stay enabled while direct UDP discovery and
+	 * hole punching remain disabled so peers do not learn each other's IP. */
+	tox_options_set_udp_enabled(opt, false);
+	tox_options_set_local_discovery_enabled(opt, false);
+	tox_options_set_hole_punching_enabled(opt, false);
 	save_path(home, path, sizeof(path));
 	save_fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
 	if (save_fd < 0 && errno != ENOENT)
@@ -629,6 +645,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	}
 	tox_callback_self_connection_status(t->tox, on_status);
 	tox_callback_friend_connection_status(t->tox, on_friend_conn);
+	tox_callback_friend_status(t->tox, on_friend_status);
 	tox_callback_friend_typing(t->tox, on_friend_typing);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
@@ -868,6 +885,19 @@ int omaq_tox_friend_online(struct omaq_tox *t, uint32_t friend_number)
 	return st != TOX_CONNECTION_NONE;
 }
 
+int omaq_tox_friend_status(struct omaq_tox *t, uint32_t friend_number)
+{
+	Tox_Err_Friend_Query err = TOX_ERR_FRIEND_QUERY_OK;
+	Tox_User_Status status;
+
+	if (!t || !t->tox || !omaq_tox_friend_online(t, friend_number))
+		return 0;
+	status = tox_friend_get_status(t->tox, friend_number, &err);
+	if (err != TOX_ERR_FRIEND_QUERY_OK)
+		return 1;
+	return status == TOX_USER_STATUS_AWAY ? 2 : 1;
+}
+
 int omaq_tox_friend_name(struct omaq_tox *t, uint32_t friend_number, char *out, size_t n)
 {
 	Tox_Err_Friend_Query err = TOX_ERR_FRIEND_QUERY_OK;
@@ -995,6 +1025,16 @@ void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *u
 	if (!t)
 		return;
 	t->on_presence = cb;
+	if (ud)
+		t->ud = ud;
+}
+
+void omaq_tox_set_friend_status_hook(struct omaq_tox *t, omaq_on_presence cb,
+				     void *ud)
+{
+	if (!t)
+		return;
+	t->on_friend_status = cb;
 	if (ud)
 		t->ud = ud;
 }

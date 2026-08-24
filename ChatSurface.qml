@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -304,6 +305,16 @@ Item {
     }
   }
 
+  function reconcileOpenGroups() {
+    if (!service || !service.groupsReady)
+      return
+    var current = openCards.slice()
+    for (var i = 0; i < current.length; i++)
+      if (String(current[i].conversation || "").charAt(0) === "g" &&
+          !service.groupById(current[i].conversation))
+        root.closeRemovedGroup(current[i].conversation)
+  }
+
   function restoreSurfaces() {
     var persisted = service ? (service.surfaces || []) : []
     var current = openCards.slice()
@@ -368,6 +379,10 @@ Item {
   }
 
   component SurfaceBtn: Button {
+    id: surfaceButton
+    property string helpText: ""
+    tooltipText: ""
+    Accessible.name: helpText !== "" ? helpText : text
     foreground: root.theme().fg || Color.foreground
     accent: root.theme().accent || Color.accent
     fontFamily: Style.font.family
@@ -377,6 +392,31 @@ Item {
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(4)
     focusable: true
+
+    Controls.ToolTip {
+      id: surfaceTooltip
+      visible: (surfaceButton.hot || surfaceButton.activeFocus) &&
+        surfaceButton.helpText !== ""
+      text: surfaceButton.helpText
+      delay: 450
+      timeout: 2600
+      padding: Style.space(5)
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Qt.darker(root.theme().bg || Color.background, 1.08)
+        border.color: Qt.rgba(surfaceButton.foreground.r,
+                              surfaceButton.foreground.g,
+                              surfaceButton.foreground.b, 0.24)
+        border.width: 1
+      }
+      contentItem: Text {
+        text: surfaceTooltip.text
+        color: surfaceButton.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        renderType: Text.QtRendering
+      }
+    }
   }
 
   component CallToolbar: Row {
@@ -389,14 +429,14 @@ Item {
       visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming
       iconText: "call"
       fontFamily: "Material Symbols Rounded"
-      tooltipText: "Call"
+      helpText: "Start call with " + (toolbar.page ? toolbar.page.peerName : "contact")
       onClicked: toolbar.page.startCall()
     }
     SurfaceBtn {
       visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
       iconText: "call"
       fontFamily: "Material Symbols Rounded"
-      tooltipText: "Answer"
+      helpText: "Answer call from " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       selected: true
       onClicked: toolbar.page.answerCall()
@@ -405,7 +445,7 @@ Item {
       visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
       iconText: "call_end"
       fontFamily: "Material Symbols Rounded"
-      tooltipText: "Decline"
+      helpText: "Decline call from " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       onClicked: toolbar.page.hangUp()
     }
@@ -413,7 +453,7 @@ Item {
       visible: toolbar.page && toolbar.page.inCall
       iconText: "call_end"
       fontFamily: "Material Symbols Rounded"
-      tooltipText: "Hang up"
+      helpText: "End call with " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       selected: true
       onClicked: toolbar.page.hangUp()
@@ -587,7 +627,7 @@ Item {
     }
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
-    function onGroupsTickChanged() { root.restoreSurfaces() }
+    function onGroupsTickChanged() { root.reconcileOpenGroups() }
     function onRemovedGroupTickChanged() { root.closeRemovedGroup(service.lastRemovedGroup) }
     function onIdentityTickChanged() {
       root.openCards = []
@@ -744,6 +784,7 @@ Item {
               Item { Layout.fillWidth: true }
               SurfaceBtn {
                 text: "Pin"
+                helpText: "Pin chat window"
                 onClicked: root.pin(card.modelData.conversation, true)
               }
             }
@@ -850,8 +891,11 @@ Item {
           })
           return
         }
-        if (!pinWin.closing && pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation)
+        if (!pinWin.closing && pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation) {
+          if (pinPage.inCall || pinPage.incoming)
+            pinPage.hangUp()
           root.dismissCard(pinWin.modelData.conversation)
+        }
       }
 
       FocusScope {
@@ -880,19 +924,23 @@ Item {
           SurfaceBtn {
             text: "Auto-open"
             selected: pinPage.autoOpenEnabled
-            tooltipText: "Open new messages automatically"
+            helpText: pinPage.autoOpenEnabled
+              ? "Auto-open chat: on" : "Auto-open chat: off"
             onClicked: pinPage.autoOpenToggled()
           }
           SurfaceBtn {
             text: root.muted ? "Unmute" : "Mute"
             selected: root.muted
-            tooltipText: "Mute notification sound"
+            helpText: root.muted ? "Notification sound: off" : "Notification sound: on"
             onClicked: root.toggleMute()
           }
           SurfaceBtn {
             text: "Close"
+            helpText: "Close chat"
             onClicked: {
               var conv = String(pinWin.modelData.conversation)
+              if (pinPage.inCall || pinPage.incoming)
+                pinPage.hangUp()
               pinWin.closing = true
               pinWin.visible = false
               root.dismissCard(conv)
@@ -980,11 +1028,12 @@ Item {
         SurfaceBtn {
           text: root.muted ? "Unmute" : "Mute"
           selected: root.muted
-          tooltipText: "Mute notification sound"
+          helpText: root.muted ? "Notification sound: off" : "Notification sound: on"
           onClicked: root.toggleMute()
         }
         SurfaceBtn {
           text: "Close"
+          helpText: "Close demo"
           onClicked: root.closeDemo()
         }
       }

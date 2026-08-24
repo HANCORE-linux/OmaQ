@@ -115,43 +115,34 @@ sleep 1
 
 greq_before=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
 greq_before=${greq_before:-0}
+group_url_before=$(grep -a '"event":"invite"' "$fa" | grep -a -c 'k=group' || true)
+group_url_before=${group_url_before:-0}
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0"}\n' "$gid" >&3
+# The helper bootstraps the direct Ratchet when necessary, sends the token only
+# inside that encrypted session, then releases the native invite for approval.
 ok=0
-try=0
-while [ "$try" -lt 10 ] && [ "$ok" -ne 1 ]; do
-	printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0"}\n' "$gid" >&3
-	i=0
-	url=""
-	while [ "$i" -lt 20 ]; do
-		url=$(grep -a '"event":"invite"' "$fa" | grep -a 'k=group' | tail -1 | sed -n 's/.*"url":"\([^\"]*\)".*/\1/p')
-		if [ -n "$url" ]; then
-			break
-		fi
-		i=$((i + 1))
-		sleep 0.1
-	done
-	if [ -z "$url" ]; then
-		try=$((try + 1))
-		sleep 1
-		continue
+i=0
+while [ "$i" -lt 150 ]; do
+	greq_now=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
+	greq_now=${greq_now:-0}
+	if [ "$greq_now" -gt "$greq_before" ]; then
+		ok=1
+		break
 	fi
-	sleep 1
-	greq_raw=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
-	greq_raw=${greq_raw:-0}
-	[ "$greq_raw" -eq "$greq_before" ] || { echo "phase3: raw group invite bypassed token" >&2; exit 1; }
-	printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
-	i=0
-	while [ "$i" -lt 20 ]; do
-		greq_now=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
-		greq_now=${greq_now:-0}
-		if [ "$greq_now" -gt "$greq_before" ]; then
-			ok=1
-			break
-		fi
-		i=$((i + 1))
-		sleep 1
-	done
-	try=$((try + 1))
+	i=$((i + 1))
+	sleep 0.2
 done
+group_url_after=$(grep -a '"event":"invite"' "$fa" | grep -a -c 'k=group' || true)
+group_url_after=${group_url_after:-0}
+[ "$group_url_after" -eq "$group_url_before" ] || {
+	echo "phase3: targeted group token leaked over IPC" >&2
+	exit 1
+}
+if grep -a -q 'OQGI1\|k=group' "$fb" ||
+   grep -R -a -q 'OQGI1\|k=group' "$hb/history" 2>/dev/null; then
+	echo "phase3: encrypted group control leaked into direct chat" >&2
+	exit 1
+fi
 if [ "$ok" -ne 1 ]; then
 	echo "phase3: no group invite" >&2
 	echo "--- A ---" >&2

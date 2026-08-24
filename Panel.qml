@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Shapes
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
@@ -34,10 +35,12 @@ BarWidget {
   property bool avatarRestorePending: false
   property bool avatarRestoreMore: false
   property string groupInviteFriendId: ""
+  property string groupInviteFeedback: ""
   property bool groupLeaveConfirm: false
   property string groupLeaveTarget: ""
   property bool groupDissolveConfirm: false
   property string groupDissolveTarget: ""
+  property int friendPage: 0
   property int avatarPickExitCode: -1
   property bool avatarPickStreamDone: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
@@ -94,7 +97,16 @@ BarWidget {
   readonly property real btnGap: Style.space(8)
   readonly property int pad: Style.spacing.popupPadding
   readonly property real nicknameControlHeight: Style.space(28)
-  readonly property int cardWidth: Style.space(340)
+  readonly property int friendPageCount: Math.max(1,
+    Math.ceil((omaq.friends ? omaq.friends.length : 0) / 30))
+  readonly property var friendPageItems: (omaq.friends || []).slice(
+    friendPage * 30, friendPage * 30 + 30)
+  readonly property int friendColumnCount: Math.min(3, Math.max(1,
+    Math.ceil(Math.max(1, friendPageItems.length) / 10)))
+  readonly property int cardWidth: Style.space(340 + (friendColumnCount - 1) * 140)
+  readonly property real railWidth: Style.space(40)
+  readonly property bool primaryMenuOpen: root.inviteOpen || root.showJoin ||
+    root.chatPickerOpen || root.settingsOpen || root.moreOpen || omaq.pending
   readonly property int visibleUnreadCount: Math.max(omaq.unreadCount, omaq.localUnreadTotal())
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
   readonly property real caretDepth: 5
@@ -133,6 +145,8 @@ BarWidget {
       easing.type: root.opened ? Easing.OutCubic : Easing.InCubic
     }
   }
+
+  onFriendPageCountChanged: friendPage = Math.min(friendPage, friendPageCount - 1)
 
   onOpenedChanged: {
     root.connectionReveal = root.opened ? 1 : 0
@@ -317,6 +331,74 @@ BarWidget {
     }
   }
 
+  component RailIcon: Item {
+    id: railIcon
+    property string materialIcon: ""
+    property string label: ""
+    property bool selected: false
+    property color activeColor: root.systemColors[3] || root.controlAccent
+    signal clicked()
+
+    implicitWidth: root.railWidth
+    implicitHeight: Style.space(34)
+    opacity: enabled ? 1 : 0.35
+    activeFocusOnTab: enabled
+    Accessible.role: Accessible.Button
+    Accessible.name: label
+    Accessible.onPressAction: if (enabled) railIcon.clicked()
+    Keys.onReturnPressed: if (enabled) railIcon.clicked()
+    Keys.onEnterPressed: if (enabled) railIcon.clicked()
+    Keys.onSpacePressed: if (enabled) railIcon.clicked()
+
+    Text {
+      anchors.centerIn: parent
+      text: railIcon.materialIcon
+      color: railIcon.selected || railHover.hovered || railIcon.activeFocus
+        ? railIcon.activeColor : root.dim
+      font.family: "Material Symbols Rounded"
+      font.pixelSize: Style.font.icon + Style.space(5)
+      font.variableAxes: ({ "FILL": railIcon.selected ? 1 : 0, "wght": 500 })
+      renderType: Text.QtRendering
+      font.hintingPreference: Font.PreferNoHinting
+    }
+
+    HoverHandler { id: railHover; enabled: railIcon.enabled }
+    Controls.ToolTip {
+      id: railTooltip
+      visible: (railHover.hovered || railIcon.activeFocus) && railIcon.label !== ""
+      text: railIcon.label
+      delay: 450
+      timeout: 2600
+      padding: Style.space(5)
+      background: Rectangle {
+        radius: Style.cornerRadius
+        color: Qt.darker(root.panelBackground, 1.08)
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g,
+                              root.foreground.b, 0.24)
+        border.width: 1
+      }
+      contentItem: Text {
+        text: railTooltip.text
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        renderType: Text.QtRendering
+      }
+    }
+    MouseArea {
+      anchors.fill: parent
+      enabled: railIcon.enabled
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        railIcon.clicked()
+        Qt.callLater(function() {
+          if (root.opened)
+            panelFocus.forceActiveFocus()
+        })
+      }
+    }
+  }
+
   component TokenTextField: TextField {
     foreground: root.controlForeground
     accent: root.controlAccent
@@ -375,6 +457,7 @@ BarWidget {
     root.nicknameEditOpen = false
     root.nicknameSubmitPending = false
     root.groupInviteFriendId = ""
+    root.groupInviteFeedback = ""
     root.groupLeaveConfirm = false
     root.groupLeaveTarget = ""
     root.groupDissolveConfirm = false
@@ -414,6 +497,7 @@ BarWidget {
     root.replaceIdentityConfirm = false
     root.replaceIdentityPath = ""
     root.groupInviteFriendId = ""
+    root.groupInviteFeedback = ""
     root.groupLeaveConfirm = false
     root.groupLeaveTarget = ""
     root.groupDissolveConfirm = false
@@ -557,6 +641,48 @@ BarWidget {
     root.chatPickerOpen = open
     if (open)
       omaq.sendOp({ op: "status" })
+  }
+
+  function openRailAdvanced(section) {
+    var key = String(section || "chat")
+    var open = !(root.moreOpen && root.moreSection === key)
+    root.dismissTransientSections()
+    if (open) {
+      root.moreOpen = true
+      root.moreSection = key
+    }
+  }
+
+  function openRailTheme() {
+    var open = !(root.settingsOpen && root.themeOpen)
+    root.dismissTransientSections()
+    root.settingsOpen = open
+    root.themeOpen = open
+  }
+
+  function openRailSounds() {
+    var open = !(root.settingsOpen && root.soundOpen)
+    root.dismissTransientSections()
+    root.settingsOpen = open
+    root.soundOpen = open
+  }
+
+  function friendStatus(friend) {
+    if (omaq.connectionState !== "online")
+      return omaq.connectionState === "reconnecting" ? "reconnecting…" : "connecting…"
+    var status = String(friend && friend.status || "")
+    if (status === "afk")
+      return "afk"
+    return friend && friend.online ? "online" : "offline"
+  }
+
+  function friendStatusColor(friend) {
+    var status = root.friendStatus(friend)
+    if (status === "online")
+      return root.systemColors[4] || root.foreground
+    if (status === "afk")
+      return root.systemColors[3] || root.controlAccent
+    return root.systemColors[1] || root.dim
   }
 
   function localFileUrl(path) {
@@ -844,6 +970,23 @@ BarWidget {
       if (omaq.inviteUrl !== "")
         omaq.saveQr()
     }
+    function onGroupInviteSentTickChanged() {
+      if (String(omaq.lastGroupInviteSentGroup || "") === String(omaq.lastGroup || "") &&
+          String(omaq.lastGroupInviteSentFriend || "") === root.groupInviteFriendId)
+        root.groupInviteFeedback = "Group invite sent to " +
+          root.friendName(root.groupInviteFriendId)
+    }
+    function onGroupInviteFailedTickChanged() {
+      if (String(omaq.lastGroupInviteFailedGroup || "") === String(omaq.lastGroup || "") &&
+          String(omaq.lastGroupInviteFailedFriend || "") === root.groupInviteFriendId)
+        root.groupInviteFeedback = omaq.lastGroupInviteFailedCode === "busy"
+          ? "Recipient is handling another group invite"
+          : "Group invite failed"
+    }
+    function onLastErrorTickChanged() {
+      if (root.groupInviteFeedback === "Sending group invite…")
+        root.groupInviteFeedback = "Group invite failed"
+    }
   }
 
   Connections {
@@ -873,14 +1016,18 @@ BarWidget {
     property real callPulseOpacity: 1.0
     anchors.fill: parent
     bar: root.bar
-    text: omaq.incomingCall ? "call" : "󰭹"
+    text: omaq.incomingCall ? "call" : (omaq.pending ? "" : "󰭹")
     fontFamily: omaq.incomingCall ? "Material Symbols Rounded" : "monospace"
-    active: omaq.incomingCall
-    activeColor: root.systemColors[1] || root.urgent
+    active: omaq.incomingCall || omaq.pending
+    activeColor: omaq.pending && !omaq.incomingCall
+      ? (root.systemColors[1] || root.urgent)
+      : (root.systemColors[1] || root.urgent)
     opacity: omaq.incomingCall ? callPulseOpacity : 1.0
     tooltipText: omaq.incomingCall
       ? "Incoming call from " + root.friendName(omaq.lastCallConv)
-      : "OmaQ"
+      : (omaq.pending
+        ? (omaq.pendingGroup ? "Group invite received" : "Friend request received")
+        : "OmaQ")
     onPressed: function(b) {
       if (b === Qt.RightButton)
         return
@@ -1147,7 +1294,8 @@ BarWidget {
     BorderSurface {
       id: card
       width: root.cardWidth
-      height: Math.min(column.implicitHeight + root.pad * 2,
+      height: Math.min(Math.max(column.implicitHeight,
+                                actionRail.implicitHeight + Style.space(52)) + root.pad * 2,
                        popup.screen ? Math.max(Style.space(260), popup.screen.height - Style.space(24)) : Style.space(720))
       color: root.connectedSurfaceEnabled ? "transparent" : root.panelBackground
       borderSpec: root.connectedSurfaceEnabled
@@ -1155,7 +1303,11 @@ BarWidget {
       radius: root.panelRadius
 
       onXChanged: root.publishConnectedGeometry()
-      onWidthChanged: root.publishConnectedGeometry()
+      onWidthChanged: {
+        if (root.opened)
+          root.placeCard()
+        root.publishConnectedGeometry()
+      }
       onHeightChanged: {
         if (root.opened)
           root.placeCard()
@@ -1174,10 +1326,93 @@ BarWidget {
         focus: root.opened
         Keys.onEscapePressed: root.close()
 
+        Column {
+          id: actionRail
+          anchors.top: parent.top
+          anchors.topMargin: root.pad + Style.space(48)
+          anchors.right: parent.right
+          anchors.rightMargin: Math.max(0, (root.railWidth - width) / 2)
+          spacing: Style.space(2)
+          z: 20
+
+          RailIcon {
+            visible: !omaq.locked
+            materialIcon: "qr_code_2"
+            label: "Invite"
+            selected: root.inviteOpen
+            onClicked: root.toggleInvite()
+          }
+          RailIcon {
+            visible: !omaq.locked
+            materialIcon: "person_add"
+            label: "Add contact"
+            selected: root.showJoin
+            onClicked: root.toggleJoin()
+          }
+          RailIcon {
+            visible: !omaq.locked
+            materialIcon: "chat"
+            label: "Open chat"
+            selected: root.chatPickerOpen
+            onClicked: root.openChat()
+          }
+          RailIcon {
+            visible: !omaq.locked
+            materialIcon: "groups"
+            label: "Groups"
+            selected: root.moreOpen && root.moreSection === "groups"
+            onClicked: root.openRailAdvanced("groups")
+          }
+          RailIcon {
+            materialIcon: "search"
+            label: "Search and safety"
+            selected: root.moreOpen && root.moreSection === "chat"
+            onClicked: root.openRailAdvanced("chat")
+          }
+          RailIcon {
+            materialIcon: "badge"
+            label: "Identity"
+            selected: root.moreOpen && root.moreSection === "identity"
+            onClicked: root.openRailAdvanced("identity")
+          }
+          RailIcon {
+            materialIcon: "palette"
+            label: "Theme"
+            selected: root.settingsOpen && root.themeOpen
+            onClicked: root.openRailTheme()
+          }
+          RailIcon {
+            materialIcon: "music_note"
+            label: "Sounds"
+            selected: root.settingsOpen && root.soundOpen
+            onClicked: root.openRailSounds()
+          }
+          RailIcon {
+            materialIcon: "science"
+            label: "Demo"
+            selected: chatSurface && chatSurface.demoOpen
+            onClicked: root.openDemo()
+          }
+          RailIcon {
+            materialIcon: chatSurface && chatSurface.muted
+              ? "notifications_off" : "notifications"
+            label: chatSurface && chatSurface.muted ? "Unmute" : "Mute"
+            selected: chatSurface && chatSurface.muted
+            onClicked: if (chatSurface) chatSurface.toggleMute()
+          }
+          RailIcon {
+            materialIcon: "warning"
+            label: "Danger zone"
+            selected: root.moreOpen && root.moreSection === "danger"
+            onClicked: root.openRailAdvanced("danger")
+          }
+        }
+
         Flickable {
           id: panelScroll
           anchors.fill: parent
           anchors.margins: root.pad
+          anchors.rightMargin: root.pad + root.railWidth
           contentWidth: width
           contentHeight: column.implicitHeight
           clip: true
@@ -1249,6 +1484,7 @@ BarWidget {
 
           GridLayout {
             id: heroActions
+            visible: false
             width: parent.width
             columns: 3
             columnSpacing: root.btnGap
@@ -1299,7 +1535,7 @@ BarWidget {
 
           GridLayout {
             id: settingsActions
-            visible: root.settingsOpen
+            visible: false
             width: parent.width
             columns: 2
             columnSpacing: root.btnGap
@@ -1376,7 +1612,7 @@ BarWidget {
                   var name = modelData && modelData.name
                     ? String(modelData.name)
                     : ("Friend " + (modelData ? modelData.id : ""))
-                  return name + " · " + root.contactStatus(!!(modelData && modelData.online))
+                  return name + " · " + root.friendStatus(modelData)
                 }
                 focusable: true
                 foreground: root.foreground
@@ -1388,7 +1624,7 @@ BarWidget {
           }
 
           Column {
-            visible: !root.settingsOpen
+            visible: !root.primaryMenuOpen
             width: parent.width
             spacing: Style.space(6)
 
@@ -1496,7 +1732,7 @@ BarWidget {
             }
 
             Text {
-              visible: !root.chatPickerOpen && omaq.friends && omaq.friends.length > 0
+              visible: omaq.friends && omaq.friends.length > 0
               text: "FRIENDS"
               color: root.dim
               font.family: root.fontFamily
@@ -1505,29 +1741,115 @@ BarWidget {
               font.letterSpacing: 1.2
             }
 
-            Repeater {
-              model: omaq.friends
-              Row {
-                required property var modelData
-                visible: !root.chatPickerOpen
-                spacing: Style.space(8)
-                width: parent ? parent.width : 0
+            Grid {
+              id: friendsGrid
+              visible: omaq.friends && omaq.friends.length > 0
+              width: parent.width
+              columns: root.friendColumnCount
+              rows: 10
+              flow: Grid.TopToBottom
+              columnSpacing: Style.space(12)
+              rowSpacing: Style.space(2)
 
-                AvatarPic {
-                  path: modelData && modelData.avatar ? String(modelData.avatar) : ""
-                  online: !!(modelData && modelData.online)
-                  unreadCount: omaq.unreadFor(modelData ? modelData.id : "")
-                  badgeEnabled: !root.settings || root.settings.notifyBadge !== false
-                  revision: omaq.avatarTick
-                  onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
-                }
+              Repeater {
+                model: root.friendPageItems
+                delegate: Item {
+                  id: friendDelegate
+                  required property var modelData
+                  width: Math.max(0, (friendsGrid.width -
+                    friendsGrid.columnSpacing * (root.friendColumnCount - 1)) /
+                    root.friendColumnCount)
+                  height: Style.space(24)
+                  activeFocusOnTab: true
+                  Accessible.role: Accessible.Button
+                  Accessible.name: friendName.text + " · " + root.friendStatus(friendDelegate.modelData)
+                  Accessible.onPressAction: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
+                    friendDelegate.modelData ? friendDelegate.modelData.name : "")
+                  Keys.onReturnPressed: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
+                    friendDelegate.modelData ? friendDelegate.modelData.name : "")
+                  Keys.onEnterPressed: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
+                    friendDelegate.modelData ? friendDelegate.modelData.name : "")
 
-                ActionButton {
-                  text: {
-                    var name = (modelData && modelData.name) ? String(modelData.name) : ("Friend " + (modelData ? modelData.id : ""))
-                    return name + " · " + root.contactStatus(!!(modelData && modelData.online))
+                  Text {
+                    id: friendName
+                    anchors.fill: parent
+                    text: {
+                      var friend = friendDelegate.modelData
+                      var name = friend && friend.name
+                        ? String(friend.name) : ("Friend " + (friend ? friend.id : ""))
+                      var unread = omaq.unreadFor(friend ? friend.id : "")
+                      return unread > 0 ? name + " · " + unread : name
+                    }
+                    color: root.friendStatusColor(friendDelegate.modelData)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: friendDelegate.modelData && friendDelegate.modelData.online
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
                   }
-                  onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
+                      friendDelegate.modelData ? friendDelegate.modelData.name : "")
+                  }
+                }
+              }
+            }
+
+            Row {
+              visible: root.friendPageCount > 1
+              x: Math.max(0, (parent.width - implicitWidth) / 2)
+              spacing: Style.space(8)
+
+              Text {
+                id: previousFriendPage
+                text: "chevron_left"
+                color: root.friendPage > 0 ? root.systemColors[3] : root.dim
+                font.family: "Material Symbols Rounded"
+                font.pixelSize: Style.font.icon
+                font.variableAxes: ({ "FILL": activeFocus ? 1 : 0, "wght": 500 })
+                activeFocusOnTab: root.friendPage > 0
+                Accessible.role: Accessible.Button
+                Accessible.name: "Previous friend page"
+                Accessible.onPressAction: if (root.friendPage > 0) root.friendPage--
+                Keys.onReturnPressed: if (root.friendPage > 0) root.friendPage--
+                Keys.onEnterPressed: if (root.friendPage > 0) root.friendPage--
+                Keys.onSpacePressed: if (root.friendPage > 0) root.friendPage--
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: root.friendPage > 0
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.friendPage--
+                }
+              }
+              Text {
+                text: (root.friendPage + 1) + "/" + root.friendPageCount
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                id: nextFriendPage
+                text: "chevron_right"
+                color: root.friendPage + 1 < root.friendPageCount
+                  ? root.systemColors[3] : root.dim
+                font.family: "Material Symbols Rounded"
+                font.pixelSize: Style.font.icon
+                font.variableAxes: ({ "FILL": activeFocus ? 1 : 0, "wght": 500 })
+                activeFocusOnTab: root.friendPage + 1 < root.friendPageCount
+                Accessible.role: Accessible.Button
+                Accessible.name: "Next friend page"
+                Accessible.onPressAction: if (root.friendPage + 1 < root.friendPageCount) root.friendPage++
+                Keys.onReturnPressed: if (root.friendPage + 1 < root.friendPageCount) root.friendPage++
+                Keys.onEnterPressed: if (root.friendPage + 1 < root.friendPageCount) root.friendPage++
+                Keys.onSpacePressed: if (root.friendPage + 1 < root.friendPageCount) root.friendPage++
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: root.friendPage + 1 < root.friendPageCount
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.friendPage++
                 }
               }
             }
@@ -1839,6 +2161,7 @@ BarWidget {
             }
 
             TokenButton {
+              visible: false
               text: root.moreOpen ? "Hide advanced" : "Advanced"
               iconText: "tune"
               iconFontFamily: "Material Symbols Rounded"
@@ -1856,6 +2179,7 @@ BarWidget {
               spacing: Style.space(8)
 
               GridLayout {
+                visible: false
                 width: parent.width
                 columns: 2
                 columnSpacing: root.btnGap
@@ -2061,6 +2385,7 @@ BarWidget {
                     onClicked: {
                       omaq.selectGroup(modelData.id)
                       root.groupInviteFriendId = ""
+                      root.groupInviteFeedback = ""
                       root.groupLeaveConfirm = false
                       root.groupLeaveTarget = ""
                       root.groupDissolveConfirm = false
@@ -2114,11 +2439,22 @@ BarWidget {
                   : "Select a contact"
                 enabled: root.groupInviteFriendId !== ""
                 onClicked: {
-                  omaq.inviteUrl = ""
-                  omaq.qrPath = ""
-                  if (omaq.inviteToGroup(root.groupInviteFriendId, omaq.lastGroup))
-                    root.inviteOpen = true
+                  root.groupInviteFeedback = "Sending group invite…"
+                  if (!omaq.inviteToGroup(root.groupInviteFriendId, omaq.lastGroup))
+                    root.groupInviteFeedback = "Group invite failed"
                 }
+              }
+
+              Text {
+                visible: root.moreSection === "groups" && root.groupInviteFeedback !== ""
+                width: parent.width
+                text: root.groupInviteFeedback
+                color: root.groupInviteFeedback.indexOf("sent") >= 0 ||
+                  root.groupInviteFeedback.indexOf("Sending") === 0
+                  ? root.systemColors[3] : root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
               }
 
               Text {

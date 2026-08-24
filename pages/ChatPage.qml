@@ -366,21 +366,10 @@ FocusScope {
        (acknowledgement >= 3 ? root.receiptReadColor :
         (acknowledgement >= 2 ? root.receiptDeliveredColor :
          (acknowledgement >= 1 ? root.receiptSentColor : root.fg))))
-    implicitWidth: Math.max(Style.space(18), receiptText.implicitWidth + (read ? Style.space(8) : 0))
-    implicitHeight: Math.max(Style.space(18), receiptText.implicitHeight + (read ? Style.space(4) : 0))
+    implicitWidth: Math.max(Style.space(18), receiptText.implicitWidth)
+    implicitHeight: Math.max(Style.space(18), receiptText.implicitHeight)
     Accessible.role: Accessible.StaticText
     Accessible.name: label
-
-    Rectangle {
-      visible: receiptMark.read
-      anchors.centerIn: parent
-      width: receiptText.implicitWidth + Style.space(8)
-      height: receiptText.implicitHeight + Style.space(3)
-      radius: height / 2
-      color: "transparent"
-      border.color: root.receiptReadColor
-      border.width: 1
-    }
 
     Text {
       id: receiptText
@@ -1123,12 +1112,42 @@ FocusScope {
     return reactions
   }
 
+  function modelCount(model) {
+    if (!model)
+      return 0
+    if (typeof model.count === "number")
+      return model.count
+    return typeof model.length === "number" ? model.length : 0
+  }
+
+  function modelEntry(model, index) {
+    if (!model)
+      return null
+    if (typeof model.get === "function")
+      return model.get(index)
+    return model[index]
+  }
+
+  function groupReactionEmojiList(current) {
+    var emojis = []
+    var count = root.modelCount(current)
+    for (var i = 0; i < count; i++) {
+      var reaction = root.modelEntry(current, i)
+      if (reaction && reaction.emoji)
+        emojis.push(String(reaction.emoji))
+    }
+    return emojis
+  }
+
   function updatedGroupReactions(current, actor, emoji) {
     var next = []
     var actorKey = String(actor || "")
-    for (var i = 0; current && i < current.length; i++)
-      if (String(current[i].actor || "") !== actorKey)
-        next.push({ actor: String(current[i].actor || ""), emoji: String(current[i].emoji || "") })
+    var count = root.modelCount(current)
+    for (var i = 0; i < count; i++) {
+      var reaction = root.modelEntry(current, i)
+      if (reaction && String(reaction.actor || "") !== actorKey)
+        next.push({ actor: String(reaction.actor || ""), emoji: String(reaction.emoji || "") })
+    }
     if (actorKey && emoji)
       next.push({ actor: actorKey, emoji: String(emoji) })
     return next
@@ -2387,9 +2406,8 @@ FocusScope {
           readonly property string reactionMe: String(model.reactionMe || "")
           readonly property string reactionPeer: String(model.reactionPeer || "")
           readonly property var groupReactions: model.groupReactions || []
-          readonly property var groupReactionEmojis: line.groupReactions.map(function(reaction) {
-            return String(reaction.emoji || "")
-          })
+          readonly property var groupReactionEmojis: root.groupReactionEmojiList(
+            line.groupReactions)
           readonly property bool messageReactions: line.contextId !== "" &&
             !line.fileMessage && !line.deleted
           readonly property bool hasReaction: !line.deleted &&
@@ -2696,14 +2714,16 @@ FocusScope {
               Repeater {
                 model: line.smileGlyphs
                 delegate: Item {
-                  required property string modelData
+                  id: smileDelegate
+                  required property int index
+                  readonly property string glyph: String(line.smileGlyphs[index] || "")
                   width: root.smilePx
                   height: root.smilePx
 
                   Image {
                     id: smileImage
                     anchors.fill: parent
-                    source: root.smileSrc(modelData)
+                    source: root.smileSrc(smileDelegate.glyph)
                     fillMode: Image.PreserveAspectFit
                     sourceSize.width: root.smilePx * 2
                     sourceSize.height: root.smilePx * 2
@@ -2716,7 +2736,7 @@ FocusScope {
                   Text {
                     anchors.fill: parent
                     visible: smileImage.status === Image.Error || smileImage.status === Image.Null
-                    text: modelData
+                    text: smileDelegate.glyph
                     color: root.fg
                     font.family: "Noto Color Emoji"
                     font.pixelSize: root.smilePx
@@ -2737,7 +2757,7 @@ FocusScope {
             anchors.verticalCenterOffset: Style.space(3)
             anchors.leftMargin: Style.space(6)
             width: reactionBadgeRow.implicitWidth + Style.space(8)
-            height: Style.space(18)
+            height: Style.space(20)
             radius: height / 2
             color: Qt.darker(root.bg, 1.08)
             border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.2)
@@ -2750,18 +2770,20 @@ FocusScope {
               spacing: Style.space(2)
 
               Repeater {
+                id: reactionBadgeRepeater
                 model: [line.reactionMe, line.reactionPeer].concat(
                   line.groupReactionEmojis).filter(function(value, index, values) {
                   return value !== "" && values.indexOf(value) === index
                 })
 
                 Text {
-                  required property string modelData
-                  text: modelData
+                  required property int index
+                  text: String(reactionBadgeRepeater.model[index] || "")
                   color: root.fg
                   font.family: "Noto Color Emoji"
-                  font.pixelSize: Style.font.caption
-                  renderType: Text.QtRendering
+                  font.pixelSize: Style.font.caption + 2
+                  font.hintingPreference: Font.PreferFullHinting
+                  renderType: Text.NativeRendering
                 }
               }
             }
@@ -2856,13 +2878,14 @@ FocusScope {
                 id: reactionPickerRepeater
                 model: root.emojiSet
                 delegate: ReactionAction {
-                  required property string modelData
+                  required property int index
+                  readonly property string emojiValue: String(root.emojiSet[index] || "")
                   compact: true
-                  emoji: modelData
-                  selected: line.reactionMe === modelData
-                  tooltipText: "React with " + modelData
+                  emoji: emojiValue
+                  selected: line.reactionMe === emojiValue
+                  tooltipText: "React with " + emojiValue
                   onClicked: {
-                    root.reactToMessage(line.contextId, line.reactionMe, modelData)
+                    root.reactToMessage(line.contextId, line.reactionMe, emojiValue)
                     reactionPicker.close()
                   }
                 }
@@ -3100,10 +3123,11 @@ FocusScope {
           Repeater {
             model: root.emojiSet
             ChatBtn {
-              required property string modelData
-              text: modelData
-              helpText: modelData
-              onClicked: root.insertEmoji(modelData)
+              required property int index
+              readonly property string emojiValue: String(root.emojiSet[index] || "")
+              text: emojiValue
+              helpText: emojiValue
+              onClicked: root.insertEmoji(emojiValue)
             }
           }
         }
@@ -3259,8 +3283,10 @@ FocusScope {
                 onTextChanged: root.updateTyping()
                 persistentSelection: true
                 background: BorderSurface {
+                  readonly property var stateBorder: Border.controlSpec(
+                    input.activeFocus ? "focus" : "normal", root.fg, root.accent)
                   color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-                  borderSpec: Border.controlSpec(input.activeFocus ? "focus" : "normal", root.fg, root.accent)
+                  borderSpec: Border.withWidth(stateBorder, Style.normalBorderWidth)
                   radius: Style.cornerRadius
                 }
                 Keys.onPressed: function(event) {

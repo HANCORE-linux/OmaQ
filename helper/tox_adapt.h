@@ -30,6 +30,7 @@ uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32);
 int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max);
 int omaq_tox_friend_name(struct omaq_tox *t, uint32_t friend_number, char *out, size_t n);
 int omaq_tox_friend_online(struct omaq_tox *t, uint32_t friend_number);
+int omaq_tox_friend_status(struct omaq_tox *t, uint32_t friend_number);
 int omaq_tox_nospam_rotate(struct omaq_tox *t);
 int omaq_tox_send(struct omaq_tox *t, uint32_t friend_number, const char *text);
 int omaq_tox_save(struct omaq_tox *t);
@@ -46,6 +47,8 @@ typedef void (*omaq_on_group_peer)(void *ud, uint32_t gnum, uint32_t peer,
 				   int joined, int removed);
 void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message msg, void *ud);
 void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *ud);
+void omaq_tox_set_friend_status_hook(struct omaq_tox *t, omaq_on_presence cb,
+				     void *ud);
 void omaq_tox_set_typing_hook(struct omaq_tox *t, omaq_on_typing cb, void *ud);
 int omaq_tox_set_typing(struct omaq_tox *t, uint32_t friend_number, int typing);
 void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,

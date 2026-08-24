@@ -82,7 +82,7 @@ exec 5>"$holdb2"
 echo '{"op":"status"}' >&5
 i=0
 while [ "$i" -lt 60 ]; do
-	if grep -a -q '"event":"friends".*"online":true' "$fb2"; then
+	if grep -a -q '"event":"friend.info".*"online":true' "$fb2"; then
 		break
 	fi
 	i=$((i + 1))

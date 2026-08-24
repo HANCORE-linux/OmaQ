@@ -39,7 +39,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 4
+  readonly property int requiredHelperProtocol: 5
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -61,6 +61,13 @@ Item {
   property var pendingGroupOrder: []
   property string pendingGroupGeneration: ""
   property int groupsTick: 0
+  property string lastGroupInviteSentGroup: ""
+  property string lastGroupInviteSentFriend: ""
+  property int groupInviteSentTick: 0
+  property string lastGroupInviteFailedGroup: ""
+  property string lastGroupInviteFailedFriend: ""
+  property string lastGroupInviteFailedCode: ""
+  property int groupInviteFailedTick: 0
   property bool groupsReady: false
   property string lastRemovedGroup: ""
   property int removedGroupTick: 0
@@ -150,6 +157,8 @@ Item {
   property bool locked: false
   property bool saveProtected: false
   property var friends: []
+  property string pendingFriendGeneration: ""
+  property var pendingFriendBuild: []
   property var searchItems: []
   property int searchTick: 0
   property string selfAvatar: ""
@@ -204,6 +213,25 @@ Item {
     if (conv) {
       root.lastConversation = conv
       root.lastDirectId = conv
+    }
+  }
+
+  function applyFriendSnapshot(items) {
+    root.friends = items || []
+    if (!root.lastDirectId)
+      return
+    var stillFriend = false
+    for (var i = 0; i < root.friends.length; i++) {
+      if (String(root.friends[i].id) === String(root.lastDirectId)) {
+        stillFriend = true
+        break
+      }
+    }
+    if (!stillFriend && root.lastConversation === root.lastDirectId) {
+      root.lastDirectId = ""
+      root.lastConversation = ""
+      root.safetyCode = ""
+      root.safetyConv = ""
     }
   }
 
@@ -359,28 +387,40 @@ Item {
         root.connectionState = "locked"
       }
     }
+    if (ev.event === "friend.list.begin") {
+      root.pendingFriendGeneration = String(ev.generation || "")
+      root.pendingFriendBuild = []
+    }
+    if (ev.event === "friend.info" &&
+        String(ev.generation || "") === root.pendingFriendGeneration) {
+      var friendBuild = root.pendingFriendBuild.slice()
+      friendBuild.push({
+        id: String(ev.id || ""),
+        name: String(ev.name || ("Friend " + String(ev.id || ""))),
+        avatar: String(ev.avatar || ""),
+        online: !!ev.online,
+        status: String(ev.status || (ev.online ? "online" : "offline"))
+      })
+      root.pendingFriendBuild = friendBuild
+    }
+    if (ev.event === "friend.list.end" &&
+        String(ev.generation || "") === root.pendingFriendGeneration) {
+      if (!root.locked && root.lastError !== "helper_down" &&
+          root.lastError !== "helper_incompatible" &&
+          root.lastError !== "identity_rollback_failed" &&
+          root.lastError !== "identity_backup_cleanup_failed")
+        root.lastError = ""
+      root.applyFriendSnapshot(root.pendingFriendBuild)
+      root.pendingFriendGeneration = ""
+      root.pendingFriendBuild = []
+    }
     if (ev.event === "friends") {
       if (!root.locked && root.lastError !== "helper_down" &&
           root.lastError !== "helper_incompatible" &&
           root.lastError !== "identity_rollback_failed" &&
           root.lastError !== "identity_backup_cleanup_failed")
         root.lastError = ""
-      root.friends = ev.items || []
-      if (root.lastDirectId) {
-        var stillFriend = false
-        for (var fi = 0; fi < root.friends.length; fi++) {
-          if (String(root.friends[fi].id) === String(root.lastDirectId)) {
-            stillFriend = true
-            break
-          }
-        }
-        if (!stillFriend && root.lastConversation === root.lastDirectId) {
-          root.lastDirectId = ""
-          root.lastConversation = ""
-          root.safetyCode = ""
-          root.safetyConv = ""
-        }
-      }
+      root.applyFriendSnapshot(ev.items || [])
     }
     if (ev.event === "avatar") {
       var id = ev.id || ""
@@ -393,7 +433,11 @@ Item {
         var i, found = false
         for (i = 0; i < next.length; i++) {
           if (String(next[i].id) === String(id)) {
-            next[i] = { id: next[i].id, name: next[i].name, avatar: path, online: !!next[i].online }
+            var updatedFriend = {}
+            for (var friendKey in next[i])
+              updatedFriend[friendKey] = next[i][friendKey]
+            updatedFriend.avatar = path
+            next[i] = updatedFriend
             found = true
           }
         }
@@ -701,6 +745,17 @@ Item {
       root.pendingGroupGeneration = ""
       root.pendingGroupBuild = ({})
       root.pendingGroupOrder = []
+    }
+    if (ev.event === "group.invite.sent") {
+      root.lastGroupInviteSentGroup = String(ev.group || "")
+      root.lastGroupInviteSentFriend = String(ev.friend || "")
+      root.groupInviteSentTick = root.groupInviteSentTick + 1
+    }
+    if (ev.event === "group.invite.failed") {
+      root.lastGroupInviteFailedGroup = String(ev.group || "")
+      root.lastGroupInviteFailedFriend = String(ev.friend || "")
+      root.lastGroupInviteFailedCode = String(ev.code || "forbidden")
+      root.groupInviteFailedTick = root.groupInviteFailedTick + 1
     }
     if (ev.event === "group.changed") {
       if ((ev.action === "dissolve" || ev.action === "leave") && ev.group) {
@@ -1559,6 +1614,8 @@ Item {
     root.lastCallConv = ""
     root.callDurationSeconds = 0
     root.friends = []
+    root.pendingFriendGeneration = ""
+    root.pendingFriendBuild = []
     root.surfaces = []
     root.surfacesTick = root.surfacesTick + 1
     root.lastError = "identity_changed"

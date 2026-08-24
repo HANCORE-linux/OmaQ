@@ -47,7 +47,7 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
-#define OMAQ_PROTOCOL_VERSION 4
+#define OMAQ_PROTOCOL_VERSION 5
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -67,11 +67,13 @@ static struct {
 } g_file_requests[FILE_REQUEST_CACHE];
 static uint64_t g_file_request_sequence;
 static uint64_t g_identity_backup_sequence;
+static uint64_t g_friend_generation;
 #ifdef HAVE_SIGNAL
 static struct omaq_ratchet *g_ratchet;
 #endif
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
+static int g_pending_announced;
 #ifdef HAVE_SIGNAL
 static char g_pending_rk[OMAQ_RK_HEX + 1];
 static int g_have_pending_rk;
@@ -89,9 +91,16 @@ static int g_gpending_announced;
 static int g_have_gauth;
 static uint32_t g_gauth_friend;
 static int64_t g_gauth_exp;
+static int64_t g_gauth_reservation_deadline;
 static char g_gauth_group[65];
 static int g_group_registry_pending;
 static char g_group_registry_group[OMAQ_GROUP_ID_MAX];
+static int g_group_invite_send_pending;
+static uint32_t g_group_invite_send_friend;
+static char g_group_invite_send_group[OMAQ_GROUP_ID_MAX];
+static char g_group_invite_send_id[OMAQ_INVITE_ID_MAX + 1];
+static char g_group_invite_send_url[OMAQ_URL_MAX];
+static int64_t g_group_invite_send_deadline;
 static int g_group_registry_pruned;
 static int g_group_registry_unmapped;
 static int g_group_registry_sync_warning;
@@ -1015,6 +1024,127 @@ static int send_message_reaction_wire(uint32_t friend, const char *conversation,
 	return omaq_tox_send(g_tox, friend, wire);
 }
 
+static int send_group_invite_wire(uint32_t friend, const char *url)
+{
+	char conversation[16], plain[OMAQ_URL_MAX + 8], wire[3600];
+
+	if (!g_tox || !g_ratchet || !url ||
+	    snprintf(conversation, sizeof(conversation), "%u", friend) >=
+		    (int)sizeof(conversation) ||
+	    snprintf(plain, sizeof(plain), "OQGI1|%s", url) >= (int)sizeof(plain) ||
+	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire,
+				 sizeof(wire)) != 0)
+		return -1;
+	return omaq_tox_send(g_tox, friend, wire);
+}
+
+static int request_ratchet_session(uint32_t friend)
+{
+	char conversation[16], bundle[900], message[920];
+
+	if (!g_tox || !g_ratchet ||
+	    snprintf(conversation, sizeof(conversation), "%u", friend) >=
+		    (int)sizeof(conversation))
+		return -1;
+	if (omaq_ratchet_has_session(g_ratchet, conversation))
+		return 1;
+	if (omaq_ratchet_bundle(g_ratchet, bundle, sizeof(bundle)) != 0 ||
+	    snprintf(message, sizeof(message), "OQB1%s", bundle) >=
+		    (int)sizeof(message) ||
+	    omaq_tox_send(g_tox, friend, message) != 0)
+		return -1;
+	return 0;
+}
+
+static void emit_group_invite_result(uint32_t friend, const char *group,
+				     const char *event_name, const char *code)
+{
+	char event[240];
+
+	if (code)
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"%s\",\"group\":\"%s\",\"friend\":\"%u\",\"code\":\"%s\"}",
+			 event_name, group, friend, code);
+	else
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"%s\",\"group\":\"%s\",\"friend\":\"%u\"}",
+			 event_name, group, friend);
+	emit(event);
+}
+
+static void clear_pending_group_invite(void)
+{
+	g_group_invite_send_pending = 0;
+	g_group_invite_send_friend = UINT32_MAX;
+	g_group_invite_send_group[0] = '\0';
+	g_group_invite_send_id[0] = '\0';
+	g_group_invite_send_url[0] = '\0';
+	g_group_invite_send_deadline = 0;
+}
+
+static int send_group_invite_response(uint32_t friend, const char *prefix,
+				      const char *invite_id, const char *group)
+{
+	char conversation[16], plain[112], wire[380];
+
+	if (!prefix || !invite_id || !group ||
+	    snprintf(conversation, sizeof(conversation), "%u", friend) >=
+		    (int)sizeof(conversation) ||
+	    snprintf(plain, sizeof(plain), "%s|%s|%s", prefix, invite_id, group) >=
+		    (int)sizeof(plain) ||
+	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire,
+				 sizeof(wire)) != 0)
+		return -1;
+	return omaq_tox_send(g_tox, friend, wire);
+}
+
+static void finish_pending_group_invite(uint32_t friend)
+{
+	if (!g_group_invite_send_pending || friend != g_group_invite_send_friend)
+		return;
+	if (send_group_invite_wire(friend, g_group_invite_send_url) != 0) {
+		emit_group_invite_result(friend, g_group_invite_send_group,
+					 "group.invite.failed", "forbidden");
+		clear_pending_group_invite();
+		return;
+	}
+	g_group_invite_send_deadline = (int64_t)time(NULL) + 30;
+}
+
+static void complete_pending_group_invite(uint32_t friend,
+					  const char *invite_id,
+					  const char *group, int ready)
+{
+	omaq_role self = ROLE_MEMBER;
+
+	if (!g_group_invite_send_pending || friend != g_group_invite_send_friend ||
+	    strcmp(invite_id, g_group_invite_send_id) != 0 ||
+	    strcmp(group, g_group_invite_send_group) != 0)
+		return;
+	if (!ready) {
+		emit_group_invite_result(friend, group, "group.invite.failed", "busy");
+		clear_pending_group_invite();
+		return;
+	}
+	if (omaq_group_self_role(g_tox, group, &self) != 0 ||
+	    omaq_group_invite_friend(g_tox, group, friend, self, ROLE_MEMBER) != 0)
+		emit_group_invite_result(friend, group, "group.invite.failed", "forbidden");
+	else
+		emit_group_invite_result(friend, group, "group.invite.sent", NULL);
+	clear_pending_group_invite();
+}
+
+static void expire_pending_group_invite(void)
+{
+	if (!g_group_invite_send_pending ||
+	    (int64_t)time(NULL) < g_group_invite_send_deadline)
+		return;
+	emit_group_invite_result(g_group_invite_send_friend,
+				 g_group_invite_send_group,
+				 "group.invite.failed", "ratchet_pending");
+	clear_pending_group_invite();
+}
+
 static int send_receipt_wire(uint32_t friend, const char *conversation,
 			     const char *id, const char *state)
 {
@@ -1056,10 +1186,19 @@ static void clear_invite(void)
 	g_issued_is_group = 0;
 	g_issued_group[0] = '\0';
 	g_have_pending = 0;
+	g_pending_announced = 0;
 #ifdef HAVE_SIGNAL
 	g_pending_rk[0] = '\0';
 	g_have_pending_rk = 0;
 #endif
+}
+
+static void announce_pending_direct(void)
+{
+	if (!g_have_pending || g_pending_announced)
+		return;
+	g_pending_announced = 1;
+	emit("{\"event\":\"request\",\"kind\":\"direct\"}");
 }
 
 static void clear_group_auth(void)
@@ -1067,7 +1206,18 @@ static void clear_group_auth(void)
 	g_have_gauth = 0;
 	g_gauth_friend = UINT32_MAX;
 	g_gauth_exp = 0;
+	g_gauth_reservation_deadline = 0;
 	g_gauth_group[0] = '\0';
+	announce_pending_direct();
+}
+
+static void expire_group_auth_reservation(void)
+{
+	if (!g_have_gauth || (g_have_gpending && g_gpending_announced) ||
+	    g_gauth_reservation_deadline == 0 ||
+	    (int64_t)time(NULL) < g_gauth_reservation_deadline)
+		return;
+	clear_group_auth();
 }
 
 static void reset_identity_runtime_state(void)
@@ -1079,6 +1229,12 @@ static void reset_identity_runtime_state(void)
 	g_gpending_announced = 0;
 	g_group_registry_pending = 0;
 	g_group_registry_group[0] = '\0';
+	g_group_invite_send_pending = 0;
+	g_group_invite_send_friend = UINT32_MAX;
+	g_group_invite_send_group[0] = '\0';
+	g_group_invite_send_id[0] = '\0';
+	g_group_invite_send_url[0] = '\0';
+	g_group_invite_send_deadline = 0;
 	g_group_registry_pruned = 0;
 	g_group_registry_unmapped = 0;
 	g_group_registry_sync_warning = 0;
@@ -1598,55 +1754,55 @@ static void sync_connection_state(void)
 static void emit_friends(void)
 {
 	uint32_t list[64];
-	int n, i, wr, first = 1;
-	char ev[OMAQ_JSON_LINE_MAX];
-	char *p = ev;
-	size_t left = sizeof(ev);
+	char event[1200], generation[32];
+	int n = 0;
 
-	if (!g_tox) {
-		emit("{\"event\":\"friends\",\"items\":[]}");
-		return;
-	}
-	n = omaq_tox_friend_list(g_tox, list, 64);
-	wr = snprintf(p, left, "{\"event\":\"friends\",\"items\":[");
-	if (wr < 0 || (size_t)wr >= left) {
-		emit("{\"event\":\"friends\",\"items\":[]}");
-		return;
-	}
-	p += wr;
-	left -= (size_t)wr;
-	for (i = 0; i < n; i++) {
-		char name[129], esc[280], id[16], adest[512], apath[600];
-		const char *on;
+	g_friend_generation++;
+	if (g_friend_generation == 0)
+		g_friend_generation = 1;
+	snprintf(generation, sizeof(generation), "%llu",
+		 (unsigned long long)g_friend_generation);
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"friend.list.begin\",\"generation\":\"%s\"}",
+		 generation);
+	emit(event);
+	if (g_tox)
+		n = omaq_tox_friend_list(g_tox, list, 64);
+	for (int i = 0; i < n; i++) {
+		char name[129], escaped_name[280], id[16], avatar[512], escaped_avatar[600];
+		const char *online, *status;
+		int friend_status;
 
-		if (omaq_tox_friend_name(g_tox, list[i], name, sizeof(name)) != 0)
+		if (omaq_tox_friend_name(g_tox, list[i], name, sizeof(name)) != 0 ||
+		    !omaq_group_member_name_bytes_ok(name, strlen(name)))
 			snprintf(name, sizeof(name), "Friend %u", list[i]);
-		if (omaq_json_escape(name, esc, sizeof(esc)) != 0)
-			continue;
+		if (omaq_json_escape(name, escaped_name, sizeof(escaped_name)) != 0) {
+			snprintf(name, sizeof(name), "Friend %u", list[i]);
+			if (omaq_json_escape(name, escaped_name,
+					     sizeof(escaped_name)) != 0)
+				return;
+		}
 		snprintf(id, sizeof(id), "%u", list[i]);
-		on = omaq_tox_friend_online(g_tox, list[i]) ? "true" : "false";
-		if (omaq_avatar_dest(home_dir(), id, adest, sizeof(adest)) == 0 &&
-		    access(adest, R_OK) == 0 &&
-		    omaq_json_escape(adest, apath, sizeof(apath)) == 0)
-			wr = snprintf(p, left,
-				      "%s{\"id\":\"%s\",\"name\":\"%s\",\"avatar\":\"%s\",\"online\":%s}",
-				      first ? "" : ",", id, esc, apath, on);
+		friend_status = omaq_tox_friend_status(g_tox, list[i]);
+		online = friend_status > 0 ? "true" : "false";
+		status = friend_status == 2 ? "afk" :
+			(friend_status == 1 ? "online" : "offline");
+		if (omaq_avatar_dest(home_dir(), id, avatar, sizeof(avatar)) == 0 &&
+		    access(avatar, R_OK) == 0 &&
+		    omaq_json_escape(avatar, escaped_avatar, sizeof(escaped_avatar)) == 0)
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"friend.info\",\"generation\":\"%s\",\"id\":\"%s\",\"name\":\"%s\",\"avatar\":\"%s\",\"online\":%s,\"status\":\"%s\"}",
+				 generation, id, escaped_name, escaped_avatar, online, status);
 		else
-			wr = snprintf(p, left,
-				      "%s{\"id\":\"%s\",\"name\":\"%s\",\"online\":%s}",
-				      first ? "" : ",", id, esc, on);
-		if (wr < 0 || (size_t)wr >= left)
-			break;
-		p += wr;
-		left -= (size_t)wr;
-		first = 0;
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"friend.info\",\"generation\":\"%s\",\"id\":\"%s\",\"name\":\"%s\",\"online\":%s,\"status\":\"%s\"}",
+				 generation, id, escaped_name, online, status);
+		emit(event);
 	}
-	if (left < 3) {
-		emit("{\"event\":\"friends\",\"items\":[]}");
-		return;
-	}
-	memcpy(p, "]}", 3);
-	emit(ev);
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"friend.list.end\",\"generation\":\"%s\"}",
+		 generation);
+	emit(event);
 }
 
 static void emit_avatar(const char *id, const char *path)
@@ -1733,6 +1889,14 @@ static void hook_presence(void *ud, uint32_t friend, int online)
 		(void)omaq_file_send_avatar_begin(g_tox, friend, selfav, hid, NULL);
 }
 
+static void hook_friend_status(void *ud, uint32_t friend, int online)
+{
+	(void)ud;
+	(void)friend;
+	(void)online;
+	emit_friends();
+}
+
 static void hook_typing(void *ud, uint32_t friend, int typing)
 {
 	char conv[16], ev[180];
@@ -1782,10 +1946,13 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 		return;
 	memcpy(g_pending_pk, pk32, 32);
 	g_have_pending = 1;
-	if (g_issued_is_group)
+	g_pending_announced = 0;
+	if (g_issued_is_group) {
+		g_pending_announced = 1;
 		emit("{\"event\":\"request\",\"kind\":\"group\"}");
-	else
-		emit("{\"event\":\"request\",\"kind\":\"direct\"}");
+	} else if (!g_have_gauth && !g_have_gpending) {
+		announce_pending_direct();
+	}
 }
 
 static void hook_ginv(void *ud, uint32_t friend, const uint8_t *data, size_t len)
@@ -1794,21 +1961,18 @@ static void hook_ginv(void *ud, uint32_t friend, const uint8_t *data, size_t len
 	int64_t now = (int64_t)time(NULL);
 
 	(void)ud;
-	if (!data || len == 0 || len > sizeof(g_gpending_data))
+	if (!data || len == 0 || len > sizeof(g_gpending_data) || !g_have_gauth ||
+	    !omaq_group_invite_match(g_gauth_friend, friend, g_gauth_exp, now))
 		return;
 	snprintf(key, sizeof(key), "group:%u", friend);
-	if (omaq_rate_allow(&g_rate, key, now) != 0 ||
-	    (g_have_gpending && g_gpending_announced))
+	if (omaq_rate_allow(&g_rate, key, now) != 0 || g_have_gpending)
 		return;
 	memcpy(g_gpending_data, data, len);
 	g_gpending_len = len;
 	g_gpending_friend = friend;
 	g_have_gpending = 1;
-	g_gpending_announced = 0;
-	if (g_have_gauth && omaq_group_invite_match(g_gauth_friend, friend, g_gauth_exp, now)) {
-		g_gpending_announced = 1;
-		emit("{\"event\":\"request\",\"kind\":\"group\"}");
-	}
+	g_gpending_announced = 1;
+	emit("{\"event\":\"request\",\"kind\":\"group\"}");
 }
 
 static int group_cleanup_is_pending(uint32_t group)
@@ -2070,6 +2234,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 				snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
 				(void)omaq_tox_send(g_tox, friend, bmsg);
 			}
+			finish_pending_group_invite(friend);
 		}
 		return;
 	}
@@ -2078,6 +2243,62 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		return;
 	text = plain;
 #endif
+	if (text && (strncmp(text, "OQGIA|", 6) == 0 ||
+		     strncmp(text, "OQGIB|", 6) == 0)) {
+		const char *invite_id = text + 6;
+		const char *separator = strchr(invite_id, '|');
+		if (separator && separator > invite_id &&
+		    (size_t)(separator - invite_id) <= OMAQ_INVITE_ID_MAX &&
+		    strlen(separator + 1) == OMAQ_GROUP_ID_MAX - 1 &&
+		    separator[1] == 'g' && separator[2] == ':') {
+			char response_id[OMAQ_INVITE_ID_MAX + 1];
+			memcpy(response_id, invite_id, (size_t)(separator - invite_id));
+			response_id[(size_t)(separator - invite_id)] = '\0';
+			complete_pending_group_invite(friend, response_id, separator + 1,
+						      text[4] == 'A');
+		}
+		return;
+	}
+	if (text && strncmp(text, "OQGI1|", 6) == 0) {
+		omaq_invite invite;
+		uint32_t mapped_friend = UINT32_MAX;
+		int64_t now = (int64_t)time(NULL);
+
+		if (omaq_invite_parse(text + 6, &invite) != 0 ||
+		    invite.kind != INVITE_GROUP || omaq_invite_expired(&invite, now) ||
+		    strlen(invite.group) != 64 ||
+		    friend_for_addr(invite.tox_addr, &mapped_friend) != 0 ||
+		    mapped_friend != friend)
+			return;
+		if (g_have_pending || g_have_gauth || g_have_gpending) {
+			char group_id[OMAQ_GROUP_ID_MAX];
+			snprintf(group_id, sizeof(group_id), "g:%s", invite.group);
+			(void)send_group_invite_response(friend, "OQGIB", invite.id,
+						 group_id);
+			return;
+		}
+		g_have_gauth = 1;
+		g_gauth_friend = friend;
+		g_gauth_exp = invite.expiry;
+		g_gauth_reservation_deadline = now + 30;
+		snprintf(g_gauth_group, sizeof(g_gauth_group), "%s", invite.group);
+		{
+			char group_id[OMAQ_GROUP_ID_MAX];
+			snprintf(group_id, sizeof(group_id), "g:%s", invite.group);
+			if (send_group_invite_response(friend, "OQGIA", invite.id,
+						       group_id) != 0) {
+				clear_group_auth();
+				return;
+			}
+		}
+		if (g_have_gpending && !g_gpending_announced &&
+		    omaq_group_invite_match(g_gauth_friend, g_gpending_friend,
+					g_gauth_exp, now)) {
+			g_gpending_announced = 1;
+			emit("{\"event\":\"request\",\"kind\":\"group\"}");
+		}
+		return;
+	}
 	if (text && strncmp(text, "OQX1|", 5) == 0) {
 		char reaction_rate_key[32];
 		if (omaq_message_reaction_wire_unpack(text, reaction_id, sizeof(reaction_id),
@@ -2493,17 +2714,29 @@ static void pump_call_audio(void)
 	emit_call_state(friend, "ended");
 }
 
-static void rand_id(char *out, size_t n)
+static int rand_id(char *out, size_t n)
 {
 	unsigned char b[8];
 	static const char *d = "0123456789abcdef";
-	if (getrandom(b, sizeof(b), 0) != (ssize_t)sizeof(b))
-		memset(b, 0x11, sizeof(b));
-	for (size_t i = 0; i < sizeof(b) && i * 2 + 1 < n; i++) {
+	size_t offset = 0;
+
+	if (!out || n < sizeof(b) * 2 + 1)
+		return -1;
+	while (offset < sizeof(b)) {
+		ssize_t got = getrandom(b + offset, sizeof(b) - offset, 0);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			return -1;
+		offset += (size_t)got;
+	}
+	for (size_t i = 0; i < sizeof(b); i++) {
 		out[i * 2] = d[b[i] >> 4];
 		out[i * 2 + 1] = d[b[i] & 0xf];
 	}
-	out[16] = '\0';
+	out[sizeof(b) * 2] = '\0';
+	explicit_bzero(b, sizeof(b));
+	return 0;
 }
 #endif
 
@@ -2514,6 +2747,7 @@ static void attach_hooks(void)
 		return;
 	omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
 	omaq_tox_set_presence_hook(g_tox, hook_presence, NULL);
+	omaq_tox_set_friend_status_hook(g_tox, hook_friend_status, NULL);
 	omaq_tox_set_typing_hook(g_tox, hook_typing, NULL);
 	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
 	omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
@@ -3071,7 +3305,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				}
 				memset(&inv, 0, sizeof(inv));
 				omaq_tox_self_addr_hex(g_tox, inv.tox_addr);
-				rand_id(inv.id, sizeof(inv.id));
+				if (rand_id(inv.id, sizeof(inv.id)) != 0) {
+					emit_error("forbidden");
+					return 0;
+				}
 				inv.expiry = (int64_t)time(NULL) + ttl;
 				inv.kind = INVITE_GROUP;
 				if (omaq_tox_group_chat_id_hex(g_tox, group_number, inv.group,
@@ -3092,12 +3329,35 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					emit_error("unsupported");
 					return 0;
 				}
-				if (op->id[0] &&
-				    omaq_group_invite_friend(g_tox, op->group,
-							     direct_id_number(op->id),
-							     self, granted) != 0) {
-					emit_error("forbidden");
+				if (op->id[0]) {
+#ifdef HAVE_SIGNAL
+					uint32_t invited_friend = direct_id_number(op->id);
+					int session_rc;
+					if (g_group_invite_send_pending) {
+						emit_error("busy");
+						return 0;
+					}
+					session_rc = request_ratchet_session(invited_friend);
+					if (session_rc < 0) {
+						emit_error("forbidden");
+						return 0;
+					}
+					g_group_invite_send_pending = 1;
+					g_group_invite_send_friend = invited_friend;
+					g_group_invite_send_deadline = (int64_t)time(NULL) + 30;
+					memcpy(g_group_invite_send_group, op->group,
+					       strlen(op->group) + 1);
+					snprintf(g_group_invite_send_id,
+						 sizeof(g_group_invite_send_id), "%s", inv.id);
+					snprintf(g_group_invite_send_url,
+						 sizeof(g_group_invite_send_url), "%s", url);
+					if (session_rc == 1)
+						finish_pending_group_invite(invited_friend);
 					return 0;
+#else
+					emit_error("no_ratchet");
+					return 0;
+#endif
 				}
 				snprintf(g_issued_id, sizeof(g_issued_id), "%s", inv.id);
 				snprintf(g_issued_url, sizeof(g_issued_url), "%s", url);
@@ -3120,7 +3380,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			int ttl = op->has_ttl ? op->ttl_sec : 86400;
 			memset(&inv, 0, sizeof(inv));
 			omaq_tox_self_addr_hex(g_tox, inv.tox_addr);
-			rand_id(inv.id, sizeof(inv.id));
+			if (rand_id(inv.id, sizeof(inv.id)) != 0) {
+				emit_error("forbidden");
+				return 0;
+			}
 			inv.expiry = (int64_t)time(NULL) + ttl;
 			inv.kind = INVITE_DIRECT;
 #ifdef HAVE_SIGNAL
@@ -3161,6 +3424,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 #ifdef HAVE_TOX
 			if (g_tox) {
 				uint32_t fn = UINT32_MAX;
+				if (g_have_pending || g_have_gauth || g_have_gpending) {
+					emit_error("busy");
+					return 0;
+				}
 				if (strlen(inv.group) != 64 ||
 				    strlen(inv.group) >= sizeof(g_gauth_group)) {
 					emit_error("unsupported");
@@ -3174,6 +3441,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				g_have_gauth = 1;
 				g_gauth_friend = fn;
 				g_gauth_exp = inv.expiry;
+				g_gauth_reservation_deadline = (int64_t)time(NULL) + 30;
 				memcpy(g_gauth_group, inv.group, strlen(inv.group) + 1);
 				if (g_have_gpending && !g_gpending_announced &&
 				    omaq_group_invite_match(g_gauth_friend, g_gpending_friend,
@@ -3355,6 +3623,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 			g_have_gpending = 0;
 			g_gpending_announced = 0;
+			clear_group_auth();
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
@@ -3410,6 +3679,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				return 0;
 			}
 			g_have_pending = 0;
+			g_pending_announced = 0;
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
@@ -4407,7 +4677,24 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 			fn = direct_id_number(cid);
 			{
-				int stopped = omaq_av_stop(g_tox, fn);
+				uint32_t active_friend = UINT32_MAX;
+				const char *active_state = NULL;
+				int has_active = omaq_av_status(&active_friend, &active_state);
+				int stopped;
+
+				(void)active_state;
+				if (has_active == 1 && active_friend != fn) {
+					emit_error_conv("forbidden", cid);
+					return 0;
+				}
+				if (has_active == 0) {
+					snprintf(ev, sizeof(ev),
+						 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}",
+						 cid);
+					emit(ev);
+					return 0;
+				}
+				stopped = omaq_av_stop(g_tox, fn);
 				if (stopped < 0) {
 					emit_error_conv("forbidden", cid);
 					return 0;
@@ -4415,8 +4702,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				g_av_reset_requested = 1;
 			}
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}",
-				 cid);
+				 "{\"event\":\"call.state\",\"conversation\":\"%u\",\"state\":\"ended\"}",
+				 fn);
 			emit(ev);
 			return 0;
 		}
@@ -4880,6 +5167,10 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 			if (g_tox) {
 				omaq_tox_iterate(g_tox);
+				expire_group_auth_reservation();
+#ifdef HAVE_SIGNAL
+				expire_pending_group_invite();
+#endif
 				if (omaq_group_take_save_error())
 					emit_error("group_registry_failed");
 				retry_group_registry();
@@ -4946,6 +5237,10 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 		if (g_tox && !g_identity_recovery_required) {
 			omaq_tox_iterate(g_tox);
+			expire_group_auth_reservation();
+#ifdef HAVE_SIGNAL
+			expire_pending_group_invite();
+#endif
 			if (omaq_group_take_save_error())
 				emit_error("group_registry_failed");
 			retry_group_registry();

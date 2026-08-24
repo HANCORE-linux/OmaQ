@@ -10,7 +10,7 @@ No signup and no email: the identity is created on this machine. No phone number
 
 ## Security
 
-Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
+Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. OmaQ keeps Tox in TCP-relay privacy mode with direct UDP discovery and hole punching disabled, so contacts do not receive each other's IP addresses. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
 
 ## How OmaQ works
 
