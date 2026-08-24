@@ -6,13 +6,15 @@
 ## Landed
 
 - Header probe: `docs/stages/03-toxcore.md` (private NGC, no dissolve primitive, founder-only moderator promotion)
-- `group.c`: conversation id `g<n>`, peer table, dissolve = kick-down + leave
-- Wire: `group.create` / `dissolve` / `member.setRole` / `member.remove` / `leave`
-- `invite.create` `kind=group` (URL + `tox_group_invite_friend` when `id` is a friend); raw NGC invites stay pending until the matching group URL is redeemed
-- Same chat path: `msg.send` to `g0` uses NGC; history still JSONL via `store.h`
-- Panel: create group, invite last contact, dissolve
-- Observer unused. Admin → admin is `forbidden` on the wire (Tox)
-- `make verify-3`; `.phase` is 3
+- Stable conversation IDs use the Tox group chat ID as `g:<64-lowercase-hex>`; process-local group numbers never cross IPC or persistence boundaries
+- Helper-authoritative group cache, private `groups.tsv` registry, member table, roles, online state, and a maximum of 10 members
+- Wire operations: `group.create`, `group.dissolve`, `group.leave`, `group.member.setRole`, and `group.member.remove`
+- Group invites are member-only and require a matching group URL; promotion is a separate owner action using the member's stable 64-hex public key
+- Group messages use the normal chat history, replies, edits, deletes, reactions, receipts, unread counts, and typing presentation
+- Calls and file transfers remain direct-chat-only
+- The panel supports group creation, selection, member inspection, inviting a selected contact, role changes, removal, leave, and founder dissolve
+- Dissolve removes peers allowed by the Tox role rules and then leaves; no native Tox dissolve primitive exists
+- Private group mappings are included in versioned identity export bundles and reconciled against the imported Tox saved state; a missing private membership is reported and pruned, never recreated through public Chat-ID join
 
 ## How to check
 
@@ -23,5 +25,5 @@ make verify-3
 ## Stays out
 
 - No live plugin copy
-- Cards / pin / sounds / themes (phase 4)
 - Public Chat-ID join
+- Group calls or file transfer

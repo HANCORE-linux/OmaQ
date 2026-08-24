@@ -126,8 +126,62 @@ while [ "$i" -lt 40 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no call.incoming" >&2; tail -20 "$fb" >&2; exit 1; }
 
+ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
+echo '{"op":"call.stop","conversation":"0"}' >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
+	if [ "$ended_after" -gt "$ended_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: incoming decline did not end caller" >&2; exit 1; }
+sleep 0.5
+incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+i=0
+while [ "$i" -lt 40 ]; do
+	echo '{"op":"call.start","conversation":"0"}' >&3
+	sleep 0.2
+	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+	if [ "$incoming_after" -gt "$incoming_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+done
+[ "$i" -lt 40 ] || { echo "phase6: second incoming call missing" >&2; exit 1; }
+
 echo '{"op":"call.answer","conversation":"0"}' >&4
-sleep 0.4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"call.state"' "$fa" | grep -a -q '"state":"active"' &&
+	   grep -a '"event":"call.state"' "$fb" | grep -a -q '"state":"active"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: call did not become active on both peers" >&2; exit 1; }
+sleep 1
+if grep -a -q '"code":"audio_unavailable"' "$fa" "$fb"; then
+	echo "phase6: audio backend unavailable" >&2
+	exit 1
+fi
+ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0","state":"ended"' || true)
+echo '{"op":"call.stop","conversation":"999"}' >&3
+i=0
+while [ "$i" -lt 20 ]; do
+	if grep -a '"event":"error"' "$fa" | grep -a '"code":"forbidden"' |
+	   grep -a -q '"conversation":"999"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: stale call stop was not rejected" >&2; exit 1; }
+ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0","state":"ended"' || true)
+[ "$ended_after" -eq "$ended_before" ] || { echo "phase6: stale stop ended active call" >&2; exit 1; }
 peak_a=$(ps -o rss= -p "$pa" | tr -d ' ')
 peak_b=$(ps -o rss= -p "$pb" | tr -d ' ')
 peak=$peak_a
@@ -135,8 +189,7 @@ if [ "$peak_b" -gt "$peak" ]; then
 	peak=$peak_b
 fi
 echo '{"op":"call.stop","conversation":"0"}' >&3
-sleep 0.3
-echo '{"op":"call.stop","conversation":"0"}' >&4
+sleep 0.5
 
 if [ "$peak" -gt 40960 ]; then
 	echo "phase6: call peak rss ${peak} kB > 40960" >&2

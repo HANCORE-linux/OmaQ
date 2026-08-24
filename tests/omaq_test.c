@@ -182,6 +182,11 @@ static void test_json(void)
 		fail("json limit overflow");
 	if (omaq_json_parse_op("{\"op\":\"sta\rtus\"}", &op) == 0)
 		fail("json embedded carriage return");
+	if (omaq_json_validate("{\"id\":\"ok\",\"items\":[true,null,-1.5e2]}") != 0 ||
+	    omaq_json_validate("{bad}") == 0 ||
+	    omaq_json_validate("{\"id\":01}") == 0 ||
+	    omaq_json_validate("{\"id\":\"\xc0\x80\"}") == 0)
+		fail("json history validation");
 }
 
 struct line_capture {
@@ -277,35 +282,96 @@ static void test_store(void)
 	if (omaq_message_append(dir, "c1", "me", "say \"hi\" \\ok", "out") != 0)
 		fail("message escape append");
 	{
-		char id[64], *updated = NULL;
+		char id[64], actor[65], escaped_text[1400], *updated = NULL;
 		size_t updated_n = 0;
 		if (omaq_message_append_with_id(dir, "c1", "me", "editable", "out", id, sizeof(id)) != 0 ||
 		    omaq_message_edit(dir, "c1", id, "edited") != 0 ||
-		    omaq_store_update_receipt(dir, "c1", id, "delivered") != 0 ||
-		    omaq_store_update_receipt(dir, "c1", id, "read") != 0 ||
-		    omaq_store_update_receipt(dir, "c1", id, "delivered") != 0 ||
+		    omaq_store_update_receipt_changed(dir, "c1", id, "delivered") != 1 ||
+		    omaq_store_update_receipt_changed(dir, "c1", id, "delivered") != 0 ||
+		    omaq_store_update_receipt_changed(dir, "c1", id, "read") != 1 ||
+		    omaq_store_update_receipt_changed(dir, "c1", id, "read") != 0 ||
+		    omaq_store_update_receipt_changed(dir, "c1", id, "delivered") != 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
 		    !updated || !strstr(updated, "\"text\":\"edited\"") || !strstr(updated, "\"edited\":true") ||
 		    !strstr(updated, "\"receipt\":\"read\"}"))
 			fail("message edit");
 		free(updated);
 		updated = NULL;
+		{
+			static const char marker[] = "\"reaction_group_";
+			size_t used = 0;
+			for (int marker_index = 0; marker_index < 32; marker_index++) {
+				memcpy(escaped_text + used, marker, sizeof(marker) - 1);
+				used += sizeof(marker) - 1;
+			}
+			memset(escaped_text + used, '"', sizeof(escaped_text) - 1 - used);
+			escaped_text[sizeof(escaped_text) - 1] = '\0';
+		}
+		if (omaq_message_edit(dir, "c1", id, escaped_text) != 0)
+			fail("message maximal escape edit");
 		if (omaq_store_message_exists(dir, "c1", id) != 1 ||
+		    omaq_message_append_id(dir, "c1", "peer", "collision", "in", id) == 0 ||
 		    omaq_store_update_reaction(dir, "c1", id, "❤️", "me") != 0 ||
 		    omaq_store_update_reaction(dir, "c1", id, "🔥", "peer") != 0 ||
 		    omaq_store_update_reaction(dir, "c1", id, "🔥", "peer") != 0 ||
+		    omaq_store_update_group_reaction(dir, "c1", id, "👍",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+		    omaq_store_update_group_reaction(dir, "c1", id, "🎉",
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
 		    !updated || !strstr(updated, "\"reaction_me\":\"❤️\"") ||
 		    !strstr(updated, "\"reaction_peer\":\"🔥\"") ||
+		    !strstr(updated, "\"reaction_group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":\"👍\"") ||
+		    !strstr(updated, "\"reaction_group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":\"🎉\"") ||
 		    omaq_store_message_exists(dir, "c1", "missing") != 0 ||
 		    omaq_store_update_reaction(dir, "c1", "missing", "👍", "me") != -2)
 			fail("message reaction store");
 		free(updated);
+		updated = NULL;
+		for (int actor_index = 1; actor_index <= 30; actor_index++) {
+			snprintf(actor, sizeof(actor), "%064x", (unsigned int)actor_index);
+			if (omaq_store_update_group_reaction(dir, "c1", id, "👍", actor) != 0)
+				fail("group reaction actor bound allowance");
+		}
+		snprintf(actor, sizeof(actor), "%064x", 31u);
+		if (omaq_store_update_group_reaction(dir, "c1", id, "👍", actor) != -1 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated, "\"reaction_group_000000000000000000000000000000000000000000000000000000000000001e\":\"👍\""))
+			fail("group reaction actor bound");
+		free(updated);
+		updated = NULL;
+		if (omaq_store_update_group_reaction(dir, "c1", id, "",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated,
+			"\"reaction_group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":\"\"") ||
+		    !strstr(updated,
+			"\"reaction_group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":\"🎉\""))
+			fail("group reaction isolation");
+		free(updated);
 		if (omaq_store_append(dir, "reaction-bad", "{\"id\":\"broken-1\",\"text\":\"broken\"") != 0 ||
 		    omaq_store_update_reaction(dir, "reaction-bad", "broken-1", "👍", "peer") != -1)
 			fail("message malformed reaction store");
+		{
+			char truncated_path[512];
+			FILE *truncated;
+			if (snprintf(truncated_path, sizeof(truncated_path),
+				     "%s/history/reaction-bad/messages.jsonl", dir) >=
+				    (int)sizeof(truncated_path) ||
+			    !(truncated = fopen(truncated_path, "a"))) {
+				fail("truncated history fixture");
+			} else {
+				fputs("partial", truncated);
+				fclose(truncated);
+				for (int retry = 0; retry < 100; retry++)
+					if (omaq_store_message_id_used(dir, "reaction-bad",
+							       "broken-1") != -1)
+						fail("truncated history rejection");
+			}
+		}
 		if (omaq_message_append_id(dir, "c1", "peer", "peer text", "in", "peer-1") != 0 ||
 		    omaq_message_apply_delete(dir, "c1", "peer-1") != 0 ||
+		    omaq_message_append_id(dir, "c1", "peer", "collision", "in", "peer-1") == 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
 		    !updated || !strstr(updated, "\"id\":\"peer-1\"") || !strstr(updated, "\"deleted\":true"))
 			fail("message delete");
@@ -314,6 +380,16 @@ static void test_store(void)
 		if (omaq_message_append_file_with_id(dir, "c1", "peer", "song.mp3", "in",
 						     id, sizeof(id)) == 0)
 			fail("file message path validation");
+		if (omaq_message_append_id(dir,
+			"g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"peer", "old group", "in", "group-old-1") != 0 ||
+		    omaq_store_message_exists(dir,
+			"g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"group-old-1") != 1 ||
+		    omaq_store_message_exists(dir,
+			"g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"group-old-1") != 0)
+			fail("stable group history isolation");
 		if (omaq_message_append_file_with_id(dir, "c1", "peer", "/tmp/song.mp3", "in",
 						     id, sizeof(id)) != 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
@@ -393,10 +469,13 @@ static void test_conv(void)
 	omaq_unread_init(&loaded);
 	if (omaq_unread_increment(&unread, "0") != 0 ||
 	    omaq_unread_increment(&unread, "0") != 0 ||
-	    omaq_unread_increment(&unread, "g7") != 0 ||
+	    omaq_unread_increment(&unread,
+		"g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
 	    omaq_unread_increment(&unread, "../bad") == 0 ||
 	    omaq_unread_increment(&unread, "01") == 0 ||
 	    omaq_unread_increment(&unread, "g01") == 0 ||
+	    omaq_unread_increment(&unread,
+		"g:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == 0 ||
 	    omaq_unread_increment(&unread, "4294967296") == 0 ||
 	    omaq_unread_increment(&unread, "g4294967296") == 0 ||
 	    omaq_unread_total(&unread) != 3 || omaq_unread_count(&unread, "0") != 2 ||
@@ -414,6 +493,18 @@ static void test_conv(void)
 	fclose(f);
 	if (omaq_store_unread_load(&loaded, dir) == 0 || loaded.length != 0)
 		fail("unread duplicate rejection");
+	f = fopen(path, "w");
+	if (!f)
+		fail("unread legacy fixture");
+	else {
+		fputs("g7\t9\n0\t1\n", f);
+		fclose(f);
+		if (omaq_store_unread_load(&loaded, dir) != 0 || loaded.length != 1 ||
+		    omaq_unread_total(&loaded) != 1)
+			fail("unread legacy group discard");
+	}
+	omaq_unread_destroy(&loaded);
+	omaq_unread_init(&loaded);
 	for (i = 0; i < 200; i++) {
 		char conversation[32];
 		snprintf(conversation, sizeof(conversation), "%d", i + 100);
@@ -480,6 +571,8 @@ static void test_identity_files(void)
 {
 	char dir[] = "/tmp/omaq-id-XXXXXX";
 	char src[256], dst[256], other[256], linkpath[256], temp_path[320];
+	char registry[256], bundle[256], fresh[256], fresh_tox[300], fresh_registry[300];
+	char tox_alias[300];
 	FILE *f;
 
 	if (!mkdtemp(dir)) {
@@ -490,6 +583,14 @@ static void test_identity_files(void)
 	    snprintf(dst, sizeof(dst), "%s/backup.save", dir) >= (int)sizeof(dst) ||
 	    snprintf(other, sizeof(other), "%s/other.save", dir) >= (int)sizeof(other) ||
 	    snprintf(linkpath, sizeof(linkpath), "%s/link.save", dir) >= (int)sizeof(linkpath) ||
+	    snprintf(registry, sizeof(registry), "%s/groups.tsv", dir) >= (int)sizeof(registry) ||
+	    snprintf(bundle, sizeof(bundle), "%s/bundle.save", dir) >= (int)sizeof(bundle) ||
+	    snprintf(fresh, sizeof(fresh), "%s/fresh", dir) >= (int)sizeof(fresh) ||
+	    snprintf(fresh_tox, sizeof(fresh_tox), "%s/tox.save", fresh) >= (int)sizeof(fresh_tox) ||
+	    snprintf(fresh_registry, sizeof(fresh_registry), "%s/groups.tsv", fresh) >=
+		    (int)sizeof(fresh_registry) ||
+	    snprintf(tox_alias, sizeof(tox_alias), "%s/./tox.save", dir) >=
+		    (int)sizeof(tox_alias) ||
 	    snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld", linkpath, (long)getpid()) >=
 		    (int)sizeof(temp_path)) {
 		fail("id path");
@@ -504,6 +605,29 @@ static void test_identity_files(void)
 	fclose(f);
 	if (omaq_identity_export(dir, dst) != 0)
 		fail("id export");
+	f = fopen(registry, "w");
+	if (!f) {
+		fail("id registry write");
+		return;
+	}
+	fputs("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup\n", f);
+	fclose(f);
+	if (omaq_identity_bundle_export(dir, src) == 0 ||
+	    omaq_identity_bundle_export(dir, tox_alias) == 0 ||
+	    omaq_identity_bundle_export(dir, registry) == 0)
+		fail("identity bundle source alias");
+	if (mkdir(fresh, 0700) != 0 ||
+	    omaq_identity_bundle_export(dir, bundle) != 0 ||
+	    omaq_identity_bundle_import(fresh, bundle, 0) != 0)
+		fail("identity bundle roundtrip");
+	else {
+		char copied[256];
+		if (read_file(fresh_tox, copied, sizeof(copied)) != 0 ||
+		    strcmp(copied, "SAVE-A") != 0 ||
+		    read_file(fresh_registry, copied, sizeof(copied)) != 0 ||
+		    !strstr(copied, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup"))
+			fail("identity bundle group registry");
+	}
 	if (omaq_identity_export_exclusive(dir, dst) == 0 ||
 	    omaq_identity_export_exclusive(dir, other) != 0)
 		fail("id exclusive export");
@@ -652,6 +776,46 @@ static void test_rate_key_only(void)
 		fail("rate key-only isolation");
 }
 
+static void test_control_rate(void)
+{
+	omaq_control_rate r;
+	char actor[65];
+	int i;
+
+	omaq_control_rate_init(&r);
+	for (i = 0; i < OMAQ_CONTROL_RATE_GLOBAL; i++) {
+		snprintf(actor, sizeof(actor), "%064x", (unsigned int)(i + 1));
+		if (omaq_control_rate_allow(&r, i % 2 ? 'r' : 'x',
+					    (uint32_t)(i % 8), actor, 3000) != 0)
+			fail("control rate global allowance");
+	}
+	snprintf(actor, sizeof(actor), "%064x",
+		 (unsigned int)(OMAQ_CONTROL_RATE_GLOBAL + 1));
+	if (omaq_control_rate_allow(&r, 'r', 0, actor, 3000) == 0)
+		fail("control rate global limit");
+	if (omaq_control_rate_allow(&r, 'r', 0, actor, 3060) != 0)
+		fail("control rate global reset");
+
+	omaq_control_rate_init(&r);
+	memset(actor, 'a', 64);
+	actor[64] = '\0';
+	for (i = 0; i < OMAQ_CONTROL_RATE_RECEIPT_PER_KEY; i++)
+		if (omaq_control_rate_allow(&r, 'r', 7, actor, 4000) != 0)
+			fail("control rate actor allowance");
+	if (omaq_control_rate_allow(&r, 'r', 7, actor, 4000) == 0)
+		fail("control rate actor limit");
+	omaq_control_rate_init(&r);
+	if (omaq_control_rate_allow(&r, 'x', 7, actor, 4000) != 0)
+		fail("control rate kind isolation");
+	for (i = 0; i < OMAQ_CONTROL_RATE_PER_KEY; i++)
+		if (omaq_control_rate_allow(&r, 'e', 7, actor, 4000) != 0 ||
+		    omaq_control_rate_allow(&r, 'd', 7, actor, 4000) != 0)
+			fail("control action rate allowance");
+	if (omaq_control_rate_allow(&r, 'e', 7, actor, 4000) == 0 ||
+	    omaq_control_rate_allow(&r, 'd', 7, actor, 4000) == 0)
+		fail("control action rate limit");
+}
+
 static void test_safety(void)
 {
 	char body[512];
@@ -748,24 +912,123 @@ static void test_ratchet_pins(void)
 
 static void test_group_id(void)
 {
-	char id[16];
+	char id[OMAQ_GROUP_ID_MAX], title48[49], title49[50];
+	const char embedded_nul[] = { 'a', '\0', 'b' };
+	uint8_t group_message[1401];
+	const char *chat_a =
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const char *stable_a =
+		"g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const char *chat_b =
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	const char *stable_b =
+		"g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 	uint32_t n;
 
-	if (omaq_group_id_format(0, id, sizeof(id)) != 0 || strcmp(id, "g0") != 0)
+	memset(title48, 'a', sizeof(title48) - 1);
+	title48[sizeof(title48) - 1] = '\0';
+	memset(title49, 'b', sizeof(title49) - 1);
+	title49[sizeof(title49) - 1] = '\0';
+	memset(group_message, 'a', sizeof(group_message));
+	if (!omaq_group_message_bytes_ok(group_message, 1399) ||
+	    omaq_group_message_bytes_ok(group_message, 1400) ||
+	    omaq_group_message_bytes_ok(group_message, 1401))
+		fail("group message length validation");
+	group_message[10] = '\0';
+	if (omaq_group_message_bytes_ok(group_message, 1399))
+		fail("group message nul validation");
+	group_message[0] = 0xe0;
+	group_message[1] = 0xc0;
+	group_message[2] = 0x80;
+	group_message[10] = 'a';
+	if (omaq_group_message_bytes_ok(group_message, 1399))
+		fail("group message utf8 validation");
+	if (!omaq_group_title_ok("Test room") || !omaq_group_title_ok("Grüppe 🎉") ||
+	    !omaq_group_title_ok(title48) || omaq_group_title_ok(title49) ||
+	    omaq_group_title_ok("") || omaq_group_title_ok("bad\nroom") ||
+	    omaq_group_title_ok("bad\xc0\x80") ||
+	    omaq_group_title_ok("bad\xed\xa0\x80") ||
+	    omaq_group_title_ok("bad\xc2\x85") ||
+	    omaq_group_title_ok("bad\xe0\xc0\x80") ||
+	    omaq_group_title_ok("bad\xed\x7f\x80") ||
+	    omaq_group_title_ok("bad\xf0\xff\x80\x80") ||
+	    omaq_group_title_ok("bad\xf4\x7f\x80\x80") ||
+	    omaq_group_title_bytes_ok(embedded_nul, sizeof(embedded_nul)) ||
+	    omaq_group_member_name_bytes_ok("bad\xc2\x85", 5) ||
+	    omaq_group_member_name_bytes_ok(embedded_nul, sizeof(embedded_nul)))
+		fail("group title validation");
+	omaq_group_reset();
+	if (omaq_group_set_chat_id(0, chat_a) != 0 ||
+	    omaq_group_id_format(0, id, sizeof(id)) != 0 || strcmp(id, stable_a) != 0)
 		fail("group id format");
-	if (omaq_group_id_parse("g0", &n) != 0 || n != 0)
-		fail("group id parse 0");
-	if (omaq_group_id_parse("g12", &n) != 0 || n != 12)
-		fail("group id parse 12");
-	if (omaq_group_id_parse("0", &n) == 0)
-		fail("group id not g");
-	if (omaq_group_id_parse("gx", &n) == 0)
-		fail("group id junk");
-	omaq_group_note_peer(0, 7);
+	if (omaq_group_id_parse(stable_a, &n) != 0 || n != 0)
+		fail("group id parse");
+	if (omaq_group_id_parse("g0", &n) == 0 || omaq_group_id_parse("gx", &n) == 0 ||
+	    omaq_group_set_chat_id(1,
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == 0)
+		fail("group id validation");
+	if (omaq_group_set_title(0, "Test room") != 0)
+		fail("group title cache");
+	omaq_group_set_limit(0, OMAQ_GROUP_PEERS);
+	for (uint32_t peer = 0; peer < OMAQ_GROUP_PEERS; peer++) {
+		char key[65], name[32];
+		snprintf(key, sizeof(key), "%064x", peer + 1);
+		snprintf(name, sizeof(name), "Member %u", peer);
+		if (omaq_group_note_member(0, peer, key, name,
+					   peer == 0 ? ROLE_OWNER : ROLE_MEMBER,
+					   1, peer == 0) != 0)
+			fail("group member add");
+	}
+	if (omaq_group_note_member(0, OMAQ_GROUP_PEERS,
+		"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		"Too many", ROLE_MEMBER, 1, 0) == 0)
+		fail("group member cap");
+	if (omaq_group_count() != 1 || omaq_group_number_at(0) != 0 ||
+	    strcmp(omaq_group_title(0), "Test room") != 0 ||
+	    omaq_group_peer_count(0) != OMAQ_GROUP_PEERS ||
+	    strcmp(omaq_group_peer_name(0, 0), "Member 0") != 0 ||
+	    omaq_group_peer_cached_role(0, 0) != ROLE_OWNER ||
+	    !omaq_group_peer_self(0, 0) || !omaq_group_peer_online(0, 1))
+		fail("group member snapshot");
+	omaq_group_mark_peer_offline(0, 1);
+	if (omaq_group_peer_online(0, 1))
+		fail("group member offline");
+	omaq_group_drop_peer(0, 1);
+	if (omaq_group_peer_count(0) != OMAQ_GROUP_PEERS - 1)
+		fail("group member remove");
+	{
+		uint32_t reused_peer = UINT32_MAX;
+		if (omaq_group_note_member(0, 1,
+			"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			"Replacement", ROLE_MEMBER, 1, 0) != 0 ||
+		    omaq_group_peer_for_key(0,
+			"0000000000000000000000000000000000000000000000000000000000000002",
+			&reused_peer) == 0 ||
+		    omaq_group_peer_for_key(0,
+			"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			&reused_peer) != 0 || reused_peer != 1)
+			fail("group stable key peer reuse");
+	}
 	omaq_group_mark_dissolved(0);
+	if (omaq_group_set_chat_id(0, chat_b) != 0 ||
+	    omaq_group_id_parse(stable_a, &n) == 0 ||
+	    omaq_group_id_parse(stable_b, &n) != 0 || n != 0)
+		fail("group handle reuse identity isolation");
 	omaq_group_reset();
 	if (omaq_group_peer_count(0) != 0 || omaq_group_is_dissolved(0))
 		fail("group identity reset");
+	for (uint32_t group = 0; group < OMAQ_GROUPS_MAX; group++) {
+		if (!omaq_group_can_create() ||
+		    omaq_group_set_title(group, "Capacity") != 0)
+			fail("group cache capacity fill");
+	}
+	if (omaq_group_can_create())
+		fail("group cache ninth simultaneous");
+	omaq_group_mark_dissolved(3);
+	if (!omaq_group_can_create() || omaq_group_set_title(OMAQ_GROUPS_MAX, "Reclaimed") != 0 ||
+	    omaq_group_count() != OMAQ_GROUPS_MAX)
+		fail("group cache reclaim");
+	omaq_group_reset();
 }
 
 static void test_group_plan(void)
@@ -1120,6 +1383,7 @@ int main(void)
 	test_rate_gold();
 	test_rate_hour();
 	test_rate_key_only();
+	test_control_rate();
 	test_safety();
 	test_group_invite();
 	test_ratchet_pins();

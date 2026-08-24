@@ -13,15 +13,22 @@ hb=$(mktemp -d /tmp/omaq-p3b-XXXXXX)
 sb=$(mktemp -d /tmp/omaq-p3bs-XXXXXX)
 fa=$(mktemp /tmp/omaq-p3oa-XXXXXX)
 fb=$(mktemp /tmp/omaq-p3ob-XXXXXX)
+hc=$(mktemp -d /tmp/omaq-p3c-XXXXXX)
+sc=$(mktemp -d /tmp/omaq-p3cs-XXXXXX)
+fc=$(mktemp /tmp/omaq-p3oc-XXXXXX)
 holda=$(mktemp -u /tmp/omaq-p3fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p3fb-XXXXXX)
+holdc=$(mktemp -u /tmp/omaq-p3fc-XXXXXX)
 pa=""
 pb=""
+pc=""
 cleanup() {
-	exec 3>&- 4>&- 2>/dev/null || true
+	exec 3>&- 4>&- 5>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
 	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
-	rm -rf "$ha" "$sa" "$hb" "$sb" "$fa" "$fb" "$holda" "$holdb" "$fa.err" "$fb.err"
+	[ -n "${pc:-}" ] && kill "$pc" 2>/dev/null || true
+	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$fa" "$fb" "$fc" \
+		"$holda" "$holdb" "$holdc" "$fa.err" "$fb.err" "$fc.err"
 }
 trap cleanup EXIT
 
@@ -75,6 +82,22 @@ while [ "$i" -lt 90 ]; do
 	sleep 1
 done
 [ "$i" -lt 90 ] || { echo "phase3: direct contacts did not come online" >&2; exit 1; }
+
+# Group numbers are process-local. Give B a pre-existing g0 so A's room must
+# still authorize correctly when B allocates a different local number.
+echo '{"op":"group.create","title":"preexisting"}' >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"group.info"' "$fb" | grep -a -q '"title":"preexisting"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase3: recipient pre-existing group missing" >&2; exit 1; }
+pre_gid=$(grep -a '"event":"group.info"' "$fb" | grep -a '"title":"preexisting"' |
+	tail -1 | sed -n 's/.*"group":"\([^"]*\)".*/\1/p')
+[ -n "$pre_gid" ] || { echo "phase3: pre-existing stable id missing" >&2; exit 1; }
 
 echo '{"op":"group.create","title":"room"}' >&3
 i=0
@@ -140,14 +163,83 @@ fi
 echo '{"op":"contact.decide","accept":true}' >&4
 i=0
 while [ "$i" -lt 90 ]; do
-	if grep -a '"event":"group.changed"' "$fa" | grep -a '"action":"join"' |
-	   grep -a -q '"peer":"1"'; then
+	if grep -a '"event":"group.changed"' "$fa" |
+	   grep -a -q '"action":"member.join"'; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 1
 done
-[ "$i" -lt 90 ] || { echo "phase3: accepted member did not join" >&2; exit 1; }
+if [ "$i" -ge 90 ]; then
+	echo "phase3: accepted member did not join" >&2
+	tail -40 "$fa" >&2
+	tail -40 "$fb" >&2
+	tail -n 20 -- "$fa.err" "$fb.err" >&2
+	exit 1
+fi
+grep -a '"event":"group.info"' "$fa" | grep -a '"title":"room"' |
+	grep -a -q '"limit":10' || { echo "phase3: group info/limit missing" >&2; exit 1; }
+grep -a '"event":"group.member"' "$fa" | grep -a -q '"online":true' || {
+	echo "phase3: online group member snapshot missing" >&2
+	exit 1
+}
+member_key=$(grep -a '"event":"group.member"' "$fa" | grep -a '"self":false' |
+	tail -1 | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
+[ -n "$member_key" ] || { echo "phase3: stable moderation key missing" >&2; exit 1; }
+printf '{"op":"group.member.setRole","group":"%s","member":"%s","role":"admin"}\n' \
+	"$gid" "$member_key" >&3
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"group.member"' "$fa" | grep -a '"key":"'"$member_key"'"' |
+	   grep -a -q '"role":"admin"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+if [ "$i" -ge 50 ]; then
+	echo "phase3: stable-key role change missing" >&2
+	tail -40 "$fa" >&2
+	echo "--- B ---" >&2
+	tail -40 "$fb" >&2
+	echo "--- ERRORS ---" >&2
+	tail -n 20 -- "$fa.err" "$fb.err" >&2
+	exit 1
+fi
+
+# Tox NGC private groups cannot be restored from a chat ID alone. A cold
+# helper must visibly prune a registry entry missing from Tox saved state,
+# never fabricate a disconnected phantom group.
+cp -a "$ha/." "$hc/"
+rm -f "$hc/tox.save"
+mkdir -p "$hc/history/g7"
+printf '%s\n' '{"id":"legacy","text":"archived"}' >"$hc/history/g7/messages.jsonl"
+mkfifo "$holdc"
+OMAQ_HOME="$hc" OMAQ_STATE="$sc" "$bin" >"$fc" 2>"$fc.err" <"$holdc" &
+pc=$!
+exec 5>"$holdc"
+sleep 0.5
+echo '{"op":"status"}' >&5
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a -q '"code":"group_orphaned"' "$fc" &&
+	   grep -a -q '"code":"legacy_group_state_archived"' "$fc"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+if [ "$i" -ge 50 ] ||
+   grep -a '"event":"group.info"' "$fc" | grep -a -q '"group":"'"$gid"'"'; then
+	echo "phase3: orphaned private group was not pruned" >&2
+	tail -30 "$fc" >&2
+	tail -n 20 -- "$fc.err" >&2
+	exit 1
+fi
+exec 5>&-
+kill "$pc" 2>/dev/null || true
+wait "$pc" 2>/dev/null || true
+pc=""
 
 ok=0
 i=0
@@ -165,12 +257,111 @@ grep -a '"event":"message"' "$fa" | grep -a -q '"request":"phase3-group-hi-' || 
 	echo "phase3: group message request correlation missing" >&2
 	exit 1
 }
+grep -a '"event":"message"' "$fb" | grep -a '"text":"hi"' |
+	grep -E -a -q '"sender":"[0-9a-f]{64}"' || {
+	echo "phase3: stable group sender identity missing" >&2
+	exit 1
+}
+message_id=$(grep -a '"event":"message"' "$fa" | grep -a '"request":"phase3-group-hi-' |
+	tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+recipient_gid=$(grep -a '"event":"message"' "$fb" | grep -a '"text":"hi"' | tail -1 |
+	sed -n 's/.*"conversation":"\([^"]*\)".*/\1/p')
+[ -n "$message_id" ] || { echo "phase3: group message id missing" >&2; exit 1; }
+[ -n "$recipient_gid" ] || { echo "phase3: recipient local group id missing" >&2; exit 1; }
+[ "$recipient_gid" = "$gid" ] || { echo "phase3: stable group id differs across peers" >&2; exit 1; }
+printf '{"op":"message.react","conversation":"%s","id":"%s","text":"👍"}\n' "$recipient_gid" "$message_id" >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"message.reaction"' "$fa" | grep -a '"id":"'"$message_id"'"' |
+	   grep -E -a -q '"actor":"[0-9a-f]{64}"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 40 ] || { echo "phase3: group reaction missing" >&2; exit 1; }
+printf '{"op":"receipt.send","conversation":"%s","id":"%s","state":"read"}\n' "$recipient_gid" "$message_id" >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$message_id"'"' |
+	   grep -a -q '"state":"read"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 40 ] || { echo "phase3: group read receipt missing" >&2; exit 1; }
+read_events_before=$(grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$message_id"'"' |
+	grep -a -c '"state":"read"' || true)
+i=0
+while [ "$i" -lt 35 ]; do
+	printf '{"op":"receipt.send","conversation":"%s","id":"%s","state":"read"}\n' "$recipient_gid" "$message_id" >&4
+	i=$((i + 1))
+done
+sleep 1
+read_events_after=$(grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$message_id"'"' |
+	grep -a -c '"state":"read"' || true)
+[ "$read_events_after" -eq "$read_events_before" ] || {
+	echo "phase3: duplicate group receipt emitted repeated updates" >&2
+	exit 1
+}
 
-peer=$(grep -a '"action":"join"' "$fa" | tail -1 | sed -n 's/.*"peer":"\([^"]*\)".*/\1/p')
-if [ -n "$peer" ]; then
-	printf '{"op":"group.member.setRole","group":"%s","member":"%s","role":"admin"}\n' "$gid" "$peer" >&3
+if [ -n "$member_key" ]; then
+	printf '{"op":"group.member.setRole","group":"%s","member":"%s","role":"member"}\n' "$gid" "$member_key" >&3
 	sleep 0.5
+	self_leave_before=$(grep -a '"event":"group.changed"' "$fb" | grep -a '"group":"'"$gid"'"' |
+		grep -a -c '"action":"leave"' || true)
+	printf '{"op":"group.member.remove","group":"%s","member":"%s"}\n' "$gid" "$member_key" >&3
+	i=0
+	while [ "$i" -lt 50 ]; do
+		self_leave_after=$(grep -a '"event":"group.changed"' "$fb" | grep -a '"group":"'"$gid"'"' |
+			grep -a -c '"action":"leave"' || true)
+		if [ "$self_leave_after" -gt "$self_leave_before" ]; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	[ "$i" -lt 50 ] || { echo "phase3: kicked self group was not removed" >&2; exit 1; }
+	i=0
+	while [ "$i" -lt 30 ]; do
+		if grep -a '"event":"group.info"' "$fa" | grep -a '"group":"'"$gid"'"' |
+			tail -1 | grep -a -q '"members":1'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ "$i" -lt 30 ] || { echo "phase3: kicked member remained in initiator cache" >&2; exit 1; }
 fi
+
+# A failed registry pre-commit must not execute the irreversible Tox leave.
+registry_errors_before=$(grep -a -c '"code":"group_registry_failed"' "$fb" || true)
+chmod 0500 "$hb"
+printf '{"op":"group.leave","group":"%s"}\n' "$pre_gid" >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	registry_errors_after=$(grep -a -c '"code":"group_registry_failed"' "$fb" || true)
+	if [ "$registry_errors_after" -gt "$registry_errors_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+chmod 0700 "$hb"
+[ "$i" -lt 30 ] || { echo "phase3: registry write failure not reported" >&2; exit 1; }
+pre_info_before=$(grep -a '"event":"group.info"' "$fb" | grep -a -c '"group":"'"$pre_gid"'"' || true)
+echo '{"op":"status"}' >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	pre_info_after=$(grep -a '"event":"group.info"' "$fb" | grep -a -c '"group":"'"$pre_gid"'"' || true)
+	if [ "$pre_info_after" -gt "$pre_info_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: failed leave mutated the group" >&2; exit 1; }
 
 echo "{\"op\":\"group.dissolve\",\"group\":\"$gid\"}" >&3
 i=0

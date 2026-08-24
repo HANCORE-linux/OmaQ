@@ -7,8 +7,10 @@
 
 - `file.send` / `file.accept` / `file.cancel` over Tox `TOX_FILE_KIND_DATA`
 - Incoming transfer stays paused until `file.accept`; default dest `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported.
-- `call.start` / `call.answer` / `call.stop`: 1:1 ToxAV signaling (48 kbit, video 0). PCM capture/playback is not wired; `verify-6` asserts start/stop, not audible audio.
-- Empty audio receive callback registered so `toxav_answer` can init the codec
+- `call.start` / `call.answer` / `call.stop`: direct-chat-only ToxAV signaling (48 kbit, video 0).
+- `helper/av.c` uses bounded 48 kHz mono PCM rings. Capture and playback run on cancelable `libpulse-simple` worker threads, while all ToxAV calls remain on the helper iteration thread.
+- Incoming audio is downmixed from stereo when needed. Unsupported rates are dropped rather than interpreted incorrectly.
+- `verify-6` requires both peers to reach `active`, keeps helper RSS below the existing bound, and fails if either local audio backend reports `audio_unavailable`.
 - Groups (`g…`) return `forbidden` for file and call
 - Chat page: file path, accept/decline, small image preview of the dest, call/answer/hang up
 - `make verify-6`; `.phase` is 6
@@ -20,7 +22,7 @@
 make verify-6
 ```
 
-Measured call-peak RSS: **21544 kB** (`.rss-call-kb`). Gate is 40960 kB (OmaQ.md ≤ 40 MB).
+The latest measured call-peak RSS is recorded in `.rss-call-kb`. Gate is 40960 kB (OmaQ.md ≤ 40 MB).
 
 ## Stays out
 

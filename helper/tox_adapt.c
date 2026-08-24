@@ -36,6 +36,7 @@ struct omaq_tox {
 	omaq_on_presence on_presence;
 	omaq_on_typing on_typing;
 	omaq_on_call on_call;
+	omaq_on_audio on_audio;
 	void *ud;
 	int online;
 	time_t next_bootstrap;
@@ -75,11 +76,30 @@ static void hex_of(const uint8_t *in, size_t n, char *out)
 
 static int hex_in(const char *hex, uint8_t *out, size_t n)
 {
+	if (!hex || !out)
+		return -1;
 	for (size_t i = 0; i < n; i++) {
-		unsigned int v;
-		if (sscanf(hex + i * 2, "%2x", &v) != 1)
+		unsigned char hi = (unsigned char)hex[i * 2];
+		unsigned char lo = (unsigned char)hex[i * 2 + 1];
+		unsigned int a, b;
+
+		if (hi >= '0' && hi <= '9')
+			a = hi - '0';
+		else if (hi >= 'a' && hi <= 'f')
+			a = hi - 'a' + 10;
+		else if (hi >= 'A' && hi <= 'F')
+			a = hi - 'A' + 10;
+		else
 			return -1;
-		out[i] = (uint8_t)v;
+		if (lo >= '0' && lo <= '9')
+			b = lo - '0';
+		else if (lo >= 'a' && lo <= 'f')
+			b = lo - 'a' + 10;
+		else if (lo >= 'A' && lo <= 'F')
+			b = lo - 'A' + 10;
+		else
+			return -1;
+		out[i] = (uint8_t)((a << 4) | b);
 	}
 	return 0;
 }
@@ -122,69 +142,82 @@ static void save_path(const char *home, char *buf, size_t n)
 	snprintf(buf, n, "%s/tox.save", home);
 }
 
-void omaq_tox_save(struct omaq_tox *t)
+int omaq_tox_save(struct omaq_tox *t)
 {
 	char path[576], tmp[580];
-	FILE *f;
+	FILE *f = NULL;
 	size_t n, wr, outn;
 	uint8_t *plain, *out;
 	Tox_Err_Encryption eerr = TOX_ERR_ENCRYPTION_OK;
+	int dir_fd = -1, rc = -1;
 
 	if (!t || !t->tox)
-		return;
+		return -1;
 	n = tox_get_savedata_size(t->tox);
-	plain = malloc(n);
-	if (!plain)
-		return;
+	if (n == 0 || !(plain = malloc(n)))
+		return -1;
 	tox_get_savedata(t->tox, plain);
 	out = plain;
 	outn = n;
 	if (t->pass[0]) {
 		outn = n + tox_pass_encryption_extra_length();
 		out = malloc(outn);
-		if (!out) {
-			explicit_bzero(plain, n);
-			free(plain);
-			return;
-		}
+		if (!out)
+			goto done;
 		if (!tox_pass_encrypt(plain, n, (const uint8_t *)t->pass, strlen(t->pass),
-				      out, &eerr)) {
-			explicit_bzero(plain, n);
-			free(plain);
-			explicit_bzero(out, outn);
-			free(out);
-			return;
-		}
+				      out, &eerr))
+			goto done;
 		explicit_bzero(plain, n);
 		free(plain);
 		plain = NULL;
 	}
 	save_path(t->home, path, sizeof(path));
-	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) {
-		explicit_bzero(out, outn);
-		free(out);
-		return;
-	}
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+		goto done;
 	f = fopen(tmp, "wb");
-	if (!f) {
-		explicit_bzero(out, outn);
-		free(out);
-		return;
-	}
+	if (!f)
+		goto done;
 	wr = fwrite(out, 1, outn, f);
-	if (wr != outn || fflush(f) != 0 || fsync(fileno(f)) != 0) {
+	{
+		int write_failed = wr != outn;
+		if (!write_failed && fflush(f) != 0)
+			write_failed = 1;
+		if (!write_failed && fsync(fileno(f)) != 0)
+			write_failed = 1;
+		if (!write_failed && fchmod(fileno(f), 0600) != 0)
+			write_failed = 1;
+		if (fclose(f) != 0)
+			write_failed = 1;
+		f = NULL;
+		if (write_failed) {
+			unlink(tmp);
+			goto done;
+		}
+	}
+	if (rename(tmp, path) != 0) {
+		unlink(tmp);
+		goto done;
+	}
+	rc = 1;
+	dir_fd = open(t->home, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+	if (dir_fd >= 0 && fsync(dir_fd) == 0)
+		rc = 0;
+done:
+	if (dir_fd >= 0)
+		close(dir_fd);
+	if (f) {
 		fclose(f);
 		unlink(tmp);
+	}
+	if (out && out != plain) {
 		explicit_bzero(out, outn);
 		free(out);
-		return;
 	}
-	fchmod(fileno(f), 0600);
-	fclose(f);
-	explicit_bzero(out, outn);
-	free(out);
-	if (rename(tmp, path) != 0)
-		unlink(tmp);
+	if (plain) {
+		explicit_bzero(plain, n);
+		free(plain);
+	}
+	return rc;
 }
 
 static int nickname_ok(const char *name)
@@ -222,12 +255,23 @@ int omaq_tox_self_name(struct omaq_tox *t, char *out, size_t n)
 int omaq_tox_set_name(struct omaq_tox *t, const char *name)
 {
 	Tox_Err_Set_Info error = TOX_ERR_SET_INFO_OK;
+	uint8_t old_name[TOX_MAX_NAME_LENGTH] = {0};
+	size_t old_len;
 
 	if (!t || !t->tox || nickname_ok(name) != 0)
 		return -1;
+	old_len = tox_self_get_name_size(t->tox);
+	if (old_len > sizeof(old_name))
+		return -1;
+	if (old_len)
+		tox_self_get_name(t->tox, old_name);
 	if (!tox_self_set_name(t->tox, (const uint8_t *)name, strlen(name), &error))
 		return -1;
-	omaq_tox_save(t);
+	if (omaq_tox_save(t) < 0) {
+		Tox_Err_Set_Info rollback_error = TOX_ERR_SET_INFO_OK;
+		(void)tox_self_set_name(t->tox, old_name, old_len, &rollback_error);
+		return -1;
+	}
 	return 0;
 }
 
@@ -301,16 +345,11 @@ static void on_gmsg(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Message_Type typ
 		    const uint8_t *message, size_t length, uint32_t mid, void *ud)
 {
 	struct omaq_tox *t = ud;
-	char tmp[1400];
 	(void)tox;
 	(void)type;
 	(void)mid;
-	if (length >= sizeof(tmp))
-		length = sizeof(tmp) - 1;
-	memcpy(tmp, message, length);
-	tmp[length] = '\0';
 	if (t->on_gmsg)
-		t->on_gmsg(t->ud, gnum, peer, tmp);
+		t->on_gmsg(t->ud, gnum, peer, message, length);
 }
 
 static void on_gjoin(Tox *tox, uint32_t gnum, uint32_t peer, void *ud)
@@ -318,7 +357,51 @@ static void on_gjoin(Tox *tox, uint32_t gnum, uint32_t peer, void *ud)
 	struct omaq_tox *t = ud;
 	(void)tox;
 	if (t->on_gpeer)
-		t->on_gpeer(t->ud, gnum, peer, 1);
+		t->on_gpeer(t->ud, gnum, peer, 1, 0);
+}
+
+static void on_gpeer_name(Tox *tox, uint32_t gnum, uint32_t peer,
+			  const uint8_t *name, size_t length, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	(void)name;
+	(void)length;
+	if (t->on_gpeer)
+		t->on_gpeer(t->ud, gnum, peer, 2, 0);
+}
+
+static void on_gmoderation(Tox *tox, uint32_t gnum, uint32_t source,
+			   uint32_t target, Tox_Group_Mod_Event type, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	(void)source;
+	if (t->on_gpeer)
+		t->on_gpeer(t->ud, gnum, target,
+			    type == TOX_GROUP_MOD_EVENT_KICK ? 0 : 2,
+			    type == TOX_GROUP_MOD_EVENT_KICK ? 1 : 0);
+}
+
+static void on_gpeer_limit(Tox *tox, uint32_t gnum, uint32_t limit, void *ud)
+{
+	struct omaq_tox *t = ud;
+	Tox_Err_Group_Self_Query err = TOX_ERR_GROUP_SELF_QUERY_OK;
+	uint32_t peer = tox_group_self_get_peer_id(tox, gnum, &err);
+
+	(void)limit;
+	if (t->on_gpeer && err == TOX_ERR_GROUP_SELF_QUERY_OK)
+		t->on_gpeer(t->ud, gnum, peer, 4, 0);
+}
+
+static void on_gself_join(Tox *tox, uint32_t gnum, void *ud)
+{
+	struct omaq_tox *t = ud;
+	Tox_Err_Group_Self_Query err = TOX_ERR_GROUP_SELF_QUERY_OK;
+	uint32_t peer = tox_group_self_get_peer_id(tox, gnum, &err);
+
+	if (t->on_gpeer && err == TOX_ERR_GROUP_SELF_QUERY_OK)
+		t->on_gpeer(t->ud, gnum, peer, 3, 0);
 }
 
 static void on_gexit(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Group_Exit_Type xt,
@@ -326,13 +409,14 @@ static void on_gexit(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Group_Exit_Type
 {
 	struct omaq_tox *t = ud;
 	(void)tox;
-	(void)xt;
 	(void)name;
 	(void)nlen;
 	(void)part;
 	(void)plen;
 	if (t->on_gpeer)
-		t->on_gpeer(t->ud, gnum, peer, 0);
+		t->on_gpeer(t->ud, gnum, peer, 0,
+			    xt == TOX_GROUP_EXIT_TYPE_QUIT ||
+			    xt == TOX_GROUP_EXIT_TYPE_KICK);
 }
 
 static int role_to_tox(int r)
@@ -414,13 +498,11 @@ static void on_file_ctrl(Tox *tox, uint32_t friend, uint32_t fnum, Tox_File_Cont
 static void on_av_audio(ToxAV *av, uint32_t friend, const int16_t *pcm, size_t samples,
 			uint8_t channels, uint32_t rate, void *ud)
 {
+	struct omaq_tox *t = ud;
+
 	(void)av;
-	(void)friend;
-	(void)pcm;
-	(void)samples;
-	(void)channels;
-	(void)rate;
-	(void)ud;
+	if (t->on_audio)
+		t->on_audio(t->ud, friend, pcm, samples, channels, rate);
 }
 
 static void on_av_call(ToxAV *av, uint32_t friend, bool audio, bool video, void *ud)
@@ -431,7 +513,7 @@ static void on_av_call(ToxAV *av, uint32_t friend, bool audio, bool video, void 
 	(void)audio;
 	(void)video;
 	if (t->on_call)
-		t->on_call(t->ud, friend, 1);
+		t->on_call(t->ud, friend, OMAQ_TOX_CALL_INCOMING);
 }
 
 static void on_av_state(ToxAV *av, uint32_t friend, uint32_t state, void *ud)
@@ -442,7 +524,11 @@ static void on_av_state(ToxAV *av, uint32_t friend, uint32_t state, void *ud)
 	if (state == TOXAV_FRIEND_CALL_STATE_FINISHED ||
 	    state == TOXAV_FRIEND_CALL_STATE_ERROR) {
 		if (t->on_call)
-			t->on_call(t->ud, friend, 0);
+			t->on_call(t->ud, friend, OMAQ_TOX_CALL_ENDED);
+	} else if (state & (TOXAV_FRIEND_CALL_STATE_SENDING_A |
+			    TOXAV_FRIEND_CALL_STATE_ACCEPTING_A)) {
+		if (t->on_call)
+			t->on_call(t->ud, friend, OMAQ_TOX_CALL_ACTIVE);
 	}
 }
 
@@ -549,6 +635,10 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	tox_callback_group_invite(t->tox, on_ginv);
 	tox_callback_group_message(t->tox, on_gmsg);
 	tox_callback_group_peer_join(t->tox, on_gjoin);
+	tox_callback_group_peer_name(t->tox, on_gpeer_name);
+	tox_callback_group_moderation(t->tox, on_gmoderation);
+	tox_callback_group_peer_limit(t->tox, on_gpeer_limit);
+	tox_callback_group_self_join(t->tox, on_gself_join);
 	tox_callback_group_peer_exit(t->tox, on_gexit);
 	tox_callback_file_recv(t->tox, on_file_recv);
 	tox_callback_file_chunk_request(t->tox, on_file_chunk_req);
@@ -567,7 +657,10 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 		(void)omaq_tox_set_name(t, "omaq");
 	bootstrap_tox(t, 1);
 	t->next_bootstrap = time(NULL) + 10;
-	omaq_tox_save(t);
+	if (omaq_tox_save(t) < 0) {
+		omaq_tox_discard(t);
+		return NULL;
+	}
 	return t;
 
 savedata_fail:
@@ -611,28 +704,48 @@ void omaq_tox_close(struct omaq_tox *t)
 {
 	if (!t)
 		return;
-	omaq_tox_save(t);
+	(void)omaq_tox_save(t);
 	omaq_tox_discard(t);
 }
 
 int omaq_tox_protect(struct omaq_tox *t, const char *pass)
 {
+	char old_pass[sizeof(t->pass)];
+
 	if (!t || !t->tox)
 		return -1;
-	if (store_pass(t, pass) != 0)
+	snprintf(old_pass, sizeof(old_pass), "%s", t->pass);
+	if (store_pass(t, pass) != 0) {
+		explicit_bzero(old_pass, sizeof(old_pass));
 		return -1;
-	omaq_tox_save(t);
+	}
+	if (omaq_tox_save(t) < 0) {
+		wipe_pass(t);
+		if (old_pass[0])
+			(void)store_pass(t, old_pass);
+		explicit_bzero(old_pass, sizeof(old_pass));
+		return -1;
+	}
+	explicit_bzero(old_pass, sizeof(old_pass));
 	return 0;
 }
 
 int omaq_tox_unprotect(struct omaq_tox *t, const char *pass)
 {
+	char old_pass[sizeof(t->pass)];
+
 	if (!t || !t->tox || !t->pass[0] || !pass)
 		return -1;
 	if (strcmp(t->pass, pass) != 0)
 		return -1;
+	snprintf(old_pass, sizeof(old_pass), "%s", t->pass);
 	wipe_pass(t);
-	omaq_tox_save(t);
+	if (omaq_tox_save(t) < 0) {
+		(void)store_pass(t, old_pass);
+		explicit_bzero(old_pass, sizeof(old_pass));
+		return -1;
+	}
+	explicit_bzero(old_pass, sizeof(old_pass));
 	return 0;
 }
 
@@ -706,11 +819,18 @@ int omaq_tox_friend_pk_hex(struct omaq_tox *t, uint32_t friend_number, char *hex
 int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number)
 {
 	Tox_Err_Friend_Delete err = TOX_ERR_FRIEND_DELETE_OK;
-	if (!t || !t->tox)
+	Tox_Err_Friend_Get_Public_Key key_err = TOX_ERR_FRIEND_GET_PUBLIC_KEY_OK;
+	uint8_t key[TOX_PUBLIC_KEY_SIZE];
+
+	if (!t || !t->tox ||
+	    !tox_friend_get_public_key(t->tox, friend_number, key, &key_err) ||
+	    !tox_friend_delete(t->tox, friend_number, &err))
 		return -1;
-	if (!tox_friend_delete(t->tox, friend_number, &err))
+	if (omaq_tox_save(t) < 0) {
+		Tox_Err_Friend_Add add_err = TOX_ERR_FRIEND_ADD_OK;
+		(void)tox_friend_add_norequest(t->tox, key, &add_err);
 		return -1;
-	omaq_tox_save(t);
+	}
 	return 0;
 }
 
@@ -789,15 +909,19 @@ uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32)
 
 int omaq_tox_nospam_rotate(struct omaq_tox *t)
 {
-	uint32_t nospam = 0;
+	uint32_t nospam = 0, old_nospam;
 	if (!t || !t->tox)
 		return -1;
 	if (getentropy(&nospam, sizeof(nospam)) != 0)
 		nospam = (uint32_t)getpid() ^ (uint32_t)time(NULL);
-	if (nospam == tox_self_get_nospam(t->tox))
+	old_nospam = tox_self_get_nospam(t->tox);
+	if (nospam == old_nospam)
 		nospam ^= 0x9e3779b9u;
 	tox_self_set_nospam(t->tox, nospam);
-	omaq_tox_save(t);
+	if (omaq_tox_save(t) < 0) {
+		tox_self_set_nospam(t->tox, old_nospam);
+		return -1;
+	}
 	return 0;
 }
 
@@ -815,7 +939,11 @@ int omaq_tox_friend_add(struct omaq_tox *t, const char *addr_hex, const char *ms
 	fn = tox_friend_add(t->tox, addr, (const uint8_t *)msg, strlen(msg), &err);
 	if (err != TOX_ERR_FRIEND_ADD_OK)
 		return -1;
-	omaq_tox_save(t);
+	if (omaq_tox_save(t) < 0) {
+		Tox_Err_Friend_Delete delete_err = TOX_ERR_FRIEND_DELETE_OK;
+		(void)tox_friend_delete(t->tox, fn, &delete_err);
+		return -1;
+	}
 	if (fn_out)
 		*fn_out = fn;
 	return 0;
@@ -826,9 +954,17 @@ int omaq_tox_friend_accept(struct omaq_tox *t, const uint8_t *pk32)
 	Tox_Err_Friend_Add err = TOX_ERR_FRIEND_ADD_OK;
 	if (!t || !pk32)
 		return -1;
-	tox_friend_add_norequest(t->tox, pk32, &err);
-	omaq_tox_save(t);
-	return err == TOX_ERR_FRIEND_ADD_OK ? 0 : -1;
+	{
+		uint32_t friend_number = tox_friend_add_norequest(t->tox, pk32, &err);
+		if (err != TOX_ERR_FRIEND_ADD_OK)
+			return -1;
+		if (omaq_tox_save(t) < 0) {
+			Tox_Err_Friend_Delete delete_err = TOX_ERR_FRIEND_DELETE_OK;
+			(void)tox_friend_delete(t->tox, friend_number, &delete_err);
+			return -1;
+		}
+	}
+	return 0;
 }
 
 int omaq_tox_send(struct omaq_tox *t, uint32_t friend_number, const char *text)
@@ -898,20 +1034,36 @@ void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
 		t->ud = ud;
 }
 
+static size_t group_nickname(struct omaq_tox *t, uint8_t *out, size_t n)
+{
+	size_t len;
+
+	if (!t || !t->tox || !out || n < 5)
+		return 0;
+	len = tox_self_get_name_size(t->tox);
+	if (len == 0 || len >= n) {
+		memcpy(out, "omaq", 4);
+		return 4;
+	}
+	tox_self_get_name(t->tox, out);
+	return len;
+}
+
 int omaq_tox_group_new(struct omaq_tox *t, const char *title, uint32_t *gnum)
 {
 	Tox_Err_Group_New err = TOX_ERR_GROUP_NEW_OK;
 	uint32_t n;
-	static const uint8_t nick[] = "omaq";
+	uint8_t nick[TOX_MAX_NAME_LENGTH + 1];
+	size_t nick_len;
 
 	if (!t || !t->tox || !title || !gnum)
 		return -1;
+	nick_len = group_nickname(t, nick, sizeof(nick));
 	n = tox_group_new(t->tox, TOX_GROUP_PRIVACY_STATE_PRIVATE,
-			  (const uint8_t *)title, strlen(title), nick, 4, &err);
+			  (const uint8_t *)title, strlen(title), nick, nick_len, &err);
 	if (err != TOX_ERR_GROUP_NEW_OK || n == UINT32_MAX)
 		return -1;
 	*gnum = n;
-	omaq_tox_save(t);
 	return 0;
 }
 
@@ -939,15 +1091,17 @@ int omaq_tox_group_invite_accept(struct omaq_tox *t, uint32_t friend,
 {
 	Tox_Err_Group_Invite_Accept err = TOX_ERR_GROUP_INVITE_ACCEPT_OK;
 	uint32_t n;
-	static const uint8_t nick[] = "omaq";
+	uint8_t nick[TOX_MAX_NAME_LENGTH + 1];
+	size_t nick_len;
 
 	if (!t || !t->tox || !data || !gnum)
 		return -1;
-	n = tox_group_invite_accept(t->tox, friend, data, len, nick, 4, NULL, 0, &err);
+	nick_len = group_nickname(t, nick, sizeof(nick));
+	n = tox_group_invite_accept(t->tox, friend, data, len, nick, nick_len,
+				    NULL, 0, &err);
 	if (err != TOX_ERR_GROUP_INVITE_ACCEPT_OK || n == UINT32_MAX)
 		return -1;
 	*gnum = n;
-	omaq_tox_save(t);
 	return 0;
 }
 
@@ -978,8 +1132,7 @@ int omaq_tox_group_leave(struct omaq_tox *t, uint32_t gnum)
 		return -1;
 	if (!tox_group_leave(t->tox, gnum, NULL, 0, &err))
 		return -1;
-	omaq_tox_save(t);
-	return 0;
+	return omaq_tox_save(t) != 0 ? 1 : 0;
 }
 
 int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text)
@@ -1032,6 +1185,193 @@ int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer)
 	if (err != TOX_ERR_GROUP_SELF_QUERY_OK)
 		return -1;
 	*peer = p;
+	return 0;
+}
+
+int omaq_tox_group_set_peer_limit(struct omaq_tox *t, uint32_t gnum, uint16_t limit)
+{
+	Tox_Err_Group_Set_Peer_Limit err = TOX_ERR_GROUP_SET_PEER_LIMIT_OK;
+
+	if (!t || !t->tox || limit == 0)
+		return -1;
+	if (!tox_group_set_peer_limit(t->tox, gnum, limit, &err))
+		return -1;
+	return 0;
+}
+
+int omaq_tox_group_peer_limit(struct omaq_tox *t, uint32_t gnum, uint16_t *limit)
+{
+	Tox_Err_Group_State_Query err = TOX_ERR_GROUP_STATE_QUERY_OK;
+	uint16_t value;
+
+	if (!t || !t->tox || !limit)
+		return -1;
+	value = tox_group_get_peer_limit(t->tox, gnum, &err);
+	if (err != TOX_ERR_GROUP_STATE_QUERY_OK || value == 0)
+		return -1;
+	*limit = value;
+	return 0;
+}
+
+int omaq_tox_group_count(struct omaq_tox *t, size_t *count)
+{
+	if (!t || !t->tox || !count)
+		return -1;
+	*count = tox_group_get_number_groups(t->tox);
+	return 0;
+}
+
+int omaq_tox_group_numbers(struct omaq_tox *t, uint32_t *groups, size_t max,
+			   size_t *count)
+{
+	size_t total, found = 0;
+
+	if (!t || !t->tox || !groups || !count)
+		return -1;
+	total = tox_group_get_number_groups(t->tox);
+	if (total > max)
+		return -1;
+	for (uint32_t candidate = 0; candidate < 65536 && found < total;
+	     candidate++) {
+		Tox_Err_Group_State_Query err = TOX_ERR_GROUP_STATE_QUERY_OK;
+		uint8_t id[TOX_GROUP_CHAT_ID_SIZE];
+		if (tox_group_get_chat_id(t->tox, candidate, id, &err) &&
+		    err == TOX_ERR_GROUP_STATE_QUERY_OK)
+			groups[found++] = candidate;
+	}
+	if (found != total)
+		return -1;
+	*count = found;
+	return 0;
+}
+
+int omaq_tox_group_by_chat_id(struct omaq_tox *t, const char *chat_id,
+			      uint32_t *gnum)
+{
+	Tox_Err_Group_By_Id err = TOX_ERR_GROUP_BY_ID_OK;
+	uint8_t id[TOX_GROUP_CHAT_ID_SIZE];
+	uint32_t group;
+
+	if (!t || !t->tox || !chat_id || strlen(chat_id) != 64 || !gnum ||
+	    hex_in(chat_id, id, sizeof(id)) != 0)
+		return -1;
+	group = tox_group_by_id(t->tox, id, &err);
+	if (err != TOX_ERR_GROUP_BY_ID_OK || group == UINT32_MAX)
+		return -1;
+	*gnum = group;
+	return 0;
+}
+
+int omaq_tox_group_registry_proof(struct omaq_tox *t, const char *chat_id,
+				  char *out, size_t n)
+{
+	static const uint8_t domain[] = "OMAQGRP1";
+	uint8_t input[sizeof(domain) - 1 + TOX_SECRET_KEY_SIZE + TOX_GROUP_CHAT_ID_SIZE];
+	uint8_t digest[TOX_HASH_LENGTH];
+
+	if (!t || !t->tox || !chat_id || strlen(chat_id) != 64 ||
+	    !out || n < TOX_HASH_LENGTH * 2 + 1 ||
+	    hex_in(chat_id, input + sizeof(domain) - 1 + TOX_SECRET_KEY_SIZE,
+		   TOX_GROUP_CHAT_ID_SIZE) != 0)
+		return -1;
+	memcpy(input, domain, sizeof(domain) - 1);
+	tox_self_get_secret_key(t->tox, input + sizeof(domain) - 1);
+	if (omaq_tox_hash(input, sizeof(input), digest) != 0) {
+		explicit_bzero(input, sizeof(input));
+		return -1;
+	}
+	explicit_bzero(input, sizeof(input));
+	hex_of(digest, sizeof(digest), out);
+	explicit_bzero(digest, sizeof(digest));
+	return 0;
+}
+
+int omaq_tox_group_chat_id_hex(struct omaq_tox *t, uint32_t gnum, char *out,
+				       size_t n)
+{
+	Tox_Err_Group_State_Query err = TOX_ERR_GROUP_STATE_QUERY_OK;
+	uint8_t chat_id[TOX_GROUP_CHAT_ID_SIZE];
+
+	if (!t || !t->tox || !out || n < TOX_GROUP_CHAT_ID_SIZE * 2 + 1)
+		return -1;
+	if (!tox_group_get_chat_id(t->tox, gnum, chat_id, &err) ||
+	    err != TOX_ERR_GROUP_STATE_QUERY_OK)
+		return -1;
+	hex_of(chat_id, sizeof(chat_id), out);
+	return 0;
+}
+
+int omaq_tox_group_name(struct omaq_tox *t, uint32_t gnum, char *out, size_t n,
+			size_t *out_len)
+{
+	Tox_Err_Group_State_Query err = TOX_ERR_GROUP_STATE_QUERY_OK;
+	size_t len;
+
+	if (!t || !t->tox || !out || n == 0 || !out_len)
+		return -1;
+	len = tox_group_get_name_size(t->tox, gnum, &err);
+	if (err != TOX_ERR_GROUP_STATE_QUERY_OK || len == 0 || len + 1 > n)
+		return -1;
+	if (!tox_group_get_name(t->tox, gnum, (uint8_t *)out, &err) ||
+	    err != TOX_ERR_GROUP_STATE_QUERY_OK)
+		return -1;
+	out[len] = '\0';
+	*out_len = len;
+	return 0;
+}
+
+int omaq_tox_group_peer_info(struct omaq_tox *t, uint32_t gnum, uint32_t peer,
+			     char *key_hex, size_t key_n, char *name, size_t name_n,
+			     size_t *name_len, int *role, int *online, int *self)
+{
+	Tox_Err_Group_Self_Query self_err = TOX_ERR_GROUP_SELF_QUERY_OK;
+	uint32_t self_peer;
+	uint8_t key[TOX_PUBLIC_KEY_SIZE];
+	size_t len;
+
+	if (!t || !t->tox || !key_hex || key_n < TOX_PUBLIC_KEY_SIZE * 2 + 1 ||
+	    !name || name_n == 0 || !name_len || !role || !online || !self)
+		return -1;
+	self_peer = tox_group_self_get_peer_id(t->tox, gnum, &self_err);
+	*self = self_err == TOX_ERR_GROUP_SELF_QUERY_OK && self_peer == peer;
+	if (*self) {
+		Tox_Err_Group_Self_Query err = TOX_ERR_GROUP_SELF_QUERY_OK;
+		len = tox_group_self_get_name_size(t->tox, gnum, &err);
+		if (err != TOX_ERR_GROUP_SELF_QUERY_OK || len + 1 > name_n ||
+		    !tox_group_self_get_name(t->tox, gnum, (uint8_t *)name, &err) ||
+		    err != TOX_ERR_GROUP_SELF_QUERY_OK ||
+		    !tox_group_self_get_public_key(t->tox, gnum, key, &err) ||
+		    err != TOX_ERR_GROUP_SELF_QUERY_OK)
+			return -1;
+		name[len] = '\0';
+		*role = role_from_tox(tox_group_self_get_role(t->tox, gnum, &err));
+		if (err != TOX_ERR_GROUP_SELF_QUERY_OK)
+			return -1;
+		{
+			Tox_Err_Group_Is_Connected conn_err = TOX_ERR_GROUP_IS_CONNECTED_OK;
+			*online = tox_group_is_connected(t->tox, gnum, &conn_err) &&
+				conn_err == TOX_ERR_GROUP_IS_CONNECTED_OK;
+		}
+	} else {
+		Tox_Err_Group_Peer_Query err = TOX_ERR_GROUP_PEER_QUERY_OK;
+		len = tox_group_peer_get_name_size(t->tox, gnum, peer, &err);
+		if (err != TOX_ERR_GROUP_PEER_QUERY_OK || len + 1 > name_n ||
+		    !tox_group_peer_get_name(t->tox, gnum, peer, (uint8_t *)name, &err) ||
+		    err != TOX_ERR_GROUP_PEER_QUERY_OK ||
+		    !tox_group_peer_get_public_key(t->tox, gnum, peer, key, &err) ||
+		    err != TOX_ERR_GROUP_PEER_QUERY_OK)
+			return -1;
+		name[len] = '\0';
+		*role = role_from_tox(tox_group_peer_get_role(t->tox, gnum, peer, &err));
+		if (err != TOX_ERR_GROUP_PEER_QUERY_OK)
+			return -1;
+		*online = tox_group_peer_get_connection_status(t->tox, gnum, peer, &err) !=
+			TOX_CONNECTION_NONE;
+		if (err != TOX_ERR_GROUP_PEER_QUERY_OK)
+			return -1;
+	}
+	*name_len = len;
+	hex_of(key, sizeof(key), key_hex);
 	return 0;
 }
 
@@ -1153,6 +1493,43 @@ int omaq_tox_av_answer(struct omaq_tox *t, uint32_t friend)
 	return 0;
 }
 
+int omaq_tox_av_available(const struct omaq_tox *t)
+{
+	return t && t->av;
+}
+
+int omaq_tox_av_reset(struct omaq_tox *t)
+{
+	Toxav_Err_New err = TOXAV_ERR_NEW_OK;
+
+	if (!t || !t->tox)
+		return -1;
+	if (t->av) {
+		toxav_kill(t->av);
+		t->av = NULL;
+	}
+	t->av = toxav_new(t->tox, &err);
+	if (!t->av || err != TOXAV_ERR_NEW_OK)
+		return -1;
+	toxav_callback_audio_receive_frame(t->av, on_av_audio, t);
+	toxav_callback_call(t->av, on_av_call, t);
+	toxav_callback_call_state(t->av, on_av_state, t);
+	return 0;
+}
+
+int omaq_tox_av_audio_send(struct omaq_tox *t, uint32_t friend,
+			   const int16_t *pcm, size_t samples,
+			   uint8_t channels, uint32_t rate)
+{
+	Toxav_Err_Send_Frame err = TOXAV_ERR_SEND_FRAME_OK;
+
+	if (!t || !t->av || !pcm || samples == 0)
+		return -1;
+	if (!toxav_audio_send_frame(t->av, friend, pcm, samples, channels, rate, &err))
+		return -1;
+	return 0;
+}
+
 int omaq_tox_av_hangup(struct omaq_tox *t, uint32_t friend)
 {
 	Toxav_Err_Call_Control err = TOXAV_ERR_CALL_CONTROL_OK;
@@ -1169,6 +1546,15 @@ void omaq_tox_set_call_hook(struct omaq_tox *t, omaq_on_call cb, void *ud)
 	if (!t)
 		return;
 	t->on_call = cb;
+	if (ud)
+		t->ud = ud;
+}
+
+void omaq_tox_set_audio_hook(struct omaq_tox *t, omaq_on_audio cb, void *ud)
+{
+	if (!t)
+		return;
+	t->on_audio = cb;
 	if (ud)
 		t->ud = ud;
 }

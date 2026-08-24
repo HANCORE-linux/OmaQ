@@ -5,7 +5,7 @@
 
 ## Landed
 
-- `identity.export` writes `tox.save` (0600, tmp+rename)
+- `identity.export` writes a versioned 0600 identity bundle containing `tox.save` and the private group registry (tmp+rename)
 - `identity.import` refuses if `tox.save` exists (`identity_exists`) unless `replace:true`
 - `search` scans the open conversation's JSONL (case-insensitive, last 20 hits)
 - Panel: search field, export button

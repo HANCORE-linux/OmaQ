@@ -132,9 +132,12 @@ int omaq_invite_parse(const char *url, omaq_invite *out)
 			if (seen_g)
 				return -1;
 			seen_g = 1;
-			if (vlen < 1 || vlen > 64)
+			if (vlen != 64)
 				return -1;
-			memcpy(out->group, val, vlen + 1);
+			for (size_t i = 0; i < vlen; i++)
+				if (!is_hex(val[i]))
+					return -1;
+			lower_copy(out->group, val, vlen);
 		} else if (strcmp(key, "r") == 0) {
 			if (seen_r)
 				return -1;
@@ -177,6 +180,8 @@ int omaq_invite_parse(const char *url, omaq_invite *out)
 			return -1;
 		if (!seen_r)
 			memcpy(out->role, "member", 7);
+		if (strcmp(out->role, "member") != 0)
+			return -1;
 	}
 	return 0;
 }
@@ -195,6 +200,12 @@ int omaq_invite_format(const omaq_invite *inv, char *buf, size_t buflen)
 			n = snprintf(buf, buflen, "omaq://invite/%s?i=%s&e=%lld&k=direct",
 				     inv->tox_addr, inv->id, (long long)inv->expiry);
 	} else {
+		if ((inv->role[0] && strcmp(inv->role, "member") != 0) ||
+		    strlen(inv->group) != 64)
+			return -1;
+		for (size_t i = 0; i < 64; i++)
+			if (!is_hex(inv->group[i]))
+				return -1;
 		n = snprintf(buf, buflen, "omaq://invite/%s?i=%s&e=%lld&k=group&g=%s&r=%s",
 			     inv->tox_addr, inv->id, (long long)inv->expiry,
 			     inv->group, inv->role[0] ? inv->role : "member");

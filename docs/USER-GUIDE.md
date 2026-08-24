@@ -74,7 +74,31 @@ The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_
 
 Unread messages are marked in the chat with a **New messages** divider.
 
-## 6. Protect and move your identity
+## 6. Voice calls
+
+Voice calls are available only in direct chats.
+
+1. Use the call button in a direct chat to ring the contact.
+2. An incoming call changes the OmaQ bar widget to a pulsing call icon using system palette `color01`. Clicking it opens the caller's chat but never answers automatically.
+3. Choose **Answer** or **Decline**. **Hang up** remains available while ringing and during an active call.
+4. An active call shows its elapsed time beside the call controls.
+
+OmaQ captures and plays call audio through `libpulse-simple`; PipeWire-Pulse supplies the desktop audio devices. Call audio stays in bounded memory and is not recorded.
+
+## 7. Groups
+
+Groups are private and limited to 10 members.
+
+1. Open **Advanced** → **Groups**.
+2. Enter a name and choose **Create**.
+3. Select a named group, choose a contact, then use **Invite Contact**. Internal identifiers such as `g0` are not shown as group names.
+4. Use **Open** to enter the selected group chat, or use the confirmed **Leave** action for that named group.
+5. The member strip in a group chat shows every cached member's name, role, and online/offline status.
+6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation.
+
+Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
+
+## 8. Protect and move your identity
 
 ![Protect identity](images/06-protect-identity.png)
 
@@ -83,11 +107,11 @@ Your OmaQ identity is local. The private identity is not stored on a central cha
 1. Open **Advanced** → **Identity**.
 2. Enter a passphrase in **Passphrase for identity file**.
 3. Click **Protect**.
-4. Use **Export** to create a protected copy.
+4. Use **Export** to create a private identity bundle.
 5. Move that file securely to the new computer.
 6. Open **Advanced** → **Identity** there and use **Import**.
 7. If the imported identity is encrypted, enter its passphrase first. Use **Replace** only when intentionally replacing an existing identity, then confirm **Replace now**. OmaQ validates a staged copy, creates a unique recovery backup, and restores the current identity if replacement fails.
 
-The identity file is stored locally at `~/.local/share/omaq/tox.save`. The passphrase encrypts this file. It does not encrypt chat history.
+The identity file is stored locally at `~/.local/share/omaq/tox.save`. Export creates a versioned bundle containing that saved identity and its private group mappings. The passphrase encrypts the Tox identity data; filesystem permissions protect the bundle and group metadata. It does not encrypt chat history.
 
-Never send the identity file through a public channel. Do not copy private ratchet state or chat history unless you deliberately want to move that local data as well.
+Never send the identity bundle through a public channel. Transfer it securely and delete extra copies. Tox does not restore a missing private-group membership from a Chat ID; OmaQ reports and removes such orphaned mappings instead of fabricating a public join, so another member may need to invite the imported identity again. Do not copy private ratchet state or chat history unless you deliberately want to move that local data as well.

@@ -18,13 +18,22 @@ OLD_URGENT_LIMIT = 4096 * 1024
 BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
-EVENT = b'{"event":"snapshot","protocol":3,"unread":0,"conversations":[]}\n'
+EVENT = b'{"event":"snapshot","protocol":4,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
-STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":3,"unread":0,"conversations":[],"request":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":4,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 HISTORY_A_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-a"}\n'
 HISTORY_A_EVENT = b'{"event":"history","conversation":"7","request":"history-a","items":[]}\n'
 HISTORY_B_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-b"}\n'
 HISTORY_B_EVENT = b'{"event":"history","conversation":"7","request":"history-b","items":[]}\n'
+ESCAPED_HISTORY_REQUEST = b'\\"' * 70
+HISTORY_BAD_COMMAND = (
+    b'{"op":"history","conversation":"8","limit":50,"id":"'
+    + ESCAPED_HISTORY_REQUEST + b'"}\n'
+)
+HISTORY_BAD_EVENT = (
+    b'{"event":"history.failed","conversation":"8","request":"'
+    + ESCAPED_HISTORY_REQUEST + b'","code":"history_failed"}\n'
+)
 MESSAGE_REJECT_COMMAND = b'{"op":"msg.send","conversation":"7","text":"retry-me","id":"message-request-1"}\n'
 MESSAGE_REJECT_EVENT = b'{"event":"message.failed","conversation":"7","request":"message-request-1","code":"unsupported","delivered":false}\n'
 MESSAGE_MISSING_ID_COMMAND = b'{"op":"msg.send","conversation":"7","text":"missing-id"}\n'
@@ -174,6 +183,18 @@ def main() -> int:
                 response += chunk
             if response != HISTORY_A_EVENT:
                 raise RuntimeError(f"history-a correlation mismatch: {response!r}")
+            broken_history = Path(home) / "history" / "8" / "messages.jsonl"
+            broken_history.parent.mkdir(parents=True, exist_ok=True)
+            broken_history.write_bytes(b'{"id":"valid-prefix"}\n{bad}\n')
+            framing_client.sendall(HISTORY_BAD_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != HISTORY_BAD_EVENT:
+                raise RuntimeError(f"malformed history did not fail closed: {response!r}")
             framing_client.sendall(MESSAGE_REJECT_COMMAND)
             response = b""
             while b"\n" not in response:
@@ -319,6 +340,7 @@ def main() -> int:
             + FILE_REJECT_EVENTS
             + STATUS_NONCE_EVENT
             + HISTORY_A_EVENT
+            + HISTORY_BAD_EVENT
             + MESSAGE_REJECT_EVENT
             + MESSAGE_MISSING_ID_EVENT
             + MESSAGE_ESCAPED_CONV_EVENT

@@ -17,9 +17,16 @@ int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out
 /* Last matching lines (case-insensitive). Caller frees *out. */
 int omaq_store_update_receipt(const char *home, const char *conv_id, const char *id,
 			       const char *state);
+/* 1 = changed, 0 = already at this/equivalent state, -2 = not found, -1 = error. */
+int omaq_store_update_receipt_changed(const char *home, const char *conv_id,
+				      const char *id, const char *state);
 int omaq_store_message_exists(const char *home, const char *conv_id, const char *id);
+int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id);
 int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
                                 const char *emoji, const char *actor);
+int omaq_store_update_group_reaction(const char *home, const char *conv_id,
+				     const char *id, const char *emoji,
+				     const char *actor_key);
 int omaq_store_search(const char *home, const char *conv_id, const char *needle,
 		      int limit, char **out, size_t *out_len);
 int omaq_store_unread_load(omaq_unread_state *state, const char *state_dir);

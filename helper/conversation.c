@@ -32,19 +32,24 @@ void omaq_conv_note(omaq_conv *c, const char *last, int incoming)
 
 static int unread_id_ok(const char *id)
 {
-	size_t i = 0, digits;
+	size_t i, digits;
 	uint32_t value = 0;
 
 	if (!id || !id[0] || strlen(id) >= OMAQ_CONV_ID_MAX)
 		return 0;
-	if (id[0] == 'g')
-		i = 1;
-	if (!id[i])
+	if (id[0] == 'g') {
+		if (strlen(id) != 66 || id[1] != ':')
+			return 0;
+		for (i = 2; i < 66; i++)
+			if (!((id[i] >= '0' && id[i] <= '9') ||
+			      (id[i] >= 'a' && id[i] <= 'f')))
+				return 0;
+		return 1;
+	}
+	digits = strlen(id);
+	if (digits > 1 && id[0] == '0')
 		return 0;
-	digits = strlen(id + i);
-	if (digits > 1 && id[i] == '0')
-		return 0;
-	for (; id[i]; i++) {
+	for (i = 0; id[i]; i++) {
 		uint32_t digit;
 		if (id[i] < '0' || id[i] > '9')
 			return 0;

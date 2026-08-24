@@ -8,6 +8,9 @@ int omaq_identity_pass_ok(const char *pass);
 int omaq_identity_export(const char *home, const char *path);
 int omaq_identity_export_exclusive(const char *home, const char *path);
 int omaq_identity_import(const char *home, const char *path, int replace);
+int omaq_identity_bundle_export(const char *home, const char *path);
+int omaq_identity_bundle_snapshot(const char *source, const char *destination);
+int omaq_identity_bundle_import(const char *home, const char *path, int replace);
 
 #ifdef HAVE_TOX
 #include "tox_adapt.h"

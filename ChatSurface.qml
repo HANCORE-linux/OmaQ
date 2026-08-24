@@ -122,6 +122,11 @@ Item {
 
   function friendLabel(conv, fallback) {
     var key = String(conv || "")
+    if (key.charAt(0) === "g" && root.service &&
+        typeof root.service.groupName === "function") {
+      var groupRevision = Number(root.service.groupsTick || 0)
+      return groupRevision >= 0 ? root.service.groupName(key) : "Group"
+    }
     var name = root.friendName(key)
     if (name)
       return name
@@ -136,16 +141,27 @@ Item {
   }
 
   function friendOnline(conv) {
-    var friend = root.friendData(conv)
+    var key = String(conv || "")
+    if (key.charAt(0) === "g" && root.service &&
+        typeof root.service.groupOnlineCount === "function") {
+      var groupRevision = Number(root.service.groupsTick || 0)
+      return groupRevision >= 0 && root.service.groupOnlineCount(key) > 0
+    }
+    var friend = root.friendData(key)
     return !!(friend && friend.online)
+  }
+
+  function conversationKeyOk(conv) {
+    var key = String(conv || "")
+    return (/^(0|[1-9][0-9]*)$/.test(key) && key.length <= 10 &&
+            Number(key) <= 4294967295) || /^g:[0-9a-f]{64}$/.test(key)
   }
 
   function autoOpenFor(conv) {
     var key = String(conv || "")
-    if (root.autoOpenUnavailable)
+    if (root.autoOpenUnavailable || !root.conversationKeyOk(key))
       return false
-    return key !== "" && key.charAt(0) !== "g"
-      ? root.autoOpenByConversation[key] !== false : true
+    return root.autoOpenByConversation[key] !== false
   }
 
   function cloneAutoOpen(value) {
@@ -168,8 +184,7 @@ Item {
     }
     var key
     for (key in users) {
-      if (!/^(0|[1-9][0-9]*)$/.test(key) || key.length > 10 ||
-          Number(key) > 4294967295 || typeof users[key] !== "boolean")
+      if (!root.conversationKeyOk(key) || typeof users[key] !== "boolean")
         return false
     }
     root.autoOpenUnavailable = false
@@ -253,7 +268,7 @@ Item {
 
   function toggleAutoOpen(conv) {
     var key = String(conv || "")
-    if (!key || key.charAt(0) === "g")
+    if (!root.conversationKeyOk(key))
       return
     if (!root.autoOpenLoaded) {
       if (root.pendingAutoOpenToggles.indexOf(key) === -1)
@@ -269,12 +284,37 @@ Item {
     root.queueAutoOpenSave()
   }
 
+  function closeRemovedGroup(conv) {
+    var key = String(conv || "")
+    if (!key)
+      return
+    for (var i = 0; i < openCards.length; i++) {
+      if (String(openCards[i].conversation) === key) {
+        root.dismissCard(key)
+        return
+      }
+    }
+    var persisted = service ? (service.surfaces || []) : []
+    for (var j = 0; j < persisted.length; j++) {
+      if (String(persisted[j].conversation) === key) {
+        service.setSurface(key, persisted[j].monitor || "", Number(persisted[j].x || 0),
+          Number(persisted[j].y || 0), false)
+        return
+      }
+    }
+  }
+
   function restoreSurfaces() {
     var persisted = service ? (service.surfaces || []) : []
     var current = openCards.slice()
     var next = []
     var i, j, saved, found
     for (i = 0; i < current.length; i++) {
+      if (String(current[i].conversation).charAt(0) === "g" && service &&
+          service.groupsReady && !service.groupById(current[i].conversation)) {
+        root.closeRemovedGroup(current[i].conversation)
+        continue
+      }
       saved = null
       for (j = 0; j < persisted.length; j++) {
         if (String(persisted[j].conversation) === String(current[i].conversation)) {
@@ -294,6 +334,12 @@ Item {
     for (i = 0; i < persisted.length; i++) {
       if (!persisted[i].pinned || !persisted[i].conversation)
         continue
+      if (String(persisted[i].conversation).charAt(0) === "g" && service &&
+          service.groupsReady && !service.groupById(persisted[i].conversation)) {
+        service.setSurface(String(persisted[i].conversation), persisted[i].monitor || "",
+          Number(persisted[i].x || 0), Number(persisted[i].y || 0), false)
+        continue
+      }
       found = false
       for (j = 0; j < next.length; j++)
         if (String(next[j].conversation) === String(persisted[i].conversation))
@@ -336,29 +382,50 @@ Item {
   component CallToolbar: Row {
     id: toolbar
     required property var page
+    visible: !!page && page.directConversation
     spacing: Style.space(4)
 
     SurfaceBtn {
       visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming
-      iconText: "󰏲"
+      iconText: "call"
+      fontFamily: "Material Symbols Rounded"
       tooltipText: "Call"
       onClicked: toolbar.page.startCall()
     }
     SurfaceBtn {
       visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
-      iconText: "󰏴"
+      iconText: "call"
+      fontFamily: "Material Symbols Rounded"
       tooltipText: "Answer"
       bordered: true
       selected: true
       onClicked: toolbar.page.answerCall()
     }
     SurfaceBtn {
+      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
+      iconText: "call_end"
+      fontFamily: "Material Symbols Rounded"
+      tooltipText: "Decline"
+      bordered: true
+      onClicked: toolbar.page.hangUp()
+    }
+    SurfaceBtn {
       visible: toolbar.page && toolbar.page.inCall
-      iconText: "󰖂"
+      iconText: "call_end"
+      fontFamily: "Material Symbols Rounded"
       tooltipText: "Hang up"
       bordered: true
       selected: true
       onClicked: toolbar.page.hangUp()
+    }
+    Text {
+      visible: toolbar.page && toolbar.page.callActive
+      anchors.verticalCenter: parent.verticalCenter
+      text: toolbar.page ? toolbar.page.callDurationText : "0:00"
+      color: root.theme().fg || Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.features: ({ "tnum": 1 })
     }
   }
 
@@ -520,6 +587,8 @@ Item {
     }
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
+    function onGroupsTickChanged() { root.restoreSurfaces() }
+    function onRemovedGroupTickChanged() { root.closeRemovedGroup(service.lastRemovedGroup) }
     function onIdentityTickChanged() {
       root.openCards = []
       root.pendingIncoming = []

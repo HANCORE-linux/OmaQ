@@ -52,7 +52,7 @@ External review of PLAN + `OmaQ.md` vs the live Quattro shell. Verdicts:
 | 3b | No dissolve primitive | **Use as risk.** Dissolve = kick all + leave + mark dissolved. Confirm in `03-toxcore.md`. |
 | 3c | Private group needs an existing friend | **Use as constraint.** Group invite after 1:1. No public DHT directory. Confirm in `03-toxcore.md`. |
 | 3d | `group.c` must not duplicate toxcore | **Use.** Headers first, implement only the gap. |
-| 3e | `r=admin` is not instant | **Use.** Join as member, then `setRole`. |
+| 3e | Group invite roles | **Member-only.** Promote a joined member with a separate stable-key `setRole` operation. |
 | — | Manifest `version`; SPDX `GPL-3.0-or-later`; verify-0 is a C driver; do not invent RSS | **Use.** |
 | — | Helper death; rate limit; import must not clobber | **Use.** |
 | — | NGC API details as facts | **Discard until headers.** Marked suspicion only. |
@@ -206,7 +206,7 @@ omaq://invite/<tox-addr>?i=<invite-id>&e=<unix-expiry>&k=<kind>[&g=<group-id>][&
 | `e` | required, decimal unix seconds |
 | `k` | required, `direct` or `group` |
 | `g` | required iff `k=group`, forbidden iff `k=direct` |
-| `r` | iff `k=group`: `member` or `admin`. Default `member` if omitted. Forbidden on `direct` |
+| `r` | iff `k=group`: `member` only. Default `member` if omitted. Forbidden on `direct` |
 | `rk` | optional, 64 hex: Signal identity public key for the Double Ratchet. Direct only. Forbidden on `group`. Phase 8. |
 | query order | irrelevant |
 | duplicate key | invalid |
@@ -221,7 +221,7 @@ This is the **only** invite string. Gold files in `tests/gold/invite/` cover: ha
 
 The QR is **not** a bare Tox id. The address is still in the URL because `tox_friend_add` needs it. Revoke deletes `i`. The address remains knowable to anyone who saw the URL; they can knock, we reject without a live token. **`nospam.rotate` changes `<tox-addr>` and invalidates every outstanding invite.** Document that in the Profile UI.
 
-`r=admin` on a group link is a **promotion request after join**, not instant admin. Between join and `setRole` the peer is `member`. Tox cannot assign the role in the invite packet.
+Group links are member-only. Tox cannot safely bind an elevated role in the invite packet, so owners promote a joined member separately by stable member key.
 
 ---
 
@@ -252,7 +252,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"status","id":"optional-fresh-handshake-nonce"}
 {"op":"invite.create","ttlSec":86400,"kind":"direct"}
 {"op":"invite.create","ttlSec":86400,"kind":"group","group":"...","role":"member"}
-{"op":"invite.create","ttlSec":86400,"kind":"group","group":"...","role":"admin"}
+{"op":"invite.create","ttlSec":86400,"kind":"group","group":"...","role":"member"}
 {"op":"invite.revoke","id":"..."}
 {"op":"invite.redeem","payload":"omaq://invite/..."}
 {"op":"contact.decide","id":"...","accept":true}
@@ -287,7 +287,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 
 Helper → service: `snapshot`, `request`, `message`, `message.failed`, `message.reaction`, `receipt`, `receipt.sent`, `receipt.failed`, `connection`, `group.changed`, `file.offer`, `file.sending`, `file.done`, `file.canceled`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `identity_backup_failed` | `identity_passphrase_required` | `identity_import_failed` | `identity_state_archive_failed` | `identity_rollback_failed` | `rate_limited` | `locked` | `request_required` | `no_ratchet` | `ratchet_pending` | `history_failed` | `busy`).
 
-Protocol 3 requires every `msg.send` to carry a non-empty client request `id`; missing IDs fail with `request_required` before transport. `file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported. The optional client request `id` on `file.send` is echoed as `request` so multiple UI clients correlate `file.sending`; that event exposes the validated transfer id required for outgoing cancellation. Protocol 3 adds request-correlated message outcomes: `msg.send.id` is echoed as `message.request`, while pre-delivery failures use `message.failed` with `delivered:false`. A post-transport history failure emits the successful `message` event followed by `message.failed` with `delivered:true`; this means transport was committed, not that a peer receipt arrived, and it must never offer Resend. If the helper disconnects after accepting a send but before reporting an outcome, the UI marks that request `delivery_unknown` and does not offer automatic Resend because transport may already have succeeded. Status handshakes require protocol 3, include a per-process `instance` id, and echo a fresh status-request nonce so stale replay records or older attached helpers cannot release queued operations. The helper persists per-conversation unread counts and broadcasts `unread` updates so every bar instance shows and clears the same badge state. After reconnecting to the same instance, `file.status` replays the cached state for the originating request. `receipt.sent` and `receipt.failed` correlate local read-receipt attempts by message id so transient failures can be retried without affecting message-send state. A local cancel ends with `file.canceled`, while transport errors and remote cancellation use `file.failed`. File events include `dir:"in"|"out"`. Completed incoming files are persisted as history messages with `kind:"file"`; persistence failure emits `history_failed` after the completed path event. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
+Protocol 3 introduced the requirement that every `msg.send` must carry a non-empty client request `id`; missing IDs fail with `request_required` before transport. `file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported. The optional client request `id` on `file.send` is echoed as `request` so multiple UI clients correlate `file.sending`; that event exposes the validated transfer id required for outgoing cancellation. Protocol 3 adds request-correlated message outcomes: `msg.send.id` is echoed as `message.request`, while pre-delivery failures use `message.failed` with `delivered:false`. A post-transport history failure emits the successful `message` event followed by `message.failed` with `delivered:true`; this means transport was committed, not that a peer receipt arrived, and it must never offer Resend. If the helper disconnects after accepting a send but before reporting an outcome, the UI marks that request `delivery_unknown` and does not offer automatic Resend because transport may already have succeeded. Status handshakes require protocol 4, include a per-process `instance` id, and echo a fresh status-request nonce so stale replay records or older attached helpers cannot release queued operations. The helper persists per-conversation unread counts and broadcasts `unread` updates so every bar instance shows and clears the same badge state. After reconnecting to the same instance, `file.status` replays the cached state for the originating request. `receipt.sent` and `receipt.failed` correlate local read-receipt attempts by message id so transient failures can be retried without affecting message-send state. A local cancel ends with `file.canceled`, while transport errors and remote cancellation use `file.failed`. File events include `dir:"in"|"out"`. Completed incoming files are persisted as history messages with `kind:"file"`; persistence failure emits `history_failed` after the completed path event. Protocol 4 uses the stable 32-byte Tox group chat ID for group conversation identity and persistent state; process-local Tox group numbers never cross the helper boundary. The private `groups.tsv` registry uses identity-bound proofs before reconnecting a missing group, reconciles metadata with groups present in Tox saved state, participates in identity replacement and versioned identity export bundles, and must not be synchronized separately. An orphaned private-group ID is visibly pruned because a private group cannot be rejoined from its chat ID alone. Legacy `g<number>` history remains archived in place, while obsolete unread/surface entries are ignored and reported as `legacy_group_state_archived` because mapping a reused process-local number would be unsafe. Named private groups are helper-authoritative and capped at 10 members through both local invite policy and Tox NGC's peer limit. Generation-tagged `group.list.begin`, `group.info`, `group.member`, and `group.list.end` events atomically project names, stable public-key identities, roles, and online state to every UI client. Group message actions, allowlisted reactions, and receipts use Tox-native group messages; group file transfer remains unavailable because Tox NGC has no group file primitive. Calls are direct-chat-only, audio-only (48 kbit, video 0), and use bounded 48 kHz mono PCM rings with `libpulse-simple`; ToxAV send/iterate remains on the helper thread. Hangup and incoming-call decline use `TOXAV_CALL_CONTROL_CANCEL`. Active calls emit `call.state:active`; status snapshots reconcile the authoritative call state after reconnect, and the UI owns only the elapsed-time presentation.
 
 `identity.import` without `replace` **refuses** if `tox.save` already exists (`identity_exists`). `replace:true` needs an explicit UI confirmation bound to the selected path. The helper validates an exact staged copy, requires the imported passphrase when encrypted, creates a unique non-overwriting recovery backup, archives the previous identity's history, avatars, files, unread/surface/Auto-open state, and rotates Ratchet state. A per-client instance gate rejects operations queued under the old identity. Invalid replacement data restores the previous identity. Never default to replace.
 
@@ -338,7 +338,7 @@ Confirmed in `docs/stages/03-toxcore.md` (headers, 0.2.22-2):
 
 - **Dissolve** is not a Tox primitive. OmaQ dissolve = kick everyone `role_may` allows + leave + mark dissolved. The NGC group may linger; we do not promise it is gone.
 - **Private group join** needs `tox_group_invite_friend` and an **existing Tox friend**. Group invite is: already-accepted 1:1, or redeem does the 1:1 token dance then the group invite. No public DHT directory. No `tox_group_join` (that is the public Chat-ID path).
-- **`r=admin`:** join as Tox `USER` (OmaQ member), then `setRole`. There is a member window.
+- **Invite roles:** group links accept only `member`; owner/admin changes are separate, confirmed operations keyed by the member's stable public key.
 - **Gap vs product:** Tox lets only the founder promote to moderator. OmaQ `roles.c` still allows admin → admin; `tox_group_set_role` then returns `forbidden`. We do not invent a side channel.
 - **No peer-list API.** `group.c` tracks join/exit. Observer is never set.
 
@@ -420,7 +420,7 @@ ln -s /usr/share/omaq/plugin ~/.config/omarchy/plugins/hancore.omaq
 
 No `install=` daemon. No `Restart=always`.
 
-`depends`: `toxcore`, `qrencode`, `zbar`.  
+`depends`: `toxcore`, `libsignal-protocol-c`, `libpulse`, `ttf-material-symbols-variable`, `qrencode`, `zbar`.
 `license`: `MIT` and `GPL-3.0-or-later`.  
 `source=`: tagged tarball + real `sha256sums`, never `SKIP` on a release.
 

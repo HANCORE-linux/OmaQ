@@ -33,6 +33,11 @@ BarWidget {
   property bool nicknameSubmitPending: false
   property bool avatarRestorePending: false
   property bool avatarRestoreMore: false
+  property string groupInviteFriendId: ""
+  property bool groupLeaveConfirm: false
+  property string groupLeaveTarget: ""
+  property bool groupDissolveConfirm: false
+  property string groupDissolveTarget: ""
   property int avatarPickExitCode: -1
   property bool avatarPickStreamDone: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
@@ -369,6 +374,11 @@ BarWidget {
     root.replaceIdentityPath = ""
     root.nicknameEditOpen = false
     root.nicknameSubmitPending = false
+    root.groupInviteFriendId = ""
+    root.groupLeaveConfirm = false
+    root.groupLeaveTarget = ""
+    root.groupDissolveConfirm = false
+    root.groupDissolveTarget = ""
     root.opened = false
     if (bar && typeof bar.releasePopout === "function") {
       var screenName = popup.screen ? String(popup.screen.name || "") : ""
@@ -403,6 +413,11 @@ BarWidget {
     root.removeContactConfirm = false
     root.replaceIdentityConfirm = false
     root.replaceIdentityPath = ""
+    root.groupInviteFriendId = ""
+    root.groupLeaveConfirm = false
+    root.groupLeaveTarget = ""
+    root.groupDissolveConfirm = false
+    root.groupDissolveTarget = ""
   }
 
   function toggleSettings() {
@@ -583,6 +598,15 @@ BarWidget {
     avatarPick.running = true
   }
 
+  function friendName(id) {
+    var key = String(id || "")
+    var friends = omaq.friends || []
+    for (var i = 0; i < friends.length; i++)
+      if (String(friends[i].id || "") === key)
+        return String(friends[i].name || ("Friend " + key))
+    return key ? "Friend " + key : ""
+  }
+
   function openFriend(id, name) {
     if (!id)
       return
@@ -592,6 +616,18 @@ BarWidget {
     if (chatSurface) {
       chatSurface.ensureCard(String(id), name || "")
       chatSurface.requestChatFocus(String(id))
+    }
+    root.close()
+  }
+
+  function openGroup(id) {
+    var groupId = String(id || "")
+    if (!omaq.selectGroup(groupId))
+      return
+    omaq.clearUnread(groupId)
+    if (chatSurface) {
+      chatSurface.ensureCard(groupId, omaq.groupName(groupId))
+      chatSurface.requestChatFocus(groupId)
     }
     root.close()
   }
@@ -834,14 +870,33 @@ BarWidget {
 
   BarIconButton {
     id: button
+    property real callPulseOpacity: 1.0
     anchors.fill: parent
     bar: root.bar
-    text: "󰭹"
-    fontFamily: "monospace"
+    text: omaq.incomingCall ? "call" : "󰭹"
+    fontFamily: omaq.incomingCall ? "Material Symbols Rounded" : "monospace"
+    active: omaq.incomingCall
+    activeColor: root.systemColors[1] || root.urgent
+    opacity: omaq.incomingCall ? callPulseOpacity : 1.0
+    tooltipText: omaq.incomingCall
+      ? "Incoming call from " + root.friendName(omaq.lastCallConv)
+      : "OmaQ"
     onPressed: function(b) {
       if (b === Qt.RightButton)
         return
+      if (omaq.incomingCall && omaq.lastCallConv) {
+        root.openFriend(omaq.lastCallConv, root.friendName(omaq.lastCallConv))
+        return
+      }
       root.toggle()
+    }
+
+    SequentialAnimation on callPulseOpacity {
+      running: omaq.incomingCall
+      loops: Animation.Infinite
+      NumberAnimation { to: 0.38; duration: 520; easing.type: Easing.InOutSine }
+      NumberAnimation { to: 1.0; duration: 520; easing.type: Easing.InOutSine }
+      onRunningChanged: if (!running) button.callPulseOpacity = 1.0
     }
   }
 
@@ -1948,95 +2003,208 @@ BarWidget {
 
               PanelSectionHeader {
                 visible: root.moreSection === "groups"
-                text: "GROUP"
+                text: "GROUPS"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              GridLayout {
+              Row {
                 visible: root.moreSection === "groups"
                 width: parent.width
-                columns: 2
-                columnSpacing: root.btnGap
-                rowSpacing: Style.space(4)
-                TokenButton {
-                  Layout.fillWidth: true
-                  text: "Create group"
-                  bordered: true
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: omaq.createGroup()
+                spacing: root.btnGap
+
+                TokenTextField {
+                  id: groupNameField
+                  width: parent.width - createGroupButton.width - parent.spacing
+                  foreground: root.controlForeground
+                  placeholderText: "Group name"
+                  onAccepted: createGroupButton.clicked()
                 }
-                TokenButton {
-                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
-                  Layout.fillWidth: true
-                  text: "Invite last contact"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
+
+                ActionButton {
+                  id: createGroupButton
+                  text: "Create"
+                  enabled: omaq.groupTitleOk(groupNameField.text)
                   onClicked: {
-                    omaq.inviteUrl = ""
-                    omaq.qrPath = ""
-                    root.inviteOpen = true
-                    omaq.inviteToGroup()
+                    if (omaq.createGroup(groupNameField.text.trim()))
+                      groupNameField.text = ""
                   }
-                }
-                TokenButton {
-                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
-                  Layout.fillWidth: true
-                  text: "Make admin"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: omaq.setLastGroupMemberRole("admin")
-                }
-                TokenButton {
-                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
-                  Layout.fillWidth: true
-                  text: "Make member"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: omaq.setLastGroupMemberRole("member")
-                }
-                TokenButton {
-                  visible: omaq.lastGroup !== "" && omaq.lastDirectId !== ""
-                  Layout.fillWidth: true
-                  text: "Remove last member"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: omaq.removeLastGroupMember()
-                }
-                TokenButton {
-                  visible: omaq.lastGroup !== ""
-                  Layout.fillWidth: true
-                  text: "Leave group"
-                  focusable: true
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: omaq.leaveGroup()
                 }
               }
 
               Text {
-                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
+                visible: root.moreSection === "groups" && (!omaq.groups || omaq.groups.length === 0)
                 width: parent.width
-                text: omaq.lastGroup
+                text: "No groups yet"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WrapAnywhere
               }
 
-              TokenButton {
+              Column {
+                visible: root.moreSection === "groups" && omaq.groups && omaq.groups.length > 0
+                width: parent.width
+                spacing: Style.space(4)
+
+                Repeater {
+                  model: omaq.groups || []
+                  delegate: TokenButton {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    text: String(modelData.title || "Group") + " · " +
+                      String(modelData.memberCount || 0) + "/" + String(modelData.limit || 10)
+                    selected: String(modelData.id || "") === String(omaq.lastGroup || "")
+                    bordered: true
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: {
+                      omaq.selectGroup(modelData.id)
+                      root.groupInviteFriendId = ""
+                      root.groupLeaveConfirm = false
+                      root.groupLeaveTarget = ""
+                      root.groupDissolveConfirm = false
+                      root.groupDissolveTarget = ""
+                    }
+                  }
+                }
+              }
+
+              ActionButton {
                 visible: root.moreSection === "groups" && omaq.lastGroup !== ""
-                text: "Dissolve group"
-                focusable: true
+                width: parent.width
+                iconText: "chat"
+                iconFontFamily: "Material Symbols Rounded"
+                text: "Open " + omaq.groupName(omaq.lastGroup)
+                onClicked: root.openGroup(omaq.lastGroup)
+              }
+
+              PanelSectionHeader {
+                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
+                text: "INVITE CONTACT TO " + omaq.groupName(omaq.lastGroup).toUpperCase()
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: omaq.dissolveGroup()
+              }
+
+              Flow {
+                visible: root.moreSection === "groups" && omaq.lastGroup !== "" &&
+                  omaq.friends && omaq.friends.length > 0
+                width: parent.width
+                spacing: Style.space(4)
+
+                Repeater {
+                  model: omaq.friends || []
+                  delegate: TokenButton {
+                    required property var modelData
+                    text: String(modelData.name || ("Friend " + modelData.id))
+                    selected: String(modelData.id || "") === root.groupInviteFriendId
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: root.groupInviteFriendId = String(modelData.id || "")
+                  }
+                }
+              }
+
+              ActionButton {
+                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
+                width: parent.width
+                text: root.groupInviteFriendId
+                  ? "Invite contact · " + root.friendName(root.groupInviteFriendId)
+                  : "Select a contact"
+                enabled: root.groupInviteFriendId !== ""
+                onClicked: {
+                  omaq.inviteUrl = ""
+                  omaq.qrPath = ""
+                  if (omaq.inviteToGroup(root.groupInviteFriendId, omaq.lastGroup))
+                    root.inviteOpen = true
+                }
+              }
+
+              Text {
+                visible: root.moreSection === "groups" && root.groupLeaveConfirm
+                width: parent.width
+                text: "Leave " + omaq.groupName(root.groupLeaveTarget) + "?"
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Row {
+                visible: root.moreSection === "groups" && omaq.lastGroup !== ""
+                width: parent.width
+                spacing: root.btnGap
+
+                ActionButton {
+                  width: root.groupLeaveConfirm
+                    ? (parent.width - parent.spacing) / 2 : parent.width
+                  text: root.groupLeaveConfirm ? "Cancel" : "Leave " + omaq.groupName(omaq.lastGroup)
+                  accent: root.groupLeaveConfirm ? root.controlAccent : root.urgent
+                  onClicked: {
+                    root.groupDissolveConfirm = false
+                    root.groupDissolveTarget = ""
+                    root.groupLeaveConfirm = !root.groupLeaveConfirm
+                    root.groupLeaveTarget = root.groupLeaveConfirm
+                      ? String(omaq.lastGroup || "") : ""
+                  }
+                }
+                ActionButton {
+                  visible: root.groupLeaveConfirm
+                  width: visible ? (parent.width - parent.spacing) / 2 : 0
+                  text: "Leave now"
+                  accent: root.urgent
+                  onClicked: {
+                    var target = root.groupLeaveTarget
+                    root.groupLeaveConfirm = false
+                    root.groupLeaveTarget = ""
+                    omaq.leaveGroup(target)
+                  }
+                }
+              }
+
+              Text {
+                visible: root.moreSection === "groups" && root.groupDissolveConfirm
+                width: parent.width
+                text: "Dissolve " + omaq.groupName(root.groupDissolveTarget) + " for every member?"
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              Row {
+                visible: root.moreSection === "groups" && omaq.lastGroup !== "" &&
+                  omaq.groupSelfRole(root.groupDissolveConfirm
+                    ? root.groupDissolveTarget : omaq.lastGroup) === "owner"
+                width: parent.width
+                spacing: root.btnGap
+
+                ActionButton {
+                  width: root.groupDissolveConfirm
+                    ? (parent.width - parent.spacing) / 2 : parent.width
+                  text: root.groupDissolveConfirm ? "Cancel" : "Dissolve group"
+                  accent: root.groupDissolveConfirm ? root.controlAccent : root.urgent
+                  onClicked: {
+                    root.groupLeaveConfirm = false
+                    root.groupLeaveTarget = ""
+                    root.groupDissolveConfirm = !root.groupDissolveConfirm
+                    root.groupDissolveTarget = root.groupDissolveConfirm
+                      ? String(omaq.lastGroup || "") : ""
+                  }
+                }
+                ActionButton {
+                  visible: root.groupDissolveConfirm
+                  width: visible ? (parent.width - parent.spacing) / 2 : 0
+                  text: "Dissolve now"
+                  accent: root.urgent
+                  onClicked: {
+                    var target = root.groupDissolveTarget
+                    root.groupDissolveConfirm = false
+                    root.groupDissolveTarget = ""
+                    omaq.dissolveGroup(target)
+                  }
+                }
               }
 
               PanelSeparator {

@@ -14,6 +14,8 @@
 
 #define ROTATE_BYTES (2 * 1024 * 1024)
 #define UNREAD_STATE_BYTES (1024 * 1024)
+#define STORE_LINE_MAX 16384u
+#define GROUP_REACTION_ACTORS_MAX 32
 
 static int fsync_dir(const char *path)
 {
@@ -69,7 +71,7 @@ static int replace_string_field(const char *line, const char *field_name,
 				const char *value_text, char **out)
 {
 	const char *field, *value, *end;
-	char prefix_text[80], esc[2800];
+	char prefix_text[128], esc[2800];
 	char *result;
 	size_t prefix, suffix, n, field_len;
 
@@ -150,7 +152,7 @@ static int append_flag(const char *line, const char *flag, char **out)
 
 static int append_string_field(const char *line, const char *field, const char *value, char **out)
 {
-	char needle[80], esc[2800], *result;
+	char needle[128], esc[2800], *result;
 	size_t len, extra;
 
 	if (!line || !field || !value || !out ||
@@ -251,8 +253,12 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 		    !strstr(lines[i], needle) || !strstr(lines[i], "\"from\":\"me\""))
 			continue;
 		matched = 1;
-		if (strcmp(state, "delivered") == 0 && strstr(lines[i], "\"receipt\":\"read\""))
-			continue;
+		if ((strcmp(state, "read") == 0 &&
+		     strstr(lines[i], "\"receipt\":\"read\"")) ||
+		    (strcmp(state, "delivered") == 0 &&
+		     (strstr(lines[i], "\"receipt\":\"delivered\"") ||
+		      strstr(lines[i], "\"receipt\":\"read\""))))
+			break;
 		if (append_string_field(lines[i], "receipt", state, &marked) != 0)
 			break;
 		free(lines[i]);
@@ -264,7 +270,7 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 		for (i = 0; i < n; i++)
 			free(lines[i]);
 		free(lines);
-		return matched ? 1 : 0;
+		return matched ? 2 : 0;
 	}
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp) ||
 	    !(f = fopen(tmp, "w")))
@@ -293,6 +299,28 @@ fail:
 	return -1;
 }
 
+static int group_reaction_field_count(const char *line)
+{
+	static const char marker[] = ",\"reaction_group_";
+	const char *cursor = line;
+	int count = 0;
+
+	while (cursor && (cursor = strstr(cursor, marker)) != NULL) {
+		const char *key = cursor + sizeof(marker) - 1;
+		int valid = strlen(key) >= 66;
+		for (size_t i = 0; valid && i < 64; i++)
+			if (!((key[i] >= '0' && key[i] <= '9') ||
+			      (key[i] >= 'a' && key[i] <= 'f'))) {
+				valid = 0;
+				break;
+			}
+		if (valid && key[64] == '"' && key[65] == ':')
+			count++;
+		cursor = key;
+	}
+	return count;
+}
+
 static int update_file_reaction(const char *path, const char *id, const char *emoji,
                                 const char *field)
 {
@@ -317,6 +345,16 @@ static int update_file_reaction(const char *path, const char *id, const char *em
 		if (strstr(lines[i], value_needle)) {
 			unchanged = 1;
 			break;
+		}
+		if (strncmp(field, "reaction_group_", 15) == 0) {
+			char field_needle[128];
+			if (snprintf(field_needle, sizeof(field_needle), "\"%s\":", field) >=
+			    (int)sizeof(field_needle) ||
+			    (!strstr(lines[i], field_needle) &&
+			     group_reaction_field_count(lines[i]) >= GROUP_REACTION_ACTORS_MAX)) {
+				failed = 1;
+				break;
+			}
 		}
 		if (append_string_field(lines[i], field, emoji, &marked) != 0) {
 			failed = 1;
@@ -361,7 +399,7 @@ fail:
 	return -1;
 }
 
-static int file_message_exists(const char *path, const char *id)
+static int file_message_id(const char *path, const char *id, int include_deleted)
 {
 	char **lines = NULL;
 	size_t n = 0, cap = 0, i;
@@ -372,7 +410,8 @@ static int file_message_exists(const char *path, const char *id)
 	for (i = 0; i < n; i++) {
 		char needle[128];
 		if (snprintf(needle, sizeof(needle), "\"id\":\"%s\"", id) < (int)sizeof(needle) &&
-		    strstr(lines[i], needle) && !strstr(lines[i], "\"deleted\":true")) {
+		    strstr(lines[i], needle) &&
+		    (include_deleted || !strstr(lines[i], "\"deleted\":true"))) {
 			found = 1;
 			break;
 		}
@@ -392,10 +431,25 @@ int omaq_store_message_exists(const char *home, const char *conv_id, const char 
 	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
 	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 		return -1;
-	result = file_message_exists(path, id);
+	result = file_message_id(path, id, 0);
 	if (result != 0)
 		return result;
-	return file_message_exists(rot, id);
+	return file_message_id(rot, id, 0);
+}
+
+int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id)
+{
+	char path[576], rot[580];
+	int result;
+
+	if (!home || !conv_id || !id || !id[0] ||
+	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	result = file_message_id(path, id, 1);
+	if (result != 0)
+		return result;
+	return file_message_id(rot, id, 1);
 }
 
 int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
@@ -419,8 +473,35 @@ int omaq_store_update_reaction(const char *home, const char *conv_id, const char
 	return result > 0 ? 0 : -2;
 }
 
-int omaq_store_update_receipt(const char *home, const char *conv_id, const char *id,
-			       const char *state)
+int omaq_store_update_group_reaction(const char *home, const char *conv_id,
+				     const char *id, const char *emoji,
+				     const char *actor_key)
+{
+	char path[576], rot[580], field[96];
+	int result;
+
+	if (!home || !conv_id || !id || !id[0] || !emoji || !actor_key ||
+	    strlen(actor_key) != 64)
+		return -1;
+	for (size_t i = 0; i < 64; i++)
+		if (!((actor_key[i] >= '0' && actor_key[i] <= '9') ||
+		      (actor_key[i] >= 'a' && actor_key[i] <= 'f')))
+			return -1;
+	if (snprintf(field, sizeof(field), "reaction_group_%s", actor_key) >=
+	    (int)sizeof(field) || hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	result = update_file_reaction(path, id, emoji, field);
+	if (result != 0)
+		return result > 0 ? 0 : -1;
+	result = update_file_reaction(rot, id, emoji, field);
+	if (result < 0)
+		return -1;
+	return result > 0 ? 0 : -2;
+}
+
+int omaq_store_update_receipt_changed(const char *home, const char *conv_id,
+				      const char *id, const char *state)
 {
 	char path[576], rot[580];
 	int result;
@@ -431,12 +512,26 @@ int omaq_store_update_receipt(const char *home, const char *conv_id, const char 
 	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 		return -1;
 	result = update_file_receipt(path, id, state);
-	if (result != 0)
-		return result > 0 ? 0 : -1;
-	result = update_file_receipt(rot, id, state);
+	if (result == 1)
+		return 1;
+	if (result == 2)
+		return 0;
 	if (result < 0)
 		return -1;
-	return result > 0 ? 0 : -2;
+	result = update_file_receipt(rot, id, state);
+	if (result == 1)
+		return 1;
+	if (result == 2)
+		return 0;
+	return result < 0 ? -1 : -2;
+}
+
+int omaq_store_update_receipt(const char *home, const char *conv_id, const char *id,
+			       const char *state)
+{
+	int result = omaq_store_update_receipt_changed(home, conv_id, id, state);
+
+	return result >= 0 ? 0 : result;
 }
 
 int omaq_store_update_message(const char *home, const char *conv_id, const char *id,
@@ -509,8 +604,15 @@ int omaq_store_unread_load(omaq_unread_state *state, const char *state_dir)
 		}
 		errno = 0;
 		count = strtoul(count_text, &end, 10);
-		if (errno != 0 || !end || *end != '\0' || count > UINT_MAX ||
-		    omaq_unread_set(&loaded, line, (unsigned)count) != 0)
+		if (errno != 0 || !end || *end != '\0' || count > UINT_MAX)
+			goto invalid;
+		if (line[0] == 'g' && line[1] >= '0' && line[1] <= '9') {
+			for (i = 1; line[i]; i++)
+				if (line[i] < '0' || line[i] > '9')
+					goto invalid;
+			continue;
+		}
+		if (omaq_unread_set(&loaded, line, (unsigned)count) != 0)
 			goto invalid;
 	}
 	if (ferror(f) || bytes != (size_t)st.st_size || fclose(f) != 0) {
@@ -645,10 +747,22 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 	return 0;
 }
 
+static void reset_read_lines(char ***lines, size_t *n, size_t *cap)
+{
+	if (!lines || !n || !cap)
+		return;
+	for (size_t i = 0; i < *n; i++)
+		free((*lines)[i]);
+	free(*lines);
+	*lines = NULL;
+	*n = 0;
+	*cap = 0;
+}
+
 static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 {
 	FILE *f;
-	char buf[4096];
+	char buf[STORE_LINE_MAX + 2];
 
 	f = fopen(path, "r");
 	if (!f)
@@ -656,13 +770,23 @@ static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 	while (fgets(buf, sizeof(buf), f)) {
 		size_t len = strlen(buf);
 		char *copy;
-		if (len && buf[len - 1] == '\n')
-			buf[--len] = '\0';
+		if (len == 0 || len > STORE_LINE_MAX || buf[len - 1] != '\n') {
+			fclose(f);
+			reset_read_lines(lines, n, cap);
+			return -1;
+		}
+		buf[--len] = '\0';
+		if (omaq_json_validate(buf) != 0) {
+			fclose(f);
+			reset_read_lines(lines, n, cap);
+			return -1;
+		}
 		if (*n == *cap) {
 			size_t ncap = *cap ? *cap * 2 : 16;
 			char **nl = realloc(*lines, ncap * sizeof(*nl));
 			if (!nl) {
 				fclose(f);
+				reset_read_lines(lines, n, cap);
 				return -1;
 			}
 			*lines = nl;
@@ -671,12 +795,21 @@ static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 		copy = malloc(len + 1);
 		if (!copy) {
 			fclose(f);
+			reset_read_lines(lines, n, cap);
 			return -1;
 		}
 		memcpy(copy, buf, len + 1);
 		(*lines)[(*n)++] = copy;
 	}
-	fclose(f);
+	if (ferror(f)) {
+		fclose(f);
+		reset_read_lines(lines, n, cap);
+		return -1;
+	}
+	if (fclose(f) != 0) {
+		reset_read_lines(lines, n, cap);
+		return -1;
+	}
 	return 0;
 }
 

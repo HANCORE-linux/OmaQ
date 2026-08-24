@@ -42,5 +42,6 @@ typedef struct {
 
 int omaq_json_parse_op(const char *line, omaq_op *out);
 int omaq_json_escape(const char *in, char *out, size_t outn);
+int omaq_json_validate(const char *json);
 
 #endif

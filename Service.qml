@@ -39,7 +39,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 3
+  readonly property int requiredHelperProtocol: 4
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -56,11 +56,20 @@ Item {
   property string lastAddr: ""
   property string lastGroup: ""
   property bool pendingGroup: false
+  property var groups: []
+  property var pendingGroupBuild: ({})
+  property var pendingGroupOrder: []
+  property string pendingGroupGeneration: ""
+  property int groupsTick: 0
+  property bool groupsReady: false
+  property string lastRemovedGroup: ""
+  property int removedGroupTick: 0
   property string lastChatText: ""
   property string lastChatId: ""
   property string lastChatReply: ""
   property string lastChatDir: ""
   property string lastChatKind: ""
+  property string lastChatSender: ""
   property string lastChatRequest: ""
   property string lastMessageFailedConv: ""
   property string lastMessageFailedRequest: ""
@@ -94,6 +103,9 @@ Item {
   property int lastHistoryUnreadCount: 0
   property string lastHistoryUnreadConv: ""
   property int historyTick: 0
+  property string lastHistoryFailedConv: ""
+  property string lastHistoryFailedCode: ""
+  property int historyFailedTick: 0
   property var pendingHistoryUnread: ({})
   property var historyRetryTickByConversation: ({})
   property var historyRequestByConversation: ({})
@@ -134,6 +146,7 @@ Item {
   property bool incomingCall: false
   property string lastCallState: ""
   property string lastCallConv: ""
+  property int callDurationSeconds: 0
   property bool locked: false
   property bool saveProtected: false
   property var friends: []
@@ -166,6 +179,32 @@ Item {
     for (key in root.unreadByConversation)
       total += Number(root.unreadByConversation[key] || 0)
     return total
+  }
+
+  function applyCallSnapshot(snapshotCall) {
+    var conv = ""
+    var state = ""
+    if (snapshotCall && typeof snapshotCall === "object") {
+      conv = String(snapshotCall.conversation || "")
+      state = String(snapshotCall.state || "")
+      if (!/^(0|[1-9][0-9]*)$/.test(conv) ||
+          ["incoming", "ringing", "active"].indexOf(state) === -1) {
+        conv = ""
+        state = ""
+      }
+    }
+    if (state === "active" &&
+        (root.lastCallState !== "active" || String(root.lastCallConv || "") !== conv))
+      root.callDurationSeconds = 0
+    if (!state)
+      root.callDurationSeconds = 0
+    root.incomingCall = state === "incoming"
+    root.lastCallState = state
+    root.lastCallConv = conv
+    if (conv) {
+      root.lastConversation = conv
+      root.lastDirectId = conv
+    }
   }
 
   function handleLine(line) {
@@ -247,6 +286,7 @@ Item {
         root.pendingHandshakeEvents = []
         root.pendingHandshakeBytes = 0
         root.handshakeEventOverflow = false
+        root.applyCallSnapshot(ev.call)
         if (previousInstance && previousInstance === nextInstance)
           root.reconcileOutgoingFiles()
       }
@@ -427,6 +467,7 @@ Item {
       root.lastChatReply = String(ev.reply || "")
       root.lastChatDir = ev.dir === "out" ? "out" : "in"
       root.lastChatKind = String(ev.kind || "")
+      root.lastChatSender = String(ev.sender || "")
       root.lastChatRequest = String(ev.request || "")
       if (root.lastChatDir !== "out" &&
           (!root.authoritativeUnreadSeen || root.helperCompatibility === "incompatible")) {
@@ -467,7 +508,7 @@ Item {
       root.lastReactionConv = String(ev.conversation || "")
       root.lastReactionId = String(ev.id || "")
       root.lastReactionEmoji = String(ev.emoji || "")
-      root.lastReactionActor = ev.actor === "me" ? "me" : "peer"
+      root.lastReactionActor = String(ev.actor || "peer")
       root.reactionTick = root.reactionTick + 1
     }
     if (ev.event === "message.reaction.failed") {
@@ -483,6 +524,29 @@ Item {
         ? "Unread state could not be loaded."
         : "Unread state could not be saved."
       root.unreadFailedTick = root.unreadFailedTick + 1
+    }
+    if (ev.event === "history.failed") {
+      var failedHistoryConv = String(ev.conversation || "")
+      var expectedFailedHistoryRequest = String(root.historyRequestByConversation[failedHistoryConv] || "")
+      if (!expectedFailedHistoryRequest ||
+          String(ev.request || "") !== expectedFailedHistoryRequest)
+        return
+      var failedHistoryRequests = {}
+      for (var failedRequestKey in root.historyRequestByConversation)
+        if (failedRequestKey !== failedHistoryConv)
+          failedHistoryRequests[failedRequestKey] = root.historyRequestByConversation[failedRequestKey]
+      root.historyRequestByConversation = failedHistoryRequests
+      var failedHistoryPending = {}
+      for (var failedPendingKey in root.pendingHistoryUnread) {
+        if (failedPendingKey !== failedHistoryConv)
+          failedHistoryPending[failedPendingKey] = root.pendingHistoryUnread[failedPendingKey]
+        else if ((root.pendingHistoryUnread[failedPendingKey] || []).length > 1)
+          failedHistoryPending[failedPendingKey] = root.pendingHistoryUnread[failedPendingKey].slice(1)
+      }
+      root.pendingHistoryUnread = failedHistoryPending
+      root.lastHistoryFailedConv = failedHistoryConv
+      root.lastHistoryFailedCode = String(ev.code || "history_failed")
+      root.historyFailedTick = root.historyFailedTick + 1
     }
     if (ev.event === "history") {
       var historyConv = String(ev.conversation || "")
@@ -565,11 +629,88 @@ Item {
       root.pending = true
       root.pendingGroup = ev.kind === "group"
     }
+    if (ev.event === "group.list.begin") {
+      root.groupsReady = false
+      root.pendingGroupGeneration = String(ev.generation || "")
+      root.pendingGroupBuild = ({})
+      root.pendingGroupOrder = []
+    }
+    if (ev.event === "group.info" &&
+        String(ev.generation || "") === root.pendingGroupGeneration) {
+      var groupId = String(ev.group || "")
+      if (groupId) {
+        var groupBuild = {}
+        var existingGroup
+        for (existingGroup in root.pendingGroupBuild)
+          groupBuild[existingGroup] = root.pendingGroupBuild[existingGroup]
+        groupBuild[groupId] = {
+          id: groupId,
+          title: String(ev.title || "Group"),
+          memberCount: Math.max(0, Number(ev.members || 0)),
+          limit: Math.max(1, Number(ev.limit || 10)),
+          members: []
+        }
+        root.pendingGroupBuild = groupBuild
+        var groupOrder = root.pendingGroupOrder.slice()
+        if (groupOrder.indexOf(groupId) < 0)
+          groupOrder.push(groupId)
+        root.pendingGroupOrder = groupOrder
+      }
+    }
+    if (ev.event === "group.member" &&
+        String(ev.generation || "") === root.pendingGroupGeneration) {
+      var memberGroupId = String(ev.group || "")
+      var stagedGroup = root.pendingGroupBuild[memberGroupId]
+      if (stagedGroup) {
+        var memberBuild = {}
+        var stagedKey
+        for (stagedKey in root.pendingGroupBuild)
+          memberBuild[stagedKey] = root.pendingGroupBuild[stagedKey]
+        var members = (stagedGroup.members || []).slice()
+        members.push({
+          peer: String(ev.peer || ""),
+          key: String(ev.key || ""),
+          name: String(ev.name || "Member"),
+          role: String(ev.role || "member"),
+          online: !!ev.online,
+          self: !!ev.self
+        })
+        memberBuild[memberGroupId] = {
+          id: stagedGroup.id,
+          title: stagedGroup.title,
+          memberCount: stagedGroup.memberCount,
+          limit: stagedGroup.limit,
+          members: members
+        }
+        root.pendingGroupBuild = memberBuild
+      }
+    }
+    if (ev.event === "group.list.end" &&
+        String(ev.generation || "") === root.pendingGroupGeneration) {
+      var nextGroups = []
+      for (var groupIndex = 0; groupIndex < root.pendingGroupOrder.length; groupIndex++) {
+        var completedGroup = root.pendingGroupBuild[root.pendingGroupOrder[groupIndex]]
+        if (completedGroup)
+          nextGroups.push(completedGroup)
+      }
+      root.groups = nextGroups
+      root.groupsReady = true
+      root.groupsTick = root.groupsTick + 1
+      if (root.lastGroup && !root.groupById(root.lastGroup))
+        root.lastGroup = nextGroups.length ? String(nextGroups[0].id) : ""
+      root.pendingGroupGeneration = ""
+      root.pendingGroupBuild = ({})
+      root.pendingGroupOrder = []
+    }
     if (ev.event === "group.changed") {
+      if ((ev.action === "dissolve" || ev.action === "leave") && ev.group) {
+        root.lastRemovedGroup = String(ev.group)
+        root.removedGroupTick = root.removedGroupTick + 1
+      }
       if ((ev.action === "dissolve" || ev.action === "leave") && ev.group === root.lastGroup &&
           (ev.action === "dissolve" || String(ev.peer || "") === "0"))
         root.lastGroup = ""
-      else if (ev.group)
+      else if ((ev.action === "create" || ev.action === "join") && ev.group)
         root.lastGroup = ev.group
       if (ev.action === "create" || ev.action === "join")
         root.lastConversation = ev.group || root.lastConversation
@@ -688,6 +829,7 @@ Item {
     }
     if (ev.event === "call.incoming") {
       root.incomingCall = true
+      root.callDurationSeconds = 0
       root.lastCallState = "incoming"
       if (ev.conversation)
         root.lastConversation = ev.conversation
@@ -696,9 +838,18 @@ Item {
         root.lastDirectId = String(root.lastCallConv)
     }
     if (ev.event === "call.state") {
-      root.lastCallState = ev.state || ""
-      if (ev.state === "ended" || ev.state === "")
+      var nextCallState = String(ev.state || "")
+      if (nextCallState === "active" &&
+          (root.lastCallState !== "active" ||
+           String(root.lastCallConv || "") !== String(ev.conversation || "")))
+        root.callDurationSeconds = 0
+      root.lastCallState = nextCallState
+      if (ev.state === "ended" || ev.state === "") {
         root.incomingCall = false
+        root.callDurationSeconds = 0
+      } else if (ev.state === "active") {
+        root.incomingCall = false
+      }
       if (ev.conversation)
         root.lastConversation = ev.conversation
       if (ev.conversation)
@@ -1035,7 +1186,7 @@ Item {
   function reactMessage(conv, id, emoji) {
     var c = String(conv || root.lastConversation || "")
     var messageId = String(id || "")
-    if (!c || !messageId || c.charAt(0) === "g")
+    if (!c || !messageId)
       return
     sendOp({ op: "message.react", conversation: c, id: messageId, text: String(emoji || "") })
   }
@@ -1054,7 +1205,7 @@ Item {
   }
   function setTyping(conv, typing) {
     var c = String(conv || root.lastConversation || "")
-    if (!c)
+    if (!c || c.charAt(0) === "g")
       return
     sendOp({ op: "typing.set", conversation: c, typing: !!typing })
   }
@@ -1093,31 +1244,101 @@ Item {
       return
     sendOp({ op: "safety.get", conversation: root.lastDirectId })
   }
-  function createGroup() { sendOp({ op: "group.create", title: "group" }) }
-  function inviteToGroup() {
-    if (!root.lastGroup || !root.lastDirectId)
-      return
-    sendOp({ op: "invite.create", kind: "group", group: root.lastGroup, role: "member", id: root.lastDirectId, ttlSec: 86400 })
+  function groupById(groupId) {
+    var key = String(groupId || "")
+    for (var i = 0; i < root.groups.length; i++)
+      if (String(root.groups[i].id || "") === key)
+        return root.groups[i]
+    return null
   }
-  function dissolveGroup() {
-    if (!root.lastGroup)
-      return
-    sendOp({ op: "group.dissolve", group: root.lastGroup })
+  function groupName(groupId) {
+    var group = root.groupById(groupId)
+    return group ? String(group.title || "Group") : "Group"
   }
-  function leaveGroup() {
-    if (!root.lastGroup)
-      return
-    sendOp({ op: "group.leave", group: root.lastGroup })
+  function groupMembers(groupId) {
+    var group = root.groupById(groupId)
+    return group ? (group.members || []) : []
   }
-  function setLastGroupMemberRole(role) {
-    if (!root.lastGroup || !root.lastDirectId)
-      return
-    sendOp({ op: "group.member.setRole", group: root.lastGroup, member: root.lastDirectId, role: role })
+  function groupSelfRole(groupId) {
+    var members = root.groupMembers(groupId)
+    for (var i = 0; i < members.length; i++)
+      if (members[i].self)
+        return String(members[i].role || "member")
+    return "member"
   }
-  function removeLastGroupMember() {
-    if (!root.lastGroup || !root.lastDirectId)
-      return
-    sendOp({ op: "group.member.remove", group: root.lastGroup, member: root.lastDirectId })
+  function groupOnlineCount(groupId) {
+    var members = root.groupMembers(groupId)
+    var count = 0
+    for (var i = 0; i < members.length; i++)
+      if (members[i].online && !members[i].self)
+        count++
+    return count
+  }
+  function selectGroup(groupId) {
+    var key = String(groupId || "")
+    if (!root.groupById(key))
+      return false
+    root.lastGroup = key
+    root.lastConversation = key
+    return true
+  }
+  function groupTitleOk(title) {
+    var name = String(title || "").trim()
+    if (!name)
+      return false
+    var encoded
+    try { encoded = encodeURIComponent(name) } catch (e) { return false }
+    var bytes = 0
+    for (var i = 0; i < encoded.length; i++) {
+      if (encoded.charAt(i) === "%")
+        i += 2
+      bytes++
+    }
+    return bytes <= 48
+  }
+  function createGroup(title) {
+    var name = String(title || "").trim()
+    if (!root.groupTitleOk(name))
+      return false
+    return sendOp({ op: "group.create", title: name })
+  }
+  function inviteToGroup(friendId, groupId) {
+    var group = String(groupId || root.lastGroup || "")
+    var friend = String(friendId || root.lastDirectId || "")
+    var selected = root.groupById(group)
+    if (!selected || !friend || Number(selected.memberCount || 0) >= Number(selected.limit || 10))
+      return false
+    root.lastGroup = group
+    root.lastDirectId = friend
+    return sendOp({ op: "invite.create", kind: "group", group: group,
+      role: "member", id: friend, ttlSec: 86400 })
+  }
+  function dissolveGroup(groupId) {
+    var group = String(groupId || root.lastGroup || "")
+    if (!group)
+      return false
+    return sendOp({ op: "group.dissolve", group: group })
+  }
+  function leaveGroup(groupId) {
+    var group = String(groupId || root.lastGroup || "")
+    if (!group)
+      return false
+    return sendOp({ op: "group.leave", group: group })
+  }
+  function setGroupMemberRole(groupId, memberKey, role) {
+    var group = String(groupId || root.lastGroup || "")
+    var key = String(memberKey || "")
+    if (!group || !/^[0-9a-f]{64}$/.test(key) ||
+        (role !== "admin" && role !== "member"))
+      return false
+    return sendOp({ op: "group.member.setRole", group: group, member: key, role: role })
+  }
+  function removeGroupMember(groupId, memberKey) {
+    var group = String(groupId || root.lastGroup || "")
+    var key = String(memberKey || "")
+    if (!group || !/^[0-9a-f]{64}$/.test(key))
+      return false
+    return sendOp({ op: "group.member.remove", group: group, member: key })
   }
   function openCard() {
     sendOp({ op: "surface.set", conversation: root.lastConversation, monitor: "", x: 40, y: 80, pinned: true })
@@ -1151,8 +1372,8 @@ Item {
   function sendFile(path, conv) {
     var c = String(conv || root.lastConversation || "")
     var filePath = String(path || "")
-    if (!c || !filePath || root.helperCompatibility === "incompatible" ||
-        root.outgoingFile(c).pending)
+    if (!c || c.charAt(0) === "g" || !filePath ||
+        root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
       return false
     root.fileRequestSequence = root.fileRequestSequence + 1
     var requestId = Date.now().toString(36) + "-" + root.fileRequestSequence.toString(36) +
@@ -1209,21 +1430,22 @@ Item {
       root.pendingFile = false
   }
   function startCall(conv) {
-    sendOp({ op: "call.start", conversation: conv || root.lastConversation })
+    var c = String(conv || root.lastConversation || "")
+    if (!c || c.charAt(0) === "g")
+      return false
+    return sendOp({ op: "call.start", conversation: c })
   }
   function answerCall(conv) {
-    var c = conv || root.lastCallConv || root.lastDirectId
-    if (!c)
-      return
-    sendOp({ op: "call.answer", conversation: c })
-    root.incomingCall = false
+    var c = String(conv || root.lastCallConv || root.lastDirectId || "")
+    if (!c || c.charAt(0) === "g")
+      return false
+    return sendOp({ op: "call.answer", conversation: c })
   }
   function stopCall(conv) {
-    var c = conv || root.lastCallConv || root.lastDirectId
-    if (!c)
-      return
-    sendOp({ op: "call.stop", conversation: c })
-    root.incomingCall = false
+    var c = String(conv || root.lastCallConv || root.lastDirectId || "")
+    if (!c || c.charAt(0) === "g")
+      return false
+    return sendOp({ op: "call.stop", conversation: c })
   }
 
   function resetBackoff() {
@@ -1264,6 +1486,8 @@ Item {
     root.historyRequestByConversation = ({})
     root.lastHistoryItems = []
     root.lastHistoryConv = ""
+    root.lastHistoryFailedConv = ""
+    root.lastHistoryFailedCode = ""
     root.lastHistoryUnreadConv = ""
     root.lastHistoryUnreadCount = 0
     root.searchItems = []
@@ -1272,6 +1496,7 @@ Item {
     root.lastChatReply = ""
     root.lastChatDir = ""
     root.lastChatKind = ""
+    root.lastChatSender = ""
     root.lastChatRequest = ""
     root.lastChatConv = ""
     root.lastMessageFailedConv = ""
@@ -1312,6 +1537,13 @@ Item {
     root.lastDirectId = ""
     root.lastAddr = ""
     root.lastGroup = ""
+    root.groups = []
+    root.groupsReady = false
+    root.lastRemovedGroup = ""
+    root.pendingGroupBuild = ({})
+    root.pendingGroupOrder = []
+    root.pendingGroupGeneration = ""
+    root.groupsTick = root.groupsTick + 1
     root.pending = false
     root.pendingGroup = false
     root.inviteUrl = ""
@@ -1325,6 +1557,7 @@ Item {
     root.connectionState = "starting"
     root.lastCallState = ""
     root.lastCallConv = ""
+    root.callDurationSeconds = 0
     root.friends = []
     root.surfaces = []
     root.surfacesTick = root.surfacesTick + 1
@@ -1389,6 +1622,7 @@ Item {
     root.recoveringHelper = true
     root.connectionState = "reconnecting"
     root.selfOnline = false
+    root.applyCallSnapshot(null)
     if (root.lastError !== "identity_rollback_failed" &&
         root.lastError !== "identity_backup_cleanup_failed")
       root.lastError = "helper_down"
@@ -1447,6 +1681,13 @@ Item {
     interval: 5000
     repeat: false
     onTriggered: root.retryHelperHandshake()
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.lastCallState === "active"
+    onTriggered: root.callDurationSeconds = root.callDurationSeconds + 1
   }
 
   Timer {

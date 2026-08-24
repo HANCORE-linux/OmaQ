@@ -18,10 +18,29 @@ typedef struct {
 	int64_t hour[OMAQ_RATE_PER_HOUR];
 } omaq_rate;
 
+#define OMAQ_CONTROL_RATE_SLOTS 320
+#define OMAQ_CONTROL_RATE_PER_KEY 30
+#define OMAQ_CONTROL_RATE_RECEIPT_PER_KEY 60
+#define OMAQ_CONTROL_RATE_GLOBAL 120
+#define OMAQ_CONTROL_RATE_KEY_LEN 80
+
+typedef struct {
+	struct {
+		char key[OMAQ_CONTROL_RATE_KEY_LEN];
+		int64_t window;
+		unsigned int count;
+	} entries[OMAQ_CONTROL_RATE_SLOTS];
+	int64_t global_window;
+	unsigned int global_count;
+} omaq_control_rate;
+
 void omaq_rate_init(omaq_rate *r);
 /* 0 = allow and record, -1 = deny. key is an opaque id (e.g. peer pk hex). */
 int omaq_rate_allow(omaq_rate *r, const char *key, int64_t now);
 /* Per-key window only, for protocol-specific independent limiters. */
 int omaq_rate_allow_key_only(omaq_rate *r, const char *key, int64_t now);
+void omaq_control_rate_init(omaq_control_rate *r);
+int omaq_control_rate_allow(omaq_control_rate *r, char kind, uint32_t group,
+			    const char *actor, int64_t now);
 
 #endif

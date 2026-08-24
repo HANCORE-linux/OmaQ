@@ -8,6 +8,7 @@ PKG_CONFIG ?= pkg-config
 TOX_OK := $(shell $(PKG_CONFIG) --exists libtoxcore && echo yes || \
 	($(PKG_CONFIG) --exists toxcore && echo yes || echo no))
 SIG_OK := $(shell $(PKG_CONFIG) --exists libsignal-protocol-c && echo yes || echo no)
+PULSE_OK := $(shell $(PKG_CONFIG) --exists libpulse-simple && echo yes || echo no)
 
 ifeq ($(TOX_OK),yes)
   TOX_PC := $(shell $(PKG_CONFIG) --exists libtoxcore && echo libtoxcore || echo toxcore)
@@ -21,6 +22,12 @@ ifeq ($(SIG_OK),yes)
   CFLAGS += $(shell $(PKG_CONFIG) --cflags libsignal-protocol-c)
   TOX_LIBS += $(shell $(PKG_CONFIG) --libs libsignal-protocol-c)
   TOX_LIBS += $(shell $(PKG_CONFIG) --libs libcrypto)
+endif
+
+ifeq ($(PULSE_OK),yes)
+  CFLAGS += -DHAVE_PULSE
+  CFLAGS += $(shell $(PKG_CONFIG) --cflags libpulse-simple)
+  TOX_LIBS += $(shell $(PKG_CONFIG) --libs libpulse-simple)
 endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
@@ -39,10 +46,11 @@ TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation
 BIN_TEST := tests/omaq_test
 BIN_SPOOL_TEST := tests/stdout_spool_test
 BIN_FILE_TRANSFER_TEST := tests/file_transfer_test
+BIN_AV_STATE_TEST := tests/av_state_test
 BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
 BIN_HELP := helper/omaq
 
-.PHONY: all test helper check-signal arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
+.PHONY: all test helper check-signal check-audio arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
 all: $(BIN_TEST) helper
@@ -58,6 +66,10 @@ $(BIN_FILE_TRANSFER_TEST): tests/file_transfer_test.c helper/file.c helper/file.
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX -o $@ \
 		tests/file_transfer_test.c helper/file.c helper/avatar.c
 
+$(BIN_AV_STATE_TEST): tests/av_state_test.c helper/av.c helper/av.h helper/tox_adapt.h
+	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DHAVE_TOX -o $@ \
+		tests/av_state_test.c helper/av.c -pthread
+
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
 		-DOMAQ_STDOUT_SPOOL_MAX=5242880u -o $@ $(HELPER_SRC)
@@ -69,13 +81,21 @@ check-signal:
 		exit 1; \
 	fi
 
-$(BIN_HELP): check-signal $(HELPER_SRC)
+check-audio:
+	@if [ "$(PULSE_OK)" != "yes" ]; then \
+		echo "omaq: libpulse-simple is required for voice calls" >&2; \
+		echo "omaq: install libpulse before running 'make helper'" >&2; \
+		exit 1; \
+	fi
+
+$(BIN_HELP): check-signal check-audio $(HELPER_SRC)
 	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
-test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_IPC_TEST_HELPER)
+test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(BIN_IPC_TEST_HELPER)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
+	./$(BIN_AV_STATE_TEST)
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 
 helper: $(BIN_HELP)
@@ -222,5 +242,5 @@ verify-8: test arch helper
 	@echo "verify-8: ok"
 
 clean:
-	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) \
+	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
 		$(BIN_IPC_TEST_HELPER) $(BIN_HELP)

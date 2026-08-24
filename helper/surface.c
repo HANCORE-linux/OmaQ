@@ -27,10 +27,24 @@ static int surf_path(const char *state, char *buf, size_t n)
 
 static int conv_ok(const char *c)
 {
-	if (!c || !c[0] || strlen(c) >= 80)
+	size_t len;
+
+	if (!c || !c[0] || (len = strlen(c)) >= 80)
 		return 0;
-	if (strchr(c, '/') || strstr(c, "..") || strchr(c, '\n'))
+	if (c[0] == 'g') {
+		if (len != 66 || c[1] != ':')
+			return 0;
+		for (size_t i = 2; i < len; i++)
+			if (!((c[i] >= '0' && c[i] <= '9') ||
+			      (c[i] >= 'a' && c[i] <= 'f')))
+				return 0;
+		return 1;
+	}
+	if (len > 1 && c[0] == '0')
 		return 0;
+	for (size_t i = 0; i < len; i++)
+		if (c[i] < '0' || c[i] > '9')
+			return 0;
 	return 1;
 }
 
@@ -78,7 +92,7 @@ static int load_all(const char *path, omaq_surface *arr, int *n)
 		return 0;
 	while (fgets(buf, sizeof(buf), f)) {
 		omaq_surface s;
-		if (parse_line(buf, &s) != 0)
+		if (parse_line(buf, &s) != 0 || !conv_ok(s.conversation))
 			continue;
 		if (*n >= OMAQ_SURFACE_MAX)
 			break;

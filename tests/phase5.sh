@@ -25,11 +25,19 @@ case "$ha" in
 "$real_home"|"$real_home"/*) echo "phase5: refused real home" >&2; exit 1 ;;
 esac
 
+orphan_stage="$sa/identity-import-stage-999999"
+mkdir -p "$orphan_stage"
+printf 'staged' >"$orphan_stage/tox.save"
+printf 'registry' >"$orphan_stage/groups.tsv"
+printf 'bundle' >"$orphan_stage/identity.bundle"
+printf 'temp' >"$orphan_stage/groups.tsv.tmp.999999"
+printf 'temp' >"$orphan_stage/identity.bundle.tmp.999999"
 mkfifo "$hold"
 OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$out" 2>"$out.err" <"$hold" &
 pid=$!
 exec 3>"$hold"
 sleep 0.4
+[ ! -e "$orphan_stage" ] || { echo "phase5: orphan import stage not cleaned" >&2; exit 1; }
 
 echo '{"op":"status"}' >&3
 sleep 0.2
@@ -74,6 +82,18 @@ echo '{"op":"status"}' >&4
 sleep 0.2
 addrb=$(grep -a '"addr"' "$outb" | tail -1 | sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
 [ -n "$addrb" ] || { echo "phase5: no addr b" >&2; exit 1; }
+printf '{"op":"group.create","title":"Exported group"}\n' >&4
+i=0
+exported_gid=""
+while [ "$i" -lt 40 ]; do
+	exported_gid=$(grep -a '"event":"group.changed"' "$outb" | grep -a '"action":"create"' |
+		tail -1 | sed -n 's/.*"group":"\([^"]*\)".*/\1/p')
+	[ -n "$exported_gid" ] && break
+	i=$((i + 1))
+	sleep 0.05
+done
+[ -n "$exported_gid" ] || { echo "phase5: no exported group" >&2; exit 1; }
+sleep 1
 expb=$(mktemp /tmp/omaq-p5b-XXXXXX.save)
 printf '{"op":"identity.export","path":"%s"}\n' "$expb" >&4
 sleep 0.3
@@ -106,6 +126,19 @@ while [ "$i" -lt 40 ]; do
 done
 [ -n "$instance" ] || { echo "phase5: identity handshake missing" >&2; exit 1; }
 printf '{"op":"identity.ready","id":"%s"}\n' "$instance" >&3
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a -q '"code":"group_orphaned"' "$out"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.05
+done
+[ "$i" -lt 40 ] || { echo "phase5: missing private group was not reported" >&2; exit 1; }
+if grep -a '"event":"group.info"' "$out" | grep -a -q '"group":"'"$exported_gid"'"'; then
+	echo "phase5: private group was fabricated from exported chat ID" >&2
+	exit 1
+fi
 
 # Search fixture on disk (no need for a live message).
 python3 - "$ha" <<'PY'

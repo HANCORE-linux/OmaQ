@@ -20,15 +20,16 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Files:** paused offer, explicit Accept/Decline, cancelable outgoing transfers, default downloads under `~/Downloads/omaq/`, and in-chat playback for received audio files without image or video previews.
 - **Notifications:** `Auto-open` is per conversation; Settings groups Mute, Demo, Theme, and licensed sound presets; unread counts remain until the relevant chat is actively opened.
 - **Connection state:** Panel and chat distinguish `Connecting…`/`Reconnecting…` from an online service with an offline contact.
-- **Identity:** local `tox.save`, optional passphrase encryption, Export, Import, and rollback-protected Replace.
-- **Groups:** UI and basic group operations exist; role management and cross-network behavior still need acceptance testing.
+- **Calls:** direct chats provide microphone/speaker audio, explicit Answer/Decline/Hang up controls, a call timer, and a `color01` pulsing incoming-call bar icon that opens the caller's chat without answering. Calls never appear in group chats.
+- **Identity:** local `tox.save`, optional passphrase encryption, versioned Export bundles with private group mappings, Import, and rollback-protected Replace.
+- **Groups:** named private groups are capped at 10 members. The panel provides group selection, creation, contact invitation, opening, and confirmed leave. Group chats expose names, roles, online/offline state, role-aware member moderation, reactions, replies, edits, deletes, formatting, unread state, and receipts. Group file transfer remains unavailable because Tox NGC has no group file-transfer primitive.
 
 ## Security boundaries
 
 - The private Tox identity is local; there is no central identity server.
 - The passphrase protects the local identity file, not JSONL chat history.
-- Private identities, ratchet state, and local history must never be synchronized unintentionally.
-- Calls are excluded from the user guide and are not product-ready; current support is signaling-level only.
+- Private identities, the private-group registry, ratchet state, and local history must never be synchronized unintentionally.
+- Direct call audio uses bounded in-memory PCM rings and the local PulseAudio client API; no audio is persisted.
 
 ## Open points
 

@@ -20,7 +20,7 @@ OmaQ policy (`roles.c`) still allows admin → admin. On the wire that call fail
 - **Private** group (`TOX_GROUP_PRIVACY_STATE_PRIVATE`): join only via `tox_group_invite_friend` to an **existing friend**. No DHT directory. Chat ID join (`tox_group_join`) is the public path; OmaQ does not use it.
 - Invite is valid only while the inviter is still in the group.
 - Accept: `tox_group_invite_accept` (needs the invite blob from `group_invite`).
-- OmaQ `omaq://…&k=group` is our token layer. After 1:1 exists, the helper must also call `tox_group_invite_friend`. `r=admin` is a **promotion after join** (member window), not a Tox invite role.
+- OmaQ `omaq://…&k=group` is our token layer. After 1:1 exists, the helper must also call `tox_group_invite_friend`. Group invites are member-only; an owner promotes a joined member separately.
 
 ## Kick / leave
 
@@ -37,4 +37,4 @@ No `tox_group_get_peer_list`. Peers are tracked from `group_peer_join` / `group_
 
 ## What `group.c` implements
 
-Only the gap: conversation id `g<n>`, dissolve plan, peer table, OmaQ role_may before each Tox call, `r=admin` as post-join `setRole`. No second role engine. Observer never set.
+Only the gap: stable chat-ID conversation mapping, dissolve plan, peer table, and `role_may` before each Tox call. Promotions are explicit post-join `setRole` operations. No second role engine. Observer is never set.

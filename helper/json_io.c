@@ -258,3 +258,199 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		return -1;
 	return 0;
 }
+
+static const char *validate_ws(const char *p)
+{
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+		p++;
+	return p;
+}
+
+static int validate_utf8_char(const unsigned char **cursor)
+{
+	const unsigned char *p = *cursor;
+	size_t need;
+
+	if (*p >= 0xc2 && *p <= 0xdf)
+		need = 1;
+	else if (*p >= 0xe0 && *p <= 0xef)
+		need = 2;
+	else if (*p >= 0xf0 && *p <= 0xf4)
+		need = 3;
+	else
+		return -1;
+	for (size_t i = 1; i <= need; i++)
+		if ((p[i] & 0xc0) != 0x80)
+			return -1;
+	if ((p[0] == 0xe0 && p[1] < 0xa0) ||
+	    (p[0] == 0xed && p[1] >= 0xa0) ||
+	    (p[0] == 0xf0 && p[1] < 0x90) ||
+	    (p[0] == 0xf4 && p[1] >= 0x90))
+		return -1;
+	*cursor = p + need + 1;
+	return 0;
+}
+
+static int validate_string(const char **cursor)
+{
+	const unsigned char *p = (const unsigned char *)*cursor;
+
+	if (*p++ != '"')
+		return -1;
+	while (*p && *p != '"') {
+		if (*p < 0x20)
+			return -1;
+		if (*p >= 0x80) {
+			if (validate_utf8_char(&p) != 0)
+				return -1;
+			continue;
+		}
+		if (*p++ != '\\')
+			continue;
+		if (*p == '"' || *p == '\\' || *p == '/' || *p == 'b' ||
+		    *p == 'f' || *p == 'n' || *p == 'r' || *p == 't') {
+			p++;
+			continue;
+		}
+		if (*p++ != 'u')
+			return -1;
+		for (int i = 0; i < 4; i++, p++)
+			if (!isxdigit(*p))
+				return -1;
+	}
+	if (*p != '"')
+		return -1;
+	*cursor = (const char *)(p + 1);
+	return 0;
+}
+
+static int validate_value(const char **cursor, int depth);
+
+static int validate_array(const char **cursor, int depth)
+{
+	const char *p = validate_ws(*cursor + 1);
+
+	if (*p == ']') {
+		*cursor = p + 1;
+		return 0;
+	}
+	for (;;) {
+		if (validate_value(&p, depth + 1) != 0)
+			return -1;
+		p = validate_ws(p);
+		if (*p == ']') {
+			*cursor = p + 1;
+			return 0;
+		}
+		if (*p != ',')
+			return -1;
+		p = validate_ws(p + 1);
+	}
+}
+
+static int validate_object(const char **cursor, int depth)
+{
+	const char *p = validate_ws(*cursor + 1);
+
+	if (*p == '}') {
+		*cursor = p + 1;
+		return 0;
+	}
+	for (;;) {
+		if (validate_string(&p) != 0)
+			return -1;
+		p = validate_ws(p);
+		if (*p != ':')
+			return -1;
+		p = validate_ws(p + 1);
+		if (validate_value(&p, depth + 1) != 0)
+			return -1;
+		p = validate_ws(p);
+		if (*p == '}') {
+			*cursor = p + 1;
+			return 0;
+		}
+		if (*p != ',')
+			return -1;
+		p = validate_ws(p + 1);
+	}
+}
+
+static int validate_number(const char **cursor)
+{
+	const char *p = *cursor;
+
+	if (*p == '-')
+		p++;
+	if (*p == '0') {
+		p++;
+		if (*p >= '0' && *p <= '9')
+			return -1;
+	} else {
+		if (*p < '1' || *p > '9')
+			return -1;
+		while (*p >= '0' && *p <= '9')
+			p++;
+	}
+	if (*p == '.') {
+		p++;
+		if (*p < '0' || *p > '9')
+			return -1;
+		while (*p >= '0' && *p <= '9')
+			p++;
+	}
+	if (*p == 'e' || *p == 'E') {
+		p++;
+		if (*p == '+' || *p == '-')
+			p++;
+		if (*p < '0' || *p > '9')
+			return -1;
+		while (*p >= '0' && *p <= '9')
+			p++;
+	}
+	*cursor = p;
+	return 0;
+}
+
+static int validate_value(const char **cursor, int depth)
+{
+	const char *p = validate_ws(*cursor);
+
+	if (depth > 32)
+		return -1;
+	if (*p == '"') {
+		if (validate_string(&p) != 0)
+			return -1;
+	} else if (*p == '{') {
+		if (validate_object(&p, depth) != 0)
+			return -1;
+	} else if (*p == '[') {
+		if (validate_array(&p, depth) != 0)
+			return -1;
+	} else if (strncmp(p, "true", 4) == 0) {
+		p += 4;
+	} else if (strncmp(p, "false", 5) == 0) {
+		p += 5;
+	} else if (strncmp(p, "null", 4) == 0) {
+		p += 4;
+	} else if (*p == '-' || (*p >= '0' && *p <= '9')) {
+		if (validate_number(&p) != 0)
+			return -1;
+	} else {
+		return -1;
+	}
+	*cursor = p;
+	return 0;
+}
+
+int omaq_json_validate(const char *json)
+{
+	const char *p;
+
+	if (!json)
+		return -1;
+	p = validate_ws(json);
+	if (validate_value(&p, 0) != 0)
+		return -1;
+	return *validate_ws(p) == '\0' ? 0 : -1;
+}

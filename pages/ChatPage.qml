@@ -28,6 +28,10 @@ FocusScope {
   property bool autoOpenEnabled: true
   property bool readActive: false
   property bool clearConfirm: false
+  property bool groupMembersOpen: false
+  property string groupActionConfirm: ""
+  property string groupActionMemberKey: ""
+  property string groupActionName: ""
   signal autoOpenToggled()
   property bool terminalLook: false
   property bool pulseUnread: false
@@ -69,9 +73,33 @@ FocusScope {
     return String(service.filePathFor(root.conversation) || "")
   }
   readonly property bool mediaPathInHistory: root.hasFileMessage(root.mediaPath)
+  readonly property bool groupConversation: String(root.conversation || "").charAt(0) === "g"
+  readonly property var groupMembers: {
+    if (!root.groupConversation || !root.service ||
+        typeof root.service.groupMembers !== "function")
+      return []
+    var revision = Number(root.service.groupsTick || 0)
+    return revision >= 0 ? root.service.groupMembers(root.conversation) : []
+  }
+  readonly property int groupPeerCount: {
+    var count = 0
+    for (var i = 0; i < root.groupMembers.length; i++)
+      if (!root.groupMembers[i].self)
+        count++
+    return count
+  }
+  readonly property int groupOnlineCount: {
+    var count = 0
+    for (var i = 0; i < root.groupMembers.length; i++)
+      if (!root.groupMembers[i].self && root.groupMembers[i].online)
+        count++
+    return count
+  }
   readonly property string peerConnectionStatus: {
     if (service && service.connectionState && service.connectionState !== "online")
       return service.connectionState === "reconnecting" ? "reconnecting…" : "connecting…"
+    if (root.groupConversation)
+      return root.groupOnlineCount + "/" + root.groupPeerCount + " online"
     if (root.peerTyping)
       return "typing…"
     return root.peerOnline ? "online" : "offline"
@@ -81,7 +109,10 @@ FocusScope {
       return false
     return service.isPeerTyping(root.conversation)
   }
+  readonly property bool directConversation: root.demo || !root.groupConversation
   readonly property bool incoming: {
+    if (!root.directConversation)
+      return false
     if (root.demo)
       return root.demoIncomingCall
     if (!service || !service.incomingCall)
@@ -89,6 +120,8 @@ FocusScope {
     return root.sameConv(service.lastCallConv || service.lastConversation)
   }
   readonly property bool inCall: {
+    if (!root.directConversation)
+      return false
     if (root.demo)
       return root.demoInCall
     if (!service || service.incomingCall)
@@ -98,6 +131,14 @@ FocusScope {
     var s = service.lastCallState || ""
     return s !== "" && s !== "ended"
   }
+  readonly property bool callActive: root.directConversation &&
+    (root.demo ? root.demoInCall :
+      (!!root.service && root.service.lastCallState === "active" &&
+       root.sameConv(root.service.lastCallConv || root.service.lastConversation)))
+  readonly property int callDurationSeconds: root.demo
+    ? root.demoCallDurationSeconds :
+      (root.service ? Number(root.service.callDurationSeconds || 0) : 0)
+  readonly property string callDurationText: root.formatCallDuration(root.callDurationSeconds)
   readonly property bool fileForThis: {
     if (root.demo)
       return root.demoIncomingFile
@@ -109,6 +150,7 @@ FocusScope {
   property bool demoIncomingFile: false
   property bool demoIncomingCall: false
   property bool demoInCall: false
+  property int demoCallDurationSeconds: 0
   property int demoReplyIndex: 0
   property bool typingSent: false
   property string typingConversation: ""
@@ -791,6 +833,8 @@ FocusScope {
     var entry = item || {}
     if (entry.ack === undefined)
       entry.ack = -1
+    if (entry.sender === undefined)
+      entry.sender = ""
     if (entry.newMarker === undefined)
       entry.newMarker = false
     if (entry.live === undefined)
@@ -801,6 +845,8 @@ FocusScope {
       entry.reactionMe = ""
     if (entry.reactionPeer === undefined)
       entry.reactionPeer = ""
+    if (entry.groupReactions === undefined)
+      entry.groupReactions = []
     if (entry.needsReadReceipt === undefined)
       entry.needsReadReceipt = false
     if (entry.failed === undefined)
@@ -844,7 +890,7 @@ FocusScope {
 
   function reactToMessage(id, currentEmoji, emoji) {
     var messageId = String(id || "")
-    if (!messageId || root.demo || !root.service || String(root.conversation || "").charAt(0) === "g")
+    if (!messageId || root.demo || !root.service)
       return
     var selectedEmoji = String(emoji || "")
     root.service.reactMessage(root.conversation, messageId,
@@ -857,6 +903,58 @@ FocusScope {
     if (!conv)
       return false
     return String(conv) === String(root.conversation)
+  }
+
+  function groupMemberName(peerValue) {
+    var peer = String(peerValue || "").replace(/^(peer:|member:)/, "")
+    for (var i = 0; i < root.groupMembers.length; i++)
+      if (String(root.groupMembers[i].peer || "") === peer ||
+          String(root.groupMembers[i].key || "") === peer)
+        return String(root.groupMembers[i].name || "Member")
+    return "Member"
+  }
+
+  function groupSelfRole() {
+    for (var i = 0; i < root.groupMembers.length; i++)
+      if (root.groupMembers[i].self)
+        return String(root.groupMembers[i].role || "member")
+    return "member"
+  }
+
+  function mayManageGroupMember(member) {
+    if (!member || member.self || !member.online)
+      return false
+    var selfRole = root.groupSelfRole()
+    var targetRole = String(member.role || "member")
+    return selfRole === "owner" ? targetRole !== "owner" :
+      (selfRole === "admin" && targetRole === "member")
+  }
+
+  function requestGroupMemberAction(action, member) {
+    if (!root.groupConversation || !member || !root.mayManageGroupMember(member))
+      return
+    root.groupActionConfirm = String(action || "")
+    root.groupActionMemberKey = String(member.key || "")
+    root.groupActionName = String(member.name || "Member")
+  }
+
+  function confirmGroupMemberAction() {
+    if (!root.service || !root.groupActionConfirm || !root.groupActionMemberKey)
+      return
+    if (root.groupActionConfirm === "remove")
+      root.service.removeGroupMember(root.conversation, root.groupActionMemberKey)
+    else
+      root.service.setGroupMemberRole(root.conversation, root.groupActionMemberKey,
+        root.groupActionConfirm)
+    root.groupActionConfirm = ""
+    root.groupActionMemberKey = ""
+    root.groupActionName = ""
+  }
+
+  function clearGroupMemberAction() {
+    root.groupActionConfirm = ""
+    root.groupActionMemberKey = ""
+    root.groupActionName = ""
   }
 
   function messageAt(index) {
@@ -906,7 +1004,7 @@ FocusScope {
     if (root.demo || !root.service || !root.conversation)
       return
     root.service.clearUnread(root.conversation)
-    if (String(root.conversation).charAt(0) === "g" || !root.peerOnline)
+    if (!root.peerOnline)
       return
     var pending = root.pendingReceiptIds.slice()
     var changed = false
@@ -1012,6 +1110,30 @@ FocusScope {
     return false
   }
 
+  function historyGroupReactions(item) {
+    var reactions = []
+    if (!item)
+      return reactions
+    var key
+    for (key in item) {
+      if (key.indexOf("reaction_group_") !== 0 || !item[key])
+        continue
+      reactions.push({ actor: key.slice("reaction_group_".length), emoji: String(item[key]) })
+    }
+    return reactions
+  }
+
+  function updatedGroupReactions(current, actor, emoji) {
+    var next = []
+    var actorKey = String(actor || "")
+    for (var i = 0; current && i < current.length; i++)
+      if (String(current[i].actor || "") !== actorKey)
+        next.push({ actor: String(current[i].actor || ""), emoji: String(current[i].emoji || "") })
+    if (actorKey && emoji)
+      next.push({ actor: actorKey, emoji: String(emoji) })
+    return next
+  }
+
   function applyHistory(items, cleared) {
     var keep = []
     var unreadCount = 0
@@ -1022,7 +1144,7 @@ FocusScope {
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
       if (!cleared && existing && (existing.local || existing.live))
-        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
+        keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
     if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
@@ -1051,7 +1173,7 @@ FocusScope {
       var historyAck = -1
       if (dir === "out")
         historyAck = it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1)
-      root.appendLine({ id: it.id || "", reply: it.reply || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
+      root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
     }
     if (root.readActive)
       root.markRead()
@@ -1154,7 +1276,7 @@ FocusScope {
     }
     if (dir === "in" && !hasNewMarker)
       root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
-    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: false, live: true, pending: false, failed: false, failureCode: "", clientKey: dir === "out" ? request : "", ack: dir === "out" ? 1 : -1 })
+    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", sender: service.lastChatSender || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: false, live: true, pending: false, failed: false, failureCode: "", clientKey: dir === "out" ? request : "", ack: dir === "out" ? 1 : -1 })
     if (root.readActive && dir === "in" && service.lastChatId)
       root.markRead()
     if (followLatest)
@@ -1272,8 +1394,18 @@ FocusScope {
       root.applyMessageFailure(clientKey, service.lastError || "helper_incompatible", false)
   }
 
+  function formatCallDuration(value) {
+    var seconds = Math.max(0, Math.floor(Number(value || 0)))
+    var minutes = Math.floor(seconds / 60)
+    var remainder = seconds % 60
+    return minutes.toString() + ":" + (remainder < 10 ? "0" : "") + remainder.toString()
+  }
+
   function startCall() {
+    if (!root.directConversation)
+      return
     if (root.demo) {
+      root.demoCallDurationSeconds = 0
       root.demoIncomingCall = false
       root.demoInCall = true
       root.appendLine({ dir: "sys", text: "Call started (demo)", ack: -1 })
@@ -1285,7 +1417,10 @@ FocusScope {
   }
 
   function answerCall() {
+    if (!root.directConversation)
+      return
     if (root.demo) {
+      root.demoCallDurationSeconds = 0
       root.demoIncomingCall = false
       root.demoInCall = true
       root.appendLine({ dir: "sys", text: "Call answered (demo)", ack: -1 })
@@ -1297,9 +1432,12 @@ FocusScope {
   }
 
   function hangUp() {
+    if (!root.directConversation)
+      return
     if (root.demo) {
       root.demoIncomingCall = false
       root.demoInCall = false
+      root.demoCallDurationSeconds = 0
       root.appendLine({ dir: "sys", text: "Call ended (demo)", ack: -1 })
       list.positionViewAtEnd()
       return
@@ -1309,6 +1447,8 @@ FocusScope {
   }
 
   function attachFile() {
+    if (root.groupConversation)
+      return
     if (root.demo) {
       root.demoIncomingFile = true
       root.appendLine({ dir: "sys", text: "File offer: notes.png (demo)", ack: -1 })
@@ -1489,6 +1629,13 @@ FocusScope {
   }
 
   Timer {
+    interval: 1000
+    repeat: true
+    running: root.demo && root.demoInCall
+    onTriggered: root.demoCallDurationSeconds = root.demoCallDurationSeconds + 1
+  }
+
+  Timer {
     id: demoReply
     interval: 650
     onTriggered: {
@@ -1617,8 +1764,13 @@ FocusScope {
       for (var i = 0; i < lines.count; i++) {
         var reactionLine = lines.get(i)
         if (reactionLine && reactionLine.id === root.service.lastReactionId) {
-          lines.setProperty(i, root.service.lastReactionActor === "me"
-            ? "reactionMe" : "reactionPeer", root.service.lastReactionEmoji)
+          var reactionActor = String(root.service.lastReactionActor || "peer")
+          if (root.groupConversation && reactionActor !== "me" && reactionActor !== "peer")
+            lines.setProperty(i, "groupReactions", root.updatedGroupReactions(
+              reactionLine.groupReactions || [], reactionActor, root.service.lastReactionEmoji))
+          else
+            lines.setProperty(i, reactionActor === "me" ? "reactionMe" : "reactionPeer",
+              root.service.lastReactionEmoji)
           break
         }
       }
@@ -1655,6 +1807,13 @@ FocusScope {
       if (!root.service || !root.sameConv(root.service.lastHistoryConv))
         return
       root.applyHistory(root.service.lastHistoryItems, root.service.lastHistoryCleared)
+    }
+    function onHistoryFailedTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastHistoryFailedConv))
+        return
+      root.reactionStatus = "Chat history could not be loaded"
+      reactionStatusTimer.interval = 6000
+      reactionStatusTimer.restart()
     }
     function onLastErrorTickChanged() {
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
@@ -1713,6 +1872,8 @@ FocusScope {
     root.fileStatus = ""
     root.fileStatusPath = ""
     root.reactionStatus = ""
+    root.groupMembersOpen = root.groupConversation
+    root.clearGroupMemberAction()
     mediaPlayer.stop()
     root.activeAudioPath = ""
     root.audioErrorPath = ""
@@ -1742,6 +1903,7 @@ FocusScope {
   }
 
   Component.onCompleted: {
+    root.groupMembersOpen = root.groupConversation
     if (root.demo)
       root.resetDemo()
   }
@@ -1783,7 +1945,7 @@ FocusScope {
           Text {
             anchors.centerIn: parent
             visible: root.peerAvatar === "" || root.peerAvatarFailed
-            text: "person"
+            text: root.groupConversation ? "group" : "person"
             color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72)
             font.family: "Material Symbols Rounded"
             font.pixelSize: Math.round(Style.font.display * 0.64)
@@ -1810,6 +1972,14 @@ FocusScope {
           font.pixelSize: Style.font.caption
           font.letterSpacing: 1.2
           elide: Text.ElideRight
+        }
+
+        FormatBtn {
+          visible: root.groupConversation && !root.clearConfirm
+          materialIcon: "group"
+          helpText: (root.groupMembersOpen ? "Hide" : "Show") + " group members"
+          selected: root.groupMembersOpen
+          onClicked: root.groupMembersOpen = !root.groupMembersOpen
         }
 
         Text {
@@ -1841,6 +2011,126 @@ FocusScope {
           materialIcon: "delete"
           helpText: "Clear messages in this chat"
           onClicked: root.clearConfirm = true
+        }
+      }
+
+      Item {
+        visible: root.groupConversation && root.groupMembersOpen
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? Style.space(32) : 0
+        clip: true
+
+        Flickable {
+          anchors.fill: parent
+          contentWidth: memberRow.width
+          contentHeight: height
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.HorizontalFlick
+          clip: true
+
+          Row {
+            id: memberRow
+            height: parent.height
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.groupMembers
+              delegate: ChatBtn {
+                id: memberButton
+                required property var modelData
+                height: parent ? parent.height : implicitHeight
+                text: String(modelData.name || "Member") + " · " +
+                  String(modelData.role || "member") + " · " +
+                  (modelData.online ? "online" : "offline")
+                helpText: String(modelData.name || "Member") + " is " +
+                  (modelData.online ? "online" : "offline")
+                foreground: modelData.online ? root.accent : root.fg
+                bordered: true
+                selected: !!modelData.self
+                onClicked: memberMenu.popup()
+                TapHandler {
+                  acceptedButtons: Qt.RightButton
+                  onTapped: memberMenu.popup()
+                }
+
+                Controls.Menu {
+                  id: memberMenu
+                  width: Style.space(220)
+                  padding: Style.space(4)
+
+                  background: Rectangle {
+                    radius: Style.cornerRadius
+                    color: Qt.darker(root.bg, 1.08)
+                    border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+                    border.width: 1
+                  }
+
+                  ContextMenuItem {
+                    enabled: false
+                    text: String(memberButton.modelData.name || "Member") + " · " +
+                      (memberButton.modelData.online ? "online" : "offline")
+                    materialIcon: memberButton.modelData.online ? "circle" : "circle_outline"
+                  }
+                  ContextMenuItem {
+                    visible: root.groupSelfRole() === "owner" &&
+                      !memberButton.modelData.self && memberButton.modelData.online &&
+                      memberButton.modelData.role === "member"
+                    text: "Make admin…"
+                    materialIcon: "shield_person"
+                    onTriggered: root.requestGroupMemberAction("admin", memberButton.modelData)
+                  }
+                  ContextMenuItem {
+                    visible: root.groupSelfRole() === "owner" &&
+                      !memberButton.modelData.self && memberButton.modelData.online &&
+                      memberButton.modelData.role === "admin"
+                    text: "Make member…"
+                    materialIcon: "person"
+                    onTriggered: root.requestGroupMemberAction("member", memberButton.modelData)
+                  }
+                  ContextMenuItem {
+                    visible: root.mayManageGroupMember(memberButton.modelData)
+                    text: "Remove member…"
+                    materialIcon: "person_remove"
+                    onTriggered: root.requestGroupMemberAction("remove", memberButton.modelData)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      Row {
+        visible: root.groupConversation && root.groupActionConfirm !== ""
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? Math.max(groupActionText.implicitHeight,
+          cancelGroupAction.implicitHeight) : 0
+        spacing: Style.space(4)
+
+        Text {
+          id: groupActionText
+          width: parent.width - cancelGroupAction.width - confirmGroupAction.width - parent.spacing * 2
+          text: root.groupActionConfirm === "remove"
+            ? "Remove " + root.groupActionName + " from this group?"
+            : (root.groupActionConfirm === "admin"
+              ? "Make " + root.groupActionName + " an admin?"
+              : "Make " + root.groupActionName + " a member?")
+          color: root.groupActionConfirm === "remove" ? (root.theme.unread || root.accent) : root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
+        ChatBtn {
+          id: cancelGroupAction
+          text: "Cancel"
+          onClicked: root.clearGroupMemberAction()
+        }
+        ChatBtn {
+          id: confirmGroupAction
+          text: "Confirm"
+          bordered: true
+          selected: true
+          onClicked: root.confirmGroupMemberAction()
         }
       }
 
@@ -2088,15 +2378,23 @@ FocusScope {
           readonly property bool edited: !!model.edited
           readonly property bool failed: !!model.failed
           readonly property string failureCode: String(model.failureCode || "")
+          readonly property string senderPeer: String(model.sender || "")
+          readonly property bool showGroupSender: root.groupConversation && model.dir === "in" &&
+            line.senderPeer !== ""
           readonly property bool uncertain: line.failureCode === "delivery_unknown"
           readonly property string clientKey: String(model.clientKey || "")
           readonly property bool keyboardSelected: line.ListView.isCurrentItem && list.activeFocus
           readonly property string reactionMe: String(model.reactionMe || "")
           readonly property string reactionPeer: String(model.reactionPeer || "")
-          readonly property bool directReactions: line.contextId !== "" && !line.fileMessage &&
-            String(root.conversation || "").charAt(0) !== "g" && !line.deleted
+          readonly property var groupReactions: model.groupReactions || []
+          readonly property var groupReactionEmojis: line.groupReactions.map(function(reaction) {
+            return String(reaction.emoji || "")
+          })
+          readonly property bool messageReactions: line.contextId !== "" &&
+            !line.fileMessage && !line.deleted
           readonly property bool hasReaction: !line.deleted &&
-            (line.reactionMe !== "" || line.reactionPeer !== "")
+            (line.reactionMe !== "" || line.reactionPeer !== "" ||
+             line.groupReactionEmojis.length > 0)
           property bool reactionPickerOpen: false
           readonly property bool actionControlsVisible: line.failed ||
             (line.contextId !== "" && !line.deleted && !line.fileMessage &&
@@ -2122,7 +2420,9 @@ FocusScope {
                   model.dir === "out" && model.ack !== undefined, parent.width))
             implicitHeight: Math.max(
               line.fileMessage ? fileMessageRow.implicitHeight : (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight),
-              line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) + Style.space(12)
+              line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) +
+              (line.showGroupSender ? groupSenderLabel.implicitHeight + Style.space(3) : 0) +
+              Style.space(12)
             radius: Style.cornerRadius
             color: root.bubbleColor(model.dir)
             border.color: line.failed ? (root.theme.unread || root.accent) :
@@ -2132,11 +2432,29 @@ FocusScope {
             visible: model.dir !== "sys" && !model.newMarker
 
             Text {
+              id: groupSenderLabel
+              visible: line.showGroupSender
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.leftMargin: Style.space(8)
+              anchors.rightMargin: Style.space(8)
+              anchors.topMargin: Style.space(3)
+              text: root.groupMemberName(line.senderPeer)
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              elide: Text.ElideRight
+            }
+
+            Text {
               id: label
               visible: !line.smileOnly && !line.fileMessage
               anchors.left: parent.left
               anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.verticalCenter: line.showGroupSender ? undefined : parent.verticalCenter
+              anchors.top: line.showGroupSender ? groupSenderLabel.bottom : undefined
               anchors.leftMargin: Style.space(8)
               anchors.rightMargin: line.hasCode ? Style.space(60) :
                 (model.dir === "out" && model.ack !== undefined ? Style.space(28) : Style.space(8))
@@ -2370,7 +2688,8 @@ FocusScope {
                 line.smileWidth - Style.space(16) - line.smileReceiptReserve)
               height: implicitHeight
               anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.verticalCenter: line.showGroupSender ? undefined : parent.verticalCenter
+              anchors.top: line.showGroupSender ? groupSenderLabel.bottom : undefined
               anchors.leftMargin: Style.space(8)
               spacing: Style.space(2)
 
@@ -2431,7 +2750,8 @@ FocusScope {
               spacing: Style.space(2)
 
               Repeater {
-                model: [line.reactionMe, line.reactionPeer].filter(function(value, index, values) {
+                model: [line.reactionMe, line.reactionPeer].concat(
+                  line.groupReactionEmojis).filter(function(value, index, values) {
                   return value !== "" && values.indexOf(value) === index
                 })
 
@@ -2467,7 +2787,7 @@ FocusScope {
             }
             ReactionAction {
               id: moreReactionAction
-              visible: line.directReactions
+              visible: line.messageReactions
               compact: true
               materialIcon: "add_reaction"
               tooltipText: "React"
@@ -2909,6 +3229,7 @@ FocusScope {
           spacing: Style.space(4)
 
             FormatBtn {
+              visible: !root.groupConversation
               materialIcon: "attach_file"
               helpText: "File (Ctrl+O)"
               selected: root.showFile
