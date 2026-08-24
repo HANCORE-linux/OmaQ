@@ -37,10 +37,10 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 
 ![Chat controls](images/03-chat-controls.png)
 
-1. Type in the message field.
+1. Move the pointer into the message field or focus it with the keyboard, then type.
 2. Press **Send** or `Ctrl+Enter`.
 3. Use the formatting buttons above the field when needed.
-4. Hover over a direct message to react with Heart, Thumbs up, Fire, or another emoji. Reactions appear below the message and never cover its contents.
+4. Hover over a direct message to use the compact reaction controls beside it. Applied reactions overlap the message's lower-left edge without covering its contents.
 5. Hover over your own message and click the edit icon, or select it with the keyboard and press `E`.
 6. The right-click menu provides **Copy**, **Reply**, and confirmed **Delete** actions.
 
@@ -50,12 +50,13 @@ Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallb
 
 ![Send files](images/04-files.png)
 
-1. Click the file icon.
+1. Click the file icon to expand **File transfer**.
 2. Click **Choose**, or enter an **Absolute file path**.
-3. Click **Send file**. Use **Cancel** to close the chooser or stop an active outgoing transfer.
-4. The recipient chooses **Accept** or **Decline**.
-5. Accepted files are stored in `~/Downloads/omaq/` by default.
-6. Received audio files provide an in-chat Play/Pause control. Image and video previews are not shown inside the chat.
+3. Click **Send file**. Collapse the section with its arrow or use **Cancel** to stop an active outgoing transfer.
+4. A completed transfer keeps its success message and local file path visible until dismissed or replaced by the next file action.
+5. The recipient chooses **Accept** or **Decline**.
+6. Accepted files are stored in `~/Downloads/omaq/` by default.
+7. Received audio files provide an in-chat Play/Pause control. Image and video previews are not shown inside the chat.
 
 The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_DIR`.
 

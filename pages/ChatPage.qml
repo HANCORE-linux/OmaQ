@@ -29,9 +29,14 @@ FocusScope {
   property bool terminalLook: false
   property bool pulseUnread: false
   property bool showFile: false
+  property bool followLatest: true
+  onShowFileChanged: root.restoreLatestPosition()
+  onFileStatusChanged: root.restoreLatestPosition()
+  onFileStatusPathChanged: root.restoreLatestPosition()
   property bool emojiOpen: false
   property bool demo: false
   property string fileStatus: ""
+  property string fileStatusPath: ""
   property string reactionStatus: ""
   property bool filePickerClosing: false
   property int filePickerExitCode: -1
@@ -134,7 +139,36 @@ FocusScope {
     }
   }
 
+  component OmaqTooltip: Controls.ToolTip {
+    id: omaqTooltip
+    delay: 450
+    timeout: 2500
+    padding: Style.space(5)
+
+    background: Rectangle {
+      radius: Style.cornerRadius
+      color: Qt.darker(root.bg, 1.08)
+      border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.24)
+      border.width: 1
+    }
+
+    contentItem: Text {
+      text: omaqTooltip.text
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      renderType: Text.QtRendering
+    }
+  }
+
   component ChatBtn: Button {
+    id: chatButton
+    property string helpText: ""
+    property bool suppressHelp: false
+    tooltipText: ""
+    Accessible.role: Accessible.Button
+    Accessible.name: chatButton.helpText !== "" ? chatButton.helpText : chatButton.text
+    Accessible.onPressAction: chatButton.clicked()
     foreground: root.fg
     accent: root.accent
     fontFamily: root.fontFamily
@@ -144,13 +178,19 @@ FocusScope {
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(4)
     focusable: true
+
+    OmaqTooltip {
+      visible: !chatButton.suppressHelp &&
+        (chatButton.hot || chatButton.activeFocus) && chatButton.helpText !== ""
+      text: chatButton.helpText
+    }
   }
 
   component ContextMenuItem: Controls.MenuItem {
     id: contextItem
     property string materialIcon: ""
     implicitWidth: Style.space(220)
-    implicitHeight: Style.space(32)
+    implicitHeight: visible ? Style.space(32) : 0
     leftPadding: Style.space(8)
     rightPadding: Style.space(8)
     topPadding: Style.space(4)
@@ -211,11 +251,15 @@ FocusScope {
     property string materialIcon: ""
     property string tooltipText: ""
     property bool selected: false
+    property bool compact: false
     signal clicked()
 
-    implicitWidth: Style.space(26)
-    implicitHeight: Style.space(24)
+    implicitWidth: compact ? Style.space(18) : Style.space(24)
+    implicitHeight: compact ? Style.space(20) : Style.space(24)
     activeFocusOnTab: visible
+    Accessible.role: Accessible.Button
+    Accessible.name: reactionAction.tooltipText
+    Accessible.onPressAction: reactionAction.clicked()
     Keys.onReturnPressed: reactionAction.clicked()
     Keys.onEnterPressed: reactionAction.clicked()
     Keys.onSpacePressed: reactionAction.clicked()
@@ -228,7 +272,9 @@ FocusScope {
           ? root.accent : root.fg)
         : root.fg
       font.family: reactionAction.emoji !== "" ? "Noto Color Emoji" : "Material Symbols Rounded"
-      font.pixelSize: reactionAction.emoji !== "" ? Style.font.body : Style.font.icon
+      font.pixelSize: reactionAction.emoji !== ""
+        ? (reactionAction.compact ? Style.font.bodySmall : Style.font.body)
+        : (reactionAction.compact ? Style.font.body : Style.font.icon)
       font.variableAxes: reactionAction.materialIcon !== "" ? ({ "FILL": 0, "wght": 500 }) : ({})
       renderType: Text.QtRendering
       opacity: reactionAction.selected ? 1.0 : (reactionHover.hovered || reactionAction.activeFocus ? 0.95 : 0.78)
@@ -248,8 +294,11 @@ FocusScope {
       cursorShape: Qt.PointingHandCursor
     }
     TapHandler { onTapped: reactionAction.clicked() }
-    Controls.ToolTip.visible: reactionHover.hovered && reactionAction.tooltipText !== ""
-    Controls.ToolTip.text: reactionAction.tooltipText
+
+    OmaqTooltip {
+      visible: reactionHover.hovered && reactionAction.tooltipText !== ""
+      text: reactionAction.tooltipText
+    }
   }
 
   component FormatBtn: ChatBtn {
@@ -709,6 +758,15 @@ FocusScope {
     return item && item.dir !== "sys" && !item.newMarker ? item : null
   }
 
+  function restoreLatestPosition() {
+    if (!root.followLatest)
+      return
+    Qt.callLater(function() {
+      if (root.followLatest && list.count)
+        list.positionViewAtEnd()
+    })
+  }
+
   function selectMessage(direction, fromEdge) {
     if (!lines.count)
       return
@@ -724,7 +782,11 @@ FocusScope {
     if (index < 0 || index >= lines.count)
       return
     list.currentIndex = index
-    list.positionViewAtIndex(index, ListView.Contain)
+    root.followLatest = index === lines.count - 1
+    if (root.followLatest)
+      list.positionViewAtEnd()
+    else
+      list.positionViewAtIndex(index, ListView.Contain)
   }
 
   function ensureMessageSelection() {
@@ -898,7 +960,7 @@ FocusScope {
       if (!found)
         root.appendLine(keep[i])
     }
-    list.positionViewAtEnd()
+    root.restoreLatestPosition()
   }
 
   function bubbleWidth(value, hasCode, withReceipt, availableWidth) {
@@ -957,6 +1019,7 @@ FocusScope {
     if (!t)
       return
     var dir = service.lastChatDir === "out" ? "out" : "in"
+    var followLatest = root.followLatest
     var i
     var hasNewMarker = false
     for (i = 0; i < lines.count; i++) {
@@ -975,7 +1038,6 @@ FocusScope {
         lines.setProperty(i, "reply", service.lastChatReply || "")
         if (dir === "out")
           lines.setProperty(i, "ack", 1)
-        list.positionViewAtEnd()
         return
       }
     }
@@ -984,7 +1046,8 @@ FocusScope {
     root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: dir === "out", live: dir === "in", pending: false, ack: dir === "out" ? 1 : -1 })
     if (root.readActive && dir === "in" && service.lastChatId)
       root.markRead()
-    list.positionViewAtEnd()
+    if (followLatest)
+      root.restoreLatestPosition()
   }
 
   function failPending() {
@@ -1001,7 +1064,7 @@ FocusScope {
       if (item && item.local && item.pending) {
         lines.remove(i)
         root.appendLine({ dir: "sys", text: message, ack: -1 })
-        list.positionViewAtEnd()
+        root.restoreLatestPosition()
         return
       }
     }
@@ -1040,6 +1103,7 @@ FocusScope {
     if (!root.demo && !service)
       return
     root.stopTyping()
+    root.followLatest = true
     if (root.editingId) {
       var editId = root.editingId
       var editText = t
@@ -1054,7 +1118,7 @@ FocusScope {
     var replyId = root.replyToId
     root.clearReply()
     root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, ack: root.demo ? 1 : 0 })
-    list.positionViewAtEnd()
+    root.restoreLatestPosition()
     if (root.demo) {
       demoReply.restart()
       return
@@ -1112,8 +1176,11 @@ FocusScope {
       return
     }
     root.showFile = true
-    root.fileStatus = ""
-    root.openFilePicker()
+    if (!root.restoreOutgoingFileStatus()) {
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+    }
+    filePath.forceActiveFocus()
   }
 
   function finishFilePicker() {
@@ -1129,7 +1196,10 @@ FocusScope {
       var picked = String(filePickerOutput.text || "").trim()
       if (picked !== "") {
         filePath.text = picked
-        root.fileStatus = ""
+        if (!root.restoreOutgoingFileStatus()) {
+          root.fileStatus = ""
+          root.fileStatusPath = ""
+        }
       }
     } else if (root.filePickerExitCode === 2) {
       root.fileStatus = "No file picker found — enter a path manually"
@@ -1155,7 +1225,10 @@ FocusScope {
     root.filePickerExitCode = -1
     root.filePickerStreamDone = false
     filePath.text = ""
-    root.fileStatus = ""
+    if (!root.restoreOutgoingFileStatus()) {
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+    }
   }
 
   function insertEmoji(glyph) {
@@ -1166,6 +1239,7 @@ FocusScope {
 
   function sendSelectedFile() {
     var path = String(filePath.text || "").trim()
+    fileStatusTimer.stop()
     if (!path) {
       root.fileStatus = "Choose a file first"
       return
@@ -1196,6 +1270,17 @@ FocusScope {
     }
     root.closeFileChooser()
     root.fileStatus = "Sending…"
+    root.fileStatusPath = path
+  }
+
+  function restoreOutgoingFileStatus() {
+    if (root.demo || !root.service || !root.service.fileSendingFor(root.conversation))
+      return false
+    var transfer = root.service.outgoingFile(root.conversation)
+    fileStatusTimer.stop()
+    root.fileStatus = "Sending…"
+    root.fileStatusPath = String(transfer.path || "")
+    return true
   }
 
   function cancelOutgoingFile() {
@@ -1216,7 +1301,12 @@ FocusScope {
     id: fileStatusTimer
     interval: 1800
     repeat: false
-    onTriggered: root.fileStatus = ""
+    onTriggered: {
+      if (root.restoreOutgoingFileStatus())
+        return
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+    }
   }
 
   Timer {
@@ -1420,16 +1510,12 @@ FocusScope {
       if (!root.service || (root.service.lastError !== "history_failed" &&
                             root.service.lastError !== "file_failed"))
         root.failPending()
-      if (root.service && root.sameConv(root.service.lastFileConv) &&
-          root.service.lastFileState === "failed" &&
-          (root.service.lastFileDir === "out" || !root.service.fileSendingFor(root.conversation))) {
-        root.fileStatus = "File transfer failed: " + root.service.lastFileError
-        fileStatusTimer.interval = 5000
-        fileStatusTimer.restart()
-      } else if (root.service && root.sameConv(root.service.lastErrorConv) &&
-                 root.service.lastError === "history_failed") {
+      if (root.service && root.sameConv(root.service.lastErrorConv) &&
+          root.service.lastError === "history_failed") {
+        root.restoreOutgoingFileStatus()
         root.fileStatus = "File received, but chat history could not be saved"
-        fileStatusTimer.interval = 5000
+        root.fileStatusPath = String(root.service.lastFilePath || "")
+        fileStatusTimer.interval = 6000
         fileStatusTimer.restart()
       }
     }
@@ -1438,26 +1524,34 @@ FocusScope {
         return
       if (root.service.lastFileDir === "in") {
         root.closeFileChooser()
-        if (root.service.fileSendingFor(root.conversation)) {
-          root.fileStatus = "Sending…"
+        if (root.restoreOutgoingFileStatus())
           return
-        }
       }
       if (root.service.lastFileState === "offer") {
         root.closeFileChooser()
       } else if (root.service.lastFileState === "sending") {
+        fileStatusTimer.stop()
         root.fileStatus = "Sending…"
+        var sendingTransfer = root.service.outgoingFile(root.conversation)
+        root.fileStatusPath = String(sendingTransfer.path || root.service.lastFilePath || "")
       } else if (root.service.lastFileState === "canceling" || root.service.lastFileState === "canceled") {
         root.closeFileChooser()
       } else if (root.service.lastFileState === "done") {
+        var completedTransfer = root.service.outgoingFile(root.conversation)
+        var completedPath = root.service.lastFileDir === "out"
+          ? String(completedTransfer.path || "") : String(root.service.lastFilePath || "")
         root.closeFileChooser()
-        root.fileStatus = root.service.lastFilePath !== "" ? "File received" : "File sent"
-        fileStatusTimer.interval = 1800
-        fileStatusTimer.restart()
+        root.fileStatus = "File transfer successful"
+        root.fileStatusPath = completedPath
+        fileStatusTimer.stop()
       } else if (root.service.lastFileState === "failed") {
+        var failedFile = root.service.outgoingFile(root.conversation)
+        var failedPath = root.service.lastFileDir === "out"
+          ? String(failedFile.path || "") : ""
         root.closeFileChooser()
         root.fileStatus = "File transfer failed: " + (root.service.lastFileError || "file_failed")
-        fileStatusTimer.interval = 5000
+        root.fileStatusPath = failedPath
+        fileStatusTimer.interval = 6000
         fileStatusTimer.restart()
       }
     }
@@ -1465,9 +1559,12 @@ FocusScope {
 
   onConversationChanged: {
     root.stopTyping()
+    fileStatusTimer.stop()
+    root.followLatest = true
     root.clearConfirm = false
     root.clearDeleteConfirm()
     root.fileStatus = ""
+    root.fileStatusPath = ""
     root.reactionStatus = ""
     mediaPlayer.stop()
     root.activeAudioPath = ""
@@ -1476,6 +1573,7 @@ FocusScope {
     root.readReceiptIds = []
     root.pendingReceiptIds = []
     root.failedReceiptIds = []
+    root.restoreOutgoingFileStatus()
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
       root.service.requestHistory(root.conversation)
@@ -1579,14 +1677,14 @@ FocusScope {
         FormatBtn {
           visible: !root.demo && root.clearConfirm
           materialIcon: "close"
-          tooltipText: "Cancel"
+          helpText: "Cancel"
           onClicked: root.clearConfirm = false
         }
 
         FormatBtn {
           visible: !root.demo && root.clearConfirm
           materialIcon: "check"
-          tooltipText: "Clear this chat"
+          helpText: "Clear this chat"
           selected: true
           onClicked: root.clearChat()
         }
@@ -1594,7 +1692,7 @@ FocusScope {
         FormatBtn {
           visible: !root.demo && !root.clearConfirm
           materialIcon: "delete"
-          tooltipText: "Clear messages in this chat"
+          helpText: "Clear messages in this chat"
           onClicked: root.clearConfirm = true
         }
       }
@@ -1608,6 +1706,27 @@ FocusScope {
         boundsBehavior: Flickable.StopAtBounds
         model: lines
         activeFocusOnTab: true
+        readonly property bool hasVerticalOverflow: contentHeight > height + 1
+        readonly property real scrollbarGutter: messageScrollbar.visible
+          ? messageScrollbar.width + Style.space(4) : 0
+        readonly property real messageLaneWidth: Math.max(0, width - scrollbarGutter)
+        Controls.ScrollBar.vertical: Controls.ScrollBar {
+          id: messageScrollbar
+          visible: list.hasVerticalOverflow
+          policy: list.hasVerticalOverflow
+            ? Controls.ScrollBar.AlwaysOn : Controls.ScrollBar.AlwaysOff
+          width: Style.space(5)
+          contentItem: Rectangle {
+            implicitWidth: Style.space(3)
+            radius: width / 2
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.58)
+          }
+          background: Item {}
+        }
+        onMovementStarted: root.followLatest = false
+        onMovementEnded: root.followLatest = list.atYEnd
+        onHeightChanged: root.restoreLatestPosition()
+        onContentHeightChanged: root.restoreLatestPosition()
         onActiveFocusChanged: {
           if (activeFocus) {
             root.ensureMessageSelection()
@@ -1645,7 +1764,7 @@ FocusScope {
         }
         footer: Column {
           id: fileFooter
-          width: list.width
+          width: list.messageLaneWidth
           spacing: Style.space(6)
 
           Row {
@@ -1726,6 +1845,7 @@ FocusScope {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
+              scrollGestureEnabled: false
               onClicked: {
                 filePathLink.forceActiveFocus()
                 filePathMenu.open()
@@ -1788,20 +1908,12 @@ FocusScope {
           }
 
         }
-        onHeightChanged: Qt.callLater(function() {
-          if (list.count)
-            list.positionViewAtEnd()
-        })
-        onContentHeightChanged: Qt.callLater(function() {
-          if (list.count)
-            list.positionViewAtEnd()
-        })
-
         delegate: FocusScope {
           id: line
-          width: list.width
+          width: list.messageLaneWidth
           height: model.newMarker ? newDivider.implicitHeight :
-            Math.max(bubble.implicitHeight + line.actionLaneHeight, sysLine.implicitHeight)
+            Math.max(bubble.implicitHeight + (line.hasReaction ? Style.space(12) : 0),
+              sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
           readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
@@ -1821,20 +1933,19 @@ FocusScope {
           readonly property bool keyboardSelected: line.ListView.isCurrentItem && list.activeFocus
           readonly property string reactionMe: String(model.reactionMe || "")
           readonly property string reactionPeer: String(model.reactionPeer || "")
-          readonly property bool directReactions: line.contextId !== "" &&
+          readonly property bool directReactions: line.contextId !== "" && !line.fileMessage &&
             String(root.conversation || "").charAt(0) !== "g" && !line.deleted
           readonly property bool hasReaction: !line.deleted &&
             (line.reactionMe !== "" || line.reactionPeer !== "")
           property bool reactionPickerOpen: false
           readonly property bool actionControlsVisible: line.contextId !== "" && !line.deleted &&
+            !line.fileMessage &&
             (lineHover.hovered || line.keyboardSelected || line.activeFocus ||
              line.reactionPickerOpen)
-          readonly property real reactionPickerHeight: line.reactionPickerOpen
-            ? Math.ceil(root.emojiSet.length / 6) * Style.space(26) + Style.space(6) : 0
-          readonly property real actionLaneHeight: (model.dir !== "sys" &&
-            ((line.contextId !== "" && !line.deleted) || line.hasReaction))
-            ? Style.space(28) + line.reactionPickerHeight : 0
-          Keys.onEscapePressed: line.reactionPickerOpen = false
+          Keys.onEscapePressed: {
+            reactionPicker.close()
+            line.reactionPickerOpen = false
+          }
 
           HoverHandler {
             id: lineHover
@@ -1894,7 +2005,7 @@ FocusScope {
                 visible: line.audioMessage
                 materialIcon: root.audioErrorPath === line.contextText && root.audioError !== ""
                   ? "error" : (root.audioPlaying(line.contextText) ? "pause_circle" : "play_circle")
-                tooltipText: root.audioErrorPath === line.contextText && root.audioError !== ""
+                helpText: root.audioErrorPath === line.contextText && root.audioError !== ""
                   ? root.audioError : (root.audioPlaying(line.contextText) ? "Pause audio" : "Play audio")
                 selected: root.audioPlaying(line.contextText)
                 onClicked: root.toggleAudio(line.contextText)
@@ -1934,6 +2045,7 @@ FocusScope {
                 MouseArea {
                   anchors.fill: parent
                   cursorShape: Qt.PointingHandCursor
+                  scrollGestureEnabled: false
                   onClicked: {
                     root.markRead()
                     messageFileMenu.popup()
@@ -1944,7 +2056,8 @@ FocusScope {
               FormatBtn {
                 id: fileMoreAction
                 materialIcon: "more_horiz"
-                tooltipText: "File actions"
+                helpText: "File actions"
+                suppressHelp: messageFileMenu.visible
                 onClicked: messageFileMenu.popup()
               }
 
@@ -1979,6 +2092,15 @@ FocusScope {
                   messageFileMenu.close()
                 }
               }
+              ContextMenuItem {
+                visible: line.reactionMe !== ""
+                text: "Remove reaction"
+                materialIcon: "remove_reaction"
+                onTriggered: {
+                  root.reactToMessage(line.contextId, line.reactionMe, line.reactionMe)
+                  messageFileMenu.close()
+                }
+              }
             }
 
             Text {
@@ -2002,7 +2124,7 @@ FocusScope {
               anchors.rightMargin: Style.space(4)
               z: 2
               materialIcon: "content_copy"
-              tooltipText: "Copy code"
+              helpText: "Copy code"
               onClicked: root.copyCode(model.text)
             }
 
@@ -2018,7 +2140,7 @@ FocusScope {
 
               FormatBtn {
                 materialIcon: "content_copy"
-                tooltipText: "Copy code"
+                helpText: "Copy code"
                 onClicked: root.copyCode(model.text)
               }
 
@@ -2036,6 +2158,7 @@ FocusScope {
               id: contextArea
               anchors.fill: parent
               acceptedButtons: Qt.RightButton
+              scrollGestureEnabled: false
               z: 1
               onPressed: root.markRead()
               onClicked: messageMenu.popup()
@@ -2119,88 +2242,134 @@ FocusScope {
             }
           }
 
+          Rectangle {
+            id: reactionBadge
+            visible: line.hasReaction && model.dir !== "sys" && !model.newMarker
+            anchors.left: bubble.left
+            anchors.verticalCenter: bubble.bottom
+            anchors.verticalCenterOffset: Style.space(3)
+            anchors.leftMargin: Style.space(6)
+            width: reactionBadgeRow.implicitWidth + Style.space(8)
+            height: Style.space(18)
+            radius: height / 2
+            color: Qt.darker(root.bg, 1.08)
+            border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.2)
+            border.width: 1
+            z: 4
+
+            Row {
+              id: reactionBadgeRow
+              anchors.centerIn: parent
+              spacing: Style.space(2)
+
+              Repeater {
+                model: [line.reactionMe, line.reactionPeer].filter(function(value, index, values) {
+                  return value !== "" && values.indexOf(value) === index
+                })
+
+                Text {
+                  required property string modelData
+                  text: modelData
+                  color: root.fg
+                  font.family: "Noto Color Emoji"
+                  font.pixelSize: Style.font.caption
+                  renderType: Text.QtRendering
+                }
+              }
+            }
+          }
+
           Row {
             id: reactionLane
-            visible: model.dir !== "sys" && !model.newMarker &&
-              (line.actionControlsVisible || line.hasReaction)
-            anchors.top: bubble.bottom
-            anchors.topMargin: Style.space(2)
-            anchors.left: model.dir === "out" ? undefined : bubble.left
-            anchors.right: model.dir === "out" ? bubble.right : undefined
-            height: Style.space(24)
-            spacing: Style.space(2)
+            visible: model.dir !== "sys" && !model.newMarker && line.actionControlsVisible
+            anchors.verticalCenter: bubble.verticalCenter
+            anchors.left: model.dir === "out" ? undefined : bubble.right
+            anchors.right: model.dir === "out" ? bubble.left : undefined
+            anchors.leftMargin: model.dir === "out" ? 0 : Style.space(3)
+            anchors.rightMargin: model.dir === "out" ? Style.space(3) : 0
+            spacing: 0
+            z: 5
 
-            Text {
-              visible: line.hasReaction && !line.actionControlsVisible
-              anchors.verticalCenter: parent.verticalCenter
-              text: [line.reactionMe, line.reactionPeer].filter(function(value) {
-                return value !== ""
-              }).join("  ")
-              color: root.fg
-              font.family: "Noto Color Emoji"
-              font.pixelSize: Style.font.body
-              renderType: Text.QtRendering
-            }
-
-            ReactionAction {
-              visible: line.actionControlsVisible && line.directReactions
-              emoji: "❤️"
-              tooltipText: line.reactionMe === emoji ? "Remove heart" : "React with heart"
-              selected: line.reactionMe === emoji
-              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
-            }
-            ReactionAction {
-              visible: line.actionControlsVisible && line.directReactions
-              emoji: "👍"
-              tooltipText: line.reactionMe === emoji ? "Remove thumbs up" : "React with thumbs up"
-              selected: line.reactionMe === emoji
-              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
-            }
-            ReactionAction {
-              visible: line.actionControlsVisible && line.directReactions
-              emoji: "🔥"
-              tooltipText: line.reactionMe === emoji ? "Remove fire" : "React with fire"
-              selected: line.reactionMe === emoji
-              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
-            }
             ReactionAction {
               id: moreReactionAction
-              visible: line.actionControlsVisible && line.directReactions
+              visible: line.directReactions
+              compact: true
               materialIcon: "add_reaction"
-              tooltipText: "More reactions"
-              selected: line.reactionPickerOpen ||
-                (line.reactionMe !== "" && line.reactionMe !== "❤️" &&
-                 line.reactionMe !== "👍" && line.reactionMe !== "🔥")
-              onClicked: line.reactionPickerOpen = !line.reactionPickerOpen
+              tooltipText: "React"
+              selected: line.reactionPickerOpen || line.reactionMe !== ""
+              onClicked: {
+                if (reactionPicker.visible)
+                  reactionPicker.close()
+                else
+                  reactionPicker.open()
+              }
             }
             ReactionAction {
-              visible: line.actionControlsVisible && model.dir === "out"
+              visible: model.dir === "out"
+              compact: true
               materialIcon: "edit"
               tooltipText: "Edit message"
               onClicked: root.beginEdit(line.contextId, line.contextText)
             }
           }
 
-          Grid {
+          Controls.Popup {
             id: reactionPicker
-            visible: line.reactionPickerOpen && line.directReactions
-            anchors.top: reactionLane.bottom
-            anchors.topMargin: Style.space(2)
-            anchors.left: model.dir === "out" ? undefined : bubble.left
-            anchors.right: model.dir === "out" ? bubble.right : undefined
-            columns: 6
-            spacing: Style.space(2)
+            width: Style.space(160)
+            height: reactionPickerGrid.implicitHeight + padding * 2
+            padding: Style.space(4)
+            margins: Style.space(3)
+            focus: true
+            closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+            onOpened: {
+              line.reactionPickerOpen = true
+              var point = moreReactionAction.mapToItem(line, 0, moreReactionAction.height + Style.space(3))
+              x = Math.max(Style.space(3), Math.min(point.x, line.width - width - Style.space(3)))
+              var below = moreReactionAction.mapToItem(list, 0,
+                moreReactionAction.height + Style.space(3))
+              var pickerY = below.y
+              if (pickerY + height > list.height - Style.space(3))
+                pickerY = moreReactionAction.mapToItem(list, 0, -height - Style.space(3)).y
+              pickerY = Math.max(Style.space(3),
+                Math.min(pickerY, list.height - height - Style.space(3)))
+              y = list.mapToItem(line, 0, pickerY).y
+              Qt.callLater(function() {
+                var firstReaction = reactionPickerRepeater.itemAt(0)
+                if (firstReaction)
+                  firstReaction.forceActiveFocus()
+              })
+            }
+            onClosed: {
+              line.reactionPickerOpen = false
+              if (moreReactionAction.visible)
+                moreReactionAction.forceActiveFocus()
+            }
 
-            Repeater {
-              model: root.emojiSet
-              delegate: ReactionAction {
-                required property string modelData
-                emoji: modelData
-                selected: line.reactionMe === modelData
-                tooltipText: "React with " + modelData
-                onClicked: {
-                  root.reactToMessage(line.contextId, line.reactionMe, modelData)
-                  line.reactionPickerOpen = false
+            background: Rectangle {
+              radius: Style.cornerRadius
+              color: Qt.darker(root.bg, 1.08)
+              border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+              border.width: 1
+            }
+
+            contentItem: Grid {
+              id: reactionPickerGrid
+              columns: 8
+              spacing: 0
+
+              Repeater {
+                id: reactionPickerRepeater
+                model: root.emojiSet
+                delegate: ReactionAction {
+                  required property string modelData
+                  compact: true
+                  emoji: modelData
+                  selected: line.reactionMe === modelData
+                  tooltipText: "React with " + modelData
+                  onClicked: {
+                    root.reactToMessage(line.contextId, line.reactionMe, modelData)
+                    reactionPicker.close()
+                  }
                 }
               }
             }
@@ -2250,51 +2419,112 @@ FocusScope {
         }
       }
 
-      RowLayout {
+      ColumnLayout {
         visible: !root.demo && root.showFile
         Layout.fillWidth: true
-        spacing: Style.space(8)
-        TextField {
-          id: filePath
+        Layout.preferredHeight: visible ? implicitHeight : 0
+        Layout.minimumHeight: visible ? implicitHeight : 0
+        spacing: Style.space(4)
+
+        RowLayout {
           Layout.fillWidth: true
-          activeFocusOnTab: true
-          foreground: root.fg
-          accent: root.accent
-          placeholderText: "Absolute file path"
-          onTextChanged: root.fileStatus = ""
-          onAccepted: root.sendSelectedFile()
+          spacing: Style.space(4)
+
+          Text {
+            Layout.fillWidth: true
+            text: "File transfer"
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          FormatBtn {
+            materialIcon: "expand_more"
+            helpText: "Collapse file transfer"
+            onClicked: root.closeFileChooser()
+          }
         }
-        ChatBtn {
-          id: chooseFileBtn
-          text: "Choose"
-          bordered: true
-          onClicked: root.openFilePicker()
-        }
-        ChatBtn {
-          id: sendFileBtn
-          text: "Send file"
-          bordered: true
-          onClicked: root.sendSelectedFile()
-        }
-        ChatBtn {
-          text: "Cancel"
-          onClicked: root.closeFileChooser()
+
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+
+          TextField {
+            id: filePath
+            Layout.fillWidth: true
+            activeFocusOnTab: true
+            enabled: !root.service || !root.service.fileSendingFor(root.conversation)
+            foreground: root.fg
+            accent: root.accent
+            placeholderText: "Absolute file path"
+            onTextChanged: {
+              if (!root.restoreOutgoingFileStatus()) {
+                root.fileStatus = ""
+                root.fileStatusPath = ""
+              }
+            }
+            onAccepted: root.sendSelectedFile()
+          }
+          ChatBtn {
+            id: chooseFileBtn
+            text: "Choose"
+            bordered: true
+            enabled: !root.service || !root.service.fileSendingFor(root.conversation)
+            onClicked: root.openFilePicker()
+          }
+          ChatBtn {
+            id: sendFileBtn
+            text: "Send file"
+            bordered: true
+            enabled: !root.service || !root.service.fileSendingFor(root.conversation)
+            onClicked: root.sendSelectedFile()
+          }
         }
       }
 
       RowLayout {
-        visible: !root.demo && (root.reactionStatus !== "" || root.fileStatus !== "")
+        visible: !root.demo && (root.reactionStatus !== "" || root.fileStatus !== "" ||
+          root.fileStatusPath !== "" ||
+          (root.service && root.service.fileSendingFor(root.conversation)))
         Layout.fillWidth: true
+        Layout.preferredHeight: visible ? implicitHeight : 0
+        Layout.minimumHeight: visible ? implicitHeight : 0
         spacing: Style.space(8)
 
-        Text {
+        ColumnLayout {
           Layout.fillWidth: true
-          text: root.reactionStatus !== "" ? root.reactionStatus : root.fileStatus
-          color: root.fileStatus === "Sending…" && root.reactionStatus === ""
-            ? root.accent : Qt.darker(root.fg, 1.35)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.Wrap
+          spacing: Style.space(2)
+
+          Text {
+            Layout.fillWidth: true
+            text: root.reactionStatus !== "" ? root.reactionStatus : root.fileStatus
+            color: root.fileStatus === "Sending…" && root.reactionStatus === ""
+              ? root.accent : Qt.darker(root.fg, 1.35)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            id: statusPathText
+            visible: root.reactionStatus === "" && root.fileStatusPath !== ""
+            Layout.fillWidth: true
+            text: root.fileStatusPath
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideMiddle
+
+            HoverHandler {
+              id: statusPathHover
+            }
+
+            OmaqTooltip {
+              visible: statusPathHover.hovered && statusPathText.truncated
+              text: root.fileStatusPath
+            }
+          }
         }
 
         ChatBtn {
@@ -2302,6 +2532,18 @@ FocusScope {
           text: "Cancel"
           bordered: true
           onClicked: root.cancelOutgoingFile()
+        }
+
+        FormatBtn {
+          visible: (!root.service || !root.service.fileSendingFor(root.conversation)) &&
+            root.reactionStatus === "" && root.fileStatus !== ""
+          materialIcon: "close"
+          helpText: "Dismiss file status"
+          onClicked: {
+            fileStatusTimer.stop()
+            root.fileStatus = ""
+            root.fileStatusPath = ""
+          }
         }
       }
 
@@ -2338,7 +2580,7 @@ FocusScope {
             visible: root.deleteConfirmId !== ""
             width: visible ? implicitWidth : 0
             materialIcon: "delete"
-            tooltipText: "Delete message"
+            helpText: "Delete message"
             selected: true
             onClicked: root.confirmDelete()
           }
@@ -2346,7 +2588,7 @@ FocusScope {
           FormatBtn {
             id: clearReplyBtn
             materialIcon: "close"
-            tooltipText: "Cancel"
+            helpText: "Cancel"
             onClicked: root.deleteConfirmId !== "" ? root.clearDeleteConfirm() :
               (root.editingId !== "" ? root.clearEdit() : root.clearReply())
           }
@@ -2365,7 +2607,7 @@ FocusScope {
             ChatBtn {
               required property string modelData
               text: modelData
-              tooltipText: modelData
+              helpText: modelData
               onClicked: root.insertEmoji(modelData)
             }
           }
@@ -2396,47 +2638,47 @@ FocusScope {
 
               FormatBtn {
                 materialIcon: "format_h1"
-                tooltipText: "Heading"
+                helpText: "Heading"
                 onClicked: root.prefixLine("# ")
               }
               FormatBtn {
                 materialIcon: "format_bold"
-                tooltipText: "Bold"
+                helpText: "Bold"
                 onClicked: root.wrapSelection("**", "**", "bold")
               }
               FormatBtn {
                 materialIcon: "format_italic"
-                tooltipText: "Italic"
+                helpText: "Italic"
                 onClicked: root.wrapSelection("*", "*", "italic")
               }
               FormatBtn {
                 materialIcon: "format_quote"
-                tooltipText: "Quote"
+                helpText: "Quote"
                 onClicked: root.prefixLine("> ")
               }
               FormatBtn {
                 materialIcon: "code"
-                tooltipText: "Code"
+                helpText: "Code"
                 onClicked: root.formatCode()
               }
               FormatBtn {
                 materialIcon: "link"
-                tooltipText: "Link"
+                helpText: "Link"
                 onClicked: root.insertLink()
               }
               FormatBtn {
                 materialIcon: "format_list_bulleted"
-                tooltipText: "Unordered list"
+                helpText: "Unordered list"
                 onClicked: root.prefixLine("- ")
               }
               FormatBtn {
                 materialIcon: "format_list_numbered"
-                tooltipText: "Numbered list"
+                helpText: "Numbered list"
                 onClicked: root.prefixLine("1. ")
               }
               FormatBtn {
                 materialIcon: "checklist"
-                tooltipText: "Task list"
+                helpText: "Task list"
                 onClicked: root.prefixLine("- [ ] ")
               }
             }
@@ -2457,7 +2699,7 @@ FocusScope {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             materialIcon: "chevron_left"
-            tooltipText: "Previous formatting tools"
+            helpText: "Previous formatting tools"
             z: 2
             onClicked: formatFlick.contentX = Math.max(0, formatFlick.contentX - Style.space(90))
           }
@@ -2477,7 +2719,7 @@ FocusScope {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             materialIcon: "chevron_right"
-            tooltipText: "More formatting tools"
+            helpText: "More formatting tools"
             z: 2
             onClicked: formatFlick.contentX = Math.min(
               Math.max(0, formatFlick.contentWidth - formatFlick.width),
@@ -2493,7 +2735,7 @@ FocusScope {
 
             FormatBtn {
               materialIcon: "attach_file"
-              tooltipText: "File (Ctrl+O)"
+              helpText: "File (Ctrl+O)"
               selected: root.showFile
               onClicked: root.attachFile()
             }
@@ -2534,6 +2776,12 @@ FocusScope {
                 }
               }
 
+              HoverHandler {
+                cursorShape: Qt.IBeamCursor
+                onHoveredChanged: if (hovered && !input.activeFocus)
+                  input.forceActiveFocus()
+              }
+
               MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.RightButton
@@ -2547,14 +2795,14 @@ FocusScope {
 
             FormatBtn {
               materialIcon: "mood"
-              tooltipText: "Emoji"
+              helpText: "Emoji"
               selected: root.emojiOpen
               onClicked: root.emojiOpen = !root.emojiOpen
             }
 
             FormatBtn {
               materialIcon: "send"
-              tooltipText: "Send (Ctrl+Enter)"
+              helpText: "Send (Ctrl+Enter)"
               bordered: true
               onClicked: root.send()
             }
