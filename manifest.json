@@ -4,7 +4,7 @@
   "name": "OmaQ",
   "version": "0.6.0",
   "author": "hancore",
-  "license": "MIT",
+  "license": "MIT AND CC-BY-SA-4.0",
   "description": "Invite-only 1:1 and group chat for the Omarchy bar.",
   "kinds": ["bar-widget"],
   "entryPoints": {
@@ -31,7 +31,7 @@
       { "key": "notifyRightPanel", "type": "boolean", "label": "Right panel", "defaultValue": false },
       { "key": "notifyDesktop", "type": "boolean", "label": "Desktop notification", "defaultValue": false },
       { "key": "surfaceMode", "type": "enum", "label": "Cards", "options": ["separate", "bundled"], "defaultValue": "separate" },
-      { "key": "sound", "type": "enum", "label": "Sound", "options": ["off", "icq-message", "click", "pop", "bell", "soft", "knock", "custom"], "defaultValue": "icq-message" },
+      { "key": "sound", "type": "enum", "label": "Sound", "options": ["off", "icq-message", "qq", "wechat", "skype", "msn", "aurora", "crystal", "ripple", "glow", "halo", "click", "pop", "bell", "soft", "knock", "custom"], "defaultValue": "icq-message" },
       { "key": "soundCustomPath", "type": "path", "label": "Custom sound", "defaultValue": "" },
       { "key": "chatTheme", "type": "enum", "label": "Chat theme", "options": ["system", "gruvbox", "rose-pine", "everforest", "gruvbox-light", "catppuccin-latte", "tokyo-night-light"], "defaultValue": "system" },
       { "key": "animateUnread", "type": "boolean", "label": "Unread motion", "defaultValue": true }

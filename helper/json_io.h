@@ -31,6 +31,7 @@ typedef struct {
 	int pinned;
 	int typing;
 	int x, y;
+	int has_text;
 	int has_ttl;
 	int has_limit;
 	int has_accept;

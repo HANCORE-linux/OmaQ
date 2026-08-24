@@ -182,6 +182,7 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "text") == 0) {
 			if (parse_string(&p, out->text, sizeof(out->text)) != 0)
 				return -1;
+			out->has_text = 1;
 		} else if (strcmp(key, "reply") == 0) {
 			if (parse_string(&p, out->reply, sizeof(out->reply)) != 0)
 				return -1;

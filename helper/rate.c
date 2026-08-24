@@ -61,18 +61,27 @@ static omaq_rate_key *find_key(omaq_rate *r, const char *key)
 	return &r->keys[free_i];
 }
 
-int omaq_rate_allow(omaq_rate *r, const char *key, int64_t now)
+int omaq_rate_allow_key_only(omaq_rate *r, const char *key, int64_t now)
 {
 	omaq_rate_key *slot;
 
 	if (!r || !key || !key[0] || now < 0)
 		return -1;
-	if (in_window(r->hour, OMAQ_RATE_PER_HOUR, now, 3600) >= OMAQ_RATE_PER_HOUR)
-		return -1;
 	slot = find_key(r, key);
 	if (in_window(slot->min, OMAQ_RATE_PER_MIN, now, 60) >= OMAQ_RATE_PER_MIN)
 		return -1;
 	push_ts(slot->min, OMAQ_RATE_PER_MIN, now);
+	return 0;
+}
+
+int omaq_rate_allow(omaq_rate *r, const char *key, int64_t now)
+{
+	if (!r || !key || !key[0] || now < 0)
+		return -1;
+	if (in_window(r->hour, OMAQ_RATE_PER_HOUR, now, 3600) >= OMAQ_RATE_PER_HOUR)
+		return -1;
+	if (omaq_rate_allow_key_only(r, key, now) != 0)
+		return -1;
 	push_ts(r->hour, OMAQ_RATE_PER_HOUR, now);
 	return 0;
 }

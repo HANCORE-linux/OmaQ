@@ -13,6 +13,11 @@ static struct {
 	int npeers;
 } tabs[TABS];
 
+void omaq_group_reset(void)
+{
+	memset(tabs, 0, sizeof(tabs));
+}
+
 static int tab_i(uint32_t gnum, int create)
 {
 	int i;

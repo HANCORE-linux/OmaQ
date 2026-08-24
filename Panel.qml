@@ -16,12 +16,16 @@ BarWidget {
   property string redeemDraft: ""
   property bool nospamConfirm: false
   property bool removeContactConfirm: false
+  property bool replaceIdentityConfirm: false
+  property string replaceIdentityPath: ""
   property bool showJoin: false
   property bool chatPickerOpen: false
   property bool inviteOpen: false
   property bool moreOpen: false
   property string moreSection: ""
+  property bool settingsOpen: false
   property bool themeOpen: false
+  property bool soundOpen: false
   property bool copied: false
   property bool safetyCodeVisible: false
   property bool safetyCopied: false
@@ -33,6 +37,24 @@ BarWidget {
   property bool avatarPickStreamDone: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
   property string systemThemeName: "System"
+  readonly property var notificationSounds: [
+    { id: "off", label: "Off" },
+    { id: "icq-message", label: "ICQ" },
+    { id: "qq", label: "QQ" },
+    { id: "wechat", label: "WeChat" },
+    { id: "skype", label: "Skype" },
+    { id: "msn", label: "MSN" },
+    { id: "aurora", label: "Aurora" },
+    { id: "crystal", label: "Crystal" },
+    { id: "ripple", label: "Ripple" },
+    { id: "glow", label: "Glow" },
+    { id: "halo", label: "Halo" },
+    { id: "click", label: "Click" },
+    { id: "pop", label: "Pop" },
+    { id: "bell", label: "Bell" },
+    { id: "soft", label: "Soft" },
+    { id: "knock", label: "Knock" }
+  ]
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color barForeground: bar && "barForeground" in bar ? bar.barForeground : foreground
   readonly property var shibumiTokens: bar && "visualTokens" in bar ? bar.visualTokens : null
@@ -68,6 +90,7 @@ BarWidget {
   readonly property int pad: Style.spacing.popupPadding
   readonly property real nicknameControlHeight: Style.space(28)
   readonly property int cardWidth: Style.space(340)
+  readonly property int visibleUnreadCount: Math.max(omaq.unreadCount, omaq.localUnreadTotal())
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
   readonly property real caretDepth: 5
   readonly property real caretHalfWidth: 6 * connectionReveal
@@ -241,7 +264,7 @@ BarWidget {
     implicitHeight: row.implicitHeight + verticalPadding * 2
     radius: root.controlRadius
     color: mouseArea.pressed ? root.controlActiveFill
-      : activeFocus || selected || active ? root.controlActiveFill
+      : selected || active ? root.controlActiveFill
       : hot ? root.controlHoverFill : root.controlFill
     borderSpec: activeFocus || hot || selected || active ? activeBorder : normalBorder
 
@@ -281,6 +304,10 @@ BarWidget {
         if (tokenButton.focusable)
           tokenButton.forceActiveFocus()
         tokenButton.clicked()
+        Qt.callLater(function() {
+          if (root.opened)
+            panelFocus.forceActiveFocus()
+        })
       }
     }
   }
@@ -330,13 +357,18 @@ BarWidget {
     root.inviteOpen = false
     root.moreOpen = false
     root.moreSection = ""
+    root.settingsOpen = false
     root.themeOpen = false
+    root.soundOpen = false
     root.safetyCodeVisible = false
     root.safetyCopied = false
     root.copied = false
     root.nospamConfirm = false
     root.removeContactConfirm = false
+    root.replaceIdentityConfirm = false
+    root.replaceIdentityPath = ""
     root.nicknameEditOpen = false
+    root.nicknameSubmitPending = false
     root.opened = false
     if (bar && typeof bar.releasePopout === "function") {
       var screenName = popup.screen ? String(popup.screen.name || "") : ""
@@ -353,6 +385,39 @@ BarWidget {
       open()
   }
 
+  function dismissTransientSections() {
+    root.inviteOpen = false
+    root.showJoin = false
+    root.chatPickerOpen = false
+    root.settingsOpen = false
+    root.themeOpen = false
+    root.soundOpen = false
+    root.moreOpen = false
+    root.moreSection = ""
+    root.safetyCodeVisible = false
+    root.safetyCopied = false
+    root.copied = false
+    root.nicknameEditOpen = false
+    root.nicknameSubmitPending = false
+    root.nospamConfirm = false
+    root.removeContactConfirm = false
+    root.replaceIdentityConfirm = false
+    root.replaceIdentityPath = ""
+  }
+
+  function toggleSettings() {
+    var open = !root.settingsOpen
+    root.dismissTransientSections()
+    root.settingsOpen = open
+  }
+
+  function toggleAdvanced() {
+    var open = !root.moreOpen
+    root.dismissTransientSections()
+    root.moreOpen = open
+    root.moreSection = open ? "chat" : ""
+  }
+
   function toggleMoreSection(section) {
     if (!root.moreOpen)
       root.moreOpen = true
@@ -360,6 +425,10 @@ BarWidget {
     if (root.moreSection !== "danger") {
       root.nospamConfirm = false
       root.removeContactConfirm = false
+    }
+    if (root.moreSection !== "identity") {
+      root.replaceIdentityConfirm = false
+      root.replaceIdentityPath = ""
     }
   }
 
@@ -370,13 +439,49 @@ BarWidget {
       return "That is not an OmaQ invite."
     if (code === "helper_down")
       return "OmaQ is restarting."
+    if (code === "helper_incompatible")
+      return "OmaQ helper needs to be restarted."
+    if (code === "helper_handshake_pending")
+      return "OmaQ is still restoring queued events."
+    if (code === "helper_event_overflow")
+      return "Some queued live events were compacted; history was resynchronized."
     if (code === "file_failed")
       return "File transfer failed."
     if (code === "avatar_failed")
       return "Avatar image is invalid or larger than 512 KiB."
     if (code === "nickname_invalid")
       return "Nickname must be 1–128 bytes without control characters."
+    if (code === "identity_changed")
+      return "Identity changed. Pending actions were discarded."
+    if (code === "identity_backup_failed")
+      return "Could not create a safe identity backup."
+    if (code === "identity_backup_cleanup_failed")
+      return "An old identity recovery backup could not be removed."
+    if (code === "identity_passphrase_required")
+      return "Enter the imported identity's passphrase first."
+    if (code === "identity_import_failed")
+      return "Identity file or passphrase is invalid."
+    if (code === "identity_state_archive_failed")
+      return "Could not archive the previous identity's local data."
+    if (code === "identity_rollback_failed")
+      return "Identity restore failed. The backup was kept in the OmaQ data folder."
     return code
+  }
+
+  function connectionLabel() {
+    if (omaq.connectionState === "online")
+      return "Online"
+    if (omaq.connectionState === "locked")
+      return "Locked"
+    if (omaq.connectionState === "reconnecting")
+      return "Reconnecting…"
+    return "Connecting…"
+  }
+
+  function contactStatus(online) {
+    if (omaq.connectionState !== "online")
+      return omaq.connectionState === "reconnecting" ? "reconnecting…" : "connecting…"
+    return online ? "online" : "offline"
   }
 
   function shortInvite(u) {
@@ -418,24 +523,25 @@ BarWidget {
   }
 
   function toggleInvite() {
-    if (root.inviteOpen) {
-      root.inviteOpen = false
-      return
-    }
-    root.showJoin = false
-    root.inviteOpen = true
-    if (!omaq.inviteUrl)
+    var open = !root.inviteOpen
+    root.dismissTransientSections()
+    root.inviteOpen = open
+    if (open && !omaq.inviteUrl)
       omaq.createInvite()
   }
 
+  function toggleJoin() {
+    var open = !root.showJoin
+    root.dismissTransientSections()
+    root.showJoin = open
+  }
+
   function openChat() {
-    root.inviteOpen = false
-    root.showJoin = false
-    root.themeOpen = false
-    root.moreOpen = false
-    root.moreSection = ""
-    root.chatPickerOpen = !root.chatPickerOpen
-    omaq.sendOp({ op: "status" })
+    var open = !root.chatPickerOpen
+    root.dismissTransientSections()
+    root.chatPickerOpen = open
+    if (open)
+      omaq.sendOp({ op: "status" })
   }
 
   function localFileUrl(path) {
@@ -482,9 +588,11 @@ BarWidget {
       return
     omaq.lastConversation = String(id)
     omaq.lastDirectId = String(id)
-    var created = chatSurface ? chatSurface.ensureCard(String(id), name || "") : true
-    if (!created)
-      omaq.clearUnread(String(id))
+    omaq.clearUnread(String(id))
+    if (chatSurface) {
+      chatSurface.ensureCard(String(id), name || "")
+      chatSurface.requestChatFocus(String(id))
+    }
     root.close()
   }
 
@@ -515,6 +623,30 @@ BarWidget {
 
   function setTheme(name) {
     root.persistSettings({ chatTheme: name })
+  }
+
+  readonly property string notificationSound: {
+    var value = root.settings && root.settings.sound
+    return value ? String(value) : "icq-message"
+  }
+
+  function setNotificationSound(name) {
+    var selectedSound = String(name || "off")
+    root.persistSettings({ sound: selectedSound })
+    if (chatSurface)
+      chatSurface.previewSound(selectedSound)
+  }
+
+  function toggleThemeSettings() {
+    root.themeOpen = !root.themeOpen
+    if (root.themeOpen)
+      root.soundOpen = false
+  }
+
+  function toggleSoundSettings() {
+    root.soundOpen = !root.soundOpen
+    if (root.soundOpen)
+      root.themeOpen = false
   }
 
   function openRepo() {
@@ -694,6 +826,7 @@ BarWidget {
     function invite(): string { omaq.createInvite(); return "ok" }
     function demo(): string { root.openDemo(); return "ok" }
     function status(): string { return omaq.statusText }
+    function unread(): string { return String(root.visibleUnreadCount) }
   }
 
   BarIconButton {
@@ -716,36 +849,38 @@ BarWidget {
           cache: false
           asynchronous: true
         }
-
-        Rectangle {
-          id: unreadBadge
-          visible: omaq.unreadCount > 0 && (!root.settings || root.settings.notifyBadge !== false)
-          anchors.right: parent.right
-          anchors.top: parent.top
-          width: Math.max(14, unreadBadgeText.implicitWidth + 6)
-          height: 14
-          radius: height / 2
-          color: root.urgent
-          border.width: 0
-          border.color: "transparent"
-          z: 10
-
-          Text {
-            id: unreadBadgeText
-            anchors.centerIn: parent
-            text: omaq.unreadCount > 99 ? "99+" : String(omaq.unreadCount)
-            color: root.bar && "background" in root.bar ? root.bar.background : Color.background
-            font.family: root.fontFamily
-            font.pixelSize: Math.max(7, Style.font.caption - 3)
-            font.bold: true
-          }
-        }
       }
     }
     onPressed: function(b) {
       if (b === Qt.RightButton)
         return
       root.toggle()
+    }
+  }
+
+  Rectangle {
+    id: unreadBadge
+    visible: root.visibleUnreadCount > 0 &&
+      (!root.settings || root.settings.notifyBadge !== false)
+    width: Math.max(Style.space(12), unreadBadgeText.implicitWidth + Style.space(6))
+    height: Style.space(12)
+    radius: height / 2
+    color: root.urgent
+    border.width: 0
+    anchors.verticalCenter: button.verticalCenter
+    anchors.verticalCenterOffset: -Style.space(6)
+    anchors.horizontalCenter: button.horizontalCenter
+    anchors.horizontalCenterOffset: Style.space(7)
+    z: 100
+
+    Text {
+      id: unreadBadgeText
+      anchors.centerIn: parent
+      text: root.visibleUnreadCount > 99 ? "99" : String(root.visibleUnreadCount)
+      color: root.bar && "background" in root.bar ? root.bar.background : Color.background
+      font.family: root.fontFamily
+      font.pixelSize: Style.space(7)
+      font.bold: true
     }
   }
 
@@ -988,6 +1123,7 @@ BarWidget {
       MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
+        onClicked: root.dismissTransientSections()
       }
 
       FocusScope {
@@ -1005,6 +1141,16 @@ BarWidget {
           clip: true
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
+
+          MouseArea {
+            width: panelScroll.width
+            height: Math.max(panelScroll.height, column.implicitHeight)
+            acceptedButtons: Qt.LeftButton
+            onClicked: {
+              root.dismissTransientSections()
+              panelFocus.forceActiveFocus()
+            }
+          }
 
           Column {
             id: column
@@ -1062,16 +1208,18 @@ BarWidget {
           GridLayout {
             id: heroActions
             width: parent.width
-            columns: 2
+            columns: 3
             columnSpacing: root.btnGap
             rowSpacing: Style.space(6)
-            readonly property real actionWidth: Math.max(0, (width - columnSpacing) / columns)
+            readonly property real actionWidth: Math.max(0,
+              (width - columnSpacing * (columns - 1)) / columns)
 
             ActionButton {
               visible: !omaq.locked
               Layout.fillWidth: true
               Layout.preferredWidth: heroActions.actionWidth
-              iconText: "󰐲"
+              iconText: "qr_code_2"
+              iconFontFamily: "Material Symbols Rounded"
               text: "Invite"
               selected: root.inviteOpen
               onClicked: root.toggleInvite()
@@ -1084,43 +1232,75 @@ BarWidget {
               iconFontFamily: "Material Symbols Rounded"
               text: "Add"
               selected: root.showJoin
-              onClicked: root.showJoin = !root.showJoin
+              onClicked: root.toggleJoin()
             }
             ActionButton {
               visible: !omaq.locked
               Layout.fillWidth: true
               Layout.preferredWidth: heroActions.actionWidth
-              iconText: "󰍩"
+              iconText: "chat"
+              iconFontFamily: "Material Symbols Rounded"
               text: "Chat"
               selected: root.chatPickerOpen
               onClicked: root.openChat()
             }
             ActionButton {
+              Layout.columnSpan: 3
               Layout.fillWidth: true
-              Layout.preferredWidth: heroActions.actionWidth
-              iconText: "󰙨"
+              iconText: "settings"
+              iconFontFamily: "Material Symbols Rounded"
+              text: "Settings"
+              selected: root.settingsOpen
+              onClicked: root.toggleSettings()
+            }
+          }
+
+          GridLayout {
+            id: settingsActions
+            visible: root.settingsOpen
+            width: parent.width
+            columns: 2
+            columnSpacing: root.btnGap
+            rowSpacing: Style.space(6)
+            readonly property real actionWidth: Math.max(0, (width - columnSpacing) / columns)
+
+            ActionButton {
+              Layout.fillWidth: true
+              Layout.preferredWidth: settingsActions.actionWidth
+              iconText: "science"
+              iconFontFamily: "Material Symbols Rounded"
               text: "Demo"
               selected: chatSurface && chatSurface.demoOpen
               onClicked: root.openDemo()
             }
             ActionButton {
               Layout.fillWidth: true
-              Layout.preferredWidth: heroActions.actionWidth
-              iconText: "󰏘"
+              Layout.preferredWidth: settingsActions.actionWidth
+              iconText: "palette"
+              iconFontFamily: "Material Symbols Rounded"
               text: "Theme"
               selected: root.themeOpen
               accent: root.chatTheme === "system" ? Color.accent : Model.themeFor(root.chatTheme).accent
-              onClicked: root.themeOpen = !root.themeOpen
+              onClicked: root.toggleThemeSettings()
             }
             ActionButton {
               Layout.fillWidth: true
-              Layout.preferredWidth: heroActions.actionWidth
+              Layout.preferredWidth: settingsActions.actionWidth
               iconText: chatSurface && chatSurface.muted ? "notifications_off" : "notifications"
               iconFontFamily: "Material Symbols Rounded"
               text: chatSurface && chatSurface.muted ? "Unmute" : "Mute"
               tooltipText: "Mute notification sound"
               selected: chatSurface && chatSurface.muted
               onClicked: if (chatSurface) chatSurface.toggleMute()
+            }
+            ActionButton {
+              Layout.fillWidth: true
+              Layout.preferredWidth: settingsActions.actionWidth
+              iconText: "music_note"
+              iconFontFamily: "Material Symbols Rounded"
+              text: "Sounds"
+              selected: root.soundOpen
+              onClicked: root.toggleSoundSettings()
             }
           }
 
@@ -1154,7 +1334,7 @@ BarWidget {
                   var name = modelData && modelData.name
                     ? String(modelData.name)
                     : ("Friend " + (modelData ? modelData.id : ""))
-                  return name + (modelData && modelData.online ? " · online" : " · offline")
+                  return name + " · " + root.contactStatus(!!(modelData && modelData.online))
                 }
                 focusable: true
                 foreground: root.foreground
@@ -1166,6 +1346,7 @@ BarWidget {
           }
 
           Column {
+            visible: !root.settingsOpen
             width: parent.width
             spacing: Style.space(6)
 
@@ -1243,6 +1424,14 @@ BarWidget {
               }
             }
 
+            Text {
+              text: root.connectionLabel()
+              color: omaq.connectionState === "online" ? root.controlAccent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: omaq.connectionState !== "online"
+            }
+
             Connections {
               target: omaq
               function onSelfNicknameChanged() {
@@ -1294,7 +1483,7 @@ BarWidget {
                 ActionButton {
                   text: {
                     var name = (modelData && modelData.name) ? String(modelData.name) : ("Friend " + (modelData ? modelData.id : ""))
-                    return name + (modelData && modelData.online ? " · online" : " · offline")
+                    return name + " · " + root.contactStatus(!!(modelData && modelData.online))
                   }
                   onClicked: root.openFriend(modelData ? modelData.id : "", modelData ? modelData.name : "")
                 }
@@ -1303,7 +1492,7 @@ BarWidget {
           }
 
           Column {
-            visible: root.themeOpen
+            visible: root.settingsOpen && root.themeOpen
             width: parent.width
             spacing: Style.space(8)
 
@@ -1358,10 +1547,53 @@ BarWidget {
             }
           }
 
-          Text {
-            visible: omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked")
+          Column {
+            visible: root.settingsOpen && root.soundOpen
             width: parent.width
-            text: root.errorText(omaq.lastError)
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "NOTIFICATION SOUND"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            GridLayout {
+              id: soundGrid
+              width: parent.width
+              columns: 4
+              columnSpacing: Style.space(4)
+              rowSpacing: Style.space(4)
+              readonly property real optionWidth: Math.max(0,
+                (width - columnSpacing * (columns - 1)) / columns)
+
+              Repeater {
+                model: root.notificationSounds
+                delegate: ActionButton {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  Layout.preferredWidth: soundGrid.optionWidth
+                  iconText: ""
+                  text: String(modelData.label)
+                  fontSize: Style.font.bodySmall
+                  horizontalPadding: Style.space(3)
+                  selected: root.notificationSound === String(modelData.id)
+                  onClicked: root.setNotificationSound(modelData.id)
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: omaq.unreadWarning !== "" ||
+              (chatSurface && chatSurface.autoOpenWarning !== "") ||
+              (omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked"))
+            width: parent.width
+            text: omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked")
+              ? root.errorText(omaq.lastError)
+              : (omaq.unreadWarning !== "" ? omaq.unreadWarning
+                : (chatSurface && chatSurface.autoOpenWarning !== ""
+                  ? chatSurface.autoOpenWarning : ""))
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1565,17 +1797,15 @@ BarWidget {
             }
 
             TokenButton {
-              text: root.moreOpen ? "Less" : "More"
+              text: root.moreOpen ? "Hide advanced" : "Advanced"
+              iconText: "tune"
+              iconFontFamily: "Material Symbols Rounded"
               focusable: true
+              bordered: true
+              selected: root.moreOpen
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onClicked: {
-                root.moreOpen = !root.moreOpen
-                if (root.moreOpen && root.moreSection === "")
-                  root.moreSection = "chat"
-                else if (!root.moreOpen)
-                  root.moreSection = ""
-              }
+              onClicked: root.toggleAdvanced()
             }
 
             Column {
@@ -1893,6 +2123,12 @@ BarWidget {
                 width: parent.width
                 foreground: root.controlForeground
                 placeholderText: "Path to identity file"
+                onTextChanged: {
+                  if (root.replaceIdentityConfirm && text.trim() !== root.replaceIdentityPath) {
+                    root.replaceIdentityConfirm = false
+                    root.replaceIdentityPath = ""
+                  }
+                }
               }
 
               Row {
@@ -1901,21 +2137,65 @@ BarWidget {
                 spacing: root.btnGap
                 ActionButton {
                   width: (parent.width - root.btnGap) / 2
-                  iconText: "󰏘"
+                  iconText: "file_open"
+                  iconFontFamily: "Material Symbols Rounded"
                   text: "Import"
                   onClicked: {
-                    if (importPath.text)
-                      omaq.importIdentity(importPath.text, false)
+                    root.replaceIdentityConfirm = false
+                    root.replaceIdentityPath = ""
+                    if (importPath.text.trim())
+                      omaq.importIdentity(importPath.text.trim(), false, passField.text)
                   }
                 }
                 ActionButton {
                   width: (parent.width - root.btnGap) / 2
-                  iconText: "󰁨"
+                  iconText: "switch_account"
+                  iconFontFamily: "Material Symbols Rounded"
                   text: "Replace"
                   accent: root.urgent
                   onClicked: {
-                    if (importPath.text)
-                      omaq.importIdentity(importPath.text, true)
+                    var value = importPath.text.trim()
+                    if (value) {
+                      root.replaceIdentityPath = value
+                      root.replaceIdentityConfirm = true
+                    }
+                  }
+                }
+              }
+
+              Text {
+                visible: root.moreSection === "identity" && root.replaceIdentityConfirm
+                width: parent.width
+                text: "Replace the current identity with " + root.replaceIdentityPath + "?"
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WrapAnywhere
+              }
+
+              Row {
+                visible: root.moreSection === "identity" && root.replaceIdentityConfirm
+                width: parent.width
+                spacing: root.btnGap
+
+                ActionButton {
+                  width: (parent.width - root.btnGap) / 2
+                  text: "Cancel"
+                  onClicked: {
+                    root.replaceIdentityConfirm = false
+                    root.replaceIdentityPath = ""
+                  }
+                }
+                ActionButton {
+                  width: (parent.width - root.btnGap) / 2
+                  iconText: "switch_account"
+                  iconFontFamily: "Material Symbols Rounded"
+                  text: "Replace now"
+                  accent: root.urgent
+                  onClicked: {
+                    omaq.importIdentity(root.replaceIdentityPath, true, passField.text)
+                    root.replaceIdentityConfirm = false
+                    root.replaceIdentityPath = ""
                   }
                 }
               }

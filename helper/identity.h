@@ -2,9 +2,11 @@
 #define OMAQ_IDENTITY_H
 
 #define OMAQ_ID_LOCKED 1
+#define OMAQ_IDENTITY_FILE_MAX (16u * 1024u * 1024u)
 
 int omaq_identity_pass_ok(const char *pass);
 int omaq_identity_export(const char *home, const char *path);
+int omaq_identity_export_exclusive(const char *home, const char *path);
 int omaq_identity_import(const char *home, const char *path, int replace);
 
 #ifdef HAVE_TOX

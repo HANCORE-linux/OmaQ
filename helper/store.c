@@ -4,6 +4,8 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +13,19 @@
 #include <unistd.h>
 
 #define ROTATE_BYTES (2 * 1024 * 1024)
+#define UNREAD_STATE_BYTES (1024 * 1024)
+
+static int fsync_dir(const char *path)
+{
+	int fd, rc;
+
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	rc = fsync(fd);
+	close(fd);
+	return rc;
+}
 
 static int mkdir_p(const char *path)
 {
@@ -41,6 +56,14 @@ static int hist_file(const char *home, const char *conv_id, char *buf, size_t n)
 }
 
 static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap);
+
+static int unread_file(const char *state_dir, char *out, size_t outn)
+{
+	if (!state_dir || !state_dir[0] || !out || outn == 0 ||
+	    snprintf(out, outn, "%s/unread.tsv", state_dir) >= (int)outn)
+		return -1;
+	return 0;
+}
 
 static int replace_string_field(const char *line, const char *field_name,
 				const char *value_text, char **out)
@@ -270,6 +293,132 @@ fail:
 	return -1;
 }
 
+static int update_file_reaction(const char *path, const char *id, const char *emoji,
+                                const char *field)
+{
+	char **lines = NULL, tmp[640];
+	size_t n = 0, cap = 0, i;
+	int changed = 0, unchanged = 0, failed = 0;
+	FILE *f;
+
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		return -1;
+	for (i = 0; i < n; i++) {
+		char needle[128], value_needle[256], escaped_emoji[128], *marked = NULL;
+		if (snprintf(needle, sizeof(needle), "\"id\":\"%s\"", id) >= (int)sizeof(needle) ||
+		    !strstr(lines[i], needle) || strstr(lines[i], "\"deleted\":true"))
+			continue;
+		if (omaq_json_escape(emoji, escaped_emoji, sizeof(escaped_emoji)) != 0 ||
+		    snprintf(value_needle, sizeof(value_needle), "\"%s\":\"%s\"",
+			     field, escaped_emoji) >= (int)sizeof(value_needle)) {
+			failed = 1;
+			break;
+		}
+		if (strstr(lines[i], value_needle)) {
+			unchanged = 1;
+			break;
+		}
+		if (append_string_field(lines[i], field, emoji, &marked) != 0) {
+			failed = 1;
+			break;
+		}
+		free(lines[i]);
+		lines[i] = marked;
+		changed = 1;
+		break;
+	}
+	if (!changed) {
+		for (i = 0; i < n; i++)
+			free(lines[i]);
+		free(lines);
+		return failed ? -1 : (unchanged ? 1 : 0);
+	}
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp) ||
+	    !(f = fopen(tmp, "w")))
+		goto fail;
+	if (fchmod(fileno(f), 0600) != 0)
+		goto close_fail;
+	for (i = 0; i < n; i++) {
+		if (fprintf(f, "%s\n", lines[i]) < 0)
+			goto close_fail;
+	}
+	if (fclose(f) != 0)
+		goto fail_tmp;
+	if (rename(tmp, path) != 0)
+		goto fail;
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	return 1;
+close_fail:
+	fclose(f);
+fail_tmp:
+	unlink(tmp);
+fail:
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	return -1;
+}
+
+static int file_message_exists(const char *path, const char *id)
+{
+	char **lines = NULL;
+	size_t n = 0, cap = 0, i;
+	int found = 0;
+
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		return -1;
+	for (i = 0; i < n; i++) {
+		char needle[128];
+		if (snprintf(needle, sizeof(needle), "\"id\":\"%s\"", id) < (int)sizeof(needle) &&
+		    strstr(lines[i], needle) && !strstr(lines[i], "\"deleted\":true")) {
+			found = 1;
+			break;
+		}
+	}
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	return found;
+}
+
+int omaq_store_message_exists(const char *home, const char *conv_id, const char *id)
+{
+	char path[576], rot[580];
+	int result;
+
+	if (!home || !conv_id || !id || !id[0] ||
+	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	result = file_message_exists(path, id);
+	if (result != 0)
+		return result;
+	return file_message_exists(rot, id);
+}
+
+int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
+                                const char *emoji, const char *actor)
+{
+	char path[576], rot[580], field[32];
+	int result;
+
+	if (!home || !conv_id || !id || !id[0] || !emoji || !actor ||
+	    (strcmp(actor, "me") != 0 && strcmp(actor, "peer") != 0) ||
+	    snprintf(field, sizeof(field), "reaction_%s", actor) >= (int)sizeof(field) ||
+	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	result = update_file_reaction(path, id, emoji, field);
+	if (result != 0)
+		return result > 0 ? 0 : -1;
+	result = update_file_reaction(rot, id, emoji, field);
+	if (result < 0)
+		return -1;
+	return result > 0 ? 0 : -2;
+}
+
 int omaq_store_update_receipt(const char *home, const char *conv_id, const char *id,
 			       const char *state)
 {
@@ -308,6 +457,135 @@ int omaq_store_update_message(const char *home, const char *conv_id, const char 
 	if (result < 0)
 		return -1;
 	return result > 0 ? 0 : -2;
+}
+
+int omaq_store_unread_load(omaq_unread_state *state, const char *state_dir)
+{
+	char path[576], line[128];
+	omaq_unread_state loaded;
+	struct stat st;
+	FILE *f;
+	int fd;
+	size_t bytes = 0;
+
+	if (!state || unread_file(state_dir, path, sizeof(path)) != 0)
+		return -1;
+	omaq_unread_init(&loaded);
+	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0) {
+		if (errno != ENOENT)
+			return -1;
+		omaq_unread_destroy(state);
+		omaq_unread_init(state);
+		return 0;
+	}
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+	    st.st_size > UNREAD_STATE_BYTES || !(f = fdopen(fd, "r"))) {
+		close(fd);
+		omaq_unread_destroy(state);
+		omaq_unread_init(state);
+		return -1;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		char *tab, *count_text, *end;
+		unsigned long count;
+		size_t i, line_size = strlen(line);
+
+		if (line_size > UNREAD_STATE_BYTES - bytes)
+			goto invalid;
+		bytes += line_size;
+		end = strchr(line, '\n');
+		tab = strchr(line, '\t');
+		if (!end || end[1] != '\0' || !tab || tab == line || strchr(tab + 1, '\t'))
+			goto invalid;
+		*tab = '\0';
+		*end = '\0';
+		count_text = tab + 1;
+		if (!count_text[0] || (count_text[0] == '0' && count_text[1]))
+			goto invalid;
+		for (i = 0; count_text[i]; i++) {
+			if (count_text[i] < '0' || count_text[i] > '9')
+				goto invalid;
+		}
+		errno = 0;
+		count = strtoul(count_text, &end, 10);
+		if (errno != 0 || !end || *end != '\0' || count > UINT_MAX ||
+		    omaq_unread_set(&loaded, line, (unsigned)count) != 0)
+			goto invalid;
+	}
+	if (ferror(f) || bytes != (size_t)st.st_size || fclose(f) != 0) {
+		omaq_unread_destroy(&loaded);
+		omaq_unread_destroy(state);
+		omaq_unread_init(state);
+		return -1;
+	}
+	omaq_unread_destroy(state);
+	*state = loaded;
+	return 0;
+invalid:
+	fclose(f);
+	omaq_unread_destroy(&loaded);
+	omaq_unread_destroy(state);
+	omaq_unread_init(state);
+	return -1;
+}
+
+int omaq_store_unread_save(const omaq_unread_state *state, const char *state_dir)
+{
+	char path[576], tmp[600];
+	omaq_unread_state validated;
+	FILE *f;
+	size_t i, bytes = 0;
+
+	if (!state || unread_file(state_dir, path, sizeof(path)) != 0 ||
+	    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp))
+		return -1;
+	omaq_unread_init(&validated);
+	for (i = 0; i < state->length; i++) {
+		if (omaq_unread_set(&validated, state->entries[i].id,
+				    state->entries[i].count) != 0) {
+			omaq_unread_destroy(&validated);
+			return -1;
+		}
+	}
+	f = fopen(tmp, "w");
+	if (!f) {
+		omaq_unread_destroy(&validated);
+		return -1;
+	}
+	if (fchmod(fileno(f), 0600) != 0)
+		goto fail;
+	for (i = 0; i < validated.length; i++) {
+		char line[128];
+		int line_size = snprintf(line, sizeof(line), "%s\t%u\n",
+					 validated.entries[i].id, validated.entries[i].count);
+		if (line_size < 0 || (size_t)line_size >= sizeof(line) ||
+		    (size_t)line_size > UNREAD_STATE_BYTES - bytes ||
+		    fwrite(line, 1, (size_t)line_size, f) != (size_t)line_size)
+			goto fail;
+		bytes += (size_t)line_size;
+	}
+	if (fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
+		unlink(tmp);
+		omaq_unread_destroy(&validated);
+		return -1;
+	}
+	if (rename(tmp, path) != 0) {
+		unlink(tmp);
+		omaq_unread_destroy(&validated);
+		return -1;
+	}
+	if (fsync_dir(state_dir) != 0) {
+		omaq_unread_destroy(&validated);
+		return -1;
+	}
+	omaq_unread_destroy(&validated);
+	return 0;
+fail:
+	fclose(f);
+	unlink(tmp);
+	omaq_unread_destroy(&validated);
+	return -1;
 }
 
 int omaq_store_clear(const char *home, const char *conv_id)

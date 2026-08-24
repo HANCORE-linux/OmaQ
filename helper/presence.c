@@ -16,6 +16,18 @@ static int conversation_ok(const char *conversation)
 	return i < 16;
 }
 
+int omaq_presence_connection_event(char *out, size_t outn, int online)
+{
+	int wr;
+
+	if (!out || outn == 0)
+		return -1;
+	wr = snprintf(out, outn,
+			"{\"event\":\"connection\",\"state\":\"%s\"}",
+			online ? "online" : "connecting");
+	return wr < 0 || (size_t)wr >= outn ? -1 : 0;
+}
+
 int omaq_presence_typing_event(char *out, size_t outn, const char *conversation, int typing)
 {
 	int wr;

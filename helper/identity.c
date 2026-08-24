@@ -2,6 +2,8 @@
 #include "identity.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -63,48 +65,65 @@ static int path_ok(const char *p)
 
 static int copy_file(const char *src, const char *dst)
 {
-	char tmp[580];
-	FILE *in, *out;
-	char buf[4096];
-	size_t n;
+	char tmp[640], buf[4096];
+	FILE *in = NULL, *out = NULL;
+	struct stat st;
+	size_t n, total = 0;
+	int in_fd = -1, out_fd = -1, tmp_created = 0, rc = -1;
 
-	if (snprintf(tmp, sizeof(tmp), "%s.tmp", dst) >= (int)sizeof(tmp))
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", dst, (long)getpid()) >= (int)sizeof(tmp))
 		return -1;
-	in = fopen(src, "rb");
-	if (!in)
-		return -1;
-	out = fopen(tmp, "wb");
-	if (!out) {
-		fclose(in);
-		return -1;
-	}
-	if (fchmod(fileno(out), 0600) != 0) {
-		fclose(in);
-		fclose(out);
-		unlink(tmp);
-		return -1;
-	}
-	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-		if (fwrite(buf, 1, n, out) != n) {
-			fclose(in);
-			fclose(out);
-			unlink(tmp);
+	if (lstat(dst, &st) == 0) {
+		if (!S_ISREG(st.st_mode))
 			return -1;
-		}
+	} else if (errno != ENOENT) {
+		return -1;
 	}
-	if (ferror(in) || fflush(out) != 0 || fsync(fileno(out)) != 0) {
+	in_fd = open(src, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+	if (in_fd < 0 || fstat(in_fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+	    st.st_size <= 0 || (uint64_t)st.st_size > OMAQ_IDENTITY_FILE_MAX)
+		goto done;
+	in = fdopen(in_fd, "rb");
+	if (!in)
+		goto done;
+	in_fd = -1;
+	out_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NONBLOCK |
+		      O_NOFOLLOW, 0600);
+	if (out_fd < 0)
+		goto done;
+	tmp_created = 1;
+	out = fdopen(out_fd, "wb");
+	if (!out)
+		goto done;
+	out_fd = -1;
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+		if (n > OMAQ_IDENTITY_FILE_MAX - total || fwrite(buf, 1, n, out) != n)
+			goto done;
+		total += n;
+	}
+	if (ferror(in) || total != (size_t)st.st_size ||
+	    fflush(out) != 0 || fsync(fileno(out)) != 0)
+		goto done;
+	if (fclose(out) != 0) {
+		out = NULL;
+		goto done;
+	}
+	out = NULL;
+	if (rename(tmp, dst) != 0)
+		goto done;
+	rc = 0;
+done:
+	if (in)
 		fclose(in);
+	if (out)
 		fclose(out);
+	if (in_fd >= 0)
+		close(in_fd);
+	if (out_fd >= 0)
+		close(out_fd);
+	if (rc != 0 && tmp_created)
 		unlink(tmp);
-		return -1;
-	}
-	fclose(in);
-	fclose(out);
-	if (rename(tmp, dst) != 0) {
-		unlink(tmp);
-		return -1;
-	}
-	return 0;
+	return rc;
 }
 
 int omaq_identity_export(const char *home, const char *path)
@@ -116,6 +135,56 @@ int omaq_identity_export(const char *home, const char *path)
 	if (snprintf(src, sizeof(src), "%s/tox.save", home) >= (int)sizeof(src))
 		return -1;
 	return copy_file(src, path);
+}
+
+int omaq_identity_export_exclusive(const char *home, const char *path)
+{
+	char src[576], buf[4096];
+	FILE *in = NULL, *out = NULL;
+	struct stat st;
+	size_t n, total = 0;
+	int in_fd = -1, out_fd = -1, rc = -1;
+
+	if (!home || !path_ok(path) ||
+	    snprintf(src, sizeof(src), "%s/tox.save", home) >= (int)sizeof(src))
+		return -1;
+	in_fd = open(src, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+	if (in_fd < 0 || fstat(in_fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+	    st.st_size <= 0 || (uint64_t)st.st_size > OMAQ_IDENTITY_FILE_MAX)
+		goto done;
+	in = fdopen(in_fd, "rb");
+	if (!in)
+		goto done;
+	in_fd = -1;
+	out_fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NONBLOCK |
+		      O_NOFOLLOW, 0600);
+	if (out_fd < 0)
+		goto done;
+	out = fdopen(out_fd, "wb");
+	if (!out)
+		goto done;
+	out_fd = -1;
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+		if (n > OMAQ_IDENTITY_FILE_MAX - total || fwrite(buf, 1, n, out) != n)
+			goto done;
+		total += n;
+	}
+	if (ferror(in) || total != (size_t)st.st_size ||
+	    fflush(out) != 0 || fsync(fileno(out)) != 0)
+		goto done;
+	rc = 0;
+done:
+	if (in)
+		fclose(in);
+	if (out && fclose(out) != 0)
+		rc = -1;
+	if (in_fd >= 0)
+		close(in_fd);
+	if (out_fd >= 0)
+		close(out_fd);
+	if (rc != 0 && (out || out_fd >= 0))
+		unlink(path);
+	return rc;
 }
 
 int omaq_identity_import(const char *home, const char *path, int replace)

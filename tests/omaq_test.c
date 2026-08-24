@@ -167,6 +167,9 @@ static void test_json(void)
 	if (omaq_json_parse_op("{\"op\":\"nickname.set\",\"nickname\":\"Alice\"}", &op) != 0 ||
 	    strcmp(op.nickname, "Alice") != 0)
 		fail("json nickname");
+	if (omaq_json_parse_op("{\"op\":\"message.react\",\"id\":\"msg-1\",\"text\":\"\"}", &op) != 0 ||
+	    !op.has_text || strcmp(op.text, "") != 0)
+		fail("json empty reaction text");
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
 	if (omaq_json_parse_op("{", &op) == 0)
@@ -286,11 +289,37 @@ static void test_store(void)
 		    !strstr(updated, "\"receipt\":\"read\"}"))
 			fail("message edit");
 		free(updated);
+		updated = NULL;
+		if (omaq_store_message_exists(dir, "c1", id) != 1 ||
+		    omaq_store_update_reaction(dir, "c1", id, "❤️", "me") != 0 ||
+		    omaq_store_update_reaction(dir, "c1", id, "🔥", "peer") != 0 ||
+		    omaq_store_update_reaction(dir, "c1", id, "🔥", "peer") != 0 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated, "\"reaction_me\":\"❤️\"") ||
+		    !strstr(updated, "\"reaction_peer\":\"🔥\"") ||
+		    omaq_store_message_exists(dir, "c1", "missing") != 0 ||
+		    omaq_store_update_reaction(dir, "c1", "missing", "👍", "me") != -2)
+			fail("message reaction store");
+		free(updated);
+		if (omaq_store_append(dir, "reaction-bad", "{\"id\":\"broken-1\",\"text\":\"broken\"") != 0 ||
+		    omaq_store_update_reaction(dir, "reaction-bad", "broken-1", "👍", "peer") != -1)
+			fail("message malformed reaction store");
 		if (omaq_message_append_id(dir, "c1", "peer", "peer text", "in", "peer-1") != 0 ||
 		    omaq_message_apply_delete(dir, "c1", "peer-1") != 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
 		    !updated || !strstr(updated, "\"id\":\"peer-1\"") || !strstr(updated, "\"deleted\":true"))
 			fail("message delete");
+		free(updated);
+		updated = NULL;
+		if (omaq_message_append_file_with_id(dir, "c1", "peer", "song.mp3", "in",
+						     id, sizeof(id)) == 0)
+			fail("file message path validation");
+		if (omaq_message_append_file_with_id(dir, "c1", "peer", "/tmp/song.mp3", "in",
+						     id, sizeof(id)) != 0 ||
+		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
+		    !updated || !strstr(updated, "\"text\":\"/tmp/song.mp3\"") ||
+		    !strstr(updated, "\"kind\":\"file\""))
+			fail("file message kind");
 		free(updated);
 	}
 	{
@@ -347,10 +376,82 @@ static void test_mutate(void)
 static void test_conv(void)
 {
 	omaq_conv c;
+	omaq_unread_state unread, loaded;
+	char dir[] = "/tmp/omaq-unread-XXXXXX", path[256];
+	FILE *f;
+	int i;
+
 	omaq_conv_init(&c, "x", CONV_DIRECT);
 	omaq_conv_note(&c, "hello", 1);
 	if (c.unread != 1 || strcmp(c.last, "hello") != 0)
 		fail("conv note");
+	if (!mkdtemp(dir)) {
+		fail("unread mkdtemp");
+		return;
+	}
+	omaq_unread_init(&unread);
+	omaq_unread_init(&loaded);
+	if (omaq_unread_increment(&unread, "0") != 0 ||
+	    omaq_unread_increment(&unread, "0") != 0 ||
+	    omaq_unread_increment(&unread, "g7") != 0 ||
+	    omaq_unread_increment(&unread, "../bad") == 0 ||
+	    omaq_unread_increment(&unread, "01") == 0 ||
+	    omaq_unread_increment(&unread, "g01") == 0 ||
+	    omaq_unread_increment(&unread, "4294967296") == 0 ||
+	    omaq_unread_increment(&unread, "g4294967296") == 0 ||
+	    omaq_unread_total(&unread) != 3 || omaq_unread_count(&unread, "0") != 2 ||
+	    omaq_store_unread_save(&unread, dir) != 0 ||
+	    omaq_store_unread_load(&loaded, dir) != 0 ||
+	    loaded.length != 2 || omaq_unread_total(&loaded) != 3 ||
+	    omaq_unread_clear(&loaded, "0") != 0 || omaq_unread_total(&loaded) != 1)
+		fail("unread state");
+	if (snprintf(path, sizeof(path), "%s/unread.tsv", dir) >= (int)sizeof(path) ||
+	    !(f = fopen(path, "w"))) {
+		fail("unread malformed fixture");
+		return;
+	}
+	fputs("0\t1\n0\t2\n", f);
+	fclose(f);
+	if (omaq_store_unread_load(&loaded, dir) == 0 || loaded.length != 0)
+		fail("unread duplicate rejection");
+	for (i = 0; i < 200; i++) {
+		char conversation[32];
+		snprintf(conversation, sizeof(conversation), "%d", i + 100);
+		if (omaq_unread_increment(&loaded, conversation) != 0) {
+			fail("unread dynamic capacity");
+			break;
+		}
+	}
+	omaq_unread_destroy(&loaded);
+	omaq_unread_init(&loaded);
+	f = fopen(path, "w");
+	if (!f)
+		fail("unread numeric fixture");
+	else {
+		fputs("0\t+1\n", f);
+		fclose(f);
+		if (omaq_store_unread_load(&loaded, dir) == 0 || loaded.length != 0)
+			fail("unread numeric rejection");
+	}
+	unlink(path);
+	if (symlink("/dev/null", path) != 0 || omaq_store_unread_load(&loaded, dir) == 0)
+		fail("unread symlink rejection");
+	unlink(path);
+	if (mkfifo(path, 0600) != 0 || omaq_store_unread_load(&loaded, dir) == 0)
+		fail("unread fifo rejection");
+	unlink(path);
+	f = fopen(path, "w");
+	if (!f || ftruncate(fileno(f), 1024 * 1024 + 1) != 0) {
+		if (f)
+			fclose(f);
+		fail("unread oversized fixture");
+	} else {
+		fclose(f);
+		if (omaq_store_unread_load(&loaded, dir) == 0)
+			fail("unread oversized rejection");
+	}
+	omaq_unread_destroy(&unread);
+	omaq_unread_destroy(&loaded);
 }
 
 static void test_search(void)
@@ -378,7 +479,7 @@ static void test_search(void)
 static void test_identity_files(void)
 {
 	char dir[] = "/tmp/omaq-id-XXXXXX";
-	char src[256], dst[256], other[256];
+	char src[256], dst[256], other[256], linkpath[256], temp_path[320];
 	FILE *f;
 
 	if (!mkdtemp(dir)) {
@@ -387,7 +488,10 @@ static void test_identity_files(void)
 	}
 	if (snprintf(src, sizeof(src), "%s/tox.save", dir) >= (int)sizeof(src) ||
 	    snprintf(dst, sizeof(dst), "%s/backup.save", dir) >= (int)sizeof(dst) ||
-	    snprintf(other, sizeof(other), "%s/other.save", dir) >= (int)sizeof(other)) {
+	    snprintf(other, sizeof(other), "%s/other.save", dir) >= (int)sizeof(other) ||
+	    snprintf(linkpath, sizeof(linkpath), "%s/link.save", dir) >= (int)sizeof(linkpath) ||
+	    snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld", linkpath, (long)getpid()) >=
+		    (int)sizeof(temp_path)) {
 		fail("id path");
 		return;
 	}
@@ -400,11 +504,51 @@ static void test_identity_files(void)
 	fclose(f);
 	if (omaq_identity_export(dir, dst) != 0)
 		fail("id export");
+	if (omaq_identity_export_exclusive(dir, dst) == 0 ||
+	    omaq_identity_export_exclusive(dir, other) != 0)
+		fail("id exclusive export");
+	f = fopen(temp_path, "w");
+	if (!f) {
+		fail("id preexisting temp fixture");
+		return;
+	}
+	fputs("KEEP", f);
+	fclose(f);
+	if (omaq_identity_export(dir, linkpath) == 0 || access(temp_path, F_OK) != 0)
+		fail("id preexisting temp preserved");
+	unlink(temp_path);
 	if (omaq_identity_import(dir, dst, 0) != 1)
 		fail("id exists");
 	f = fopen(other, "w");
 	if (!f) {
 		fail("id other");
+		return;
+	}
+	fclose(f);
+	if (omaq_identity_import(dir, other, 1) == 0)
+		fail("id empty import");
+	f = fopen(other, "w");
+	if (!f || ftruncate(fileno(f), (off_t)OMAQ_IDENTITY_FILE_MAX + 1) != 0) {
+		if (f)
+			fclose(f);
+		fail("id oversized fixture");
+		return;
+	}
+	fclose(f);
+	if (omaq_identity_import(dir, other, 1) == 0)
+		fail("id oversized import");
+	unlink(other);
+	if (mkfifo(other, 0600) != 0 || omaq_identity_import(dir, other, 1) == 0 ||
+	    omaq_identity_export(dir, other) == 0)
+		fail("id fifo path rejection");
+	if (symlink(other, linkpath) != 0 || omaq_identity_import(dir, linkpath, 1) == 0 ||
+	    omaq_identity_export(dir, linkpath) == 0)
+		fail("id symlink path rejection");
+	unlink(linkpath);
+	unlink(other);
+	f = fopen(other, "w");
+	if (!f) {
+		fail("id other rewrite");
 		return;
 	}
 	fputs("SAVE-B", f);
@@ -490,6 +634,22 @@ static void test_rate_hour(void)
 		fail("rate hour deny");
 	if (omaq_rate_allow(&r, "later", 1000 + 3600) != 0)
 		fail("rate hour rolled");
+}
+
+static void test_rate_key_only(void)
+{
+	omaq_rate r;
+	int i;
+
+	omaq_rate_init(&r);
+	for (i = 0; i < OMAQ_RATE_PER_MIN; i++) {
+		if (omaq_rate_allow_key_only(&r, "friend-0", 2000 + i) != 0)
+			fail("rate key-only allow");
+	}
+	if (omaq_rate_allow_key_only(&r, "friend-0", 2005) == 0)
+		fail("rate key-only deny");
+	if (omaq_rate_allow_key_only(&r, "friend-1", 2005) != 0)
+		fail("rate key-only isolation");
 }
 
 static void test_safety(void)
@@ -601,6 +761,11 @@ static void test_group_id(void)
 		fail("group id not g");
 	if (omaq_group_id_parse("gx", &n) == 0)
 		fail("group id junk");
+	omaq_group_note_peer(0, 7);
+	omaq_group_mark_dissolved(0);
+	omaq_group_reset();
+	if (omaq_group_peer_count(0) != 0 || omaq_group_is_dissolved(0))
+		fail("group identity reset");
 }
 
 static void test_group_plan(void)
@@ -850,12 +1015,26 @@ static void test_receipts(void)
 	    strcmp(wire, expected) != 0 || omaq_message_delete_wire_unpack(wire, id, sizeof(id)) != 0 ||
 	    strcmp(id, "msg-1") != 0)
 		fail("message delete wire");
+	if (read_file("tests/gold/actions/reaction-wire.txt", expected, sizeof(expected)) != 0 ||
+	    omaq_message_reaction_wire_pack(wire, sizeof(wire), "msg-1", "❤️") != 0 ||
+	    strcmp(wire, expected) != 0 ||
+	    omaq_message_reaction_wire_unpack(wire, id, sizeof(id), text, sizeof(text)) != 0 ||
+	    strcmp(id, "msg-1") != 0 || strcmp(text, "❤️") != 0 ||
+	    omaq_message_reaction_wire_pack(wire, sizeof(wire), "msg-1", "not-an-emoji") == 0 ||
+	    omaq_message_reaction_wire_unpack("OQX1|msg-1|❤️|extra", id, sizeof(id),
+					      text, sizeof(text)) == 0)
+		fail("message reaction wire");
 }
 
 static void test_presence(void)
 {
 	char event[160], expected[160];
 
+	if (omaq_presence_connection_event(event, sizeof(event), 0) != 0 ||
+	    strcmp(event, "{\"event\":\"connection\",\"state\":\"connecting\"}") != 0 ||
+	    omaq_presence_connection_event(event, sizeof(event), 1) != 0 ||
+	    strcmp(event, "{\"event\":\"connection\",\"state\":\"online\"}") != 0)
+		fail("connection state event");
 	if (read_file("tests/gold/presence/typing-on.json", expected, sizeof(expected)) != 0 ||
 	    omaq_presence_typing_event(event, sizeof(event), "7", 1) != 0 ||
 	    strcmp(event, expected) != 0)
@@ -940,6 +1119,7 @@ int main(void)
 	test_expire();
 	test_rate_gold();
 	test_rate_hour();
+	test_rate_key_only();
 	test_safety();
 	test_group_invite();
 	test_ratchet_pins();

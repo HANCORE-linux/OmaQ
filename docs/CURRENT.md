@@ -16,10 +16,11 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 - **Pairing:** `Invite` creates a one-use, time-limited QR/link. The recipient uses `Add`; the sender explicitly accepts the request.
 - **Direct chat:** floating chat window, Signal Double Ratchet, no plaintext fallback.
-- **Messages:** send, edit, delete, formatting, emoji, unread badge, and `New messages` divider.
-- **Files:** paused offer, explicit Accept/Decline, default downloads under `~/Downloads/omaq/`.
-- **Notifications:** `Auto-open` is per conversation; `Mute` changes sound only.
-- **Identity:** local `tox.save`, optional passphrase encryption, Export, Import, and Replace.
+- **Messages:** send, inline hover reactions, hover and keyboard editing, confirmed deletion, formatting, emoji, keyboard navigation, unread badges, and `New messages` divider.
+- **Files:** paused offer, explicit Accept/Decline, cancelable outgoing transfers, default downloads under `~/Downloads/omaq/`, and in-chat playback for received audio files without image or video previews.
+- **Notifications:** `Auto-open` is per conversation; Settings groups Mute, Demo, Theme, and licensed sound presets; unread counts remain until the relevant chat is actively opened.
+- **Connection state:** Panel and chat distinguish `Connecting…`/`Reconnecting…` from an online service with an offline contact.
+- **Identity:** local `tox.save`, optional passphrase encryption, Export, Import, and rollback-protected Replace.
 - **Groups:** UI and basic group operations exist; role management and cross-network behavior still need acceptance testing.
 
 ## Security boundaries

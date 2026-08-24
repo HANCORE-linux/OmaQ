@@ -23,6 +23,7 @@ typedef enum {
 
 omaq_file_event omaq_file_event_for(int avatar, omaq_file_outcome outcome);
 int omaq_file_path_ok(const char *path);
+int omaq_file_name_bytes_ok(const uint8_t *name, size_t length);
 int omaq_file_basename(const char *path, char *out, size_t n);
 int omaq_file_id_format(uint32_t friend, uint32_t fnum, char *out, size_t n);
 int omaq_file_id_parse(const char *id, uint32_t *friend, uint32_t *fnum);
@@ -42,11 +43,15 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 const char *dest_override, char *dest, size_t destn,
 			 int avatar);
 int omaq_file_is_avatar(uint32_t friend, uint32_t fnum);
+int omaq_file_can_cancel(uint32_t friend, uint32_t fnum);
+int omaq_file_is_sending(uint32_t friend, uint32_t fnum);
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, size_t len);
 int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 		       const uint8_t *data, size_t len, char *done_path, size_t n);
 void omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum);
+int omaq_file_busy(void);
+void omaq_file_reset(void);
 #endif
 
 #endif

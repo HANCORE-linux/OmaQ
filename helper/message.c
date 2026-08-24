@@ -55,16 +55,19 @@ int omaq_message_id_new(char *out, size_t outn)
 	return 0;
 }
 
-int omaq_message_append_id_reply(const char *home, const char *conv_id, const char *from,
-				  const char *text, const char *dir, const char *message_id,
-				  const char *reply_id)
+static int message_append_id_reply_kind(const char *home, const char *conv_id,
+					const char *from, const char *text, const char *dir,
+					const char *message_id, const char *reply_id,
+					const char *kind)
 {
 	char esc_id[128], esc_from[256], esc_text[2800], esc_reply[128], line[3400];
 	const char *reply = reply_id ? reply_id : "";
+	const char *message_kind = kind ? kind : "";
 	int wr;
 
 	if (!from || !text || !dir || !omaq_message_id_ok(message_id) ||
-	    (reply[0] && !omaq_message_id_ok(reply)))
+	    (reply[0] && !omaq_message_id_ok(reply)) ||
+	    (message_kind[0] && strcmp(message_kind, "file") != 0))
 		return -1;
 	if (strchr(from, '\n'))
 		return -1;
@@ -77,6 +80,10 @@ int omaq_message_append_id_reply(const char *home, const char *conv_id, const ch
 		wr = snprintf(line, sizeof(line),
 			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"reply\":\"%s\"}",
 			      esc_id, (long long)time(NULL), esc_from, esc_text, dir, esc_reply);
+	else if (message_kind[0])
+		wr = snprintf(line, sizeof(line),
+			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"file\"}",
+			      esc_id, (long long)time(NULL), esc_from, esc_text, dir);
 	else
 		wr = snprintf(line, sizeof(line),
 			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
@@ -84,6 +91,14 @@ int omaq_message_append_id_reply(const char *home, const char *conv_id, const ch
 	if (wr < 0 || (size_t)wr >= sizeof(line))
 		return -1;
 	return omaq_store_append(home, conv_id, line);
+}
+
+int omaq_message_append_id_reply(const char *home, const char *conv_id, const char *from,
+				  const char *text, const char *dir, const char *message_id,
+				  const char *reply_id)
+{
+	return message_append_id_reply_kind(home, conv_id, from, text, dir, message_id,
+					    reply_id, NULL);
 }
 
 int omaq_message_append_id(const char *home, const char *conv_id, const char *from,
@@ -99,6 +114,21 @@ int omaq_message_append_with_id(const char *home, const char *conv_id, const cha
 
 	if (omaq_message_id_new(id, sizeof(id)) != 0 ||
 	    omaq_message_append_id(home, conv_id, from, text, dir, id) != 0)
+		return -1;
+	if (id_out && id_outn && snprintf(id_out, id_outn, "%s", id) >= (int)id_outn)
+		return -1;
+	return 0;
+}
+
+int omaq_message_append_file_with_id(const char *home, const char *conv_id,
+				     const char *from, const char *path, const char *dir,
+				     char *id_out, size_t id_outn)
+{
+	char id[64];
+
+	if (!path || path[0] != '/' || strchr(path, '\n') || !dir || strcmp(dir, "in") != 0 ||
+	    omaq_message_id_new(id, sizeof(id)) != 0 ||
+	    message_append_id_reply_kind(home, conv_id, from, path, dir, id, "", "file") != 0)
 		return -1;
 	if (id_out && id_outn && snprintf(id_out, id_outn, "%s", id) >= (int)id_outn)
 		return -1;

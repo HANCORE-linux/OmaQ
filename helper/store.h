@@ -2,6 +2,7 @@
 #define OMAQ_STORE_H
 
 #include <stddef.h>
+#include "conversation.h"
 
 /* Only this module opens history files. */
 
@@ -16,7 +17,12 @@ int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out
 /* Last matching lines (case-insensitive). Caller frees *out. */
 int omaq_store_update_receipt(const char *home, const char *conv_id, const char *id,
 			       const char *state);
+int omaq_store_message_exists(const char *home, const char *conv_id, const char *id);
+int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
+                                const char *emoji, const char *actor);
 int omaq_store_search(const char *home, const char *conv_id, const char *needle,
 		      int limit, char **out, size_t *out_len);
+int omaq_store_unread_load(omaq_unread_state *state, const char *state_dir);
+int omaq_store_unread_save(const omaq_unread_state *state, const char *state_dir);
 
 #endif

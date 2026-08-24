@@ -86,6 +86,28 @@ static int of_find(uint32_t friend, uint32_t fnum, int create)
 	of[free_i].fnum = fnum;
 	return free_i;
 }
+int omaq_file_busy(void)
+{
+	int i;
+
+	for (i = 0; i < XFERS; i++) {
+		if (xf[i].used || of[i].used)
+			return 1;
+	}
+	return 0;
+}
+
+void omaq_file_reset(void)
+{
+	int i;
+
+	for (i = 0; i < XFERS; i++) {
+		if (xf[i].used && !xf[i].sending && xf[i].path[0])
+			unlink(xf[i].path);
+		xf_drop(i);
+	}
+	memset(of, 0, sizeof(of));
+}
 #endif
 
 omaq_file_event omaq_file_event_for(int avatar, omaq_file_outcome outcome)
@@ -106,6 +128,68 @@ int omaq_file_path_ok(const char *path)
 	return 1;
 }
 
+static int unicode_filename_format_control(uint32_t codepoint)
+{
+	return codepoint == 0x00ad ||
+		(codepoint >= 0x0600 && codepoint <= 0x0605) ||
+		codepoint == 0x061c || codepoint == 0x06dd || codepoint == 0x070f ||
+		(codepoint >= 0x0890 && codepoint <= 0x0891) || codepoint == 0x08e2 ||
+		(codepoint >= 0x17b4 && codepoint <= 0x17b5) || codepoint == 0x180e ||
+		(codepoint >= 0x200b && codepoint <= 0x200f) ||
+		(codepoint >= 0x202a && codepoint <= 0x202e) ||
+		(codepoint >= 0x2060 && codepoint <= 0x2064) ||
+		(codepoint >= 0x2066 && codepoint <= 0x206f) || codepoint == 0xfeff ||
+		(codepoint >= 0xfff9 && codepoint <= 0xfffb) || codepoint == 0x110bd ||
+		codepoint == 0x110cd || (codepoint >= 0x13430 && codepoint <= 0x1343f) ||
+		(codepoint >= 0x1bca0 && codepoint <= 0x1bca3) ||
+		(codepoint >= 0x1d173 && codepoint <= 0x1d17a) || codepoint == 0xe0001 ||
+		(codepoint >= 0xe0020 && codepoint <= 0xe007f);
+}
+
+int omaq_file_name_bytes_ok(const uint8_t *name, size_t length)
+{
+	size_t i = 0;
+
+	if (!name || length == 0 || length > OMAQ_FILE_NAME_MAX)
+		return 0;
+	while (i < length) {
+		uint8_t lead = name[i++];
+		uint32_t codepoint;
+		size_t continuation, j;
+		if (lead < 0x80) {
+			codepoint = lead;
+			continuation = 0;
+		} else if (lead >= 0xc2 && lead <= 0xdf) {
+			codepoint = lead & 0x1fu;
+			continuation = 1;
+		} else if (lead >= 0xe0 && lead <= 0xef) {
+			codepoint = lead & 0x0fu;
+			continuation = 2;
+		} else if (lead >= 0xf0 && lead <= 0xf4) {
+			codepoint = lead & 0x07u;
+			continuation = 3;
+		} else {
+			return 0;
+		}
+		if (continuation > length - i)
+			return 0;
+		for (j = 0; j < continuation; j++) {
+			uint8_t next = name[i++];
+			if ((next & 0xc0) != 0x80)
+				return 0;
+			codepoint = (codepoint << 6) | (uint32_t)(next & 0x3f);
+		}
+		if ((continuation == 2 && codepoint < 0x800) ||
+		    (continuation == 3 && codepoint < 0x10000) ||
+		    codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+		    codepoint < 0x20 || (codepoint >= 0x7f && codepoint <= 0x9f) ||
+		    codepoint == '/' || codepoint == 0x2028 || codepoint == 0x2029 ||
+		    unicode_filename_format_control(codepoint))
+			return 0;
+	}
+	return 1;
+}
+
 int omaq_file_basename(const char *path, char *out, size_t n)
 {
 	const char *b;
@@ -116,7 +200,8 @@ int omaq_file_basename(const char *path, char *out, size_t n)
 	b = b ? b + 1 : path;
 	if (!b[0] || strchr(b, '/') || strstr(b, ".."))
 		return -1;
-	if (strlen(b) >= n || strlen(b) > OMAQ_FILE_NAME_MAX)
+	if (strlen(b) >= n ||
+	    !omaq_file_name_bytes_ok((const uint8_t *)b, strlen(b)))
 		return -1;
 	memcpy(out, b, strlen(b) + 1);
 	return 0;
@@ -136,16 +221,32 @@ int omaq_file_id_format(uint32_t friend, uint32_t fnum, char *out, size_t n)
 
 int omaq_file_id_parse(const char *id, uint32_t *friend, uint32_t *fnum)
 {
-	unsigned long a, b;
-	char *end;
+	const char *p;
+	uint64_t a = 0, b = 0;
 
-	if (!id || !friend || !fnum || id[0] == 'g')
+	if (!id || !friend || !fnum || id[0] < '0' || id[0] > '9')
 		return -1;
-	a = strtoul(id, &end, 10);
-	if (!end || *end != ':' || end == id)
+	p = id;
+	if (p[0] == '0' && p[1] != ':')
 		return -1;
-	b = strtoul(end + 1, &end, 10);
-	if (!end || *end != '\0')
+	while (*p >= '0' && *p <= '9') {
+		a = a * 10u + (uint64_t)(*p - '0');
+		if (a > UINT32_MAX)
+			return -1;
+		p++;
+	}
+	if (*p != ':' || p[1] < '0' || p[1] > '9')
+		return -1;
+	p++;
+	if (p[0] == '0' && p[1] != '\0')
+		return -1;
+	while (*p >= '0' && *p <= '9') {
+		b = b * 10u + (uint64_t)(*p - '0');
+		if (b > UINT32_MAX)
+			return -1;
+		p++;
+	}
+	if (*p != '\0')
 		return -1;
 	*friend = (uint32_t)a;
 	*fnum = (uint32_t)b;
@@ -198,15 +299,23 @@ static int download_dir(const char *home, char *out, size_t n)
 static FILE *open_download_file(const char *dir, const char *name,
 				char *dest, size_t destn)
 {
+	const char *extension = strrchr(name, '.');
 	unsigned int suffix;
 
+	if (extension == name)
+		extension = NULL;
 	for (suffix = 0; suffix < 10000; suffix++) {
 		int fd;
 		int wr;
 
-		wr = suffix == 0
-			? snprintf(dest, destn, "%s/%s", dir, name)
-			: snprintf(dest, destn, "%s/%s.%u", dir, name, suffix);
+		if (suffix == 0) {
+			wr = snprintf(dest, destn, "%s/%s", dir, name);
+		} else if (extension) {
+			wr = snprintf(dest, destn, "%s/%.*s.%u%s", dir,
+				      (int)(extension - name), name, suffix, extension);
+		} else {
+			wr = snprintf(dest, destn, "%s/%s.%u", dir, name, suffix);
+		}
 		if (wr < 0 || (size_t)wr >= destn)
 			return NULL;
 		fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -405,6 +514,18 @@ int omaq_file_is_avatar(uint32_t friend, uint32_t fnum)
 	int i = xf_find(friend, fnum, 0);
 
 	return i >= 0 && xf[i].avatar;
+}
+
+int omaq_file_can_cancel(uint32_t friend, uint32_t fnum)
+{
+	return xf_find(friend, fnum, 0) >= 0 || of_find(friend, fnum, 0) >= 0;
+}
+
+int omaq_file_is_sending(uint32_t friend, uint32_t fnum)
+{
+	int i = xf_find(friend, fnum, 0);
+
+	return i >= 0 && xf[i].sending;
 }
 
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,

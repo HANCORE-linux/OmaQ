@@ -90,7 +90,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Groups | `owner > admin > member`. NGC `observer` unused in 0.x. Phase 3 starts by reading toxcore headers, then implements only the gap. |
 | Surfaces | **Card:** Quickshell overlay, drag to any monitor, stay there. **Pinned:** real Hyprland `xdg-toplevel`, terminal look. Then stock Omarchy keys apply (`SUPER+T` tile↔float, `SUPER+SHIFT+arrows` swap). Unpin (`lösen`) returns to the card. OmaQ does not bind those keys. |
 | Theme | Default System (`colors.toml`). Palettes: Paper, Ink, Moss, Dusk, Ember. Terminal-pin style uses the same palette, monospace. |
-| Sound | off, click, pop, bell, soft, knock, custom file. |
+| Sound | Compact Settings picker: off, ICQ, four branded-style presets backed by licensed open audio, five pleasant Ocean presets, and legacy/custom files. |
 | Memory | **50 MB RSS** for everything OmaQ starts (one helper + QML in a session). Do not invent a number in prose — measure. `verify-1-tox` records idle RSS; phase 6 records call-peak; phase 8 records ratchet idle + one-text. Fail if a single helper > 51200 kB. |
 | Payload | **Double Ratchet** (Signal spec) on **direct** conversations. Tox is the pipe. Not SimpleX. Not a second handshake we write ourselves. Library: Arch extra `libsignal-protocol-c` (existing). Groups stay Tox-native until a later go. |
 | Ratchet bootstrap | Direct invite requires `rk=` (32-byte identity key, 64 hex). The redeeming peer returns its own ratchet identity in the token-authenticated friend request; both expected pins and Signal identity keys persist before a bundle is accepted. Safety code still binds the Tox ids. |
@@ -249,7 +249,7 @@ $OMAQ_HOME/history/<conversation-id>/messages.jsonl
 Service → helper (unknown or not-yet-built `op` → `unsupported`):
 
 ```text
-{"op":"status"}
+{"op":"status","id":"optional-fresh-handshake-nonce"}
 {"op":"invite.create","ttlSec":86400,"kind":"direct"}
 {"op":"invite.create","ttlSec":86400,"kind":"group","group":"...","role":"member"}
 {"op":"invite.create","ttlSec":86400,"kind":"group","group":"...","role":"admin"}
@@ -264,6 +264,7 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"group.member.remove","group":"...","member":"..."}
 {"op":"group.leave","group":"..."}
 {"op":"msg.send","conversation":"...","text":"..."}
+{"op":"message.react","conversation":"...","id":"...","text":"❤️"}
 {"op":"history","conversation":"...","limit":50}
 {"op":"nospam.rotate"}
 {"op":"search","conversation":"...","text":"...","limit":20}
@@ -275,19 +276,20 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"identity.unprotect","passphrase":"..."}
 {"op":"surface.set","conversation":"...","monitor":"...","x":0,"y":0,"pinned":false}
 {"op":"surface.get","conversation":"..."}
-{"op":"file.send","conversation":"...","path":"..."}
+{"op":"file.send","conversation":"...","path":"...","id":"client-request-id"}
 {"op":"file.accept","id":"...","path":"..."}
 {"op":"file.cancel","id":"..."}
+{"op":"file.status","conversation":"...","id":"client-request-id"}
 {"op":"call.start","conversation":"..."}
 {"op":"call.answer","conversation":"..."}
 {"op":"call.stop","conversation":"..."}
 ```
 
-Helper → service: `snapshot`, `request`, `message`, `group.changed`, `file.offer`, `file.done`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `rate_limited` | `locked` | `no_ratchet` | `ratchet_pending`).
+Helper → service: `snapshot`, `request`, `message`, `message.reaction`, `receipt`, `receipt.sent`, `receipt.failed`, `connection`, `group.changed`, `file.offer`, `file.sending`, `file.done`, `file.canceled`, `file.failed`, `call.incoming`, `call.state`, `helper_down`, `error` (`invite_expired` | `unsupported` | `forbidden` | `identity_exists` | `identity_backup_failed` | `identity_passphrase_required` | `identity_import_failed` | `identity_state_archive_failed` | `identity_rollback_failed` | `rate_limited` | `locked` | `no_ratchet` | `ratchet_pending` | `history_failed` | `busy`).
 
-`file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
+`file.*` and `call.*` are 1:1 only (`conversation` is a friend number). Group ids (`g…`) return `forbidden`. Incoming files stay paused until `file.accept`. Dest default: `~/Downloads/omaq/<name>`, `0600`, cap 8 MiB. An explicit destination override remains supported. The optional client request `id` on `file.send` is echoed as `request` so multiple UI clients correlate `file.sending`; that event exposes the validated transfer id required for outgoing cancellation. Status snapshots include a per-process `instance` id and echo a fresh status-request nonce so stale replay records cannot release queued operations into a replacement helper. The helper persists per-conversation unread counts and broadcasts `unread` updates so every bar instance shows and clears the same badge state. After reconnecting to the same instance, `file.status` replays the cached state for the originating request. `receipt.sent` and `receipt.failed` correlate local read-receipt attempts by message id so transient failures can be retried without affecting message-send state. A local cancel ends with `file.canceled`, while transport errors and remote cancellation use `file.failed`. File events include `dir:"in"|"out"`. Completed incoming files are persisted as history messages with `kind:"file"`; persistence failure emits `history_failed` after the completed path event. Calls are audio-only (48 kbit, video 0). Hangup is `TOXAV_CALL_CONTROL_CANCEL`.
 
-`identity.import` without `replace` **refuses** if `tox.save` already exists (`identity_exists`). `replace:true` is an irreversible overwrite and needs an explicit UI confirm. Never default to replace.
+`identity.import` without `replace` **refuses** if `tox.save` already exists (`identity_exists`). `replace:true` needs an explicit UI confirmation bound to the selected path. The helper validates an exact staged copy, requires the imported passphrase when encrypted, creates a unique non-overwriting recovery backup, archives the previous identity's history, avatars, files, unread/surface/Auto-open state, and rotates Ratchet state. A per-client instance gate rejects operations queued under the old identity. Invalid replacement data restores the previous identity. Never default to replace.
 
 `identity.protect` encrypts `tox.save` with toxcore `toxencryptsave` (passphrase, RAM only). Default remains plaintext. Encrypted save on helper start emits `locked`; other ops return `locked` until `identity.unlock`. Wrong passphrase stays locked. This is at-rest for the identity file only — not a second chat protocol, not SimpleX.
 
@@ -366,7 +368,7 @@ IPC: `open`, `close`, `toggle`, `invite`, `status`.
 
 QR tools: system `qrencode` / `zbarimg`.
 
-Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `animateUnread`.
+Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `animateUnread`. The primary panel row is Invite/Add/Chat; the compact Settings disclosure owns Mute, Demo, Theme, and Sounds, while protocol and identity tools live under Advanced.
 
 ---
 

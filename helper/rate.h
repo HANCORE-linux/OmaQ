@@ -21,5 +21,7 @@ typedef struct {
 void omaq_rate_init(omaq_rate *r);
 /* 0 = allow and record, -1 = deny. key is an opaque id (e.g. peer pk hex). */
 int omaq_rate_allow(omaq_rate *r, const char *key, int64_t now);
+/* Per-key window only, for protocol-specific independent limiters. */
+int omaq_rate_allow_key_only(omaq_rate *r, const char *key, int64_t now);
 
 #endif

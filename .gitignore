@@ -4,6 +4,8 @@ tests/file_transfer_test
 tests/omaq_ipc_test_helper
 helper/omaq
 *.o
+__pycache__/
+*.py[cod]
 /pkg
 /src
 *.pkg.tar*

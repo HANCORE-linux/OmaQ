@@ -16,6 +16,7 @@ int omaq_group_id_parse(const char *id, uint32_t *n);
 int omaq_group_dissolve_plan(omaq_role self, const omaq_role *roles, int n,
 			     int *kick_idx, int *nkick);
 
+void omaq_group_reset(void);
 void omaq_group_note_peer(uint32_t gnum, uint32_t peer);
 void omaq_group_drop_peer(uint32_t gnum, uint32_t peer);
 int omaq_group_peer_count(uint32_t gnum);

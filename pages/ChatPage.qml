@@ -7,7 +7,7 @@ import Quickshell.Io
 import qs.Ui
 import qs.Commons
 
-Item {
+FocusScope {
   // Keep the live plugin parser cache tied to the current source revision.
   id: root
   property var service: null
@@ -18,10 +18,12 @@ Item {
   property int peerAvatarRevision: 0
   property bool peerAvatarFailed: false
   property bool peerOnline: false
+  onPeerOnlineChanged: if (root.peerOnline) root.retryReadReceipts()
   onPeerAvatarRevisionChanged: root.peerAvatarFailed = false
   property color peerNameColor: theme.accent || Color.accent
   property color peerStatusColor: theme.accent || Color.accent
   property bool autoOpenEnabled: true
+  property bool readActive: false
   property bool clearConfirm: false
   signal autoOpenToggled()
   property bool terminalLook: false
@@ -30,13 +32,20 @@ Item {
   property bool emojiOpen: false
   property bool demo: false
   property string fileStatus: ""
+  property string reactionStatus: ""
   property bool filePickerClosing: false
   property int filePickerExitCode: -1
   property bool filePickerStreamDone: false
   property string replyToId: ""
   property string replyToText: ""
   property string editingId: ""
-  property string forwardText: ""
+  property string deleteConfirmId: ""
+  property string activeAudioPath: ""
+  property string audioErrorPath: ""
+  property string audioError: ""
+  property var readReceiptIds: []
+  property var pendingReceiptIds: []
+  property var failedReceiptIds: []
   onPeerAvatarChanged: root.peerAvatarFailed = false
 
   readonly property color fg: theme.fg || Color.foreground
@@ -48,14 +57,14 @@ Item {
       return ""
     return String(service.filePathFor(root.conversation) || "")
   }
-  readonly property bool imageFile: {
-    if (!service)
-      return false
-    var p = root.mediaPath
-    return /\.(png|jpe?g|gif|webp)$/i.test(p)
+  readonly property bool mediaPathInHistory: root.hasFileMessage(root.mediaPath)
+  readonly property string peerConnectionStatus: {
+    if (service && service.connectionState && service.connectionState !== "online")
+      return service.connectionState === "reconnecting" ? "reconnecting…" : "connecting…"
+    if (root.peerTyping)
+      return "typing…"
+    return root.peerOnline ? "online" : "offline"
   }
-  readonly property bool audioFile: /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(root.mediaPath)
-  readonly property bool videoFile: /\.(mp4|webm|mkv|mov|avi)$/i.test(root.mediaPath)
   readonly property bool peerTyping: {
     if (root.demo || !service || typeof service.isPeerTyping !== "function")
       return false
@@ -115,6 +124,16 @@ Item {
     id: lines
   }
 
+  MediaPlayer {
+    id: mediaPlayer
+    source: root.activeAudioPath ? root.localFileUrl(root.activeAudioPath) : ""
+    audioOutput: AudioOutput { volume: 1.0 }
+    onErrorOccurred: function(error, errorString) {
+      root.audioErrorPath = root.activeAudioPath
+      root.audioError = errorString || "Audio playback failed"
+    }
+  }
+
   component ChatBtn: Button {
     foreground: root.fg
     accent: root.accent
@@ -124,6 +143,7 @@ Item {
     fontSize: Style.font.body
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(4)
+    focusable: true
   }
 
   component ContextMenuItem: Controls.MenuItem {
@@ -183,6 +203,53 @@ Item {
         renderType: Text.QtRendering
       }
     }
+  }
+
+  component ReactionAction: Item {
+    id: reactionAction
+    property string emoji: ""
+    property string materialIcon: ""
+    property string tooltipText: ""
+    property bool selected: false
+    signal clicked()
+
+    implicitWidth: Style.space(26)
+    implicitHeight: Style.space(24)
+    activeFocusOnTab: visible
+    Keys.onReturnPressed: reactionAction.clicked()
+    Keys.onEnterPressed: reactionAction.clicked()
+    Keys.onSpacePressed: reactionAction.clicked()
+
+    Text {
+      anchors.centerIn: parent
+      text: reactionAction.emoji !== "" ? reactionAction.emoji : reactionAction.materialIcon
+      color: reactionAction.materialIcon !== ""
+        ? (reactionAction.selected || reactionHover.hovered || reactionAction.activeFocus
+          ? root.accent : root.fg)
+        : root.fg
+      font.family: reactionAction.emoji !== "" ? "Noto Color Emoji" : "Material Symbols Rounded"
+      font.pixelSize: reactionAction.emoji !== "" ? Style.font.body : Style.font.icon
+      font.variableAxes: reactionAction.materialIcon !== "" ? ({ "FILL": 0, "wght": 500 }) : ({})
+      renderType: Text.QtRendering
+      opacity: reactionAction.selected ? 1.0 : (reactionHover.hovered || reactionAction.activeFocus ? 0.95 : 0.78)
+    }
+
+    Rectangle {
+      visible: reactionAction.selected || reactionAction.activeFocus
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: 1
+      color: root.accent
+    }
+
+    HoverHandler {
+      id: reactionHover
+      cursorShape: Qt.PointingHandCursor
+    }
+    TapHandler { onTapped: reactionAction.clicked() }
+    Controls.ToolTip.visible: reactionHover.hovered && reactionAction.tooltipText !== ""
+    Controls.ToolTip.text: reactionAction.tooltipText
   }
 
   component FormatBtn: ChatBtn {
@@ -335,31 +402,81 @@ Item {
     return base + "/omaq"
   }
 
+  function isAudioPath(path) {
+    return /\.(mp3|wav|ogg|oga|opus|flac|m4a|aac)(?:\.\d+)?$/i.test(String(path || ""))
+  }
+
+  function hasFileMessage(path) {
+    var target = String(path || "")
+    if (!target)
+      return false
+    for (var i = 0; i < lines.count; i++) {
+      var item = lines.get(i)
+      if (item && item.dir === "in" && String(item.text || "") === target &&
+          (item.kind === "file" || target === root.mediaPath))
+        return true
+    }
+    return false
+  }
+
   function filePathForConversation() {
     if (!service || !conversation)
       return ""
     return String(service.filePathFor(conversation) || "")
   }
 
-  function fileFolderForConversation() {
-    var path = filePathForConversation()
-    var slash = path.lastIndexOf("/")
-    return slash >= 0 ? path.slice(0, slash) : defaultDownloadDir()
+  function fileDisplayName(path) {
+    var value = String(path || "")
+    var slash = value.lastIndexOf("/")
+    return slash >= 0 ? value.slice(slash + 1) : value
   }
 
-  function openFileFolder() {
-    var folder = fileFolderForConversation()
+  function fileFolder(path) {
+    var value = String(path || "")
+    var slash = value.lastIndexOf("/")
+    return slash >= 0 ? value.slice(0, slash) : defaultDownloadDir()
+  }
+
+  function openFileFolder(path) {
+    var folder = root.fileFolder(path || root.filePathForConversation())
     if (folder)
       Quickshell.execDetached(["xdg-open", folder])
   }
 
-  function copyFilePath() {
-    var path = filePathForConversation()
-    if (!path)
+  function copyFilePath(path) {
+    var value = String(path || root.filePathForConversation())
+    if (!value)
       return
-    root.copyText(path)
+    root.copyText(value)
     root.fileStatus = "Path copied"
+    fileStatusTimer.interval = 1800
     fileStatusTimer.restart()
+  }
+
+  function audioPlaying(path) {
+    return String(path || "") === root.activeAudioPath &&
+      mediaPlayer.playbackState === MediaPlayer.PlayingState
+  }
+
+  function toggleAudio(path) {
+    var value = String(path || "")
+    if (!root.isAudioPath(value))
+      return
+    root.audioError = ""
+    root.audioErrorPath = ""
+    if (root.activeAudioPath === value) {
+      if (mediaPlayer.playbackState === MediaPlayer.PlayingState)
+        mediaPlayer.pause()
+      else
+        mediaPlayer.play()
+      return
+    }
+    mediaPlayer.stop()
+    root.activeAudioPath = value
+    Qt.callLater(function() {
+      if (root.activeAudioPath === value)
+        mediaPlayer.play()
+    })
   }
 
   function copyCode(value) {
@@ -495,6 +612,7 @@ Item {
   }
 
   function beginReply(id, text) {
+    root.clearDeleteConfirm()
     root.replyToId = String(id || "")
     root.replyToText = String(text || root.replyTextFor(id) || "")
     input.forceActiveFocus()
@@ -508,6 +626,7 @@ Item {
   function beginEdit(id, text) {
     if (!id)
       return
+    root.clearDeleteConfirm()
     root.editingId = String(id)
     root.clearReply()
     input.text = String(text || "")
@@ -519,21 +638,32 @@ Item {
     input.text = ""
   }
 
+  function requestDelete(id) {
+    var messageId = String(id || "")
+    if (!messageId)
+      return
+    root.clearReply()
+    if (root.editingId)
+      root.clearEdit()
+    root.deleteConfirmId = messageId
+  }
+
+  function clearDeleteConfirm() {
+    root.deleteConfirmId = ""
+  }
+
+  function confirmDelete() {
+    var messageId = root.deleteConfirmId
+    root.clearDeleteConfirm()
+    if (!root.demo && root.service && messageId)
+      root.service.deleteMessage(root.conversation, messageId)
+  }
+
   function clearChat() {
     if (!root.conversation || root.demo || !root.service)
       return
     root.clearConfirm = false
     root.service.clearHistory(root.conversation)
-  }
-
-  function forwardMessage(target, text) {
-    var conversation = String(target || "")
-    var value = String(text || "")
-    if (root.demo || !service || !conversation || !value)
-      return
-    service.sendOp({ op: "msg.send", conversation: conversation, text: value })
-    root.appendLine({ dir: "sys", text: "Forward queued", ack: -1 })
-    list.positionViewAtEnd()
   }
 
   function appendLine(item) {
@@ -544,7 +674,24 @@ Item {
       entry.newMarker = false
     if (entry.live === undefined)
       entry.live = false
+    if (entry.kind === undefined)
+      entry.kind = ""
+    if (entry.reactionMe === undefined)
+      entry.reactionMe = ""
+    if (entry.reactionPeer === undefined)
+      entry.reactionPeer = ""
+    if (entry.needsReadReceipt === undefined)
+      entry.needsReadReceipt = false
     lines.append(entry)
+  }
+
+  function reactToMessage(id, currentEmoji, emoji) {
+    var messageId = String(id || "")
+    if (!messageId || root.demo || !root.service || String(root.conversation || "").charAt(0) === "g")
+      return
+    var selectedEmoji = String(emoji || "")
+    root.service.reactMessage(root.conversation, messageId,
+      String(currentEmoji || "") === selectedEmoji ? "" : selectedEmoji)
   }
 
   function sameConv(conv) {
@@ -555,16 +702,157 @@ Item {
     return String(conv) === String(root.conversation)
   }
 
+  function messageAt(index) {
+    if (index < 0 || index >= lines.count)
+      return null
+    var item = lines.get(index)
+    return item && item.dir !== "sys" && !item.newMarker ? item : null
+  }
+
+  function selectMessage(direction, fromEdge) {
+    if (!lines.count)
+      return
+    var index
+    if (fromEdge === "start")
+      index = 0
+    else if (fromEdge === "end")
+      index = lines.count - 1
+    else
+      index = list.currentIndex >= 0 ? list.currentIndex + direction : lines.count - 1
+    while (index >= 0 && index < lines.count && !root.messageAt(index))
+      index += direction
+    if (index < 0 || index >= lines.count)
+      return
+    list.currentIndex = index
+    list.positionViewAtIndex(index, ListView.Contain)
+  }
+
+  function ensureMessageSelection() {
+    if (!root.messageAt(list.currentIndex))
+      root.selectMessage(-1, "end")
+  }
+
+  function markRead() {
+    if (root.demo || !root.service || !root.conversation)
+      return
+    root.service.clearUnread(root.conversation)
+    if (String(root.conversation).charAt(0) === "g" || !root.peerOnline)
+      return
+    var pending = root.pendingReceiptIds.slice()
+    var changed = false
+    for (var i = 0; i < lines.count; i++) {
+      var item = lines.get(i)
+      var messageId = item ? String(item.id || "") : ""
+      if (messageId && item.dir === "in" && item.needsReadReceipt &&
+          root.readReceiptIds.indexOf(messageId) < 0 &&
+          pending.indexOf(messageId) < 0 && root.failedReceiptIds.indexOf(messageId) < 0) {
+        root.service.sendReceipt(root.conversation, messageId, "read")
+        pending.push(messageId)
+        changed = true
+      }
+    }
+    if (changed)
+      root.pendingReceiptIds = pending
+  }
+
+  function confirmReadReceipt(id) {
+    var messageId = String(id || "")
+    if (!messageId)
+      return
+    var confirmed = root.readReceiptIds.slice()
+    var pending = []
+    var failed = []
+    for (var i = 0; i < root.pendingReceiptIds.length; i++) {
+      if (String(root.pendingReceiptIds[i]) !== messageId)
+        pending.push(root.pendingReceiptIds[i])
+    }
+    for (var j = 0; j < root.failedReceiptIds.length; j++) {
+      if (String(root.failedReceiptIds[j]) !== messageId)
+        failed.push(root.failedReceiptIds[j])
+    }
+    if (confirmed.indexOf(messageId) < 0)
+      confirmed.push(messageId)
+    root.pendingReceiptIds = pending
+    root.failedReceiptIds = failed
+    root.readReceiptIds = confirmed
+    for (var lineIndex = 0; lineIndex < lines.count; lineIndex++) {
+      var confirmedLine = lines.get(lineIndex)
+      if (confirmedLine && String(confirmedLine.id || "") === messageId) {
+        lines.setProperty(lineIndex, "needsReadReceipt", false)
+        break
+      }
+    }
+  }
+
+  function failReadReceipt(id) {
+    var messageId = String(id || "")
+    var pendingIndex = root.pendingReceiptIds.indexOf(messageId)
+    if (!messageId || pendingIndex < 0)
+      return
+    var pending = root.pendingReceiptIds.slice()
+    var failed = root.failedReceiptIds.slice()
+    pending.splice(pendingIndex, 1)
+    if (failed.indexOf(messageId) < 0)
+      failed.push(messageId)
+    root.pendingReceiptIds = pending
+    root.failedReceiptIds = failed
+  }
+
+  function retryReadReceipts() {
+    root.pendingReceiptIds = []
+    root.failedReceiptIds = []
+    if (root.readActive)
+      root.markRead()
+  }
+
+  function focusComposer() {
+    input.forceActiveFocus()
+    root.markRead()
+  }
+
+  function handleEscape() {
+    if (composerMenu.opened) {
+      composerMenu.close()
+      return true
+    }
+    if (root.showFile) {
+      root.closeFileChooser()
+      return true
+    }
+    if (root.emojiOpen) {
+      root.emojiOpen = false
+      return true
+    }
+    if (root.deleteConfirmId) {
+      root.clearDeleteConfirm()
+      return true
+    }
+    if (root.editingId) {
+      root.clearEdit()
+      return true
+    }
+    if (root.replyToId) {
+      root.clearReply()
+      return true
+    }
+    if (root.clearConfirm) {
+      root.clearConfirm = false
+      return true
+    }
+    return false
+  }
+
   function applyHistory(items, cleared) {
     var keep = []
     var unreadCount = 0
     var incomingIndexes = []
     var markerAt = -1
+    var unreadIndexes = ({})
     var i, j, it, dir, found
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
       if (!cleared && existing && (existing.local || existing.live))
-        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
+        keep.push({ id: existing.id || "", reply: existing.reply || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
     if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
@@ -577,8 +865,12 @@ Item {
       if (dir === "in")
         incomingIndexes.push(i)
     }
-    if (unreadCount > 0 && incomingIndexes.length > 0)
-      markerAt = incomingIndexes[Math.max(0, incomingIndexes.length - unreadCount)]
+    if (unreadCount > 0 && incomingIndexes.length > 0) {
+      var unreadStart = Math.max(0, incomingIndexes.length - unreadCount)
+      markerAt = incomingIndexes[unreadStart]
+      for (var unreadIndex = unreadStart; unreadIndex < incomingIndexes.length; unreadIndex++)
+        unreadIndexes[incomingIndexes[unreadIndex]] = true
+    }
     for (i = 0; items && i < items.length; i++) {
       it = items[i]
       if (!it || (!it.text && !it.deleted))
@@ -589,15 +881,10 @@ Item {
       var historyAck = -1
       if (dir === "out")
         historyAck = it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1)
-      root.appendLine({ id: it.id || "", reply: it.reply || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
+      root.appendLine({ id: it.id || "", reply: it.reply || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
     }
-    if (!root.demo && service && String(root.conversation || "").charAt(0) !== "g") {
-      for (i = 0; items && i < items.length; i++) {
-        it = items[i]
-        if (it && it.id && it.dir !== "out" && it.dir !== "sys")
-          service.sendReceipt(root.conversation, it.id, "read")
-      }
-    }
+    if (root.readActive)
+      root.markRead()
     for (i = 0; i < keep.length; i++) {
       found = false
       for (j = 0; j < lines.count; j++) {
@@ -626,6 +913,14 @@ Item {
       estimated += Style.space(18)
     var minimum = hasCode ? Style.space(180) : Style.space(52)
     return Math.min(Math.max(minimum, estimated), availableWidth * 0.82)
+  }
+
+  function fileBubbleWidth(path, audio, availableWidth) {
+    var name = root.fileDisplayName(path)
+    var textWidth = Math.max(Style.space(40), name.length * Style.font.bodySmall * 0.62)
+    var leadingWidth = audio ? Style.space(30) : Style.font.icon
+    var estimated = textWidth + leadingWidth + Style.space(30) + Style.space(24)
+    return Math.min(Math.max(Style.space(108), estimated), availableWidth * 0.82)
   }
 
   function bubbleColor(dir) {
@@ -686,11 +981,9 @@ Item {
     }
     if (dir === "in" && !hasNewMarker)
       root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
-    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, deleted: false, edited: false, local: dir === "out", live: dir === "in", pending: false, ack: dir === "out" ? 1 : -1 })
-    if (dir === "in" && service.lastChatId) {
-      service.sendReceipt(root.conversation, service.lastChatId, "read")
-      service.clearUnread(root.conversation)
-    }
+    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: dir === "out", live: dir === "in", pending: false, ack: dir === "out" ? 1 : -1 })
+    if (root.readActive && dir === "in" && service.lastChatId)
+      root.markRead()
     list.positionViewAtEnd()
   }
 
@@ -814,6 +1107,10 @@ Item {
       list.positionViewAtEnd()
       return
     }
+    if (root.showFile) {
+      root.closeFileChooser()
+      return
+    }
     root.showFile = true
     root.fileStatus = ""
     root.openFilePicker()
@@ -858,8 +1155,7 @@ Item {
     root.filePickerExitCode = -1
     root.filePickerStreamDone = false
     filePath.text = ""
-    if (!root.filePickerClosing)
-      root.fileStatus = ""
+    root.fileStatus = ""
   }
 
   function insertEmoji(glyph) {
@@ -878,9 +1174,35 @@ Item {
       root.fileStatus = "No conversation selected"
       return
     }
+    if (String(root.conversation).charAt(0) === "g") {
+      root.fileStatus = "Files are available in direct chats only"
+      return
+    }
+    if (path.charAt(0) !== "/" || path.length >= 512 || path.indexOf("..") !== -1) {
+      root.fileStatus = "Enter a valid absolute file path"
+      return
+    }
+    if (service.helperCompatibility === "incompatible") {
+      root.fileStatus = "Restart the OmaQ helper before sending files"
+      fileStatusTimer.interval = 5000
+      fileStatusTimer.restart()
+      return
+    }
+    if (!service.sendFile(path, root.conversation)) {
+      root.fileStatus = "A file is already sending"
+      fileStatusTimer.interval = 3000
+      fileStatusTimer.restart()
+      return
+    }
     root.closeFileChooser()
     root.fileStatus = "Sending…"
-    service.sendFile(path, root.conversation)
+  }
+
+  function cancelOutgoingFile() {
+    if (!root.service || !root.service.cancelOutgoingFile(root.conversation))
+      return
+    root.closeFileChooser()
+    root.fileStatus = ""
   }
 
   Timer {
@@ -894,7 +1216,24 @@ Item {
     id: fileStatusTimer
     interval: 1800
     repeat: false
-    onTriggered: if (root.fileStatus === "Path copied") root.fileStatus = ""
+    onTriggered: root.fileStatus = ""
+  }
+
+  Timer {
+    id: reactionStatusTimer
+    interval: 4000
+    repeat: false
+    onTriggered: root.reactionStatus = ""
+  }
+
+  Timer {
+    id: unreadClearRetry
+    interval: 5100
+    repeat: false
+    onTriggered: {
+      if (root.readActive && root.service && root.service.unreadFor(root.conversation) > 0)
+        root.markRead()
+    }
   }
 
   Process {
@@ -994,6 +1333,19 @@ Item {
     target: root.service
     enabled: !root.demo && root.service !== null
     function onMessageTickChanged() { root.pushLive() }
+    function onIdentityTickChanged() {
+      root.stopTyping()
+      root.clearReply()
+      root.clearEdit()
+      root.clearDeleteConfirm()
+      lines.clear()
+    }
+    function onUnreadTickChanged() {
+      if (root.readActive && root.service && root.service.unreadFor(root.conversation) > 0) {
+        root.markRead()
+        unreadClearRetry.restart()
+      }
+    }
     function onUpdateTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastUpdateConv) || !root.service.lastUpdateId)
         return
@@ -1003,6 +1355,30 @@ Item {
           lines.setProperty(i, "deleted", root.service.lastUpdateDeleted)
           lines.setProperty(i, "edited", root.service.lastUpdateEdited)
           lines.setProperty(i, "text", root.service.lastUpdateDeleted ? "Message deleted" : root.service.lastUpdateText)
+          break
+        }
+      }
+    }
+    function onReactionFailedTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastReactionFailedConv))
+        return
+      var code = String(root.service.lastReactionFailedCode || "forbidden")
+      root.reactionStatus = code === "offline" ? "Reaction failed: contact is offline"
+        : code === "rate_limited" ? "Reaction failed: try again in a moment"
+        : code === "not_found" ? "Reaction failed: message no longer exists"
+        : code === "history_failed" ? "Reaction sent, but could not be saved locally"
+        : "Reaction failed"
+      reactionStatusTimer.restart()
+    }
+    function onReactionTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastReactionConv) ||
+          !root.service.lastReactionId)
+        return
+      for (var i = 0; i < lines.count; i++) {
+        var reactionLine = lines.get(i)
+        if (reactionLine && reactionLine.id === root.service.lastReactionId) {
+          lines.setProperty(i, root.service.lastReactionActor === "me"
+            ? "reactionMe" : "reactionPeer", root.service.lastReactionEmoji)
           break
         }
       }
@@ -1018,28 +1394,71 @@ Item {
         }
       }
     }
+    function onReceiptSentTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastReceiptSentConv) ||
+          root.service.lastReceiptSentState !== "read")
+        return
+      root.confirmReadReceipt(root.service.lastReceiptSentId)
+    }
+    function onReceiptFailedTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastReceiptFailedConv) ||
+          root.service.lastReceiptFailedState !== "read")
+        return
+      root.failReadReceipt(root.service.lastReceiptFailedId)
+    }
+    function onHelperHandshakeTickChanged() {
+      root.retryReadReceipts()
+      if (!root.demo && root.service && root.conversation)
+        root.service.retryHistory(root.conversation)
+    }
     function onHistoryTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastHistoryConv))
         return
       root.applyHistory(root.service.lastHistoryItems, root.service.lastHistoryCleared)
     }
     function onLastErrorTickChanged() {
-      root.failPending()
-      if (root.service && root.sameConv(root.service.lastFileConv) && root.service.lastFileState === "failed")
-        root.fileStatus = "File could not be sent: " + root.service.lastFileError
+      if (!root.service || (root.service.lastError !== "history_failed" &&
+                            root.service.lastError !== "file_failed"))
+        root.failPending()
+      if (root.service && root.sameConv(root.service.lastFileConv) &&
+          root.service.lastFileState === "failed" &&
+          (root.service.lastFileDir === "out" || !root.service.fileSendingFor(root.conversation))) {
+        root.fileStatus = "File transfer failed: " + root.service.lastFileError
+        fileStatusTimer.interval = 5000
+        fileStatusTimer.restart()
+      } else if (root.service && root.sameConv(root.service.lastErrorConv) &&
+                 root.service.lastError === "history_failed") {
+        root.fileStatus = "File received, but chat history could not be saved"
+        fileStatusTimer.interval = 5000
+        fileStatusTimer.restart()
+      }
     }
     function onLastFileTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastFileConv))
         return
+      if (root.service.lastFileDir === "in") {
+        root.closeFileChooser()
+        if (root.service.fileSendingFor(root.conversation)) {
+          root.fileStatus = "Sending…"
+          return
+        }
+      }
       if (root.service.lastFileState === "offer") {
         root.closeFileChooser()
-        root.fileStatus = ""
+      } else if (root.service.lastFileState === "sending") {
+        root.fileStatus = "Sending…"
+      } else if (root.service.lastFileState === "canceling" || root.service.lastFileState === "canceled") {
+        root.closeFileChooser()
       } else if (root.service.lastFileState === "done") {
         root.closeFileChooser()
         root.fileStatus = root.service.lastFilePath !== "" ? "File received" : "File sent"
+        fileStatusTimer.interval = 1800
+        fileStatusTimer.restart()
       } else if (root.service.lastFileState === "failed") {
         root.closeFileChooser()
-        root.fileStatus = "File could not be sent: " + (root.service.lastFileError || "file_failed")
+        root.fileStatus = "File transfer failed: " + (root.service.lastFileError || "file_failed")
+        fileStatusTimer.interval = 5000
+        fileStatusTimer.restart()
       }
     }
   }
@@ -1047,10 +1466,33 @@ Item {
   onConversationChanged: {
     root.stopTyping()
     root.clearConfirm = false
+    root.clearDeleteConfirm()
     root.fileStatus = ""
+    root.reactionStatus = ""
+    mediaPlayer.stop()
+    root.activeAudioPath = ""
+    root.audioErrorPath = ""
+    root.audioError = ""
+    root.readReceiptIds = []
+    root.pendingReceiptIds = []
+    root.failedReceiptIds = []
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
       root.service.requestHistory(root.conversation)
+    }
+  }
+
+  onReadActiveChanged: if (root.readActive) root.markRead()
+
+  Keys.onPressed: function(event) {
+    root.markRead()
+    if (event.key === Qt.Key_Escape && root.handleEscape()) {
+      event.accepted = true
+      return
+    }
+    if (event.key === Qt.Key_O && (event.modifiers & Qt.ControlModifier)) {
+      root.attachFile()
+      event.accepted = true
     }
   }
 
@@ -1112,7 +1554,7 @@ Item {
             var name = root.escapeMarkup(root.demo ? "DEMO" : (root.peerName || root.conversation || "chat"))
             if (root.demo)
               return "<font color='" + String(root.peerNameColor) + "'><b>" + name + "</b></font>"
-            var status = root.peerTyping ? "typing…" : (root.peerOnline ? "online" : "offline")
+            var status = root.peerConnectionStatus
             return "<font color='" + String(root.peerNameColor) + "'><b>" + name +
               "</b></font> <font color='" + String(root.peerStatusColor) + "'>· " +
               root.escapeMarkup(status) + "</font>"
@@ -1165,6 +1607,42 @@ Item {
         spacing: Style.space(6)
         boundsBehavior: Flickable.StopAtBounds
         model: lines
+        activeFocusOnTab: true
+        onActiveFocusChanged: {
+          if (activeFocus) {
+            root.ensureMessageSelection()
+            root.markRead()
+          }
+        }
+        Keys.onPressed: function(event) {
+          var item = root.messageAt(list.currentIndex)
+          if (event.key === Qt.Key_Up) {
+            root.selectMessage(-1, "")
+          } else if (event.key === Qt.Key_Down) {
+            root.selectMessage(1, "")
+          } else if (event.key === Qt.Key_Home) {
+            root.selectMessage(1, "start")
+          } else if (event.key === Qt.Key_End) {
+            root.selectMessage(-1, "end")
+          } else if (event.key === Qt.Key_PageUp) {
+            for (var up = 0; up < 5; up++) root.selectMessage(-1, "")
+          } else if (event.key === Qt.Key_PageDown) {
+            for (var down = 0; down < 5; down++) root.selectMessage(1, "")
+          } else if (item && event.key === Qt.Key_R) {
+            root.beginReply(item.id, item.text)
+          } else if (item && event.key === Qt.Key_E && item.dir === "out" && !item.deleted) {
+            root.beginEdit(item.id, item.text)
+          } else if (item && event.key === Qt.Key_Delete && item.dir === "out" && !item.deleted) {
+            root.requestDelete(item.id)
+          } else if (item && event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+            root.copyText(item.text)
+          } else if (item && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+            root.beginReply(item.id, item.text)
+          } else {
+            return
+          }
+          event.accepted = true
+        }
         footer: Column {
           id: fileFooter
           width: list.width
@@ -1213,15 +1691,30 @@ Item {
 
           Item {
             id: filePathLink
-            visible: !root.demo && service && service.filePathFor(root.conversation) !== ""
+            visible: !root.demo && service && service.filePathFor(root.conversation) !== "" && !root.mediaPathInHistory
             width: parent.width
-            implicitHeight: visible ? filePathText.implicitHeight : 0
+            implicitHeight: visible ? filePathText.implicitHeight + Style.space(4) : 0
             height: implicitHeight
+            activeFocusOnTab: true
+            Keys.onReturnPressed: filePathMenu.open()
+            Keys.onEnterPressed: filePathMenu.open()
+            Keys.onSpacePressed: filePathMenu.open()
+
+            Rectangle {
+              anchors.fill: parent
+              color: "transparent"
+              radius: Style.cornerRadius
+              border.color: filePathLink.activeFocus ? root.accent : "transparent"
+              border.width: filePathLink.activeFocus ? 1 : 0
+            }
 
             Text {
               id: filePathText
               anchors.left: parent.left
               anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(2)
+              anchors.rightMargin: Style.space(2)
               text: root.filePathForConversation()
               color: root.accent
               font.family: root.fontFamily
@@ -1233,7 +1726,10 @@ Item {
             MouseArea {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
-              onClicked: filePathMenu.open()
+              onClicked: {
+                filePathLink.forceActiveFocus()
+                filePathMenu.open()
+              }
             }
 
             Controls.Menu {
@@ -1291,51 +1787,6 @@ Item {
             }
           }
 
-          Image {
-            visible: !root.demo && root.imageFile
-            width: visible ? Math.min(root.width, 160) : 0
-            height: visible ? 80 : 0
-            fillMode: Image.PreserveAspectFit
-            source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
-          }
-
-          MediaPlayer {
-            id: mediaPlayer
-            source: root.mediaPath ? root.localFileUrl(root.mediaPath) : ""
-            audioOutput: AudioOutput {
-              volume: 1.0
-            }
-            videoOutput: videoOutput
-            onSourceChanged: stop()
-          }
-
-          Row {
-            visible: !root.demo && root.audioFile
-            height: visible ? implicitHeight : 0
-            spacing: Style.space(8)
-            ChatBtn {
-              text: mediaPlayer.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
-              bordered: true
-              onClicked: mediaPlayer.playbackState === MediaPlayer.PlayingState ? mediaPlayer.pause() : mediaPlayer.play()
-            }
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.mediaPath
-              color: Qt.darker(root.fg, 1.5)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              elide: Text.ElideMiddle
-              width: Math.max(0, root.width - Style.space(90))
-            }
-          }
-
-          VideoOutput {
-            id: videoOutput
-            visible: !root.demo && root.videoFile
-            width: visible ? Math.min(root.width, 280) : 0
-            height: visible ? 158 : 0
-            fillMode: VideoOutput.PreserveAspectFit
-          }
         }
         onHeightChanged: Qt.callLater(function() {
           if (list.count)
@@ -1346,10 +1797,11 @@ Item {
             list.positionViewAtEnd()
         })
 
-        delegate: Item {
+        delegate: FocusScope {
           id: line
           width: list.width
-          height: model.newMarker ? newDivider.implicitHeight : Math.max(bubble.implicitHeight, sysLine.implicitHeight)
+          height: model.newMarker ? newDivider.implicitHeight :
+            Math.max(bubble.implicitHeight + line.actionLaneHeight, sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
           readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
@@ -1360,27 +1812,61 @@ Item {
               Math.min(line.smileGlyphs.length, line.smileColumns) * (root.smilePx + Style.space(2)) + Style.space(16)))
           readonly property string contextText: String(model.text || "")
           readonly property string contextId: String(model.id || "")
+          readonly property string messageKind: String(model.kind || "")
+          readonly property bool fileMessage: model.dir === "in" && !model.deleted &&
+            (line.messageKind === "file" || (root.mediaPath !== "" && line.contextText === root.mediaPath))
+          readonly property bool audioMessage: line.fileMessage && root.isAudioPath(line.contextText)
           readonly property bool deleted: !!model.deleted
           readonly property bool edited: !!model.edited
+          readonly property bool keyboardSelected: line.ListView.isCurrentItem && list.activeFocus
+          readonly property string reactionMe: String(model.reactionMe || "")
+          readonly property string reactionPeer: String(model.reactionPeer || "")
+          readonly property bool directReactions: line.contextId !== "" &&
+            String(root.conversation || "").charAt(0) !== "g" && !line.deleted
+          readonly property bool hasReaction: !line.deleted &&
+            (line.reactionMe !== "" || line.reactionPeer !== "")
+          property bool reactionPickerOpen: false
+          readonly property bool actionControlsVisible: line.contextId !== "" && !line.deleted &&
+            (lineHover.hovered || line.keyboardSelected || line.activeFocus ||
+             line.reactionPickerOpen)
+          readonly property real reactionPickerHeight: line.reactionPickerOpen
+            ? Math.ceil(root.emojiSet.length / 6) * Style.space(26) + Style.space(6) : 0
+          readonly property real actionLaneHeight: (model.dir !== "sys" &&
+            ((line.contextId !== "" && !line.deleted) || line.hasReaction))
+            ? Style.space(28) + line.reactionPickerHeight : 0
+          Keys.onEscapePressed: line.reactionPickerOpen = false
+
+          HoverHandler {
+            id: lineHover
+          }
 
           Rectangle {
             id: bubble
             anchors.left: model.dir === "out" ? undefined : parent.left
             anchors.right: model.dir === "out" ? parent.right : undefined
-            width: line.smileOnly ? line.smileWidth : root.bubbleWidth(model.text, line.hasCode, model.dir === "out" && model.ack !== undefined, parent.width)
-            implicitHeight: Math.max(line.smileOnly ? smileRow.implicitHeight : label.implicitHeight, line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) + Style.space(12)
+            width: line.fileMessage
+              ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
+              : (line.smileOnly ? line.smileWidth :
+                root.bubbleWidth(model.text, line.hasCode,
+                  model.dir === "out" && model.ack !== undefined, parent.width))
+            implicitHeight: Math.max(
+              line.fileMessage ? fileMessageRow.implicitHeight : (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight),
+              line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) + Style.space(12)
             radius: Style.cornerRadius
             color: root.bubbleColor(model.dir)
+            border.color: line.keyboardSelected ? root.accent : "transparent"
+            border.width: line.keyboardSelected ? 1 : 0
             visible: model.dir !== "sys" && !model.newMarker
 
             Text {
               id: label
-              visible: !line.smileOnly
+              visible: !line.smileOnly && !line.fileMessage
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(8)
-              anchors.rightMargin: line.hasCode ? Style.space(60) : (model.dir === "out" && model.ack !== undefined ? Style.space(28) : Style.space(8))
+              anchors.rightMargin: line.hasCode ? Style.space(60) :
+                (model.dir === "out" && model.ack !== undefined ? Style.space(28) : Style.space(8))
               text: !line.smileOnly && model.dir !== "sys" ? root.messageMarkup(model.text, model.reply, line.edited) : ""
               textFormat: Text.RichText
               linkColor: root.accent
@@ -1391,6 +1877,108 @@ Item {
               renderType: Text.QtRendering
               wrapMode: Text.Wrap
               onLinkActivated: Qt.openUrlExternally(link)
+            }
+
+            RowLayout {
+              id: fileMessageRow
+              visible: line.fileMessage
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(6)
+              anchors.rightMargin: Style.space(6)
+              spacing: Style.space(4)
+
+              FormatBtn {
+                id: audioFileAction
+                visible: line.audioMessage
+                materialIcon: root.audioErrorPath === line.contextText && root.audioError !== ""
+                  ? "error" : (root.audioPlaying(line.contextText) ? "pause_circle" : "play_circle")
+                tooltipText: root.audioErrorPath === line.contextText && root.audioError !== ""
+                  ? root.audioError : (root.audioPlaying(line.contextText) ? "Pause audio" : "Play audio")
+                selected: root.audioPlaying(line.contextText)
+                onClicked: root.toggleAudio(line.contextText)
+              }
+
+              Text {
+                id: genericFileIcon
+                visible: !line.audioMessage
+                text: "draft"
+                color: root.accent
+                font.family: "Material Symbols Rounded"
+                font.pixelSize: Style.font.icon
+                font.variableAxes: ({ "FILL": 0, "wght": 500 })
+                renderType: Text.QtRendering
+              }
+
+              Item {
+                Layout.preferredWidth: Math.min(fileMessageText.implicitWidth,
+                  Math.max(Style.space(64), fileMessageRow.width -
+                    (line.audioMessage ? audioFileAction.implicitWidth : genericFileIcon.implicitWidth) -
+                    fileMoreAction.implicitWidth - fileMessageRow.spacing * 2))
+                Layout.maximumWidth: fileMessageRow.width
+                implicitHeight: fileMessageText.implicitHeight
+
+                Text {
+                  id: fileMessageText
+                  anchors.fill: parent
+                  text: root.fileDisplayName(line.contextText)
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.underline: true
+                  elide: Text.ElideMiddle
+                  verticalAlignment: Text.AlignVCenter
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.markRead()
+                    messageFileMenu.popup()
+                  }
+                }
+              }
+
+              FormatBtn {
+                id: fileMoreAction
+                materialIcon: "more_horiz"
+                tooltipText: "File actions"
+                onClicked: messageFileMenu.popup()
+              }
+
+              Item { Layout.fillWidth: true }
+            }
+
+            Controls.Menu {
+              id: messageFileMenu
+              width: Style.space(250)
+              padding: Style.space(4)
+
+              background: Rectangle {
+                radius: Style.cornerRadius
+                color: Qt.darker(root.bg, 1.08)
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
+                border.width: 1
+              }
+
+              ContextMenuItem {
+                text: "Open containing folder"
+                materialIcon: "folder_open"
+                onTriggered: {
+                  root.openFileFolder(line.contextText)
+                  messageFileMenu.close()
+                }
+              }
+              ContextMenuItem {
+                text: "Copy full path"
+                materialIcon: "content_copy"
+                onTriggered: {
+                  root.copyFilePath(line.contextText)
+                  messageFileMenu.close()
+                }
+              }
             }
 
             Text {
@@ -1449,6 +2037,7 @@ Item {
               anchors.fill: parent
               acceptedButtons: Qt.RightButton
               z: 1
+              onPressed: root.markRead()
               onClicked: messageMenu.popup()
             }
 
@@ -1477,45 +2066,10 @@ Item {
                 onTriggered: root.beginReply(line.contextId, line.contextText)
               }
               ContextMenuItem {
-                text: "Edit"
-                materialIcon: "edit"
-                visible: model.dir === "out" && !!line.contextId && !line.deleted
-                onTriggered: root.beginEdit(line.contextId, line.contextText)
-              }
-              ContextMenuItem {
                 text: "Delete"
                 materialIcon: "delete"
                 visible: model.dir === "out" && !!line.contextId && !line.deleted
-                onTriggered: {
-                  if (root.service)
-                    root.service.deleteMessage(root.conversation, line.contextId)
-                }
-              }
-              Controls.Menu {
-                title: "Forward"
-                enabled: root.service && root.service.friends && root.service.friends.length > 0
-                padding: Style.space(4)
-                delegate: ContextMenuItem {
-                  materialIcon: "send"
-                }
-                background: Rectangle {
-                  radius: Style.cornerRadius
-                  color: Qt.darker(root.bg, 1.08)
-                  border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.22)
-                  border.width: 1
-                }
-                Repeater {
-                  model: root.service ? root.service.friends : []
-                  delegate: ContextMenuItem {
-                    required property var modelData
-                    materialIcon: "person"
-                    text: modelData && modelData.name ? String(modelData.name) : ("Friend " + String(modelData ? modelData.id : ""))
-                    onTriggered: {
-                      if (modelData)
-                        root.forwardMessage(modelData.id, line.contextText)
-                    }
-                  }
-                }
+                onTriggered: root.requestDelete(line.contextId)
               }
             }
 
@@ -1560,6 +2114,93 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     renderType: Text.QtRendering
                   }
+                }
+              }
+            }
+          }
+
+          Row {
+            id: reactionLane
+            visible: model.dir !== "sys" && !model.newMarker &&
+              (line.actionControlsVisible || line.hasReaction)
+            anchors.top: bubble.bottom
+            anchors.topMargin: Style.space(2)
+            anchors.left: model.dir === "out" ? undefined : bubble.left
+            anchors.right: model.dir === "out" ? bubble.right : undefined
+            height: Style.space(24)
+            spacing: Style.space(2)
+
+            Text {
+              visible: line.hasReaction && !line.actionControlsVisible
+              anchors.verticalCenter: parent.verticalCenter
+              text: [line.reactionMe, line.reactionPeer].filter(function(value) {
+                return value !== ""
+              }).join("  ")
+              color: root.fg
+              font.family: "Noto Color Emoji"
+              font.pixelSize: Style.font.body
+              renderType: Text.QtRendering
+            }
+
+            ReactionAction {
+              visible: line.actionControlsVisible && line.directReactions
+              emoji: "❤️"
+              tooltipText: line.reactionMe === emoji ? "Remove heart" : "React with heart"
+              selected: line.reactionMe === emoji
+              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
+            }
+            ReactionAction {
+              visible: line.actionControlsVisible && line.directReactions
+              emoji: "👍"
+              tooltipText: line.reactionMe === emoji ? "Remove thumbs up" : "React with thumbs up"
+              selected: line.reactionMe === emoji
+              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
+            }
+            ReactionAction {
+              visible: line.actionControlsVisible && line.directReactions
+              emoji: "🔥"
+              tooltipText: line.reactionMe === emoji ? "Remove fire" : "React with fire"
+              selected: line.reactionMe === emoji
+              onClicked: root.reactToMessage(line.contextId, line.reactionMe, emoji)
+            }
+            ReactionAction {
+              id: moreReactionAction
+              visible: line.actionControlsVisible && line.directReactions
+              materialIcon: "add_reaction"
+              tooltipText: "More reactions"
+              selected: line.reactionPickerOpen ||
+                (line.reactionMe !== "" && line.reactionMe !== "❤️" &&
+                 line.reactionMe !== "👍" && line.reactionMe !== "🔥")
+              onClicked: line.reactionPickerOpen = !line.reactionPickerOpen
+            }
+            ReactionAction {
+              visible: line.actionControlsVisible && model.dir === "out"
+              materialIcon: "edit"
+              tooltipText: "Edit message"
+              onClicked: root.beginEdit(line.contextId, line.contextText)
+            }
+          }
+
+          Grid {
+            id: reactionPicker
+            visible: line.reactionPickerOpen && line.directReactions
+            anchors.top: reactionLane.bottom
+            anchors.topMargin: Style.space(2)
+            anchors.left: model.dir === "out" ? undefined : bubble.left
+            anchors.right: model.dir === "out" ? bubble.right : undefined
+            columns: 6
+            spacing: Style.space(2)
+
+            Repeater {
+              model: root.emojiSet
+              delegate: ReactionAction {
+                required property string modelData
+                emoji: modelData
+                selected: line.reactionMe === modelData
+                tooltipText: "React with " + modelData
+                onClicked: {
+                  root.reactToMessage(line.contextId, line.reactionMe, modelData)
+                  line.reactionPickerOpen = false
                 }
               }
             }
@@ -1616,6 +2257,7 @@ Item {
         TextField {
           id: filePath
           Layout.fillWidth: true
+          activeFocusOnTab: true
           foreground: root.fg
           accent: root.accent
           placeholderText: "Absolute file path"
@@ -1625,6 +2267,7 @@ Item {
         ChatBtn {
           id: chooseFileBtn
           text: "Choose"
+          bordered: true
           onClicked: root.openFilePicker()
         }
         ChatBtn {
@@ -1633,16 +2276,33 @@ Item {
           bordered: true
           onClicked: root.sendSelectedFile()
         }
+        ChatBtn {
+          text: "Cancel"
+          onClicked: root.closeFileChooser()
+        }
       }
 
-      Text {
-        visible: !root.demo && root.fileStatus !== ""
+      RowLayout {
+        visible: !root.demo && (root.reactionStatus !== "" || root.fileStatus !== "")
         Layout.fillWidth: true
-        text: root.fileStatus
-        color: root.fileStatus === "Sending…" ? root.accent : Qt.darker(root.fg, 1.35)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.Wrap
+        spacing: Style.space(8)
+
+        Text {
+          Layout.fillWidth: true
+          text: root.reactionStatus !== "" ? root.reactionStatus : root.fileStatus
+          color: root.fileStatus === "Sending…" && root.reactionStatus === ""
+            ? root.accent : Qt.darker(root.fg, 1.35)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.Wrap
+        }
+
+        ChatBtn {
+          visible: root.service && root.service.fileSendingFor(root.conversation)
+          text: "Cancel"
+          bordered: true
+          onClicked: root.cancelOutgoingFile()
+        }
       }
 
       Column {
@@ -1657,14 +2317,15 @@ Item {
           id: replyBar
           x: inputBox.x
           width: inputBox.width
-          visible: root.replyToId !== "" || root.editingId !== ""
+          visible: root.replyToId !== "" || root.editingId !== "" || root.deleteConfirmId !== ""
           spacing: Style.space(6)
           height: visible ? Math.max(replyPreview.implicitHeight, clearReplyBtn.implicitHeight) : 0
 
           Text {
             id: replyPreview
-            width: parent.width - clearReplyBtn.implicitWidth - parent.spacing
-            text: root.editingId !== "" ? "✎ Editing message" : ("↩ " + (root.replyToText || root.replyToId))
+            width: parent.width - clearReplyBtn.implicitWidth - confirmDeleteBtn.width - parent.spacing * 2
+            text: root.deleteConfirmId !== "" ? "Delete this message?" :
+              (root.editingId !== "" ? "Editing message" : ("Reply: " + (root.replyToText || root.replyToId)))
             color: root.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1672,11 +2333,22 @@ Item {
             verticalAlignment: Text.AlignVCenter
           }
 
-          ChatBtn {
+          FormatBtn {
+            id: confirmDeleteBtn
+            visible: root.deleteConfirmId !== ""
+            width: visible ? implicitWidth : 0
+            materialIcon: "delete"
+            tooltipText: "Delete message"
+            selected: true
+            onClicked: root.confirmDelete()
+          }
+
+          FormatBtn {
             id: clearReplyBtn
-            text: "×"
-            tooltipText: "Cancel reply"
-            onClicked: root.editingId !== "" ? root.clearEdit() : root.clearReply()
+            materialIcon: "close"
+            tooltipText: "Cancel"
+            onClicked: root.deleteConfirmId !== "" ? root.clearDeleteConfirm() :
+              (root.editingId !== "" ? root.clearEdit() : root.clearReply())
           }
         }
 
@@ -1819,9 +2491,9 @@ Item {
           implicitHeight: input.height
           spacing: Style.space(4)
 
-            ChatBtn {
-              iconText: "󰁦"
-              tooltipText: "File"
+            FormatBtn {
+              materialIcon: "attach_file"
+              tooltipText: "File (Ctrl+O)"
               selected: root.showFile
               onClicked: root.attachFile()
             }
@@ -1843,6 +2515,8 @@ Item {
                 font.pixelSize: root.smileTextPx
                 font.hintingPreference: Font.PreferNoHinting
                 wrapMode: TextEdit.Wrap
+                verticalAlignment: Text.AlignVCenter
+                activeFocusOnTab: true
                 placeholderText: root.demo ? "Demo message" : "Message (Ctrl+Enter to send)"
                 onTextChanged: root.updateTyping()
                 persistentSelection: true
@@ -1878,9 +2552,9 @@ Item {
               onClicked: root.emojiOpen = !root.emojiOpen
             }
 
-            ChatBtn {
-              iconText: "󰒊"
-              tooltipText: "Send"
+            FormatBtn {
+              materialIcon: "send"
+              tooltipText: "Send (Ctrl+Enter)"
               bordered: true
               onClicked: root.send()
             }

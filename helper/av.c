@@ -6,6 +6,17 @@
 
 static uint32_t g_call = UINT32_MAX;
 
+int omaq_av_busy(void)
+{
+	return g_call != UINT32_MAX;
+}
+
+void omaq_av_note_incoming(uint32_t friend)
+{
+	if (g_call == UINT32_MAX || g_call == friend)
+		g_call = friend;
+}
+
 int omaq_av_start(struct omaq_tox *t, uint32_t friend)
 {
 	if (!t || g_call != UINT32_MAX)

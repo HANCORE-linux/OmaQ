@@ -94,6 +94,18 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.05
 done
 [ "$ok" -eq 1 ] || { echo "phase5: replace import failed" >&2; exit 1; }
+echo '{"op":"status","id":"phase5-identity"}' >&3
+i=0
+instance=""
+while [ "$i" -lt 40 ]; do
+	instance=$(grep -a '"request":"phase5-identity"' "$out" | tail -1 |
+		sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
+	[ -n "$instance" ] && break
+	i=$((i + 1))
+	sleep 0.05
+done
+[ -n "$instance" ] || { echo "phase5: identity handshake missing" >&2; exit 1; }
+printf '{"op":"identity.ready","id":"%s"}\n' "$instance" >&3
 
 # Search fixture on disk (no need for a live message).
 python3 - "$ha" <<'PY'

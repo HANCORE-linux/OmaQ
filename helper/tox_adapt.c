@@ -2,7 +2,10 @@
 
 #define _DEFAULT_SOURCE
 #include "tox_adapt.h"
+#include "file.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +16,8 @@
 #include <tox/tox.h>
 #include <tox/toxav.h>
 #include <tox/toxencryptsave.h>
+
+#define OMAQ_TOX_SAVE_MAX (16u * 1024u * 1024u)
 
 struct omaq_tox {
 	Tox *tox;
@@ -366,8 +371,10 @@ static void on_file_recv(Tox *tox, uint32_t friend, uint32_t fnum, uint32_t kind
 		tox_file_control(t->tox, friend, fnum, TOX_FILE_CONTROL_CANCEL, NULL);
 		return;
 	}
-	if (flen >= sizeof(name))
-		flen = sizeof(name) - 1;
+	if (!omaq_file_name_bytes_ok(filename, flen)) {
+		tox_file_control(t->tox, friend, fnum, TOX_FILE_CONTROL_CANCEL, NULL);
+		return;
+	}
 	memcpy(name, filename, flen);
 	name[flen] = '\0';
 	if (t->on_frecv)
@@ -446,9 +453,10 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	Tox_Err_New err = TOX_ERR_NEW_OK;
 	char path[576];
 	uint8_t *saved = NULL, *plain = NULL;
-	size_t slen = 0;
-	FILE *f;
+	size_t slen = 0, plain_len = 0;
+	FILE *f = NULL;
 	struct stat st;
+	int save_fd = -1;
 	int encrypted = 0;
 
 	if (err_out)
@@ -471,68 +479,56 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	tox_options_set_local_discovery_enabled(opt, true);
 	tox_options_set_hole_punching_enabled(opt, true);
 	save_path(home, path, sizeof(path));
-	f = fopen(path, "rb");
-	if (f && fstat(fileno(f), &st) == 0 && st.st_size > 0) {
-		saved = malloc((size_t)st.st_size);
-		if (saved) {
-			slen = fread(saved, 1, (size_t)st.st_size, f);
-			if (slen >= tox_pass_encryption_extra_length() &&
-			    tox_is_data_encrypted(saved)) {
-				Tox_Err_Decryption derr = TOX_ERR_DECRYPTION_OK;
-				size_t pn;
-
-				encrypted = 1;
-				if (!pass || !pass[0]) {
-					if (f)
-						fclose(f);
-					free(saved);
-					tox_options_free(opt);
-					free(t);
-					if (err_out)
-						*err_out = OMAQ_TOX_LOCKED;
-					return NULL;
-				}
-				pn = slen - tox_pass_encryption_extra_length();
-				plain = malloc(pn);
-				if (!plain ||
-				    !tox_pass_decrypt(saved, slen, (const uint8_t *)pass,
-						      strlen(pass), plain, &derr)) {
-					if (f)
-						fclose(f);
-					explicit_bzero(saved, slen);
-					free(saved);
-					if (plain) {
-						explicit_bzero(plain, pn);
-						free(plain);
-					}
-					tox_options_free(opt);
-					free(t);
-					if (err_out)
-						*err_out = OMAQ_TOX_LOCKED;
-					return NULL;
-				}
-				explicit_bzero(saved, slen);
-				free(saved);
-				saved = plain;
-				plain = NULL;
-				slen = pn;
-				if (store_pass(t, pass) != 0) {
-					if (f)
-						fclose(f);
-					explicit_bzero(saved, slen);
-					free(saved);
-					tox_options_free(opt);
-					wipe_pass(t);
-					free(t);
-					return NULL;
-				}
-			}
-			tox_options_set_savedata_type(opt, TOX_SAVEDATA_TYPE_TOX_SAVE);
-			tox_options_set_savedata_data(opt, saved, slen);
+	save_fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
+	if (save_fd < 0 && errno != ENOENT)
+		goto savedata_fail;
+	if (save_fd >= 0) {
+		if (fstat(save_fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+		    (uint64_t)st.st_size > OMAQ_TOX_SAVE_MAX)
+			goto savedata_fail;
+		f = fdopen(save_fd, "rb");
+		if (!f)
+			goto savedata_fail;
+		save_fd = -1;
+		slen = (size_t)st.st_size;
+		saved = malloc(slen);
+		if (!saved || fread(saved, 1, slen, f) != slen || ferror(f))
+			goto savedata_fail;
+		if (fclose(f) != 0) {
+			f = NULL;
+			goto savedata_fail;
 		}
+		f = NULL;
+		if (slen >= tox_pass_encryption_extra_length() && tox_is_data_encrypted(saved)) {
+			Tox_Err_Decryption derr = TOX_ERR_DECRYPTION_OK;
+			size_t pn;
+
+			encrypted = 1;
+			if (!pass || !pass[0]) {
+				if (err_out)
+					*err_out = OMAQ_TOX_LOCKED;
+				goto savedata_fail;
+			}
+			pn = slen - tox_pass_encryption_extra_length();
+			plain_len = pn;
+			plain = malloc(pn);
+			if (!plain || !tox_pass_decrypt(saved, slen, (const uint8_t *)pass,
+						       strlen(pass), plain, &derr)) {
+				if (err_out)
+					*err_out = OMAQ_TOX_LOCKED;
+				goto savedata_fail;
+			}
+			explicit_bzero(saved, slen);
+			free(saved);
+			saved = plain;
+			plain = NULL;
+			slen = pn;
+			if (store_pass(t, pass) != 0)
+				goto savedata_fail;
+		}
+		tox_options_set_savedata_type(opt, TOX_SAVEDATA_TYPE_TOX_SAVE);
+		tox_options_set_savedata_data(opt, saved, slen);
 	}
-	if (f)
-		fclose(f);
 	(void)encrypted;
 	t->tox = tox_new(opt, &err);
 	tox_options_free(opt);
@@ -573,6 +569,26 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	t->next_bootstrap = time(NULL) + 10;
 	omaq_tox_save(t);
 	return t;
+
+savedata_fail:
+	if (f)
+		fclose(f);
+	if (save_fd >= 0)
+		close(save_fd);
+	if (saved) {
+		explicit_bzero(saved, slen);
+		free(saved);
+	}
+	if (plain) {
+		explicit_bzero(plain, plain_len);
+		free(plain);
+	}
+	tox_options_free(opt);
+	wipe_pass(t);
+	free(t);
+	if (err_out && *err_out == 0)
+		*err_out = -1;
+	return NULL;
 }
 
 void omaq_tox_discard(struct omaq_tox *t)

@@ -40,7 +40,9 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 1. Type in the message field.
 2. Press **Send** or `Ctrl+Enter`.
 3. Use the formatting buttons above the field when needed.
-4. Right-click your own message for **Edit** or **Delete**.
+4. Hover over a direct message to react with Heart, Thumbs up, Fire, or another emoji. Reactions appear below the message and never cover its contents.
+5. Hover over your own message and click the edit icon, or select it with the keyboard and press `E`.
+6. The right-click menu provides **Copy**, **Reply**, and confirmed **Delete** actions.
 
 Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallback.
 
@@ -50,9 +52,10 @@ Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallb
 
 1. Click the file icon.
 2. Click **Choose**, or enter an **Absolute file path**.
-3. Click **Send file**.
+3. Click **Send file**. Use **Cancel** to close the chooser or stop an active outgoing transfer.
 4. The recipient chooses **Accept** or **Decline**.
 5. Accepted files are stored in `~/Downloads/omaq/` by default.
+6. Received audio files provide an in-chat Play/Pause control. Image and video previews are not shown inside the chat.
 
 The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_DIR`.
 
@@ -61,8 +64,10 @@ The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_
 ![Notifications](images/05-notifications.png)
 
 - **Auto-open** opens a chat window when a new message arrives.
-- **Mute** changes sound only.
-- **Mute** does not disable unread badges, unread state, encryption, or delivery.
+- Open **Settings** for **Mute**, **Demo**, **Theme**, and **Sounds**.
+- **Sounds** offers short notification presets and previews the selected sound.
+- **Mute** changes sound only and does not disable unread badges, unread state, encryption, or delivery.
+- **Connecting…** or **Reconnecting…** is shown while the local helper is establishing service.
 
 Unread messages are marked in the chat with a **New messages** divider.
 
@@ -72,13 +77,13 @@ Unread messages are marked in the chat with a **New messages** divider.
 
 Your OmaQ identity is local. The private identity is not stored on a central chat server.
 
-1. Open **More** → **Identity**.
+1. Open **Advanced** → **Identity**.
 2. Enter a passphrase in **Passphrase for identity file**.
 3. Click **Protect**.
 4. Use **Export** to create a protected copy.
 5. Move that file securely to the new computer.
-6. Open **More** → **Identity** there and use **Import**.
-7. Use **Replace** only when intentionally replacing an existing identity.
+6. Open **Advanced** → **Identity** there and use **Import**.
+7. If the imported identity is encrypted, enter its passphrase first. Use **Replace** only when intentionally replacing an existing identity, then confirm **Replace now**. OmaQ validates a staged copy, creates a unique recovery backup, and restores the current identity if replacement fails.
 
 The identity file is stored locally at `~/.local/share/omaq/tox.save`. The passphrase encrypts this file. It does not encrypt chat history.
 

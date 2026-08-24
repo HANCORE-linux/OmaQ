@@ -6,6 +6,7 @@
 | `qrencode` 4.1.1-4 / `zbar` 0.23.93-7 | `helper/qr.c` + `zbarimg` in `verify-2` | LGPL | phase 2 |
 | `libsignal-protocol-c` (Arch extra) | `helper/ratchet_adapt.c` | GPL-3.0 | phase 8 — `omarchy pkg add libsignal-protocol-c` |
 | OpenSSL `libcrypto` (already on box) | `ratchet_adapt.c` crypto provider (HMAC-SHA256, AES) | Apache-2.0 | phase 8 |
+| KDE Ocean Sound Theme, commit `13ad78d18e844d0b0458ca1d71aa692ea093c845` | Nine unmodified `.oga` notification presets under `sounds/` | CC BY-SA 4.0 | notification sound settings; see `sounds/ATTRIBUTION.md` |
 
 Helper is GPL-3.0-or-later once linked against toxcore. QML/plugin stays MIT.
 

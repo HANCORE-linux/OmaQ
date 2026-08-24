@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,21 @@ BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
 EVENT = b'{"event":"snapshot","unread":0,"conversations":[]}\n'
+STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","unread":0,"conversations":[],"request":"fresh-status-1"}\n'
+HISTORY_A_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-a"}\n'
+HISTORY_A_EVENT = b'{"event":"history","conversation":"7","request":"history-a","items":[]}\n'
+HISTORY_B_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-b"}\n'
+HISTORY_B_EVENT = b'{"event":"history","conversation":"7","request":"history-b","items":[]}\n'
+FILE_REJECT_COMMAND = b'{"op":"file.send","conversation":"7","path":"/tmp/missing","id":"request-7"}\n'
+FILE_REJECT_EVENTS = (
+    b'{"event":"file.failed","id":"","conversation":"7","dir":"out","request":"request-7","code":"unsupported"}\n'
+)
+INSTANCE_FIELD = re.compile(br',"instance":"([0-9a-f]{32})"')
+
+
+def normalize_instances(data: bytes) -> bytes:
+    return INSTANCE_FIELD.sub(b"", data)
 
 
 def test_command(index: int) -> bytes:
@@ -116,8 +132,35 @@ def main() -> int:
                 if not chunk:
                     break
                 response += chunk
-            if response != EVENT:
+            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
                 raise RuntimeError(f"socket framing recovery mismatch: {response!r}")
+            framing_client.sendall(FILE_REJECT_COMMAND)
+            response = b""
+            while response.count(b"\n") < 1:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != FILE_REJECT_EVENTS:
+                raise RuntimeError(f"file rejection correlation mismatch: {response!r}")
+            framing_client.sendall(STATUS_NONCE_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if normalize_instances(response) != STATUS_NONCE_EVENT or not INSTANCE_FIELD.search(response):
+                raise RuntimeError(f"status nonce correlation mismatch: {response!r}")
+            framing_client.sendall(HISTORY_A_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != HISTORY_A_EVENT:
+                raise RuntimeError(f"history-a correlation mismatch: {response!r}")
 
         # The first command deliberately crosses separate stdin reads.
         first.stdin.write(b'{"op":"sta')
@@ -166,8 +209,17 @@ def main() -> int:
                 if not chunk:
                     break
                 response += chunk
-            if response != EVENT:
+            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
                 raise RuntimeError(f"socket client response mismatch: {response!r}")
+            client.sendall(HISTORY_B_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != HISTORY_B_EVENT:
+                raise RuntimeError(f"history-b correlation mismatch: {response!r}")
 
         first_stdout, first_stderr = stop(first)
         first = None
@@ -205,7 +257,7 @@ def main() -> int:
                     if not chunk:
                         break
                     response += chunk
-                if response != EVENT:
+                if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
                     raise RuntimeError(f"post-replay socket response mismatch: {response!r}")
             wait_for(
                 lambda: spool_path.exists() and spool_path.stat().st_size == 0,
@@ -224,19 +276,28 @@ def main() -> int:
         replayed = replay_path.read_bytes()
         expected = (
             EVENT
+            + FILE_REJECT_EVENTS
+            + STATUS_NONCE_EVENT
+            + HISTORY_A_EVENT
             + EVENT
             + b"".join(test_event(i) for i in range(BATCH_EVENTS))
             + EVENT
+            + HISTORY_B_EVENT
             + EVENT
         )
         boundary = first_stdout.rfind(b"\n") + 1
         first_complete = first_stdout[:boundary]
         partial = first_stdout[boundary:]
-        if partial and not expected[len(first_complete) :].startswith(partial):
+        normalized_complete = normalize_instances(first_complete)
+        normalized_partial = normalize_instances(partial)
+        if partial and not expected[len(normalized_complete) :].startswith(normalized_partial):
             raise RuntimeError("old stdout ended with an invalid partial critical record")
         # A fresh helper stdout stream discards the old stream's incomplete JSONL tail.
         combined = first_complete + replayed
-        if combined != expected:
+        instances = INSTANCE_FIELD.findall(combined)
+        if len(instances) != 5 or len(set(instances)) < 2:
+            raise RuntimeError(f"helper instance ids missing or not rotated: {instances!r}")
+        if normalize_instances(combined) != expected:
             raise RuntimeError(
                 f"critical FIFO mismatch: got {len(combined)} bytes, expected {len(expected)}"
             )

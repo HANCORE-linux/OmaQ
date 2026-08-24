@@ -12,6 +12,12 @@ No signup and no email: the identity is created on this machine. No phone number
 
 Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
 
+## How OmaQ works
+
+![How OmaQ messages travel](docs/images/omaq-message-flow.png)
+
+Toxcore transports packets between devices. Direct messages receive an additional Signal Double Ratchet encryption layer, while identity and history stay local on each device.
+
 ## How to chat
 
 Create a one-time invite in the bar panel and send the link or QR out of band. The other person redeems it, you Accept, then open the chat window and type.

@@ -148,6 +148,28 @@ verify-4: test arch helper
 	test -f sounds/bell.wav
 	test -f sounds/soft.wav
 	test -f sounds/knock.wav
+	test -f sounds/qq.oga
+	test -f sounds/wechat.oga
+	test -f sounds/skype.oga
+	test -f sounds/msn.oga
+	test -f sounds/aurora.oga
+	test -f sounds/crystal.oga
+	test -f sounds/ripple.oga
+	test -f sounds/glow.oga
+	test -f sounds/halo.oga
+	test -f sounds/ATTRIBUTION.md
+	test -f sounds/LICENSES/CC-BY-SA-4.0.txt
+	printf '%s\n' \
+		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \
+		'0e283f3de90a2cc52a4239430bd5cdd82c6e7df4d69af00abae6d07c6e4f0933  sounds/aurora.oga' \
+		'c72acf3bfcbe6f46bd2a91376ee561ef8ed2dfa41b9fecbdf51b78b58a868b40  sounds/crystal.oga' \
+		'4a75ec07365aee8dded5a65125b8540d5913ff659083e7f02360ba78b6680b20  sounds/glow.oga' \
+		'16a4b5c49d9d01bcf2e46ad6c789f6849802447103776d8b1fe58cf1348ca024  sounds/halo.oga' \
+		'97f5477244c3912a1ee9cb9200ec8daa9701aa01d6a658e118d7a80c49e593c6  sounds/msn.oga' \
+		'e4694324dbf00d407a0475ff166b284cc2919a5c940bfafea5765d14a0923710  sounds/qq.oga' \
+		'113094308abc743f8e525d346c9c33c61ffe91c7f494d4a1a522b5d05168038f  sounds/ripple.oga' \
+		'd434cf3ad9c565605c2aa4b72b4cb51d4b6662a34526ec88f6b1551d08cd1e6a  sounds/skype.oga' \
+		'36258b0046399c721eefa535c13a78d08b54ff1cec98a10db87d89d098760dd0  sounds/wechat.oga' | sha256sum -c -
 	sh tests/lock-elect.sh
 	omarchy plugin validate .
 	sh tests/phase4.sh

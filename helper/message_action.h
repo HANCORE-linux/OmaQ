@@ -8,5 +8,10 @@ int omaq_message_edit_wire_unpack(const char *wire, char *id, size_t idn,
 				  char *text, size_t textn);
 int omaq_message_delete_wire_pack(char *out, size_t outn, const char *id);
 int omaq_message_delete_wire_unpack(const char *wire, char *id, size_t idn);
+int omaq_message_reaction_ok(const char *emoji);
+int omaq_message_reaction_wire_pack(char *out, size_t outn, const char *id,
+                                    const char *emoji);
+int omaq_message_reaction_wire_unpack(const char *wire, char *id, size_t idn,
+                                      char *emoji, size_t emojin);
 
 #endif

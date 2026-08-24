@@ -27,18 +27,27 @@ Item {
   property string pulseConv: ""
   property bool demoOpen: false
   property string lastNotifiedMessageId: ""
+  property string focusConversation: ""
+  property int focusRequestTick: 0
   readonly property bool muted: service ? service.muted : false
   property var autoOpenByConversation: ({})
   property bool autoOpenLoaded: false
+  property bool autoOpenUnavailable: false
+  property string autoOpenWarning: ""
   property var pendingIncoming: []
   property bool autoOpenSavePending: false
   property var pendingAutoOpenToggles: []
   property var autoOpenPersisted: ({})
   property var autoOpenSaveSnapshot: ({})
+  property bool legacyAutoOpenMigrationPending: false
+  property bool legacyAutoOpenMigrationSaving: false
 
-  readonly property string autoOpenPath: service
-    ? service.stateDir + "/auto-open.json"
-    : (Quickshell.env("HOME") + "/.local/state/omaq/auto-open.json")
+  readonly property string autoOpenPath: service && service.identityFingerprint
+    ? service.stateDir + "/auto-open." + service.identityFingerprint + ".json"
+    : ""
+  readonly property string legacyAutoOpenPath: service
+    ? service.stateDir + "/auto-open.json" : ""
+  readonly property var autoOpenFile: autoOpenLoader.item
   readonly property var visualTokens: root.bar && "visualTokens" in root.bar
     ? root.bar.visualTokens : null
   readonly property var paletteState: visualTokens ? visualTokens.stateService : null
@@ -71,6 +80,14 @@ Item {
 
   function closeDemo() {
     root.demoOpen = false
+  }
+
+  function requestChatFocus(conv) {
+    var key = String(conv || "")
+    if (!key)
+      return
+    root.focusConversation = key
+    root.focusRequestTick = root.focusRequestTick + 1
   }
 
   function floatOmaQWindows() {
@@ -120,6 +137,8 @@ Item {
 
   function autoOpenFor(conv) {
     var key = String(conv || "")
+    if (root.autoOpenUnavailable)
+      return false
     return key !== "" && key.charAt(0) !== "g"
       ? root.autoOpenByConversation[key] !== false : true
   }
@@ -130,27 +149,46 @@ Item {
 
   function loadAutoOpen(raw) {
     var parsed
-    try { parsed = JSON.parse(String(raw || "")) } catch (e) { parsed = null }
-    if (!parsed || typeof parsed !== "object") {
-      root.autoOpenByConversation = ({})
-      root.autoOpenPersisted = ({})
-      return
+    try { parsed = JSON.parse(String(raw || "")) } catch (e) { return false }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return false
+    var users
+    if (parsed.version !== undefined) {
+      if (typeof parsed.version !== "number" || parsed.version !== 1 || !parsed.users ||
+          typeof parsed.users !== "object" || Array.isArray(parsed.users))
+        return false
+      users = parsed.users
+    } else {
+      users = parsed
     }
-    var users = parsed.users && typeof parsed.users === "object" ? parsed.users : parsed
-    root.autoOpenByConversation = users || ({})
+    var key
+    for (key in users) {
+      if (!/^(0|[1-9][0-9]*)$/.test(key) || key.length > 10 ||
+          Number(key) > 4294967295 || typeof users[key] !== "boolean")
+        return false
+    }
+    root.autoOpenUnavailable = false
+    root.autoOpenWarning = ""
+    root.autoOpenByConversation = users
     root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenByConversation)
+    return true
   }
 
   function queueAutoOpenSave() {
-    if (root.autoOpenSavePending)
+    if (root.autoOpenSavePending || !root.autoOpenFile)
       return
     root.autoOpenSavePending = true
     root.autoOpenSaveSnapshot = root.cloneAutoOpen(root.autoOpenByConversation)
-    autoOpenFile.setText(JSON.stringify({ version: 1, users: root.autoOpenSaveSnapshot }, null, 2) + "\n")
+    root.autoOpenFile.setText(JSON.stringify({ version: 1, users: root.autoOpenSaveSnapshot }, null, 2) + "\n")
   }
 
   function finishAutoOpenSave() {
     root.autoOpenSavePending = false
+    if (root.legacyAutoOpenMigrationSaving) {
+      root.legacyAutoOpenMigrationSaving = false
+      if (root.service)
+        root.service.confirmAutoOpenMigration()
+    }
     root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenSaveSnapshot)
     if (JSON.stringify(root.autoOpenByConversation) !== JSON.stringify(root.autoOpenSaveSnapshot))
       root.queueAutoOpenSave()
@@ -159,10 +197,43 @@ Item {
   function failAutoOpenSave() {
     root.autoOpenSavePending = false
     root.autoOpenByConversation = root.cloneAutoOpen(root.autoOpenPersisted)
+    root.autoOpenWarning = "Auto-open settings could not be saved."
+  }
+
+  function failAutoOpenLoad(error) {
+    root.autoOpenUnavailable = true
+    root.autoOpenWarning = "Auto-open settings could not be read; Auto-open is disabled."
+    root.autoOpenByConversation = ({})
+    root.autoOpenPersisted = ({})
+    root.autoOpenLoaded = true
+    root.legacyAutoOpenMigrationPending = false
+    root.legacyAutoOpenMigrationSaving = false
+    root.pendingAutoOpenToggles = []
+    var queued = root.pendingIncoming.slice()
+    root.pendingIncoming = []
+    for (var i = 0; i < queued.length; i++)
+      root.onIncoming(queued[i].conversation, queued[i])
+  }
+
+  function loadLegacyAutoOpen() {
+    if (root.legacyAutoOpenMigrationPending)
+      return
+    root.legacyAutoOpenMigrationPending = true
+  }
+
+  function finishLegacyAutoOpen(raw) {
+    if (!root.finishAutoOpenLoad(raw))
+      return
+    root.legacyAutoOpenMigrationSaving = true
+    root.queueAutoOpenSave()
+    Qt.callLater(function() { root.legacyAutoOpenMigrationPending = false })
   }
 
   function finishAutoOpenLoad(raw) {
-    root.loadAutoOpen(raw)
+    if (!root.loadAutoOpen(raw)) {
+      root.failAutoOpenLoad(FileViewError.Unknown)
+      return false
+    }
     root.autoOpenLoaded = true
     var toggles = root.pendingAutoOpenToggles.slice()
     root.pendingAutoOpenToggles = []
@@ -172,6 +243,7 @@ Item {
     root.pendingIncoming = []
     for (var i = 0; i < queued.length; i++)
       root.onIncoming(queued[i].conversation, queued[i])
+    return true
   }
 
   function toggleAutoOpen(conv) {
@@ -253,6 +325,7 @@ Item {
     fontSize: Style.font.body
     horizontalPadding: Style.space(6)
     verticalPadding: Style.space(4)
+    focusable: true
   }
 
   component CallToolbar: Row {
@@ -354,14 +427,22 @@ Item {
       sndProc.running = false
   }
 
-  function playSound() {
-    if (root.muted || soundName === "off" || soundName === "")
+  function packagedSoundFile(name) {
+    var selectedSound = String(name || "")
+    if (["qq", "wechat", "skype", "msn", "aurora", "crystal", "ripple", "glow", "halo"].indexOf(selectedSound) >= 0)
+      return selectedSound + ".oga"
+    return selectedSound + ".wav"
+  }
+
+  function playNamedSound(name) {
+    var selectedSound = String(name || "")
+    if (root.muted || selectedSound === "off" || selectedSound === "")
       return
     var path = soundCustom
-    if (soundName === "icq-message")
+    if (selectedSound === "icq-message")
       path = String(Qt.resolvedUrl("sounds/icq-message.mp3")).replace(/^file:\/\//, "")
-    else if (soundName !== "custom")
-      path = String(Qt.resolvedUrl("sounds/" + soundName + ".wav")).replace(/^file:\/\//, "")
+    else if (selectedSound !== "custom")
+      path = String(Qt.resolvedUrl("sounds/" + root.packagedSoundFile(selectedSound))).replace(/^file:\/\//, "")
     if (!path)
       return
     sndProc.command = [
@@ -371,6 +452,14 @@ Item {
     ]
     sndProc.running = false
     sndProc.running = true
+  }
+
+  function playSound() {
+    root.playNamedSound(root.soundName)
+  }
+
+  function previewSound(name) {
+    root.playNamedSound(name)
   }
 
   function desktopNotify() {
@@ -426,21 +515,66 @@ Item {
     }
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
+    function onIdentityTickChanged() {
+      root.openCards = []
+      root.pendingIncoming = []
+      root.focusConversation = ""
+      root.autoOpenByConversation = ({})
+      root.autoOpenPersisted = ({})
+      root.autoOpenUnavailable = false
+      root.autoOpenWarning = ""
+      root.autoOpenSaveSnapshot = ({})
+      root.autoOpenSavePending = false
+      root.legacyAutoOpenMigrationPending = false
+      root.legacyAutoOpenMigrationSaving = false
+      root.pendingAutoOpenToggles = []
+      root.autoOpenLoaded = false
+    }
   }
 
-  FileView {
-    id: autoOpenFile
-    path: root.autoOpenPath
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-    onFileChanged: if (!root.autoOpenSavePending) reload()
-    onLoaded: if (!root.autoOpenSavePending) root.finishAutoOpenLoad(text())
-    onLoadFailed: if (!root.autoOpenSavePending) root.finishAutoOpenLoad("")
-    onSaved: root.finishAutoOpenSave()
-    onSaveFailed: {
-      console.warn("OmaQ: could not save per-contact auto-open settings")
-      root.failAutoOpenSave()
+  Loader {
+    id: autoOpenLoader
+    active: !!(root.service && root.service.identityFingerprint)
+    sourceComponent: Component {
+      FileView {
+        path: root.autoOpenPath
+        watchChanges: true
+        atomicWrites: true
+        printErrors: false
+        onFileChanged: if (!root.autoOpenSavePending) reload()
+        onLoaded: if (!root.autoOpenSavePending) root.finishAutoOpenLoad(text())
+        onLoadFailed: function(error) {
+          if (root.autoOpenSavePending)
+            return
+          if (error === FileViewError.FileNotFound)
+            root.loadLegacyAutoOpen()
+          else
+            root.failAutoOpenLoad(error)
+        }
+        onSaved: root.finishAutoOpenSave()
+        onSaveFailed: {
+          console.warn("OmaQ: could not save per-contact auto-open settings")
+          root.failAutoOpenSave()
+        }
+      }
+    }
+  }
+
+  Loader {
+    id: legacyAutoOpenLoader
+    active: root.legacyAutoOpenMigrationPending && root.legacyAutoOpenPath !== ""
+    sourceComponent: Component {
+      FileView {
+        path: root.legacyAutoOpenPath
+        printErrors: false
+        onLoaded: root.finishLegacyAutoOpen(text())
+        onLoadFailed: function(error) {
+          if (error === FileViewError.FileNotFound)
+            root.finishLegacyAutoOpen("{}")
+          else
+            root.failAutoOpenLoad(error)
+        }
+      }
     }
   }
 
@@ -604,6 +738,22 @@ Item {
       property bool everShown: false
       property bool closing: false
 
+      function applyRequestedFocus() {
+        if (!pinWin.modelData || String(pinWin.modelData.conversation) !== root.focusConversation)
+          return
+        var requestedConversation = root.focusConversation
+        Qt.callLater(function() {
+          var win = pinPage.QsWindow.window
+          if (win && typeof win.requestActivate === "function")
+            win.requestActivate()
+          pinPage.focusComposer()
+          if (root.focusConversation === requestedConversation)
+            root.focusConversation = ""
+        })
+      }
+
+      Component.onCompleted: pinWin.applyRequestedFocus()
+
       onVisibleChanged: {
         if (visible) {
           pinWin.everShown = true
@@ -619,12 +769,26 @@ Item {
           root.dismissCard(pinWin.modelData.conversation)
       }
 
-      ColumnLayout {
+      FocusScope {
+        id: pinFocus
         anchors.fill: parent
-        anchors.margins: Style.space(8)
-        spacing: Style.space(6)
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape && pinPage.handleEscape()) {
+            event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_O && (event.modifiers & Qt.ControlModifier)) {
+            pinPage.attachFile()
+            event.accepted = true
+          }
+        }
 
-        RowLayout {
+        ColumnLayout {
+          anchors.fill: parent
+          anchors.margins: Style.space(8)
+          spacing: Style.space(6)
+
+          RowLayout {
           Layout.fillWidth: true
           CallToolbar { page: pinPage }
           Item { Layout.fillWidth: true }
@@ -678,6 +842,16 @@ Item {
           peerStatusColor: root.headerStatusColor
           autoOpenEnabled: root.autoOpenFor(pinWin.modelData ? pinWin.modelData.conversation : "")
           onAutoOpenToggled: root.toggleAutoOpen(pinWin.modelData ? pinWin.modelData.conversation : "")
+          readActive: {
+            var win = pinPage.QsWindow.window
+            return !!(win && win.active && pinFocus.activeFocus)
+          }
+        }
+
+          Connections {
+            target: root
+            function onFocusRequestTickChanged() { pinWin.applyRequestedFocus() }
+          }
         }
       }
     }
