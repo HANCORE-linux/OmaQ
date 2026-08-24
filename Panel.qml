@@ -104,7 +104,9 @@ BarWidget {
   readonly property int friendColumnCount: Math.min(3, Math.max(1,
     Math.ceil(Math.max(1, friendPageItems.length) / 10)))
   readonly property int cardWidth: Style.space(340 + (friendColumnCount - 1) * 140)
-  readonly property real railWidth: Style.space(40)
+  readonly property real railIconWidth: Style.space(34)
+  readonly property real railWidth: railIconWidth * 2
+  readonly property real actionButtonHeight: Style.space(36)
   readonly property bool primaryMenuOpen: root.inviteOpen || root.showJoin ||
     root.chatPickerOpen || root.settingsOpen || root.moreOpen || omaq.pending
   readonly property int visibleUnreadCount: Math.max(omaq.unreadCount, omaq.localUnreadTotal())
@@ -280,7 +282,8 @@ BarWidget {
     Keys.onSpacePressed: if (focusable) tokenButton.clicked()
 
     implicitWidth: row.implicitWidth + horizontalPadding * 2
-    implicitHeight: row.implicitHeight + verticalPadding * 2
+    implicitHeight: Math.max(root.actionButtonHeight,
+                             row.implicitHeight + verticalPadding * 2)
     radius: root.controlRadius
     color: mouseArea.pressed ? root.controlActiveFill
       : selected || active ? root.controlActiveFill
@@ -339,7 +342,7 @@ BarWidget {
     property color activeColor: root.systemColors[3] || root.controlAccent
     signal clicked()
 
-    implicitWidth: root.railWidth
+    implicitWidth: root.railIconWidth
     implicitHeight: Style.space(34)
     opacity: enabled ? 1 : 0.35
     activeFocusOnTab: enabled
@@ -413,6 +416,7 @@ BarWidget {
   }
 
   component ActionButton: TokenButton {
+    implicitHeight: root.actionButtonHeight
     foreground: root.controlForeground
     accent: root.controlAccent
     fontFamily: root.fontFamily
@@ -1326,85 +1330,93 @@ BarWidget {
         focus: root.opened
         Keys.onEscapePressed: root.close()
 
-        Column {
+        Row {
           id: actionRail
           anchors.top: parent.top
           anchors.topMargin: root.pad + Style.space(48)
           anchors.right: parent.right
-          anchors.rightMargin: Math.max(0, (root.railWidth - width) / 2)
-          spacing: Style.space(2)
+          spacing: 0
           z: 20
 
-          RailIcon {
-            visible: !omaq.locked
-            materialIcon: "qr_code_2"
-            label: "Invite"
-            selected: root.inviteOpen
-            onClicked: root.toggleInvite()
+          Column {
+            spacing: Style.space(2)
+
+            RailIcon {
+              visible: !omaq.locked
+              materialIcon: "qr_code_2"
+              label: "Invite"
+              selected: root.inviteOpen
+              onClicked: root.toggleInvite()
+            }
+            RailIcon {
+              visible: !omaq.locked
+              materialIcon: "person_add"
+              label: "Add contact"
+              selected: root.showJoin
+              onClicked: root.toggleJoin()
+            }
+            RailIcon {
+              visible: !omaq.locked
+              materialIcon: "chat"
+              label: "Open chat"
+              selected: root.chatPickerOpen
+              onClicked: root.openChat()
+            }
+            RailIcon {
+              visible: !omaq.locked
+              materialIcon: "groups"
+              label: "Groups"
+              selected: root.moreOpen && root.moreSection === "groups"
+              onClicked: root.openRailAdvanced("groups")
+            }
+            RailIcon {
+              materialIcon: "search"
+              label: "Search and safety"
+              selected: root.moreOpen && root.moreSection === "chat"
+              onClicked: root.openRailAdvanced("chat")
+            }
+            RailIcon {
+              materialIcon: "badge"
+              label: "Identity"
+              selected: root.moreOpen && root.moreSection === "identity"
+              onClicked: root.openRailAdvanced("identity")
+            }
           }
-          RailIcon {
-            visible: !omaq.locked
-            materialIcon: "person_add"
-            label: "Add contact"
-            selected: root.showJoin
-            onClicked: root.toggleJoin()
-          }
-          RailIcon {
-            visible: !omaq.locked
-            materialIcon: "chat"
-            label: "Open chat"
-            selected: root.chatPickerOpen
-            onClicked: root.openChat()
-          }
-          RailIcon {
-            visible: !omaq.locked
-            materialIcon: "groups"
-            label: "Groups"
-            selected: root.moreOpen && root.moreSection === "groups"
-            onClicked: root.openRailAdvanced("groups")
-          }
-          RailIcon {
-            materialIcon: "search"
-            label: "Search and safety"
-            selected: root.moreOpen && root.moreSection === "chat"
-            onClicked: root.openRailAdvanced("chat")
-          }
-          RailIcon {
-            materialIcon: "badge"
-            label: "Identity"
-            selected: root.moreOpen && root.moreSection === "identity"
-            onClicked: root.openRailAdvanced("identity")
-          }
-          RailIcon {
-            materialIcon: "palette"
-            label: "Theme"
-            selected: root.settingsOpen && root.themeOpen
-            onClicked: root.openRailTheme()
-          }
-          RailIcon {
-            materialIcon: "music_note"
-            label: "Sounds"
-            selected: root.settingsOpen && root.soundOpen
-            onClicked: root.openRailSounds()
-          }
-          RailIcon {
-            materialIcon: "science"
-            label: "Demo"
-            selected: chatSurface && chatSurface.demoOpen
-            onClicked: root.openDemo()
-          }
-          RailIcon {
-            materialIcon: chatSurface && chatSurface.muted
-              ? "notifications_off" : "notifications"
-            label: chatSurface && chatSurface.muted ? "Unmute" : "Mute"
-            selected: chatSurface && chatSurface.muted
-            onClicked: if (chatSurface) chatSurface.toggleMute()
-          }
-          RailIcon {
-            materialIcon: "warning"
-            label: "Danger zone"
-            selected: root.moreOpen && root.moreSection === "danger"
-            onClicked: root.openRailAdvanced("danger")
+
+          Column {
+            spacing: Style.space(2)
+
+            RailIcon {
+              materialIcon: "palette"
+              label: "Theme"
+              selected: root.settingsOpen && root.themeOpen
+              onClicked: root.openRailTheme()
+            }
+            RailIcon {
+              materialIcon: "music_note"
+              label: "Sounds"
+              selected: root.settingsOpen && root.soundOpen
+              onClicked: root.openRailSounds()
+            }
+            RailIcon {
+              materialIcon: "science"
+              label: "Demo"
+              selected: chatSurface && chatSurface.demoOpen
+              onClicked: root.openDemo()
+            }
+            RailIcon {
+              materialIcon: chatSurface && chatSurface.muted
+                ? "notifications_off" : "notifications"
+              label: chatSurface && chatSurface.muted ? "Unmute" : "Mute"
+              selected: chatSurface && chatSurface.muted
+              onClicked: if (chatSurface) chatSurface.toggleMute()
+            }
+            RailIcon {
+              materialIcon: "warning"
+              label: "Danger zone"
+              selected: root.moreOpen && root.moreSection === "danger"
+              onClicked: root.openRailAdvanced("danger")
+            }
           }
         }
 
@@ -1412,7 +1424,7 @@ BarWidget {
           id: panelScroll
           anchors.fill: parent
           anchors.margins: root.pad
-          anchors.rightMargin: root.pad + root.railWidth
+          anchors.rightMargin: root.pad
           contentWidth: width
           contentHeight: column.implicitHeight
           clip: true
@@ -1431,12 +1443,12 @@ BarWidget {
 
           Column {
             id: column
-            width: panelScroll.width
+            width: Math.max(0, panelScroll.width - root.railWidth)
             spacing: Style.space(12)
 
           Item {
             id: heroRow
-            width: parent.width
+            width: panelScroll.width
             implicitHeight: heroVisual.height
 
             Item {
@@ -1770,9 +1782,24 @@ BarWidget {
                   Keys.onEnterPressed: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
                     friendDelegate.modelData ? friendDelegate.modelData.name : "")
 
+                  Rectangle {
+                    id: friendStatusDot
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: width
+                    radius: width / 2
+                    color: root.friendStatusColor(friendDelegate.modelData)
+                    border.width: 0
+                  }
+
                   Text {
                     id: friendName
-                    anchors.fill: parent
+                    anchors.left: friendStatusDot.right
+                    anchors.leftMargin: Style.space(6)
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
                     text: {
                       var friend = friendDelegate.modelData
                       var name = friend && friend.name
@@ -1850,6 +1877,94 @@ BarWidget {
                   enabled: root.friendPage + 1 < root.friendPageCount
                   cursorShape: Qt.PointingHandCursor
                   onClicked: root.friendPage++
+                }
+              }
+            }
+
+            Text {
+              visible: omaq.groups && omaq.groups.length > 0
+              text: "GROUPS"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+
+            Column {
+              visible: omaq.groups && omaq.groups.length > 0
+              width: parent.width
+              spacing: Style.space(2)
+
+              Repeater {
+                model: omaq.groups || []
+                delegate: Item {
+                  id: activeGroupDelegate
+                  required property var modelData
+                  width: parent ? parent.width : 0
+                  height: Style.space(24)
+                  activeFocusOnTab: true
+                  readonly property int displayedMemberCount: Math.max(
+                    Number(modelData && modelData.memberCount || 0),
+                    modelData && modelData.members ? modelData.members.length : 0)
+                  Accessible.role: Accessible.Button
+                  Accessible.name: activeGroupName.text + ", " +
+                    displayedMemberCount + (displayedMemberCount === 1 ? " member" : " members")
+                  Accessible.onPressAction: root.openGroup(modelData ? modelData.id : "")
+                  Keys.onReturnPressed: root.openGroup(modelData ? modelData.id : "")
+                  Keys.onEnterPressed: root.openGroup(modelData ? modelData.id : "")
+
+                  Text {
+                    id: activeGroupIcon
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "groups"
+                    color: root.systemColors[3] || root.controlAccent
+                    font.family: "Material Symbols Rounded"
+                    font.pixelSize: Style.font.icon
+                    font.variableAxes: ({ "FILL": activeGroupDelegate.activeFocus ? 1 : 0,
+                                          "wght": 500 })
+                  }
+
+                  Text {
+                    id: activeGroupName
+                    anchors.left: activeGroupIcon.right
+                    anchors.leftMargin: Style.space(6)
+                    anchors.right: activeGroupCount.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    text: {
+                      var group = activeGroupDelegate.modelData
+                      var name = group && group.title ? String(group.title) : "Group"
+                      var unread = omaq.unreadFor(group ? group.id : "")
+                      return unread > 0 ? name + " · " + unread : name
+                    }
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    id: activeGroupCount
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(activeGroupDelegate.displayedMemberCount)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.features: ({ "tnum": 1 })
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openGroup(activeGroupDelegate.modelData
+                      ? activeGroupDelegate.modelData.id : "")
+                  }
                 }
               }
             }

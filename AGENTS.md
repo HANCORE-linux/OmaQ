@@ -33,7 +33,7 @@ Do not manually edit generated binaries as source. Build `helper/omaq` with the 
 - Code, comments, documentation, helper events, and UI labels: English.
 - UI labels are short and functional. Use established wording rather than synonyms.
 - Messages containing only emoji render as an intentionally large, high-quality emoji row. Keep normal text size for mixed text/emoji messages and retain a readable fallback when an emoji asset is unavailable.
-- The per-contact floating-window toggle is labelled exactly `Auto-open`.
+- The per-contact floating-window toggle is labelled `Auto-off` while enabled and `Auto-open` while disabled.
 - Sound control is labelled `Mute` / `Unmute` and means notification sound only.
 - Destructive confirmations must state the affected scope, e.g. `Clear this chat?`.
 
@@ -47,7 +47,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - `online`, `typing…`, and `offline` remain directly beside the friend name on the same title line and use palette `color02`.
 - Do not place the status at the far edge as a separate title block. Preserve the adjacent name/status relationship when changing the header.
 - Keep controls aligned to the existing window edges and token spacing.
-- In a floating chat window the order is: call controls, spacer, `Auto-open`, `Mute`, `Close`.
+- In a floating chat window the order is: call controls, spacer, the `Auto-off`/`Auto-open` action, `Mute`, `Close`.
 - In the Demo window, `Mute` is immediately left of `Close`.
 - In the bar panel, the global `Mute` action is below the `Demo` action. It must show its current `Mute`/`Unmute` state.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.

@@ -8,7 +8,7 @@ PKG_CONFIG ?= pkg-config
 TOX_OK := $(shell $(PKG_CONFIG) --exists libtoxcore && echo yes || \
 	($(PKG_CONFIG) --exists toxcore && echo yes || echo no))
 SIG_OK := $(shell $(PKG_CONFIG) --exists libsignal-protocol-c && echo yes || echo no)
-PULSE_OK := $(shell $(PKG_CONFIG) --exists libpulse-simple && echo yes || echo no)
+PULSE_OK := $(shell $(PKG_CONFIG) --exists libpulse && echo yes || echo no)
 
 ifeq ($(TOX_OK),yes)
   TOX_PC := $(shell $(PKG_CONFIG) --exists libtoxcore && echo libtoxcore || echo toxcore)
@@ -26,8 +26,8 @@ endif
 
 ifeq ($(PULSE_OK),yes)
   CFLAGS += -DHAVE_PULSE
-  CFLAGS += $(shell $(PKG_CONFIG) --cflags libpulse-simple)
-  TOX_LIBS += $(shell $(PKG_CONFIG) --libs libpulse-simple)
+  CFLAGS += $(shell $(PKG_CONFIG) --cflags libpulse)
+  TOX_LIBS += $(shell $(PKG_CONFIG) --libs libpulse)
 endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
@@ -83,7 +83,7 @@ check-signal:
 
 check-audio:
 	@if [ "$(PULSE_OK)" != "yes" ]; then \
-		echo "omaq: libpulse-simple is required for voice calls" >&2; \
+		echo "omaq: libpulse is required for voice calls" >&2; \
 		echo "omaq: install libpulse before running 'make helper'" >&2; \
 		exit 1; \
 	fi

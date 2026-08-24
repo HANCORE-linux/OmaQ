@@ -399,6 +399,7 @@ FocusScope {
   component FormatBtn: ChatBtn {
     id: formatButton
     property string materialIcon: ""
+    property real materialIconSize: Style.font.icon + Style.space(2)
     fontFamily: root.fontFamily
     iconText: ""
     text: ""
@@ -412,7 +413,7 @@ FocusScope {
       text: formatButton.materialIcon
       color: formatButton.hot || formatButton.selected ? formatButton.accent : formatButton.foreground
       font.family: "Material Symbols Rounded"
-      font.pixelSize: Style.font.icon + Style.space(2)
+      font.pixelSize: formatButton.materialIconSize
       font.variableAxes: ({ "FILL": 0, "wght": 500 })
       renderType: Text.QtRendering
       font.hintingPreference: Font.PreferNoHinting
@@ -1218,9 +1219,9 @@ FocusScope {
       longest = Math.max(longest, sourceLines[i].length)
     // Size from the complete logical line, not a single-word minimum. This
     // keeps short three-word messages on one line when the window allows it.
-    var estimated = longest * root.smileTextPx * 0.72 + Style.space(24)
+    var estimated = longest * root.smileTextPx * 0.72 + Style.space(16)
     if (withReceipt)
-      estimated += Style.space(28)
+      estimated += Style.space(24)
     var minimum = hasCode ? Style.space(180) : Style.space(52)
     return Math.min(Math.max(minimum, estimated), availableWidth * 0.82)
   }
@@ -2379,7 +2380,7 @@ FocusScope {
           readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
           readonly property real smileMaxWidth: Math.max(root.smilePx + Style.space(16), list.width * 0.82)
           readonly property real smileReceiptReserve: model.dir === "out" && model.ack !== undefined
-            ? Style.space(28) : 0
+            ? Style.space(24) : 0
           readonly property int smileColumns: Math.max(1, Math.floor(
             (line.smileMaxWidth - Style.space(16) - line.smileReceiptReserve + Style.space(2)) /
             (root.smilePx + Style.space(2))))
@@ -2475,7 +2476,7 @@ FocusScope {
               anchors.top: line.showGroupSender ? groupSenderLabel.bottom : undefined
               anchors.leftMargin: Style.space(8)
               anchors.rightMargin: line.hasCode ? Style.space(60) :
-                (model.dir === "out" && model.ack !== undefined ? Style.space(28) : Style.space(8))
+                (model.dir === "out" && model.ack !== undefined ? Style.space(32) : Style.space(8))
               text: !line.smileOnly && model.dir !== "sys" ? root.messageMarkup(model.text, model.reply, line.edited) : ""
               textFormat: Text.RichText
               linkColor: root.accent
@@ -3317,8 +3318,8 @@ FocusScope {
 
             FormatBtn {
               materialIcon: "text_format"
-              helpText: root.formatToolbarEnabled
-                ? "Hide formatting tools" : "Show formatting tools"
+              materialIconSize: Style.font.icon + Style.space(5)
+              helpText: root.formatToolbarEnabled ? "Hide Tools" : "Show Tools"
               selected: root.formatToolbarEnabled
               Accessible.role: Accessible.CheckBox
               Accessible.checked: root.formatToolbarEnabled
@@ -3335,7 +3336,6 @@ FocusScope {
             FormatBtn {
               materialIcon: "send"
               helpText: "Send (Ctrl+Enter)"
-              bordered: true
               onClicked: root.send()
             }
         }

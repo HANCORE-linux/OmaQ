@@ -66,7 +66,7 @@ The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_
 
 ![Notifications](images/05-notifications.png)
 
-- **Auto-open** opens a chat window when a new message arrives.
+- **Auto-off** disables automatic opening for the current contact; the action then changes to **Auto-open** so it can be enabled again.
 - Open **Settings** for **Mute**, **Demo**, **Theme**, and **Sounds**.
 - **Sounds** offers short notification presets and previews the selected sound.
 - **Mute** changes sound only and does not disable unread badges, unread state, encryption, or delivery.
@@ -83,7 +83,7 @@ Voice calls are available only in direct chats.
 3. Choose **Answer** or **Decline**. **Hang up** remains available while ringing and during an active call.
 4. An active call shows its elapsed time beside the call controls.
 
-OmaQ captures and plays call audio through `libpulse-simple`; PipeWire-Pulse supplies the desktop audio devices. Call audio stays in bounded memory and is not recorded.
+OmaQ captures and plays call audio through the `libpulse` event-loop API; PipeWire-Pulse supplies the desktop audio devices. Call audio stays in bounded memory and is not recorded.
 
 ## 7. Groups
 

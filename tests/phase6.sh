@@ -15,16 +15,63 @@ fb=$(mktemp /tmp/omaq-p6ob-XXXXXX)
 src=$(mktemp /tmp/omaq-p6-XXXXXX.bin)
 holda=$(mktemp -u /tmp/omaq-p6fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p6fb-XXXXXX)
+audio_a=$(mktemp /tmp/omaq-p6-audio-a-XXXXXX.raw)
+audio_b=$(mktemp /tmp/omaq-p6-audio-b-XXXXXX.raw)
 pa=""
 pb=""
+pulse_modules=""
+pulse_tag="omaq_p6_$$"
+cap_a="${pulse_tag}_cap_a"
+out_a="${pulse_tag}_out_a"
+cap_b="${pulse_tag}_cap_b"
+out_b="${pulse_tag}_out_b"
 cleanup() {
 	exec 3>&- 4>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
 	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
+	for module in $pulse_modules; do
+		pactl unload-module "$module" 2>/dev/null || true
+	done
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$fa" "$fb" "$src" "$holda" "$holdb" \
-		"$fa.err" "$fb.err"
+		"$audio_a" "$audio_b" "$fa.err" "$fb.err"
 }
 trap cleanup EXIT
+
+probe_call_audio() {
+	capture_sink=$1
+	playback_monitor=$2
+	capture_file=$3
+	: >"$capture_file"
+	timeout 5 parec --raw --format=s16le --rate=48000 --channels=1 \
+		--latency-msec=20 --process-time-msec=20 \
+		--device="$playback_monitor" >"$capture_file" &
+	recorder=$!
+	sleep 0.3
+	python3 - <<'PY' | pacat --playback --raw --format=s16le --rate=48000 \
+		--channels=1 --latency-msec=20 --process-time-msec=20 \
+		--device="$capture_sink"
+import math
+import struct
+import sys
+samples = (int(14000 * math.sin(2 * math.pi * 523.25 * i / 48000)) for i in range(96000))
+sys.stdout.buffer.write(b"".join(struct.pack("<h", sample) for sample in samples))
+PY
+	sleep 1
+	kill "$recorder" 2>/dev/null || true
+	wait "$recorder" 2>/dev/null || true
+	python3 - "$capture_file" <<'PY'
+import array
+import sys
+samples = array.array("h")
+with open(sys.argv[1], "rb") as source:
+    samples.frombytes(source.read())
+if sys.byteorder != "little":
+    samples.byteswap()
+peak = max((abs(sample) for sample in samples), default=0)
+if peak < 100:
+    raise SystemExit(f"phase6: transported audio peak too low: {peak}")
+PY
+}
 
 case "$ha" in
 "$real_home"|"$real_home"/*) echo "phase6: refused real home" >&2; exit 1 ;;
@@ -32,10 +79,25 @@ esac
 
 printf 'omaq-file-probe\n' >"$src"
 
+for tool in pactl pacat parec python3; do
+	command -v "$tool" >/dev/null 2>&1 || {
+		echo "phase6: missing audio test tool: $tool" >&2
+		exit 1
+	}
+done
+for sink in "$cap_a" "$out_a" "$cap_b" "$out_b"; do
+	module=$(pactl load-module module-null-sink sink_name="$sink" \
+		sink_properties=device.description=OmaQPhase6)
+	pulse_modules="$module $pulse_modules"
+done
+
 mkfifo "$holda" "$holdb"
-OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
+PULSE_SOURCE="${cap_a}.monitor" PULSE_SINK="$out_a" \
+	OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
 pa=$!
-OMAQ_HOME="$hb" OMAQ_STATE="$sb" OMAQ_DOWNLOAD_DIR="$hb/Downloads" "$bin" >"$fb" 2>"$fb.err" <"$holdb" &
+PULSE_SOURCE="${cap_b}.monitor" PULSE_SINK="$out_b" \
+	OMAQ_HOME="$hb" OMAQ_STATE="$sb" OMAQ_DOWNLOAD_DIR="$hb/Downloads" \
+	"$bin" >"$fb" 2>"$fb.err" <"$holdb" &
 pb=$!
 exec 3>"$holda"
 exec 4>"$holdb"
@@ -163,7 +225,8 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 40 ] || { echo "phase6: call did not become active on both peers" >&2; exit 1; }
-sleep 1
+probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b"
+probe_call_audio "$cap_b" "${out_a}.monitor" "$audio_a"
 if grep -a -q '"code":"audio_unavailable"' "$fa" "$fb"; then
 	echo "phase6: audio backend unavailable" >&2
 	exit 1
@@ -188,8 +251,28 @@ peak=$peak_a
 if [ "$peak_b" -gt "$peak" ]; then
 	peak=$peak_b
 fi
+remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0","state":"ended"' || true)
 echo '{"op":"call.stop","conversation":"0"}' >&3
-sleep 0.5
+i=0
+while [ "$i" -lt 40 ]; do
+	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0","state":"ended"' || true)
+	if [ "$remote_ended_after" -gt "$remote_ended_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: active hangup did not end remote" >&2; exit 1; }
+echo '{"op":"status","id":"phase6-post-hangup"}' >&4
+i=0
+while [ "$i" -lt 20 ]; do
+	if grep -a '"event":"snapshot"' "$fb" | grep -a -q '"request":"phase6-post-hangup"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: remote helper blocked after hangup" >&2; exit 1; }
 
 if [ "$peak" -gt 40960 ]; then
 	echo "phase6: call peak rss ${peak} kB > 40960" >&2

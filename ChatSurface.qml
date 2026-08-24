@@ -922,8 +922,7 @@ Item {
           CallToolbar { page: pinPage }
           Item { Layout.fillWidth: true }
           SurfaceBtn {
-            text: "Auto-open"
-            selected: pinPage.autoOpenEnabled
+            text: pinPage.autoOpenEnabled ? "Auto-off" : "Auto-open"
             helpText: pinPage.autoOpenEnabled
               ? "Auto-open chat: on" : "Auto-open chat: off"
             onClicked: pinPage.autoOpenToggled()
