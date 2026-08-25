@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include "conversation.h"
 
+#define OMAQ_STORE_READ_IDS_MAX 4096u
+
+typedef struct {
+	char id[97];
+} omaq_store_message_id;
+
 /* Only this module opens history files. */
 
 int omaq_store_append(const char *home, const char *conv_id, const char *line);
@@ -22,6 +28,13 @@ int omaq_store_update_receipt_changed(const char *home, const char *conv_id,
 				      const char *id, const char *state);
 int omaq_store_message_exists(const char *home, const char *conv_id, const char *id);
 int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id);
+/* Collect receipt-capable IDs among the newest `unread` incoming records. */
+int omaq_store_unread_receipt_ids(const char *home, const char *conv_id,
+				  unsigned unread, omaq_store_message_id **ids,
+				  size_t *count);
+/* 1 = matching message author, 0 = message exists with another author, -2 = absent. */
+int omaq_store_message_from_matches(const char *home, const char *conv_id,
+				    const char *id, const char *expected_from);
 int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
                                 const char *emoji, const char *actor);
 int omaq_store_update_group_reaction(const char *home, const char *conv_id,

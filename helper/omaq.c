@@ -47,7 +47,7 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
-#define OMAQ_PROTOCOL_VERSION 6
+#define OMAQ_PROTOCOL_VERSION 7
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -59,6 +59,9 @@ static int g_connection_online = -1;
 #define FILE_REQUEST_CACHE 8
 #define GROUP_CLEANUP_MAX OMAQ_GROUPS_MAX
 #define GROUP_INVITE_RESULT_CACHE_MAX 16
+#define RECEIPT_CAPABILITY_MAX 320
+#define RECEIPT_RETRY_BATCH 16
+#define RECEIPT_LEGACY_GRACE_SEC 120
 static struct {
 	int used;
 	uint32_t friend;
@@ -108,6 +111,17 @@ static int64_t g_group_invite_send_deadline;
 static char g_group_invite_result_cache[GROUP_INVITE_RESULT_CACHE_MAX][340];
 static size_t g_group_invite_result_cache_next;
 static size_t g_group_invite_result_cache_count;
+static omaq_receipt_outbox g_receipt_outbox;
+static int g_receipt_outbox_invalid;
+static size_t g_receipt_retry_cursor;
+static int g_receipt_transaction_pending;
+static int g_receipt_recovery_committed;
+static int64_t g_receipt_transaction_retry_after;
+static struct {
+	char conversation[OMAQ_GROUP_ID_MAX];
+	char actor[65];
+	int64_t seen;
+} g_receipt_capabilities[RECEIPT_CAPABILITY_MAX];
 static int g_group_registry_pruned;
 static int g_group_registry_unmapped;
 static int g_group_registry_sync_warning;
@@ -702,7 +716,8 @@ static int prune_unavailable_unread(void)
 #endif
 
 static void emit_json_items(const char *event, const char *conversation,
-			     const char *items, size_t items_len, const char *request)
+			     const char *items, size_t items_len, const char *request,
+			     int include_unread)
 {
 	char esc_conv[128], esc_request[OMAQ_JSON_STR_MAX], prefix[420];
 	char *ev, *p, *line;
@@ -722,7 +737,12 @@ static void emit_json_items(const char *event, const char *conversation,
 		emit_error("unsupported");
 		return;
 	}
-	if (esc_request[0])
+	if (esc_request[0] && include_unread)
+		wr = snprintf(prefix, sizeof(prefix),
+			      "{\"event\":\"%s\",\"conversation\":\"%s\",\"request\":\"%s\",\"unread\":%u,\"items\":[",
+			      event, esc_conv, esc_request,
+			      omaq_unread_count(&g_unread, conversation));
+	else if (esc_request[0])
 		wr = snprintf(prefix, sizeof(prefix),
 			      "{\"event\":\"%s\",\"conversation\":\"%s\",\"request\":\"%s\",\"items\":[",
 			      event, esc_conv, esc_request);
@@ -1022,6 +1042,27 @@ static void emit_receipt_event(const char *conversation, const char *id, const c
 	emit_receipt_event_name("receipt", conversation, id, state);
 }
 
+static void emit_conversation_read(const char *event, const char *conversation,
+				   const char *code)
+{
+	char esc_conv[128], value[360];
+
+	if (!event || !conversation ||
+	    (strcmp(event, "conversation.read") != 0 &&
+	     strcmp(event, "conversation.read.failed") != 0) ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0)
+		return;
+	if (strcmp(event, "conversation.read.failed") == 0)
+		snprintf(value, sizeof(value),
+			 "{\"event\":\"conversation.read.failed\",\"conversation\":\"%s\",\"code\":\"%s\"}",
+			 esc_conv, code && code[0] ? code : "receipt_state_failed");
+	else
+		snprintf(value, sizeof(value),
+			 "{\"event\":\"conversation.read\",\"conversation\":\"%s\"}",
+			 esc_conv);
+	emit(value);
+}
+
 static void emit_receipt_failed(const char *conversation, const char *id,
 				const char *state, const char *code)
 {
@@ -1284,7 +1325,7 @@ static void expire_pending_group_invite(void)
 static int send_receipt_wire(uint32_t friend, const char *conversation,
 			     const char *id, const char *state)
 {
-	char plain[180], wire[420];
+	char plain[256], wire[520];
 
 	if (!g_tox || !g_ratchet || !conversation || !id ||
 	    omaq_receipt_wire_pack(plain, sizeof(plain), id, state) != 0 ||
@@ -1292,7 +1333,427 @@ static int send_receipt_wire(uint32_t friend, const char *conversation,
 		return -1;
 	return omaq_tox_send(g_tox, friend, wire);
 }
+
+static int send_receipt_capability_wire(uint32_t friend, const char *conversation)
+{
+	char wire[520];
+	static const char capability[] = "OQX1|receipt-ack-v1";
+
+	if (!g_tox || !g_ratchet || !conversation ||
+	    omaq_ratchet_encrypt(g_ratchet, conversation, capability, wire,
+				  sizeof(wire)) != 0)
+		return -1;
+	return omaq_tox_send(g_tox, friend, wire);
+}
+
+static int send_receipt_confirm_wire(uint32_t friend, const char *conversation,
+				     const char *id)
+{
+	char plain[256], wire[520];
+
+	if (!g_tox || !g_ratchet || !conversation || !id ||
+	    omaq_receipt_confirm_wire_pack(plain, sizeof(plain), id, "read", "-") != 0 ||
+	    omaq_ratchet_encrypt(g_ratchet, conversation, plain, wire, sizeof(wire)) != 0)
+		return -1;
+	return omaq_tox_send(g_tox, friend, wire);
+}
 #endif
+
+static int receipt_capability_actor(uint32_t friend, char *out, size_t outn)
+{
+	return !g_tox || !out || outn < 65 ||
+		omaq_tox_friend_pk_hex(g_tox, friend, out) != 0 ? -1 : 0;
+}
+
+static void note_receipt_capability(const char *conversation, const char *actor)
+{
+	int free_slot = -1, oldest = 0;
+	int64_t now = (int64_t)time(NULL);
+
+	if (!conversation || !actor || strlen(actor) != 64)
+		return;
+	for (int i = 0; i < RECEIPT_CAPABILITY_MAX; i++) {
+		if (!g_receipt_capabilities[i].conversation[0]) {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(g_receipt_capabilities[i].conversation, conversation) == 0 &&
+		    strcmp(g_receipt_capabilities[i].actor, actor) == 0) {
+			g_receipt_capabilities[i].seen = now;
+			return;
+		}
+		if (g_receipt_capabilities[i].seen < g_receipt_capabilities[oldest].seen)
+			oldest = i;
+	}
+	if (free_slot < 0)
+		free_slot = oldest;
+	memset(&g_receipt_capabilities[free_slot], 0,
+	       sizeof(g_receipt_capabilities[free_slot]));
+	snprintf(g_receipt_capabilities[free_slot].conversation,
+		 sizeof(g_receipt_capabilities[free_slot].conversation), "%s", conversation);
+	snprintf(g_receipt_capabilities[free_slot].actor,
+		 sizeof(g_receipt_capabilities[free_slot].actor), "%s", actor);
+	g_receipt_capabilities[free_slot].seen = now;
+}
+
+static int receipt_ack_capable(const char *conversation, const char *actor)
+{
+	int64_t now = (int64_t)time(NULL);
+
+	if (!conversation || !actor)
+		return 0;
+	for (int i = 0; i < RECEIPT_CAPABILITY_MAX; i++)
+		if (strcmp(g_receipt_capabilities[i].conversation, conversation) == 0 &&
+		    strcmp(g_receipt_capabilities[i].actor, actor) == 0) {
+			if (g_receipt_capabilities[i].seen > 0 &&
+			    now - g_receipt_capabilities[i].seen <= 600)
+				return 1;
+			memset(&g_receipt_capabilities[i], 0,
+			       sizeof(g_receipt_capabilities[i]));
+			return 0;
+		}
+	return 0;
+}
+
+static void receipt_outbox_note_ack(const char *conversation, const char *id)
+{
+	if (!conversation || !id)
+		return;
+	for (size_t i = 0; i < g_receipt_outbox.length; i++)
+		if (strcmp(g_receipt_outbox.entries[i].conversation, conversation) == 0 &&
+		    strcmp(g_receipt_outbox.entries[i].id, id) == 0) {
+			g_receipt_outbox.entries[i].acknowledged = 1;
+			return;
+		}
+}
+
+static void flush_receipt_acknowledgements(void)
+{
+	omaq_receipt_outbox updated;
+	int have_ack = 0;
+
+	if (g_receipt_outbox_invalid)
+		return;
+	for (size_t i = 0; i < g_receipt_outbox.length; i++)
+		if (g_receipt_outbox.entries[i].acknowledged) {
+			have_ack = 1;
+			break;
+		}
+	if (!have_ack)
+		return;
+	omaq_receipt_outbox_init(&updated);
+	if (omaq_receipt_outbox_clone(&updated, &g_receipt_outbox) != 0)
+		return;
+	for (size_t i = updated.length; i > 0; i--)
+		if (updated.entries[i - 1u].acknowledged) {
+			if (i < updated.length)
+				memmove(&updated.entries[i - 1u], &updated.entries[i],
+					(updated.length - i) * sizeof(*updated.entries));
+			updated.length--;
+		}
+	if (omaq_receipt_outbox_save(&updated, state_dir()) != 0) {
+		omaq_receipt_outbox_destroy(&updated);
+		return;
+	}
+	for (size_t i = 0; i < g_receipt_outbox.length; i++)
+		if (g_receipt_outbox.entries[i].acknowledged)
+			emit_receipt_event_name("receipt.sent",
+				g_receipt_outbox.entries[i].conversation,
+				g_receipt_outbox.entries[i].id, "read");
+	omaq_receipt_outbox_destroy(&g_receipt_outbox);
+	g_receipt_outbox = updated;
+	if (g_receipt_outbox.length > 0)
+		g_receipt_retry_cursor %= g_receipt_outbox.length;
+	else
+		g_receipt_retry_cursor = 0;
+}
+
+static int receipt_outbox_commit_add(const char *conversation,
+				     const omaq_store_message_id *ids, size_t count)
+{
+	omaq_receipt_outbox updated;
+	int changed = 0;
+
+	if (g_receipt_outbox_invalid || (!ids && count))
+		return -1;
+	omaq_receipt_outbox_init(&updated);
+	if (omaq_receipt_outbox_clone(&updated, &g_receipt_outbox) != 0)
+		return -1;
+	for (size_t i = 0; i < count; i++) {
+		int add_rc = omaq_receipt_outbox_add(&updated, conversation, ids[i].id);
+		if (add_rc < 0) {
+			omaq_receipt_outbox_destroy(&updated);
+			return -1;
+		}
+		if (add_rc > 0)
+			changed = 1;
+	}
+	if (changed && omaq_receipt_outbox_save(&updated, state_dir()) != 0) {
+		omaq_receipt_outbox_destroy(&updated);
+		return -1;
+	}
+	omaq_receipt_outbox_destroy(&g_receipt_outbox);
+	g_receipt_outbox = updated;
+	return 0;
+}
+
+static int receipt_outbox_has_capacity(const char *conversation,
+				       const omaq_store_message_id *ids, size_t count)
+{
+	omaq_receipt_outbox prepared;
+	int rc = 0;
+
+	omaq_receipt_outbox_init(&prepared);
+	if ((!ids && count) || omaq_receipt_outbox_clone(&prepared,
+							 &g_receipt_outbox) != 0)
+		return 0;
+	for (size_t i = 0; i < count; i++)
+		if (omaq_receipt_outbox_add(&prepared, conversation, ids[i].id) < 0) {
+			rc = -1;
+			break;
+		}
+	omaq_receipt_outbox_destroy(&prepared);
+	return rc == 0;
+}
+
+static int receipt_transaction_begin(const char *conversation,
+				     const omaq_store_message_id *ids, size_t count)
+{
+	omaq_receipt_outbox transaction;
+
+	if (!conversation || !ids || count == 0)
+		return -1;
+	omaq_receipt_outbox_init(&transaction);
+	for (size_t i = 0; i < count; i++)
+		if (omaq_receipt_outbox_add(&transaction, conversation, ids[i].id) != 1) {
+			omaq_receipt_outbox_destroy(&transaction);
+			return -1;
+		}
+	if (omaq_receipt_transaction_clear(state_dir()) != 0 ||
+	    omaq_receipt_transaction_save(&transaction, state_dir()) != 0) {
+		omaq_receipt_outbox_destroy(&transaction);
+		return -1;
+	}
+	omaq_receipt_outbox_destroy(&transaction);
+	g_receipt_transaction_pending = 1;
+	g_receipt_transaction_retry_after = (int64_t)time(NULL) + 2;
+	return 0;
+}
+
+static int recover_receipt_transaction(void)
+{
+	omaq_receipt_outbox transaction;
+	omaq_unread_state durable_unread;
+	const char *conversation;
+	unsigned previous_count;
+	int committed, rc = -1;
+
+	g_receipt_recovery_committed = 0;
+	omaq_receipt_outbox_init(&transaction);
+	omaq_unread_init(&durable_unread);
+	if (omaq_receipt_transaction_load(&transaction, state_dir()) != 0)
+		goto done;
+	committed = omaq_receipt_transaction_committed(state_dir());
+	if (committed < 0)
+		goto done;
+	if (transaction.length == 0) {
+		rc = omaq_receipt_transaction_clear(state_dir());
+		goto done;
+	}
+	conversation = transaction.entries[0].conversation;
+	for (size_t i = 1; i < transaction.length; i++)
+		if (strcmp(transaction.entries[i].conversation, conversation) != 0)
+			goto done;
+	if (omaq_store_unread_load(&durable_unread, state_dir()) != 0)
+		goto done;
+	previous_count = omaq_unread_count(&g_unread, conversation);
+	if (!committed && omaq_unread_count(&durable_unread, conversation) == 0)
+		committed = 1;
+	if (committed) {
+		omaq_store_message_id *ids = calloc(transaction.length, sizeof(*ids));
+		if (!ids)
+			goto done;
+		for (size_t i = 0; i < transaction.length; i++)
+			snprintf(ids[i].id, sizeof(ids[i].id), "%s", transaction.entries[i].id);
+		rc = receipt_outbox_commit_add(conversation, ids, transaction.length);
+		free(ids);
+		if (rc != 0)
+			goto done;
+	}
+	if (omaq_receipt_transaction_clear(state_dir()) != 0)
+		goto done;
+	omaq_unread_destroy(&g_unread);
+	g_unread = durable_unread;
+	omaq_unread_init(&durable_unread);
+	if (previous_count != omaq_unread_count(&g_unread, conversation))
+		emit_unread(conversation);
+	g_receipt_recovery_committed = committed;
+	rc = 0;
+done:
+	omaq_unread_destroy(&durable_unread);
+	omaq_receipt_outbox_destroy(&transaction);
+	g_receipt_transaction_pending = rc != 0;
+	g_receipt_transaction_retry_after = rc != 0
+		? (int64_t)time(NULL) + 5 : 0;
+	return rc;
+}
+
+static void retry_receipt_transaction(void)
+{
+	if (!g_receipt_transaction_pending ||
+	    (int64_t)time(NULL) < g_receipt_transaction_retry_after)
+		return;
+	(void)recover_receipt_transaction();
+}
+
+static int receipt_transaction_discard_conversation(const char *conversation)
+{
+	omaq_receipt_outbox transaction;
+	int matches = 1, rc = 0;
+
+	if (!conversation)
+		return -1;
+	omaq_receipt_outbox_init(&transaction);
+	if (omaq_receipt_transaction_load(&transaction, state_dir()) != 0)
+		return -1;
+	for (size_t i = 0; i < transaction.length; i++)
+		if (strcmp(transaction.entries[i].conversation, conversation) != 0) {
+			matches = 0;
+			break;
+		}
+	if (transaction.length == 0 || matches)
+		rc = omaq_receipt_transaction_clear(state_dir());
+	else
+		rc = recover_receipt_transaction();
+	omaq_receipt_outbox_destroy(&transaction);
+	if (rc == 0 && matches) {
+		g_receipt_transaction_pending = 0;
+		g_receipt_transaction_retry_after = 0;
+	}
+	return rc;
+}
+
+static int receipt_outbox_drop_conversation(const char *conversation)
+{
+	omaq_receipt_outbox updated;
+	int changed = 0;
+
+	if (!conversation || g_receipt_outbox_invalid)
+		return -1;
+	omaq_receipt_outbox_init(&updated);
+	if (omaq_receipt_outbox_clone(&updated, &g_receipt_outbox) != 0) {
+		g_receipt_outbox_invalid = 1;
+		return -1;
+	}
+	for (size_t i = updated.length; i > 0; i--)
+		if (strcmp(updated.entries[i - 1u].conversation, conversation) == 0) {
+			if (i < updated.length)
+				memmove(&updated.entries[i - 1u], &updated.entries[i],
+					(updated.length - i) * sizeof(*updated.entries));
+			updated.length--;
+			changed = 1;
+		}
+	if (changed && omaq_receipt_outbox_save(&updated, state_dir()) != 0) {
+		omaq_receipt_outbox_destroy(&updated);
+		g_receipt_outbox_invalid = 1;
+		return -1;
+	}
+	omaq_receipt_outbox_destroy(&g_receipt_outbox);
+	g_receipt_outbox = updated;
+	return 0;
+}
+
+static int prune_unavailable_receipts(void)
+{
+	omaq_receipt_outbox updated;
+	int changed = 0;
+
+	if (g_receipt_outbox_invalid)
+		return -1;
+	omaq_receipt_outbox_init(&updated);
+	if (omaq_receipt_outbox_clone(&updated, &g_receipt_outbox) != 0)
+		return -1;
+	for (size_t i = updated.length; i > 0; i--) {
+		int available = unread_conversation_available(
+			updated.entries[i - 1u].conversation, NULL);
+		if (available < 0) {
+			omaq_receipt_outbox_destroy(&updated);
+			return -1;
+		}
+		if (available == 0) {
+			if (i < updated.length)
+				memmove(&updated.entries[i - 1u], &updated.entries[i],
+					(updated.length - i) * sizeof(*updated.entries));
+			updated.length--;
+			changed = 1;
+		}
+	}
+	if (changed && omaq_receipt_outbox_save(&updated, state_dir()) != 0) {
+		omaq_receipt_outbox_destroy(&updated);
+		return -1;
+	}
+	omaq_receipt_outbox_destroy(&g_receipt_outbox);
+	g_receipt_outbox = updated;
+	return 0;
+}
+
+static int group_self_member_key(uint32_t group, char *out, size_t outn)
+{
+	for (int member = 0; member < omaq_group_peer_count(group); member++) {
+		const char *key = omaq_group_peer_key(group, member);
+		if (!omaq_group_peer_self(group, member) || !key || strlen(key) != 64)
+			continue;
+		return snprintf(out, outn, "%s", key) >= (int)outn ? -1 : 0;
+	}
+	return -1;
+}
+
+static void retry_receipt_outbox(void)
+{
+	int64_t now = (int64_t)time(NULL);
+	size_t checked = 0, attempted = 0;
+
+	if (!g_tox || g_receipt_outbox_invalid || g_receipt_outbox.length == 0)
+		return;
+	while (checked < g_receipt_outbox.length && attempted < RECEIPT_RETRY_BATCH) {
+		size_t index = g_receipt_retry_cursor % g_receipt_outbox.length;
+		omaq_receipt_outbox_entry *entry = &g_receipt_outbox.entries[index];
+		unsigned jitter = (unsigned char)entry->id[0] % 5u;
+		int send_rc = -1;
+
+		g_receipt_retry_cursor = (index + 1u) % g_receipt_outbox.length;
+		checked++;
+		if (entry->next_attempt > now)
+			continue;
+		attempted++;
+		entry->next_attempt = now + 5 + (int64_t)jitter;
+		if (entry->conversation[0] == 'g') {
+			char receipt[256];
+			(void)omaq_group_send(g_tox, entry->conversation,
+					      "OQX1|receipt-ack-v1");
+			if (omaq_receipt_wire_pack(receipt, sizeof(receipt), entry->id,
+						   "read") == 0)
+				send_rc = omaq_group_send(g_tox, entry->conversation, receipt);
+		} else if (direct_id_ok(entry->conversation)) {
+#ifdef HAVE_SIGNAL
+			uint32_t friend = direct_id_number(entry->conversation);
+			if (omaq_tox_online(g_tox) && omaq_tox_friend_online(g_tox, friend)) {
+				(void)send_receipt_capability_wire(friend, entry->conversation);
+				send_rc = send_receipt_wire(friend, entry->conversation,
+						       entry->id, "read");
+			}
+#endif
+		}
+		if (send_rc != 0) {
+			entry->next_attempt = now + 10 + (int64_t)jitter;
+			continue;
+		}
+		if (entry->created > 0 && now - entry->created >= RECEIPT_LEGACY_GRACE_SEC)
+			receipt_outbox_note_ack(entry->conversation, entry->id);
+	}
+	flush_receipt_acknowledgements();
+}
 
 static int send_message_action(uint32_t friend, const char *conversation,
 			       const char *id, const char *text, int deleted)
@@ -2179,6 +2640,32 @@ static void schedule_group_cleanup(uint32_t group, const char *gid)
 			 sizeof(g_group_cleanup[free_slot].gid), "%s", gid);
 }
 
+static int prepare_group_reinvite(const char *chat_id)
+{
+	char gid[OMAQ_GROUP_ID_MAX];
+	uint32_t group = UINT32_MAX, mapped = UINT32_MAX;
+	int leave_rc;
+
+	if (!chat_id || strlen(chat_id) != 64 ||
+	    snprintf(gid, sizeof(gid), "g:%s", chat_id) >= (int)sizeof(gid))
+		return -1;
+	if (omaq_group_id_parse(gid, &mapped) == 0)
+		return 1;
+	if (!g_tox || omaq_tox_group_by_chat_id(g_tox, chat_id, &group) != 0)
+		return 0;
+	leave_rc = omaq_tox_group_leave(g_tox, group);
+	if (leave_rc < 0)
+		return -1;
+	omaq_group_mark_dissolved(group);
+	for (int i = 0; i < GROUP_CLEANUP_MAX; i++)
+		if (g_group_cleanup[i].used && g_group_cleanup[i].group == group &&
+		    strcmp(g_group_cleanup[i].gid, gid) == 0)
+			memset(&g_group_cleanup[i], 0, sizeof(g_group_cleanup[i]));
+	if (leave_rc > 0)
+		emit_error("group_registry_sync_failed");
+	return 0;
+}
+
 static int known_group_id(uint32_t gnum, char *gid, size_t n)
 {
 	char chat_id[65];
@@ -2196,7 +2683,7 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 		      const uint8_t *message, size_t length)
 {
 	char gid[OMAQ_GROUP_ID_MAX], peer_from[96], sender[OMAQ_GROUP_MEMBER_KEY_HEX + 1],
-		mid[64], wire_id[64], wire_reply[80], wire_text[1400], text_buffer[1400];
+		mid[97], wire_id[97], wire_reply[97], wire_text[1400], text_buffer[1400];
 	const char *text;
 	const char *display;
 	int has_wire_id = 0;
@@ -2222,6 +2709,25 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 	    snprintf(peer_from, sizeof(peer_from), "member:%s", sender) >=
 	    (int)sizeof(peer_from))
 		return;
+	if (text && strcmp(text, "OQX1|receipt-ack-v1") == 0) {
+		note_receipt_capability(gid, sender);
+		return;
+	}
+	{
+		char confirm_id[97], confirm_state[16], confirm_target[65], self_key[65];
+		if (omaq_receipt_confirm_wire_unpack(text, confirm_id, sizeof(confirm_id),
+						     confirm_state, sizeof(confirm_state),
+						     confirm_target, sizeof(confirm_target)) == 0) {
+			if (omaq_control_rate_allow(&g_group_control_rate, 'r', gnum, sender,
+						    (int64_t)time(NULL)) == 0 &&
+			    group_self_member_key(gnum, self_key, sizeof(self_key)) == 0 &&
+			    strcmp(confirm_target, self_key) == 0 &&
+			    omaq_store_message_from_matches(home_dir(), gid, confirm_id,
+							    peer_from) == 1)
+				receipt_outbox_note_ack(gid, confirm_id);
+			return;
+		}
+	}
 	if (text && strncmp(text, "OQX1|", 5) == 0) {
 		char reaction_id[80], reaction_emoji[32];
 		if (strlen(sender) != 64 ||
@@ -2262,15 +2768,24 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 		return;
 	}
 	{
-		char receipt_id[64], receipt_state[16];
+		char receipt_id[97], receipt_state[16];
 		if (omaq_receipt_wire_unpack(text, receipt_id, sizeof(receipt_id),
 					     receipt_state, sizeof(receipt_state)) == 0) {
+			int receipt_rc = -1;
 			if (strlen(sender) == 64 &&
 			    omaq_control_rate_allow(&g_group_control_rate, 'r', gnum, sender,
-					    (int64_t)time(NULL)) == 0 &&
-			    omaq_store_update_receipt_changed(home_dir(), gid, receipt_id,
-						      receipt_state) == 1)
+					    (int64_t)time(NULL)) == 0)
+				receipt_rc = omaq_store_update_receipt_changed(home_dir(), gid,
+									receipt_id, receipt_state);
+			if (receipt_rc == 1)
 				emit_receipt_event(gid, receipt_id, receipt_state);
+			if (receipt_rc >= 0 && strcmp(receipt_state, "read") == 0 &&
+			    receipt_ack_capable(gid, sender)) {
+				char confirmation[256];
+				if (omaq_receipt_confirm_wire_pack(confirmation, sizeof(confirmation),
+							   receipt_id, "read", sender) == 0)
+					(void)omaq_group_send(g_tox, gid, confirmation);
+			}
 			return;
 		}
 	}
@@ -2328,6 +2843,16 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int r
 			persist_forced_group_removal(gid);
 			if (clear_unread(gid) != 0)
 				emit_unread_failed(gid, "unread_persist_failed");
+			{
+				int transaction_rc = receipt_transaction_discard_conversation(gid);
+				int outbox_rc = receipt_outbox_drop_conversation(gid);
+				if (transaction_rc != 0) {
+					g_receipt_outbox_invalid = 1;
+					g_receipt_transaction_pending = 0;
+				}
+				if (transaction_rc != 0 || outbox_rc != 0)
+					emit_error_conv("receipt_state_failed", gid);
+			}
 		}
 		emit_group(gid, self ? "leave" : "member.leave", peer);
 		return;
@@ -2392,8 +2917,8 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int r
 
 static void hook_msg(void *ud, uint32_t friend, const char *text)
 {
-	char conv[16], mid[64], wire_id[64], wire_reply[80], wire_text[1400];
-	char receipt_id[64], receipt_state[16], reaction_id[80], reaction_emoji[32];
+	char conv[16], mid[97], wire_id[97], wire_reply[97], wire_text[1400];
+	char receipt_id[97], receipt_state[16], reaction_id[97], reaction_emoji[32];
 	const char *display = text;
 	int has_wire_id = 0;
 #ifdef HAVE_SIGNAL
@@ -2461,6 +2986,16 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 						 group_id);
 			return;
 		}
+		{
+			char group_id[OMAQ_GROUP_ID_MAX];
+			int prepare_rc = prepare_group_reinvite(invite.group);
+			if (prepare_rc != 0) {
+				snprintf(group_id, sizeof(group_id), "g:%s", invite.group);
+				(void)send_group_invite_response(friend, "OQGIB", invite.id,
+							 group_id);
+				return;
+			}
+		}
 		g_have_gauth = 1;
 		g_gauth_friend = friend;
 		g_gauth_exp = invite.expiry;
@@ -2482,6 +3017,22 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 			emit("{\"event\":\"request\",\"kind\":\"group\"}");
 		}
 		return;
+	}
+	if (text && strcmp(text, "OQX1|receipt-ack-v1") == 0) {
+		char actor[65];
+		if (receipt_capability_actor(friend, actor, sizeof(actor)) == 0)
+			note_receipt_capability(conv, actor);
+		return;
+	}
+	{
+		char confirm_id[97], confirm_state[16], confirm_target[65];
+		if (omaq_receipt_confirm_wire_unpack(text, confirm_id, sizeof(confirm_id),
+						     confirm_state, sizeof(confirm_state),
+						     confirm_target, sizeof(confirm_target)) == 0) {
+			if (strcmp(confirm_target, "-") == 0)
+				receipt_outbox_note_ack(conv, confirm_id);
+			return;
+		}
 	}
 	if (text && strncmp(text, "OQX1|", 5) == 0) {
 		char reaction_rate_key[32];
@@ -2517,9 +3068,18 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	}
 	if (omaq_receipt_wire_unpack(text, receipt_id, sizeof(receipt_id),
 				     receipt_state, sizeof(receipt_state)) == 0) {
-		if (omaq_store_update_receipt_changed(home_dir(), conv, receipt_id,
-					      receipt_state) == 1)
+		int receipt_rc = omaq_store_update_receipt_changed(home_dir(), conv,
+							     receipt_id, receipt_state);
+		if (receipt_rc == 1)
 			emit_receipt_event(conv, receipt_id, receipt_state);
+#ifdef HAVE_SIGNAL
+		if (receipt_rc != -1 && strcmp(receipt_state, "read") == 0) {
+			char actor[65];
+			if (receipt_capability_actor(friend, actor, sizeof(actor)) == 0 &&
+			    receipt_ack_capable(conv, actor))
+				(void)send_receipt_confirm_wire(friend, conv, receipt_id);
+		}
+#endif
 		return;
 	}
 	wire_reply[0] = '\0';
@@ -3930,12 +4490,18 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error("forbidden");
 				return 0;
 			}
+			if (recover_receipt_transaction() != 0) {
+				emit_error_conv("receipt_state_failed", cid);
+				return 0;
+			}
 			if (omaq_tox_friend_delete(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
 			if (clear_unread(cid) != 0)
 				emit_unread_failed(cid, "unread_persist_failed");
+			if (receipt_outbox_drop_conversation(cid) != 0)
+				emit_error_conv("receipt_state_failed", cid);
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_friends();
 			return 0;
@@ -4062,6 +4628,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error("forbidden");
 				return 0;
 			}
+			if (recover_receipt_transaction() != 0) {
+				emit_error_conv("receipt_state_failed", gid);
+				return 0;
+			}
 			if (group_registry_save_except(gid) < 0) {
 				emit_error_conv("group_registry_failed", gid);
 				return 0;
@@ -4073,6 +4643,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 			if (clear_unread(gid) != 0)
 				emit_unread_failed(gid, "unread_persist_failed");
+			if (receipt_outbox_drop_conversation(gid) != 0)
+				emit_error_conv("receipt_state_failed", gid);
 			emit_group(gid, "dissolve", 0);
 			return 0;
 		}
@@ -4136,6 +4708,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 #ifdef HAVE_TOX
 		if (g_tox) {
 			const char *gid = op->group[0] ? op->group : op->conversation;
+			if (recover_receipt_transaction() != 0) {
+				emit_error_conv("receipt_state_failed", gid);
+				return 0;
+			}
 			if (group_registry_save_except(gid) < 0) {
 				emit_error_conv("group_registry_failed", gid);
 				return 0;
@@ -4147,6 +4723,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 			if (clear_unread(gid) != 0)
 				emit_unread_failed(gid, "unread_persist_failed");
+			if (receipt_outbox_drop_conversation(gid) != 0)
+				emit_error_conv("receipt_state_failed", gid);
 			emit_group(gid, "leave", 0);
 			return 0;
 		}
@@ -4454,26 +5032,86 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		return 0;
 #endif
 	}
+	if (strcmp(op->op, "conversation.read") == 0 ||
+	    strcmp(op->op, "unread.clear") == 0) {
+#ifdef HAVE_TOX
+		const char *cid = op->conversation[0] ? op->conversation : "0";
+		omaq_store_message_id *ids = NULL;
+		size_t id_count = 0;
+		unsigned unread;
+
+		if (!g_tox || !conversation_id_ok(cid) || g_receipt_outbox_invalid) {
+			emit_conversation_read("conversation.read.failed", cid,
+					       g_receipt_outbox_invalid ? "receipt_state_invalid" : "forbidden");
+			return 0;
+		}
+		if (recover_receipt_transaction() != 0) {
+			emit_conversation_read("conversation.read.failed", cid,
+					       "receipt_state_failed");
+			return 0;
+		}
+		unread = omaq_unread_count(&g_unread, cid);
+		if (omaq_store_unread_receipt_ids(home_dir(), cid, unread, &ids,
+						  &id_count) != 0 ||
+		    (id_count > 0 && (!receipt_outbox_has_capacity(cid, ids, id_count) ||
+				      receipt_transaction_begin(cid, ids, id_count) != 0))) {
+			free(ids);
+			emit_conversation_read("conversation.read.failed", cid,
+					       "receipt_state_failed");
+			return 0;
+		}
+		if (clear_unread(cid) != 0) {
+			free(ids);
+			if (id_count > 0 && recover_receipt_transaction() == 0 &&
+			    g_receipt_recovery_committed) {
+				emit_conversation_read("conversation.read", cid, NULL);
+				retry_receipt_outbox();
+				return 0;
+			}
+			emit_conversation_read("conversation.read.failed", cid,
+					       "unread_persist_failed");
+			return 0;
+		}
+		if (id_count > 0 &&
+		    (omaq_receipt_transaction_mark_committed(state_dir()) != 0 ||
+		     receipt_outbox_commit_add(cid, ids, id_count) != 0 ||
+		     omaq_receipt_transaction_clear(state_dir()) != 0)) {
+			free(ids);
+			emit_conversation_read("conversation.read.failed", cid,
+					       "receipt_state_failed");
+			return 0;
+		}
+		if (id_count > 0) {
+			g_receipt_transaction_pending = 0;
+			g_receipt_transaction_retry_after = 0;
+		}
+		free(ids);
+		emit_conversation_read("conversation.read", cid, NULL);
+		retry_receipt_outbox();
+		return 0;
+#else
+		emit_error("unsupported");
+		return 0;
+#endif
+	}
 	if (strcmp(op->op, "receipt.send") == 0) {
 #ifdef HAVE_TOX
 		const char *cid = op->conversation[0] ? op->conversation : "0";
-		if (cid[0] == 'g') {
-			char receipt[180];
-			int receipt_rc;
-
-			if (!g_tox || !conversation_id_ok(cid) || !op->id[0] || !op->state[0] ||
-			    omaq_receipt_wire_pack(receipt, sizeof(receipt), op->id,
-						   op->state) != 0) {
-				emit_receipt_failed(cid, op->id, op->state, "forbidden");
-				return 0;
-			}
-			receipt_rc = omaq_group_send(g_tox, cid, receipt);
-			if (receipt_rc != 0) {
+		if (strcmp(op->state, "read") == 0) {
+			omaq_store_message_id receipt_id;
+			if (!g_tox || !conversation_id_ok(cid) || !op->id[0] ||
+			    snprintf(receipt_id.id, sizeof(receipt_id.id), "%s", op->id) >=
+				(int)sizeof(receipt_id.id) ||
+			    receipt_outbox_commit_add(cid, &receipt_id, 1) != 0) {
 				emit_receipt_failed(cid, op->id, op->state,
-					receipt_rc == -2 ? "offline" : "forbidden");
+						    g_receipt_outbox_invalid ? "receipt_state_invalid" : "forbidden");
 				return 0;
 			}
-			emit_receipt_event_name("receipt.sent", cid, op->id, op->state);
+			retry_receipt_outbox();
+			return 0;
+		}
+		if (cid[0] == 'g') {
+			emit_receipt_failed(cid, op->id, op->state, "forbidden");
 			return 0;
 		}
 #ifdef HAVE_SIGNAL
@@ -4616,21 +5254,29 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				    op->id, "unsupported", 0);
 		return 0;
 	}
-	if (strcmp(op->op, "unread.clear") == 0) {
-		const char *cid = op->conversation[0] ? op->conversation : "0";
-		if (!conversation_id_ok(cid) || clear_unread(cid) != 0)
-			emit_unread_failed(cid, "unread_persist_failed");
-		return 0;
-	}
 	if (strcmp(op->op, "history.clear") == 0) {
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		char esc_cid[128], ev[192];
-		if (!conversation_id_ok(cid) || omaq_store_clear(home_dir(), cid) != 0) {
+		if (!conversation_id_ok(cid)) {
+			emit_error_conv("forbidden", cid);
+			return 0;
+		}
+#ifdef HAVE_TOX
+		if (recover_receipt_transaction() != 0) {
+			emit_error_conv("receipt_state_failed", cid);
+			return 0;
+		}
+#endif
+		if (omaq_store_clear(home_dir(), cid) != 0) {
 			emit_error_conv("forbidden", cid);
 			return 0;
 		}
 		if (clear_unread(cid) != 0)
 			emit_unread_failed(cid, "unread_persist_failed");
+#ifdef HAVE_TOX
+		if (receipt_outbox_drop_conversation(cid) != 0)
+			emit_error_conv("receipt_state_failed", cid);
+#endif
 		if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
 			emit("{\"event\":\"history\",\"conversation\":\"0\",\"cleared\":true,\"items\":[]}");
 		else {
@@ -4647,7 +5293,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		int lim = op->has_limit ? op->limit : 50;
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		if (omaq_message_history(home_dir(), cid, lim, &out, &n) == 0 && out) {
-			emit_json_items("history", cid, out, n, op->id);
+			emit_json_items("history", cid, out, n, op->id, 1);
 			free(out);
 			return 0;
 		}
@@ -4671,7 +5317,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			return 0;
 		}
 		if (omaq_message_search(home_dir(), cid, op->text, lim, &out, &n) == 0 && out) {
-			emit_json_items("search", cid, out, n, NULL);
+			emit_json_items("search", cid, out, n, NULL, 0);
 			free(out);
 			return 0;
 		}
@@ -4951,7 +5597,9 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			return 0;
 		}
 #ifdef HAVE_TOX
-		if (replacing && g_group_invite_send_pending) {
+		if (replacing && (recover_receipt_transaction() != 0 ||
+				  g_group_invite_send_pending ||
+				  g_receipt_outbox.length > 0 || g_receipt_outbox_invalid)) {
 			emit_error("busy");
 			return 0;
 		}
@@ -5312,6 +5960,8 @@ static void start_backend(void)
 	if (g_tox && prune_unavailable_unread() < 0)
 		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
 			 "unread_persist_failed");
+	if (g_tox && prune_unavailable_receipts() < 0)
+		g_receipt_outbox_invalid = 1;
 #endif
 #ifdef HAVE_SIGNAL
 	g_ratchet = omaq_ratchet_open(home_dir());
@@ -5378,6 +6028,14 @@ int main(int argc, char **argv)
 	}
 #endif
 	omaq_unread_init(&g_unread);
+#ifdef HAVE_TOX
+	omaq_receipt_outbox_init(&g_receipt_outbox);
+	if (!g_identity_recovery_required &&
+	    omaq_receipt_outbox_load(&g_receipt_outbox, state_dir()) != 0) {
+		fprintf(stderr, "omaq: read receipt state is invalid; preserving it\n");
+		g_receipt_outbox_invalid = 1;
+	}
+#endif
 	if (!g_identity_recovery_required && omaq_store_unread_load(&g_unread, state_dir()) != 0) {
 		fprintf(stderr, "omaq: unread state is invalid; starting empty\n");
 		omaq_unread_init(&g_unread);
@@ -5385,6 +6043,10 @@ int main(int argc, char **argv)
 		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
 			 "unread_state_invalid");
 	}
+#ifdef HAVE_TOX
+	if (!g_identity_recovery_required && !g_receipt_outbox_invalid)
+		(void)recover_receipt_transaction();
+#endif
 	init_instance_id();
 	if (bind_sock() != 0)
 		return 1;
@@ -5403,6 +6065,10 @@ int main(int argc, char **argv)
 		emit("{\"event\":\"identity\",\"op\":\"recovered\"}");
 	if (g_unread_load_failed)
 		emit_unread_failed("", "unread_state_invalid");
+#ifdef HAVE_TOX
+	if (g_receipt_outbox_invalid)
+		emit_error("receipt_state_invalid");
+#endif
 	if (g_identity_backup_cleanup_failed)
 		emit_error("identity_backup_cleanup_failed");
 	if (!g_replay_mode && !g_shutdown_after_drain)
@@ -5412,6 +6078,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 			if (g_tox) {
 				omaq_tox_iterate(g_tox);
+				flush_receipt_acknowledgements();
 				expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
 				expire_pending_group_invite();
@@ -5420,6 +6087,8 @@ int main(int argc, char **argv)
 					emit_error("group_registry_failed");
 				retry_group_registry();
 				retry_group_cleanup();
+				retry_receipt_transaction();
+				retry_receipt_outbox();
 				pump_call_audio();
 				reset_call_transport();
 				sync_connection_state();
@@ -5482,6 +6151,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 		if (g_tox && !g_identity_recovery_required) {
 			omaq_tox_iterate(g_tox);
+			flush_receipt_acknowledgements();
 			expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
 			expire_pending_group_invite();
@@ -5490,6 +6160,8 @@ int main(int argc, char **argv)
 				emit_error("group_registry_failed");
 			retry_group_registry();
 			retry_group_cleanup();
+			retry_receipt_transaction();
+			retry_receipt_outbox();
 			pump_call_audio();
 			reset_call_transport();
 			sync_connection_state();
@@ -5551,6 +6223,7 @@ int main(int argc, char **argv)
 		else
 			omaq_tox_close(g_tox);
 	}
+	omaq_receipt_outbox_destroy(&g_receipt_outbox);
 #endif
 #ifdef HAVE_SIGNAL
 	if (g_ratchet)

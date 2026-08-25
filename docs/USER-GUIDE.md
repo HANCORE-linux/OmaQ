@@ -45,7 +45,7 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 6. The right-click menu provides **Copy**, **Reply**, and confirmed **Delete** actions.
 7. A message that could not be delivered stays visible with an error marker. Use its **Resend** action, or select it with the keyboard and press `R` or `Enter`.
 8. Receipt markers use the active system palette: `·` in the foreground while sending, `✓` in `color05` when sent, `✓✓` in `color04` when delivered, and unframed `✓✓` in `color03` when read. Hover a marker for its text status.
-9. Use the `format_size` panel action to set chat-message text to `85%`, `90%`, `100%`, `110%`, or `120%`. Composer, controls, and member labels keep their normal size.
+9. Use the `format_size` panel action to preview and set chat-message text to `90%`, `100%`, `110%`, `120%`, or `140%`. Composer, controls, receipts, and member labels keep their normal size.
 
 Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallback.
 
@@ -98,7 +98,7 @@ Groups are private and limited to 10 members.
 5. The member strip in a group chat shows every cached member's name, role, and online/offline status at the normal composer text size.
 6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation. A removed member may receive and accept a later fresh invite.
 
-Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
+Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. The member strip uses plain status entries: your entry is `You` with its role icon, while other members show a green or gray presence dot, role icon, and name. Every role can leave from the `logout` action in the group-chat header after confirmation. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
 
 ## 8. Protect and move your identity
 

@@ -20,7 +20,6 @@ FocusScope {
   property int peerAvatarRevision: 0
   property bool peerAvatarFailed: false
   property bool peerOnline: false
-  onPeerOnlineChanged: if (root.peerOnline) root.retryReadReceipts()
   onPeerAvatarRevisionChanged: root.peerAvatarFailed = false
   property color peerNameColor: theme.accent || Color.accent
   property color peerStatusColor: theme.accent || Color.accent
@@ -40,6 +39,7 @@ FocusScope {
   property string groupActionConfirm: ""
   property string groupActionMemberKey: ""
   property string groupActionName: ""
+  property bool groupLeaveConfirm: false
   signal autoOpenToggled()
   property bool terminalLook: false
   property bool pulseUnread: false
@@ -65,9 +65,9 @@ FocusScope {
   property string activeAudioPath: ""
   property string audioErrorPath: ""
   property string audioError: ""
-  property var readReceiptIds: []
-  property var pendingReceiptIds: []
-  property var failedReceiptIds: []
+  property bool readRequestPending: false
+  property bool readRetryBlocked: false
+  property int readRetryAttempts: 0
   property int localMessageSequence: 0
   onPeerAvatarChanged: root.peerAvatarFailed = false
 
@@ -933,6 +933,7 @@ FocusScope {
   function inviteGroupFriend(friend) {
     if (!root.groupConversation || !root.service || !friend)
       return
+    root.groupLeaveConfirm = false
     var friendId = String(friend.id || "")
     if (!friendId)
       return
@@ -959,6 +960,8 @@ FocusScope {
   function requestGroupMemberAction(action, member) {
     if (!root.groupConversation || !member || !root.mayManageGroupMember(member))
       return
+    root.groupLeaveConfirm = false
+    root.clearConfirm = false
     root.groupActionConfirm = String(action || "")
     root.groupActionMemberKey = String(member.key || "")
     root.groupActionName = String(member.name || "Member")
@@ -981,6 +984,21 @@ FocusScope {
     root.groupActionConfirm = ""
     root.groupActionMemberKey = ""
     root.groupActionName = ""
+  }
+
+  function requestGroupLeave() {
+    if (!root.groupConversation)
+      return
+    root.clearGroupMemberAction()
+    root.clearConfirm = false
+    root.closeGroupInvite()
+    root.groupLeaveConfirm = true
+  }
+
+  function confirmGroupLeave() {
+    root.groupLeaveConfirm = false
+    if (!root.demo && root.service)
+      root.service.leaveGroup(root.conversation)
   }
 
   function messageAt(index) {
@@ -1027,76 +1045,10 @@ FocusScope {
   }
 
   function markRead() {
-    if (root.demo || !root.service || !root.conversation)
+    if (root.demo || !root.service || !root.conversation || root.readRetryBlocked ||
+        root.readRequestPending || root.service.unreadFor(root.conversation) <= 0)
       return
-    root.service.clearUnread(root.conversation)
-    if (!root.peerOnline)
-      return
-    var pending = root.pendingReceiptIds.slice()
-    var changed = false
-    for (var i = 0; i < lines.count; i++) {
-      var item = lines.get(i)
-      var messageId = item ? String(item.id || "") : ""
-      if (messageId && item.dir === "in" && item.needsReadReceipt &&
-          root.readReceiptIds.indexOf(messageId) < 0 &&
-          pending.indexOf(messageId) < 0 && root.failedReceiptIds.indexOf(messageId) < 0) {
-        root.service.sendReceipt(root.conversation, messageId, "read")
-        pending.push(messageId)
-        changed = true
-      }
-    }
-    if (changed)
-      root.pendingReceiptIds = pending
-  }
-
-  function confirmReadReceipt(id) {
-    var messageId = String(id || "")
-    if (!messageId)
-      return
-    var confirmed = root.readReceiptIds.slice()
-    var pending = []
-    var failed = []
-    for (var i = 0; i < root.pendingReceiptIds.length; i++) {
-      if (String(root.pendingReceiptIds[i]) !== messageId)
-        pending.push(root.pendingReceiptIds[i])
-    }
-    for (var j = 0; j < root.failedReceiptIds.length; j++) {
-      if (String(root.failedReceiptIds[j]) !== messageId)
-        failed.push(root.failedReceiptIds[j])
-    }
-    if (confirmed.indexOf(messageId) < 0)
-      confirmed.push(messageId)
-    root.pendingReceiptIds = pending
-    root.failedReceiptIds = failed
-    root.readReceiptIds = confirmed
-    for (var lineIndex = 0; lineIndex < lines.count; lineIndex++) {
-      var confirmedLine = lines.get(lineIndex)
-      if (confirmedLine && String(confirmedLine.id || "") === messageId) {
-        lines.setProperty(lineIndex, "needsReadReceipt", false)
-        break
-      }
-    }
-  }
-
-  function failReadReceipt(id) {
-    var messageId = String(id || "")
-    var pendingIndex = root.pendingReceiptIds.indexOf(messageId)
-    if (!messageId || pendingIndex < 0)
-      return
-    var pending = root.pendingReceiptIds.slice()
-    var failed = root.failedReceiptIds.slice()
-    pending.splice(pendingIndex, 1)
-    if (failed.indexOf(messageId) < 0)
-      failed.push(messageId)
-    root.pendingReceiptIds = pending
-    root.failedReceiptIds = failed
-  }
-
-  function retryReadReceipts() {
-    root.pendingReceiptIds = []
-    root.failedReceiptIds = []
-    if (root.readActive)
-      root.markRead()
+    root.readRequestPending = root.service.markConversationRead(root.conversation)
   }
 
   function focusComposer() {
@@ -1115,6 +1067,10 @@ FocusScope {
     }
     if (root.emojiOpen) {
       root.emojiOpen = false
+      return true
+    }
+    if (root.groupLeaveConfirm) {
+      root.groupLeaveConfirm = false
       return true
     }
     if (root.deleteConfirmId) {
@@ -1199,7 +1155,7 @@ FocusScope {
     var i, j, it, dir, found
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
-      if (!cleared && existing && (existing.local || existing.live))
+      if (!cleared && existing && (existing.local || existing.pending || existing.failed))
         keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
@@ -1231,13 +1187,16 @@ FocusScope {
         historyAck = it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1)
       root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
     }
-    if (root.readActive)
-      root.markRead()
     for (i = 0; i < keep.length; i++) {
       found = false
       for (j = 0; j < lines.count; j++) {
         var historyLine = lines.get(j)
         if (historyLine && keep[i].id && historyLine.id === keep[i].id) {
+          if (keep[i].needsReadReceipt && !historyLine.needsReadReceipt)
+            lines.setProperty(j, "needsReadReceipt", true)
+          if (keep[i].dir === "out" && Number(keep[i].ack || -1) >
+              Number(historyLine.ack || -1))
+            lines.setProperty(j, "ack", keep[i].ack)
           found = true
           break
         }
@@ -1245,6 +1204,8 @@ FocusScope {
       if (!found)
         root.appendLine(keep[i])
     }
+    if (root.readActive)
+      root.markRead()
     root.restoreLatestPosition()
   }
 
@@ -1321,6 +1282,7 @@ FocusScope {
         String(pending.clientKey || "") === request
       if (pending && pending.local && requestMatches) {
         lines.setProperty(i, "pending", false)
+        lines.setProperty(i, "local", false)
         lines.setProperty(i, "failed", false)
         lines.setProperty(i, "failureCode", "")
         if (service.lastChatId)
@@ -1657,11 +1619,12 @@ FocusScope {
   }
 
   Timer {
-    id: unreadClearRetry
-    interval: 5100
+    id: readRetry
+    interval: 2500
     repeat: false
     onTriggered: {
-      if (root.readActive && root.service && root.service.unreadFor(root.conversation) > 0)
+      if (root.readActive && !root.readRetryBlocked && root.service &&
+          root.service.unreadFor(root.conversation) > 0)
         root.markRead()
     }
   }
@@ -1784,9 +1747,10 @@ FocusScope {
       lines.clear()
     }
     function onUnreadTickChanged() {
-      if (root.readActive && root.service && root.service.unreadFor(root.conversation) > 0) {
+      if (root.readActive && !root.readRetryBlocked && root.service &&
+          root.service.unreadFor(root.conversation) > 0) {
         root.markRead()
-        unreadClearRetry.restart()
+        readRetry.restart()
       }
     }
     function onUpdateTickChanged() {
@@ -1842,17 +1806,38 @@ FocusScope {
         }
       }
     }
-    function onReceiptSentTickChanged() {
-      if (!root.service || !root.sameConv(root.service.lastReceiptSentConv) ||
-          root.service.lastReceiptSentState !== "read")
+    function onConversationReadTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastConversationReadConv))
         return
-      root.confirmReadReceipt(root.service.lastReceiptSentId)
+      root.readRequestPending = false
+      root.readRetryBlocked = false
+      root.readRetryAttempts = 0
+      for (var i = 0; i < lines.count; i++)
+        if (lines.get(i).dir === "in" && lines.get(i).needsReadReceipt)
+          lines.setProperty(i, "needsReadReceipt", false)
     }
-    function onReceiptFailedTickChanged() {
-      if (!root.service || !root.sameConv(root.service.lastReceiptFailedConv) ||
-          root.service.lastReceiptFailedState !== "read")
+    function onConversationReadFailedTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastConversationReadFailedConv))
         return
-      root.failReadReceipt(root.service.lastReceiptFailedId)
+      root.readRequestPending = false
+      var code = String(root.service.lastConversationReadFailedCode || "receipt_state_failed")
+      if (code === "receipt_state_invalid" || code === "forbidden") {
+        root.readRetryBlocked = true
+        root.reactionStatus = "Read state needs attention"
+        reactionStatusTimer.interval = 6000
+        reactionStatusTimer.restart()
+        return
+      }
+      root.readRetryAttempts++
+      if (root.readRetryAttempts <= 5) {
+        readRetry.interval = Math.min(30000, 1500 * Math.pow(2, root.readRetryAttempts - 1))
+        readRetry.restart()
+      } else {
+        root.readRetryBlocked = true
+        root.reactionStatus = "Could not update read state"
+        reactionStatusTimer.interval = 6000
+        reactionStatusTimer.restart()
+      }
     }
     function onHelperInstanceGenerationChanged() {
       if (root.groupInviteFeedback === "Sending group invite…" && root.service &&
@@ -1872,9 +1857,12 @@ FocusScope {
       }
     }
     function onHelperHandshakeTickChanged() {
-      root.retryReadReceipts()
+      root.readRequestPending = false
+      root.readRetryBlocked = false
+      root.readRetryAttempts = 0
+      readRetry.interval = 2500
       if (!root.demo && root.service && root.conversation)
-        root.service.retryHistory(root.conversation)
+        root.service.requestHistory(root.conversation)
     }
     function onHistoryTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastHistoryConv))
@@ -1978,13 +1966,15 @@ FocusScope {
     root.groupMembersOpen = root.groupConversation
     root.closeGroupInvite()
     root.clearGroupMemberAction()
+    root.groupLeaveConfirm = false
     mediaPlayer.stop()
     root.activeAudioPath = ""
     root.audioErrorPath = ""
     root.audioError = ""
-    root.readReceiptIds = []
-    root.pendingReceiptIds = []
-    root.failedReceiptIds = []
+    root.readRequestPending = false
+    root.readRetryBlocked = false
+    root.readRetryAttempts = 0
+    readRetry.interval = 2500
     root.restoreOutgoingFileStatus()
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
@@ -2081,7 +2071,7 @@ FocusScope {
 
         FormatBtn {
           visible: root.groupConversation && root.groupSelfRole() !== "member" &&
-            !root.clearConfirm
+            !root.clearConfirm && !root.groupLeaveConfirm
           materialIcon: "person_add"
           helpText: root.groupInviteOpen ? "Close Add member" : "Add member"
           selected: root.groupInviteOpen
@@ -2098,11 +2088,25 @@ FocusScope {
         }
 
         FormatBtn {
-          visible: root.groupConversation && !root.clearConfirm
+          visible: root.groupConversation && !root.clearConfirm &&
+            !root.groupLeaveConfirm
           materialIcon: "group"
           helpText: (root.groupMembersOpen ? "Hide" : "Show") + " group members"
           selected: root.groupMembersOpen
           onClicked: root.groupMembersOpen = !root.groupMembersOpen
+        }
+
+        FormatBtn {
+          visible: root.groupConversation && !root.clearConfirm
+          materialIcon: "logout"
+          helpText: "Leave group"
+          selected: root.groupLeaveConfirm
+          onClicked: {
+            if (root.groupLeaveConfirm)
+              root.groupLeaveConfirm = false
+            else
+              root.requestGroupLeave()
+          }
         }
 
         Text {
@@ -2130,10 +2134,14 @@ FocusScope {
         }
 
         FormatBtn {
-          visible: !root.demo && !root.clearConfirm
+          visible: !root.demo && !root.clearConfirm && !root.groupLeaveConfirm
           materialIcon: "delete"
           helpText: "Clear messages in this chat"
-          onClicked: root.clearConfirm = true
+          onClicked: {
+            root.groupLeaveConfirm = false
+            root.clearGroupMemberAction()
+            root.clearConfirm = true
+          }
         }
       }
 
@@ -2158,6 +2166,7 @@ FocusScope {
         }
 
         Flickable {
+          id: inviteFriendsFlick
           visible: root.service && root.service.friends && root.service.friends.length > 0
           width: parent.width
           height: visible ? Style.space(30) : 0
@@ -2174,20 +2183,61 @@ FocusScope {
 
             Repeater {
               model: root.service ? (root.service.friends || []) : []
-              delegate: ChatBtn {
+              delegate: Item {
+                id: inviteFriend
                 required property var modelData
-                height: parent ? parent.height : implicitHeight
-                text: String(modelData && modelData.name ||
-                  ("Friend " + String(modelData && modelData.id || "")))
-                helpText: "Invite " + text
-                fontSize: root.smileTextPx
-                horizontalPadding: Style.space(8)
-                verticalPadding: 0
-                bordered: true
+                height: parent ? parent.height : Style.space(30)
+                width: inviteFriendContent.implicitWidth + Style.space(4)
                 enabled: root.groupInviteFeedback !== "Sending group invite…"
-                selected: String(modelData && modelData.id || "") ===
-                  root.groupInviteFriendId
-                onClicked: root.inviteGroupFriend(modelData)
+                opacity: enabled ? 1 : 0.5
+                activeFocusOnTab: enabled
+                onActiveFocusChanged: {
+                  if (!activeFocus)
+                    return
+                  if (x < inviteFriendsFlick.contentX)
+                    inviteFriendsFlick.contentX = x
+                  else if (x + width > inviteFriendsFlick.contentX + inviteFriendsFlick.width)
+                    inviteFriendsFlick.contentX = Math.max(0, x + width - inviteFriendsFlick.width)
+                }
+                Accessible.role: Accessible.Button
+                Accessible.name: "Invite " + inviteFriendName.text
+                Accessible.onPressAction: root.inviteGroupFriend(inviteFriend.modelData)
+                Keys.onReturnPressed: root.inviteGroupFriend(inviteFriend.modelData)
+                Keys.onEnterPressed: root.inviteGroupFriend(inviteFriend.modelData)
+                Keys.onSpacePressed: root.inviteGroupFriend(inviteFriend.modelData)
+
+                HoverHandler { id: inviteFriendHover }
+
+                Row {
+                  id: inviteFriendContent
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(4)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "person_add"
+                    color: String(inviteFriend.modelData && inviteFriend.modelData.id || "") ===
+                      root.groupInviteFriendId ? root.accent : root.fg
+                    font.family: "Material Symbols Rounded"
+                    font.pixelSize: Style.font.iconSmall
+                    font.variableAxes: ({ "FILL": 0, "wght": 500 })
+                  }
+                  Text {
+                    id: inviteFriendName
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(inviteFriend.modelData && inviteFriend.modelData.name ||
+                      ("Friend " + String(inviteFriend.modelData && inviteFriend.modelData.id || "")))
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: root.smileTextPx
+                    font.bold: false
+                    font.underline: inviteFriend.activeFocus || inviteFriendHover.hovered
+                  }
+                }
+
+                TapHandler {
+                  enabled: inviteFriend.enabled
+                  onTapped: root.inviteGroupFriend(inviteFriend.modelData)
+                }
               }
             }
           }
@@ -2195,12 +2245,14 @@ FocusScope {
       }
 
       Item {
-        visible: root.groupConversation && root.groupMembersOpen
+        visible: root.groupConversation && root.groupMembersOpen &&
+          !root.groupLeaveConfirm
         Layout.fillWidth: true
         Layout.preferredHeight: visible ? Style.space(30) : 0
         clip: true
 
         Flickable {
+          id: memberFlick
           anchors.fill: parent
           contentWidth: memberRow.width
           contentHeight: height
@@ -2215,25 +2267,76 @@ FocusScope {
 
             Repeater {
               model: root.groupMembers
-              delegate: ChatBtn {
+              delegate: Item {
                 id: memberButton
                 required property var modelData
-                height: parent ? parent.height : implicitHeight
-                text: String(modelData.name || "Member") + " · " +
-                  String(modelData.role || "member") + " · " +
-                  (modelData.online ? "online" : "offline") +
-                  (modelData.self ? " · you" : "")
-                helpText: String(modelData.name || "Member") + " is " +
+                height: parent ? parent.height : Style.space(30)
+                width: memberContent.implicitWidth + Style.space(4)
+                readonly property bool interactive: !modelData.self &&
+                  root.mayManageGroupMember(modelData)
+                activeFocusOnTab: interactive
+                onActiveFocusChanged: {
+                  if (!activeFocus)
+                    return
+                  if (x < memberFlick.contentX)
+                    memberFlick.contentX = x
+                  else if (x + width > memberFlick.contentX + memberFlick.width)
+                    memberFlick.contentX = Math.max(0, x + width - memberFlick.width)
+                }
+                Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
+                Accessible.name: (modelData.self ? "You" : String(modelData.name || "Member")) +
+                  " · " + String(modelData.role || "member") + " · " +
                   (modelData.online ? "online" : "offline")
-                foreground: modelData.online ? root.accent : root.fg
-                fontSize: root.smileTextPx
-                horizontalPadding: Style.space(8)
-                verticalPadding: 0
-                bordered: true
-                selected: false
-                onClicked: memberMenu.popup()
+                Accessible.onPressAction: if (memberButton.interactive) memberMenu.popup()
+                Keys.onReturnPressed: if (memberButton.interactive) memberMenu.popup()
+                Keys.onEnterPressed: if (memberButton.interactive) memberMenu.popup()
+                Keys.onSpacePressed: if (memberButton.interactive) memberMenu.popup()
+
+                HoverHandler { id: memberHover }
+
+                Row {
+                  id: memberContent
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(4)
+
+                  Rectangle {
+                    visible: !memberButton.modelData.self
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: width
+                    radius: width / 2
+                    color: memberButton.modelData.online ? "#7dce6a"
+                      : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.36)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: memberButton.modelData.role === "owner" ? "crown" :
+                      (memberButton.modelData.role === "admin" ? "shield_person" : "person")
+                    color: memberButton.modelData.self || memberButton.modelData.online
+                      ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.58)
+                    font.family: "Material Symbols Rounded"
+                    font.pixelSize: Style.font.iconSmall
+                    font.variableAxes: ({ "FILL": 1, "wght": 500 })
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: memberButton.modelData.self ? "You"
+                      : String(memberButton.modelData.name || "Member")
+                    color: memberButton.modelData.self || memberButton.modelData.online
+                      ? root.fg : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.58)
+                    font.family: root.fontFamily
+                    font.pixelSize: root.smileTextPx
+                    font.bold: false
+                    font.underline: memberButton.interactive &&
+                      (memberButton.activeFocus || memberHover.hovered)
+                  }
+                }
+
                 TapHandler {
-                  acceptedButtons: Qt.RightButton
+                  enabled: memberButton.interactive
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
                   onTapped: memberMenu.popup()
                 }
 
@@ -2315,6 +2418,37 @@ FocusScope {
           bordered: true
           selected: true
           onClicked: root.confirmGroupMemberAction()
+        }
+      }
+
+      Row {
+        visible: root.groupConversation && root.groupLeaveConfirm
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? Math.max(groupLeaveText.implicitHeight,
+          cancelGroupLeave.implicitHeight) : 0
+        spacing: Style.space(4)
+
+        Text {
+          id: groupLeaveText
+          width: parent.width - cancelGroupLeave.width - confirmGroupLeaveButton.width -
+            parent.spacing * 2
+          text: "Leave this group?"
+          color: root.theme.unread || root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          verticalAlignment: Text.AlignVCenter
+        }
+        ChatBtn {
+          id: cancelGroupLeave
+          text: "Cancel"
+          onClicked: root.groupLeaveConfirm = false
+        }
+        ChatBtn {
+          id: confirmGroupLeaveButton
+          text: "Leave"
+          bordered: true
+          selected: true
+          onClicked: root.confirmGroupLeave()
         }
       }
 

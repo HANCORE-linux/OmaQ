@@ -39,7 +39,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 6
+  readonly property int requiredHelperProtocol: 7
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -137,6 +137,11 @@ Item {
   property string lastReceiptFailedState: ""
   property string lastReceiptFailedCode: ""
   property int receiptFailedTick: 0
+  property string lastConversationReadConv: ""
+  property int conversationReadTick: 0
+  property string lastConversationReadFailedConv: ""
+  property string lastConversationReadFailedCode: ""
+  property int conversationReadFailedTick: 0
   property var peerTypingByConv: ({})
   property int typingTick: 0
   property var lastSurface: ({})
@@ -620,7 +625,9 @@ Item {
       }
       root.historyRequestByConversation = historyRequestNext
       var historyQueue = root.pendingHistoryUnread[historyConv] || []
-      var historyUnread = historyQueue.length > 0 ? Number(historyQueue[0] || 0) : 0
+      var historyUnread = ev.unread !== undefined
+        ? Math.max(0, Number(ev.unread || 0))
+        : (historyQueue.length > 0 ? Number(historyQueue[0] || 0) : 0)
       var historyPendingNext = {}
       var historyPendingKey
       for (historyPendingKey in root.pendingHistoryUnread) {
@@ -636,6 +643,15 @@ Item {
       root.lastHistoryConv = historyConv
       root.lastHistoryItems = ev.items || []
       root.historyTick = root.historyTick + 1
+    }
+    if (ev.event === "conversation.read") {
+      root.lastConversationReadConv = String(ev.conversation || "")
+      root.conversationReadTick = root.conversationReadTick + 1
+    }
+    if (ev.event === "conversation.read.failed") {
+      root.lastConversationReadFailedConv = String(ev.conversation || "")
+      root.lastConversationReadFailedCode = String(ev.code || "receipt_state_failed")
+      root.conversationReadFailedTick = root.conversationReadFailedTick + 1
     }
     if (ev.event === "receipt") {
       root.lastReceiptConv = String(ev.conversation || "")
@@ -1293,6 +1309,12 @@ Item {
     if (!c)
       return
     sendOp({ op: "history.clear", conversation: c })
+  }
+  function markConversationRead(conv) {
+    var c = String(conv || root.lastConversation || "")
+    if (!c)
+      return false
+    return sendOp({ op: "conversation.read", conversation: c })
   }
   function sendReceipt(conv, id, state) {
     var c = String(conv || root.lastConversation || "")

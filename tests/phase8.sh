@@ -75,18 +75,21 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$sent" -eq 1 ] || { echo "phase8: no ratchet plaintext event" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
 
-message_id=$(grep -a '"event":"message"' "$fb" | grep -a 'secret-ratchet-ping' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+message_id=$(grep -a '"event":"message"' "$fb" | grep -a '"dir":"in"' | grep -a 'secret-ratchet-ping' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$message_id" ] || { echo "phase8: no message id" >&2; exit 1; }
-printf '{"op":"receipt.send","conversation":"0","id":"%s","state":"read"}\n' "$message_id" >&4
+printf '{"op":"conversation.read","conversation":"0"}\n' >&4
 i=0
-while [ "$i" -lt 20 ]; do
-	if grep -a -q '"event":"receipt"' "$fa" && grep -a -q '"state":"read"' "$fa"; then
+while [ "$i" -lt 60 ]; do
+	if grep -a -q '"event":"receipt".*"id":"'"$message_id"'".*"state":"read"' "$fa" &&
+	   grep -a -q '"event":"conversation.read".*"conversation":"0"' "$fb" &&
+	   grep -a -q '"event":"receipt.sent".*"id":"'"$message_id"'".*"state":"read"' "$fb" &&
+	   [ ! -s "$sb/read-receipts.tsv" ]; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 0.2
 done
-[ "$i" -lt 20 ] || { echo "phase8: no read receipt" >&2; exit 1; }
+[ "$i" -lt 60 ] || { echo "phase8: no acknowledged read receipt" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
 printf '{"op":"msg.send","conversation":"0","text":"semantic-reply","reply":"%s","id":"phase8-reply-1"}\n' "$message_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
@@ -174,6 +177,48 @@ while [ "$i" -lt 30 ]; do
 	i=$((i + 1))
 done
 [ "$sent2" -eq 1 ] || { echo "phase8: second ratchet message missing" >&2; exit 1; }
+offline_id=$(grep -a '"event":"message"' "$fb" | grep -a '"dir":"in"' |
+	grep -a 'secret-ratchet-pong' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+[ -n "$offline_id" ] || { echo "phase8: offline receipt id missing" >&2; exit 1; }
+
+# Reading while the author is offline must survive a recipient-helper restart.
+exec 3>&-
+kill "$pa" 2>/dev/null || true
+wait "$pa" 2>/dev/null || true
+pa=""
+printf '{"op":"conversation.read","conversation":"0"}\n' >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a -q "0[[:space:]]$offline_id" "$sb/read-receipts.tsv" 2>/dev/null; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: offline read was not persisted" >&2; exit 1; }
+exec 4>&-
+kill "$pb" 2>/dev/null || true
+wait "$pb" 2>/dev/null || true
+pb=""
+rm -f "$holda" "$holdb"
+mkfifo "$holda" "$holdb"
+OMAQ_HOME="$hb" OMAQ_STATE="$sb" "$bin" >>"$fb" 2>>"$fb.err" <"$holdb" &
+pb=$!
+exec 4>"$holdb"
+OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >>"$fa" 2>>"$fa.err" <"$holda" &
+pa=$!
+exec 3>"$holda"
+i=0
+while [ "$i" -lt 90 ]; do
+	if [ ! -s "$sb/read-receipts.tsv" ] &&
+	   grep -a -q '"id":"'"$offline_id"'".*"receipt":"read"' "$ha/history/0/messages.jsonl"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+[ "$i" -lt 90 ] || { echo "phase8: persisted read receipt was not acknowledged" >&2; tail -40 "$fa" >&2; tail -40 "$fb" >&2; exit 1; }
+
 if ! grep -a '"message"' "$fa" "$fb" | grep -q '"dir":"out"'; then
 	echo "phase8: no confirmed outgoing message event" >&2
 	exit 1

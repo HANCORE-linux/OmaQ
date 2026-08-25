@@ -420,6 +420,75 @@ static void test_store(void)
 			fail("store tail rotated content");
 		free(out2);
 	}
+	{
+		omaq_store_message_id *ids = NULL;
+		omaq_receipt_outbox outbox, loaded;
+		size_t count = 0;
+		omaq_receipt_outbox_init(&outbox);
+		omaq_receipt_outbox_init(&loaded);
+		if (omaq_store_append(dir, "7",
+			"{\"id\":\"peer-read-1\",\"from\":\"peer\",\"text\":\"one\",\"dir\":\"in\"}") != 0 ||
+		    omaq_store_append(dir, "7",
+			"{\"id\":\"mine-1\",\"from\":\"me\",\"text\":\"out\",\"dir\":\"out\"}") != 0 ||
+		    omaq_store_append(dir, "7",
+			"{\"id\":\"local-file-1\",\"from\":\"peer\",\"text\":\"/tmp/a\",\"dir\":\"in\",\"kind\":\"file\"}") != 0 ||
+		    omaq_store_append(dir, "7",
+			"{\"id\":\"peer-read-2\",\"from\":\"member:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"text\":\"two\",\"dir\":\"in\"}") != 0 ||
+		    omaq_store_unread_receipt_ids(dir, "7", 2, &ids, &count) != 0 ||
+		    count != 1 || strcmp(ids[0].id, "peer-read-2") != 0 ||
+		    omaq_store_message_from_matches(dir, "7", "peer-read-2",
+			"member:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 1 ||
+		    omaq_store_message_from_matches(dir, "7", "peer-read-2", "peer") != 0)
+			fail("authoritative unread receipt ids");
+		free(ids);
+		ids = NULL;
+		if (omaq_store_unread_receipt_ids(dir, "7", 5, &ids, &count) != 0 ||
+		    count != 2)
+			fail("unread receipt history underflow recovery");
+		free(ids);
+		ids = NULL;
+		{
+			char unread_history[640];
+			if (snprintf(unread_history, sizeof(unread_history),
+				     "%s/history/7/messages.jsonl", dir) >= (int)sizeof(unread_history) ||
+			    chmod(unread_history, 0000) != 0 ||
+			    omaq_store_unread_receipt_ids(dir, "7", 1, &ids, &count) == 0 ||
+			    chmod(unread_history, 0600) != 0)
+				fail("unread receipt history open failure");
+		}
+		for (size_t overflow_index = 0;
+		     overflow_index <= OMAQ_STORE_READ_IDS_MAX; overflow_index++) {
+			char overflow_line[192];
+			snprintf(overflow_line, sizeof(overflow_line),
+				 "{\"id\":\"overflow-%zu\",\"from\":\"peer\",\"text\":\"x\",\"dir\":\"in\"}",
+				 overflow_index);
+			if (omaq_store_append(dir, "8", overflow_line) != 0) {
+				fail("receipt overflow history fixture");
+				break;
+			}
+		}
+		if (omaq_store_unread_receipt_ids(dir, "8",
+			OMAQ_STORE_READ_IDS_MAX + 1u, &ids, &count) == 0)
+			fail("receipt debt overflow accepted");
+		free(ids);
+		ids = NULL;
+		if (omaq_receipt_outbox_add(&outbox, "7", "peer-read-2") != 1 ||
+		    omaq_receipt_outbox_add(&outbox, "7", "peer-read-2") != 0 ||
+		    omaq_receipt_outbox_add(&outbox, "07", "peer-read-3") >= 0 ||
+		    omaq_receipt_outbox_save(&outbox, dir) != 0 ||
+		    omaq_receipt_outbox_load(&loaded, dir) != 0 || loaded.length != 1 ||
+		    omaq_receipt_transaction_save(&loaded, dir) != 0 ||
+		    omaq_receipt_transaction_committed(dir) != 0 ||
+		    omaq_receipt_transaction_mark_committed(dir) != 0 ||
+		    omaq_receipt_transaction_committed(dir) != 1 ||
+		    omaq_receipt_outbox_remove(&loaded, "7", "peer-read-2") != 1 ||
+		    loaded.length != 0 || omaq_receipt_transaction_load(&loaded, dir) != 0 ||
+		    loaded.length != 1 || omaq_receipt_transaction_clear(dir) != 0 ||
+		    omaq_receipt_transaction_load(&loaded, dir) != 0 || loaded.length != 0)
+			fail("persistent receipt outbox transaction");
+		omaq_receipt_outbox_destroy(&outbox);
+		omaq_receipt_outbox_destroy(&loaded);
+	}
 	if (omaq_store_clear(dir, "c1") != 0)
 		fail("store clear return");
 	else {
@@ -1271,7 +1340,7 @@ static void test_file(void)
 
 static void test_receipts(void)
 {
-	char wire[256], expected[256], id[64], reply[64], text[160], state[16];
+	char wire[256], expected[256], id[97], reply[97], text[160], state[16], target[65];
 	char too_long[98];
 
 	memset(too_long, 'a', sizeof(too_long) - 1);
@@ -1291,6 +1360,34 @@ static void test_receipts(void)
 	    omaq_receipt_wire_unpack(wire, id, sizeof(id), state, sizeof(state)) != 0 ||
 	    strcmp(id, "msg-1") != 0 || strcmp(state, "read") != 0)
 		fail("receipt wire envelope");
+	if (omaq_receipt_confirm_wire_pack(wire, sizeof(wire), "msg-1", "read",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+	    omaq_receipt_confirm_wire_unpack(wire, id, sizeof(id), state, sizeof(state),
+					     target, sizeof(target)) != 0 ||
+	    strcmp(wire, "OQX1|receipt-confirm-v1|read|msg-1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+	    strcmp(id, "msg-1") != 0 || strcmp(state, "read") != 0 ||
+	    strcmp(target, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+	    omaq_receipt_confirm_wire_unpack("OQX1|receipt-confirm-v1|read|msg-1|short", id, sizeof(id),
+					     state, sizeof(state), target, sizeof(target)) == 0)
+		fail("receipt confirmation envelope");
+	{
+		omaq_receipt_outbox boundary;
+		omaq_receipt_outbox_init(&boundary);
+		for (size_t i = 0; i < OMAQ_RECEIPT_OUTBOX_MAX; i++) {
+			char boundary_id[32];
+			snprintf(boundary_id, sizeof(boundary_id), "boundary-%zu", i);
+			if (omaq_receipt_outbox_add(&boundary, "7", boundary_id) != 1) {
+				fail("receipt outbox boundary fill");
+				break;
+			}
+		}
+		if (boundary.length != OMAQ_RECEIPT_OUTBOX_MAX ||
+		    omaq_receipt_outbox_add(&boundary, "7", "boundary-overflow") >= 0 ||
+		    omaq_receipt_outbox_remove(&boundary, "7", "boundary-0") != 1 ||
+		    omaq_receipt_outbox_add(&boundary, "7", "boundary-replacement") != 1)
+			fail("receipt outbox max boundary");
+		omaq_receipt_outbox_destroy(&boundary);
+	}
 	if (omaq_receipt_wire_pack(wire, sizeof(wire), "msg|1", "read") == 0 ||
 	    omaq_message_delete_wire_pack(wire, sizeof(wire), "msg|1") == 0 ||
 	    omaq_receipt_wire_pack(wire, sizeof(wire), "msg-1", "bad") == 0 ||

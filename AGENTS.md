@@ -50,9 +50,11 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - In a floating chat window the order is: call controls, spacer, the `Auto-off`/`Auto-open` action, `Mute`, `Close`.
 - In the Demo window, `Mute` is immediately left of `Close`.
 - In the bar panel, the global `Mute` action is below the `Demo` action. It must show its current `Mute`/`Unmute` state.
+- The panel connection banner uses the transparent, high-contrast OmaQ SVG without an opaque background and remains readable on light and dark panel surfaces.
+- When the primary identity/contact frame is visible, its bottom border aligns exactly with the bottom border of the right icon rail; either frame may increase the shared height.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.
 - The Clear chat action is a right-aligned `delete` icon. It requires an explicit confirmation and affects only the current conversation.
-- Chat message scaling uses only the fixed `85%`, `90%`, `100%`, `110%`, and `120%` steps and changes message-body text only. Composer, controls, receipts, and group member labels retain normal sizing.
+- Chat message scaling uses only the fixed `90%`, `100%`, `110%`, `120%`, and `140%` steps and changes message-body text only. Composer, controls, receipts, and group member labels retain normal sizing. The settings panel shows a live text preview.
 
 ## Composer and context-menu UX
 
@@ -103,7 +105,8 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Helper event fan-out must not block Tox iteration on a stale or slow IPC client. Prefer non-blocking client sockets and drop clients that cannot accept an event; persisted history remains the recovery source.
 - Never commit credentials, private keys, Tox saves, Ratchet state, local chat history, temporary screenshots, or downloaded audit data.
 - A self-disconnected or kicked group member must remove the stale local Tox group so a fresh, Signal-authorized native invite can be displayed and accepted later.
-- Group invitation remains stable-key- and request-bound and helper-authoritative whether initiated from the Panel or the group-chat `Add member` action. Replay bounded terminal results after a same-instance IPC reconnect; never infer failure from an unrelated connection or helper error.
+- Group invitation remains stable-key- and request-bound and helper-authoritative whether initiated from the Panel or the group-chat `Add member` action. Replay bounded terminal results after a same-instance IPC reconnect; never infer failure from an unrelated connection or helper error. Before accepting a same-group reinvite, remove an unregistered stale native Tox group with the same stable chat ID.
+- Read state is helper-authoritative. Atomically journal unread clearing into a bounded persistent read-receipt outbox, use authenticated application acknowledgements when both peers advertise support, and retain a bounded legacy terminal path. QML must never clear durable unread state before the helper records the receipt debt.
 - One process-wide tone owner loops `phone.oga` only while a direct call is incoming or ringing and stops immediately on answer, decline, hangup, or any terminal call state. Multiple monitor surfaces must not layer playback. Notification mute does not suppress this call-progress tone.
 
 ## Change workflow

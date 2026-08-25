@@ -25,7 +25,7 @@ Item {
   readonly property string chatTheme: String(setting("chatTheme", "system"))
   readonly property real messageScale: {
     var value = Number(setting("messageScale", 1.0))
-    return [0.85, 0.9, 1.0, 1.1, 1.2].indexOf(value) >= 0 ? value : 1.0
+    return [0.9, 1.0, 1.1, 1.2, 1.4].indexOf(value) >= 0 ? value : 1.0
   }
   readonly property bool formatToolbarEnabled: !!setting("formatToolbar", false)
   signal formatToolbarToggled(bool enabled)
@@ -1000,7 +1000,7 @@ Item {
           onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
           readActive: {
             var win = pinPage.QsWindow.window
-            return !!(win && win.active && pinFocus.activeFocus)
+            return !!(pinWin.visible && win && win.active && pinFocus.activeFocus)
           }
         }
 

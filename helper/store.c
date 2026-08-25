@@ -766,7 +766,7 @@ static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 
 	f = fopen(path, "r");
 	if (!f)
-		return 0;
+		return errno == ENOENT ? 0 : -1;
 	while (fgets(buf, sizeof(buf), f)) {
 		size_t len = strlen(buf);
 		char *copy;
@@ -867,6 +867,117 @@ fail:
 		free(lines);
 	}
 	return -1;
+}
+
+static int history_lines(const char *home, const char *conv_id,
+			 char ***lines, size_t *count, size_t *capacity)
+{
+	char path[576], rotated[580];
+
+	if (!lines || !count || !capacity ||
+	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rotated, sizeof(rotated), "%s.1", path) >= (int)sizeof(rotated) ||
+	    read_lines(rotated, lines, count, capacity) != 0 ||
+	    read_lines(path, lines, count, capacity) != 0) {
+		reset_read_lines(lines, count, capacity);
+		return -1;
+	}
+	return 0;
+}
+
+static int history_line_id(const char *line, char *out, size_t outn)
+{
+	const char *start, *end;
+	size_t length;
+
+	if (!line || !out || outn == 0 || !(start = strstr(line, "\"id\":\"")))
+		return -1;
+	start += strlen("\"id\":\"");
+	end = strchr(start, '\"');
+	if (!end || (length = (size_t)(end - start)) == 0 || length + 1u > outn)
+		return -1;
+	for (size_t i = 0; i < length; i++) {
+		unsigned char c = (unsigned char)start[i];
+		if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+		    !(c >= '0' && c <= '9') && c != '-' && c != '_' && c != ':' && c != '.')
+			return -1;
+	}
+	memcpy(out, start, length);
+	out[length] = '\0';
+	return 0;
+}
+
+int omaq_store_unread_receipt_ids(const char *home, const char *conv_id,
+				  unsigned unread, omaq_store_message_id **ids,
+				  size_t *count)
+{
+	char **lines = NULL;
+	omaq_store_message_id *result = NULL;
+	size_t line_count = 0, capacity = 0, incoming = 0, result_count = 0, slots;
+	int overflow = 0, rc = -1;
+
+	if (!ids || !count)
+		return -1;
+	*ids = NULL;
+	*count = 0;
+	if (unread == 0)
+		return 0;
+	if (history_lines(home, conv_id, &lines, &line_count, &capacity) != 0)
+		return -1;
+	slots = unread > OMAQ_STORE_READ_IDS_MAX ? OMAQ_STORE_READ_IDS_MAX : unread;
+	result = calloc(slots, sizeof(*result));
+	if (!result)
+		goto done;
+	for (size_t offset = 0; offset < line_count && incoming < unread; offset++) {
+		const char *line = lines[line_count - offset - 1u];
+		if (!strstr(line, "\"dir\":\"in\""))
+			continue;
+		incoming++;
+		if (strstr(line, "\"kind\":\"file\""))
+			continue;
+		if (result_count >= slots) {
+			overflow = 1;
+			continue;
+		}
+		if (history_line_id(line, result[result_count].id,
+				    sizeof(result[result_count].id)) != 0)
+			goto done;
+		result_count++;
+	}
+	if (overflow)
+		goto done;
+	*ids = result;
+	*count = result_count;
+	result = NULL;
+	rc = 0;
+done:
+	free(result);
+	reset_read_lines(&lines, &line_count, &capacity);
+	return rc;
+}
+
+int omaq_store_message_from_matches(const char *home, const char *conv_id,
+				    const char *id, const char *expected_from)
+{
+	char **lines = NULL, id_needle[128], from_needle[192];
+	size_t count = 0, capacity = 0;
+	int result = -2;
+
+	if (!id || !expected_from ||
+	    snprintf(id_needle, sizeof(id_needle), "\"id\":\"%s\"", id) >=
+		(int)sizeof(id_needle) ||
+	    snprintf(from_needle, sizeof(from_needle), "\"from\":\"%s\"", expected_from) >=
+		(int)sizeof(from_needle) ||
+	    history_lines(home, conv_id, &lines, &count, &capacity) != 0)
+		return -1;
+	for (size_t i = 0; i < count; i++) {
+		if (!strstr(lines[i], id_needle))
+			continue;
+		result = strstr(lines[i], from_needle) ? 1 : 0;
+		break;
+	}
+	reset_read_lines(&lines, &count, &capacity);
+	return result;
 }
 
 static int line_text_value(const char *line, char *out, size_t outn)

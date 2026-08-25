@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hancore.omaq",
   "name": "OmaQ",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "hancore",
   "license": "MIT AND CC-BY-SA-4.0 AND CC-BY-4.0 AND CC0-1.0 AND LicenseRef-Pixabay-Content",
   "description": "Invite-only 1:1 and group chat for the Omarchy bar.",
@@ -36,7 +36,7 @@
       { "key": "sound", "type": "enum", "label": "Sound", "options": ["off", "icq-message", "qq", "wechat", "skype", "msn", "aurora", "crystal", "ripple", "glow", "halo", "click", "pop", "bell", "soft", "knock", "custom"], "defaultValue": "icq-message" },
       { "key": "soundCustomPath", "type": "path", "label": "Custom sound", "defaultValue": "" },
       { "key": "chatTheme", "type": "enum", "label": "Chat theme", "options": ["system", "gruvbox", "rose-pine", "everforest", "gruvbox-light", "catppuccin-latte", "tokyo-night-light"], "defaultValue": "system" },
-      { "key": "messageScale", "type": "enum", "label": "Chat message scale", "options": [0.85, 0.9, 1.0, 1.1, 1.2], "defaultValue": 1.0 },
+      { "key": "messageScale", "type": "enum", "label": "Chat message scale", "options": [0.9, 1.0, 1.1, 1.2, 1.4], "defaultValue": 1.0 },
       { "key": "animateUnread", "type": "boolean", "label": "Unread motion", "defaultValue": true },
       { "key": "formatToolbar", "type": "boolean", "label": "Formatting toolbar", "defaultValue": false }
     ]
