@@ -25,7 +25,7 @@ OmaQ is a minimal, invite-only Omarchy chat plugin. Preserve these qualities:
 - `docs/PLAN.md` and `docs/CURRENT.md`: living product and implementation contracts; update them when durable behavior changes
 - `manifest.json`: plugin metadata and static settings schema
 
-Do not manually edit generated binaries as source. Build `helper/omaq` with the repository Makefile. Do not copy `~/.local/share/omaq/tox.save`, `ratchet/`, identity files, or local histories to another machine.
+Do not manually edit generated binaries as source. Build `helper/omaq` with the repository Makefile. Do not copy `~/.local/share/omaq/tox.save`, `groups.tsv`, `group-friends.tsv`, `group-registry.pending`, `ratchet/`, Identity files, handshake journals, or local histories to another machine.
 
 ## Language and copy
 
@@ -52,6 +52,12 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - In the bar panel, the global `Mute` action is below the `Demo` action. It must show its current `Mute`/`Unmute` state.
 - The panel connection banner uses the transparent, high-contrast OmaQ SVG without an opaque background and remains readable on light and dark panel surfaces.
 - When the primary identity/contact frame is visible, its bottom border aligns exactly with the bottom border of the right icon rail; either frame may increase the shared height.
+- Opening Identity, Theme, Sound, or another rail menu never changes the panel footprint. Menus replace and vertically scroll within the bounded left area without overlapping any panel edge or the icon rail.
+- A friend with unread messages has a `color03` underline beneath the displayed name. Do not show a numeric or pill-shaped unread badge beside a friend name.
+- Newly submitted self nicknames contain 1–18 valid Unicode characters. Remote legacy names may be longer, but every panel name remains single-line and right-elided inside its column. Nickname submissions are immediate-only and request-correlated so delayed results cannot complete a newer edit.
+- Identity actions use one aligned two-column grid for Protect/Remove lock, Export, Import, and Replace. Import validates a selected bundle without replacing the active identity; Replace remains separately confirmed.
+- Group-name/Create and Search-field/Search pairs share one control height. Every notification-sound option uses the same width and height with enough horizontal room for its complete label.
+- The chat settings section places one short identity-verification explanation directly below **Show safety code**.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.
 - The Clear chat action is a right-aligned `delete` icon. It requires an explicit confirmation and affects only the current conversation.
 - Chat message scaling uses only the fixed `90%`, `100%`, `110%`, `120%`, and `140%` steps and changes message-body text only. Composer, controls, receipts, and group member labels retain normal sizing. The settings panel shows a live text preview.
@@ -75,15 +81,15 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Avatar badges must not replace the online/offline status dot.
 - Avatar images use safe local file URLs, a `person` Material fallback, and a revision/cache refresh when a file is replaced.
 - Self and friend avatars are transferred only through the helper's validated avatar protocol. Never fake a friend avatar from a local identity.
-- Panel buttons such as Invite, Add, Chat, Theme, More, safety display, and confirmations are transient UI state. Reset them when the panel closes so reopening does not leave stale `selected` states.
-- Panel action buttons share one slim height, normal font weight, bounded labels, and the active shell theme's radius token.
+- Panel buttons such as Invite, Add, Chat, Theme, More, safety display, and confirmations are transient UI state. Reset them when the panel closes so reopening does not leave stale `selected` states. The Invite view shows a helper-issued expiry countdown; Revoke and New link require explicit confirmation, and New link completes revocation before requesting its replacement.
+- Panel action buttons share one slim height, normal font weight, bounded labels, the active shell theme's radius token, and explicit accessible button names/actions. Keyboard focus must scroll fixed-height rail menus to keep the focused control visible.
 - The logo, Friends/Groups list, and two-column icon rail use matching thin frames and equal section spacing. Identity is directly below Danger zone; the old Identity slot opens chat-message size.
 - Friend status dots are green online, medium gray for AFK, and dim gray offline. The new-message widget badge uses `color01`.
 - `Remove contact` requires selecting a currently projected contact and confirming that exact contact immediately before removal. Bind the confirmation to its stable public key and require the helper to recheck that key before deleting the numeric friend id.
 - The hero action grid uses stable per-column widths. Changing a label such as `Mute` ↔ `Unmute` must not move or resize neighboring buttons.
 - Current functional state such as global Mute may remain selected after reopening; that is not a stale transient selection.
-- Every destructive or privacy-impacting action requires an explicit confirmation immediately before execution, including contact removal, personal-ID/nospam rotation, clearing chat history, and equivalent future actions.
-- Safety codes are opt-in display information for identity comparison, not setup secrets. Keep them hidden until requested; copying must show confirmation.
+- Every destructive or privacy-impacting action requires an explicit confirmation immediately before execution, including invite revocation/replacement, contact removal, personal-ID/nospam rotation, clearing chat history, and equivalent future actions.
+- Safety codes are opt-in display information for identity comparison, not setup secrets. Keep them hidden until requested, bind display/copy and helper requests to the explicitly selected direct contact's numeric ID plus stable public key, ignore delayed or mismatched responses, and show copy confirmation. Background activity must not change the selected Search/Safety context.
 
 ## Auto-open and sound behavior
 
@@ -105,7 +111,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Helper event fan-out must not block Tox iteration on a stale or slow IPC client. Prefer non-blocking client sockets and drop clients that cannot accept an event; persisted history remains the recovery source.
 - Never commit credentials, private keys, Tox saves, Ratchet state, local chat history, temporary screenshots, or downloaded audit data.
 - A self-disconnected or kicked group member must remove the stale local Tox group so a fresh, Signal-authorized native invite can be displayed and accepted later.
-- Group invitation remains stable-key- and request-bound and helper-authoritative whether initiated from the Panel or the group-chat `Add member` action. Replay bounded terminal results after a same-instance IPC reconnect; never infer failure from an unrelated connection or helper error. Before accepting a same-group reinvite, remove an unregistered stale native Tox group with the same stable chat ID.
+- Group invitation remains stable-key- and request-bound and helper-authoritative whether initiated from the Panel or the group-chat `Add member` action. The GroupChat selector excludes stable keys already present in the authoritative member snapshot, and the helper rejects any raced duplicate-member invite. Replay bounded terminal results after a same-instance IPC reconnect; every global helper gate must terminate a targeted invite with its original request. Before accepting a same-group reinvite, remove an unregistered stale native Tox group with the same stable chat ID. Persist a fail-closed pre-accept transaction before native acceptance; restart recovery must remove an accepted group unless its direct-friend/group-member proof debt is durable. Never expire an established but unacknowledged proof debt merely because a retry deadline elapsed. Group-registry and friend-binding removal is one recoverable two-file transaction.
 - Read state is helper-authoritative. Atomically journal unread clearing into a bounded persistent read-receipt outbox, use authenticated application acknowledgements when both peers advertise support, and retain a bounded legacy terminal path. QML must never clear durable unread state before the helper records the receipt debt.
 - One process-wide tone owner loops `phone.oga` only while a direct call is incoming or ringing and stops immediately on answer, decline, hangup, or any terminal call state. Multiple monitor surfaces must not layer playback. Notification mute does not suppress this call-progress tone.
 

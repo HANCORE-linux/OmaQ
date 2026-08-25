@@ -16,19 +16,34 @@ fb=$(mktemp /tmp/omaq-p3ob-XXXXXX)
 hc=$(mktemp -d /tmp/omaq-p3c-XXXXXX)
 sc=$(mktemp -d /tmp/omaq-p3cs-XXXXXX)
 fc=$(mktemp /tmp/omaq-p3oc-XXXXXX)
+hd=$(mktemp -d /tmp/omaq-p3d-XXXXXX)
+sd=$(mktemp -d /tmp/omaq-p3ds-XXXXXX)
+fd=$(mktemp /tmp/omaq-p3od-XXXXXX)
+he=$(mktemp -d /tmp/omaq-p3e-XXXXXX)
+se=$(mktemp -d /tmp/omaq-p3es-XXXXXX)
+fe=$(mktemp /tmp/omaq-p3oe-XXXXXX)
+busy_export=$(mktemp -u /tmp/omaq-p3-busy-export-XXXXXX.save)
 holda=$(mktemp -u /tmp/omaq-p3fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p3fb-XXXXXX)
 holdc=$(mktemp -u /tmp/omaq-p3fc-XXXXXX)
+holdd=$(mktemp -u /tmp/omaq-p3fd-XXXXXX)
+holde=$(mktemp -u /tmp/omaq-p3fe-XXXXXX)
 pa=""
 pb=""
 pc=""
+pd=""
+pe=""
 cleanup() {
-	exec 3>&- 4>&- 5>&- 2>/dev/null || true
+	exec 3>&- 4>&- 5>&- 6>&- 7>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
 	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
 	[ -n "${pc:-}" ] && kill "$pc" 2>/dev/null || true
-	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$fa" "$fb" "$fc" \
-		"$holda" "$holdb" "$holdc" "$fa.err" "$fb.err" "$fc.err"
+	[ -n "${pd:-}" ] && kill "$pd" 2>/dev/null || true
+	[ -n "${pe:-}" ] && kill "$pe" 2>/dev/null || true
+	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$hd" "$sd" "$he" "$se" \
+		"$fa" "$fb" "$fc" "$fd" "$fe" "$busy_export" \
+		"$holda" "$holdb" "$holdc" "$holdd" "$holde" \
+		"$fa.err" "$fb.err" "$fc.err" "$fd.err" "$fe.err"
 }
 trap cleanup EXIT
 
@@ -186,6 +201,39 @@ if [ "$ok" -ne 1 ]; then
 	tail -30 "$fb" >&2
 	exit 1
 fi
+before=$(wc -l <"$fa")
+printf '{"op":"identity.export","path":"%s","id":"phase3-export-binding-debt"}\n' \
+	"$busy_export" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if tail -n +"$((before + 1))" "$fa" | grep -a '"code":"busy"' |
+	   grep -a -q '"request":"phase3-export-binding-debt"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] && [ ! -e "$busy_export" ] || {
+	echo "phase3: identity export ignored a group-binding debt" >&2
+	exit 1
+}
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-preaccept-1"}\n' "$gid" "$friend_key" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"group.invite.failed"' "$fa" | grep -a '"code":"busy"' |
+	   grep -a -q '"request":"gi-phase3-preaccept-1"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: pre-accept duplicate invite was not blocked" >&2; exit 1; }
+sleep 0.2
+greq_after_duplicate=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
+[ "$greq_after_duplicate" -eq "$greq_now" ] || {
+	echo "phase3: pre-accept duplicate produced a native invite" >&2
+	exit 1
+}
 echo '{"op":"contact.decide","accept":true}' >&4
 i=0
 while [ "$i" -lt 90 ]; do
@@ -211,6 +259,74 @@ grep -a '"event":"group.invite.sent"' "$fa" |
 if grep -a '"event":"group.invite.sent"' "$fa" |
    grep -a -q '"request":"gi-phase3-second-1"'; then
 	echo "phase3: busy second invite was reported sent" >&2
+	exit 1
+fi
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"group.member"' "$fa" |
+	   grep -a -q '"friendKey":"'"$friend_key"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 50 ] || { echo "phase3: stable friend/group member binding missing" >&2; exit 1; }
+member_key=$(grep -a '"event":"group.member"' "$fa" |
+	grep -a '"friendKey":"'"$friend_key"'"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ ${#member_key} -eq 64 ] || { echo "phase3: bound member key missing" >&2; exit 1; }
+if grep -E -q "^E[[:space:]]${gid}[[:space:]][0-9a-f]{16}[[:space:]]${friend_key}[[:space:]]${member_key}[[:space:]]" \
+   "$sa/group-bind.pending"; then
+	echo "phase3: completed inviter binding debt was not retired" >&2
+	exit 1
+fi
+i=0
+while [ "$i" -lt 50 ]; do
+	if [ -f "$sb/group-bind.pending" ] &&
+	   ! grep -q '^P[[:space:]]' "$sb/group-bind.pending"; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 50 ] || { echo "phase3: binding acknowledgement missing" >&2; exit 1; }
+cp -a "$hb/." "$hd/"
+printf 'A\t%s\t1111111111111111\t%s\t-\t0\t0\t0\n' "$gid" \
+	"0000000000000000000000000000000000000000000000000000000000000000" \
+	>"$sd/group-bind.pending"
+grep -E -q "${friend_key}[[:space:]][0-9a-f]{64}" "$ha/group-friends.tsv" || {
+	echo "phase3: stable friend/group member binding was not persisted" >&2
+	exit 1
+}
+awk -F '\t' 'NF != 3 { exit 1 }' "$ha/groups.tsv" || {
+	echo "phase3: legacy-compatible group registry schema changed" >&2
+	exit 1
+}
+cp -a "$ha/." "$he/"
+awk -F '\t' -v chat="${gid#g:}" '$1 != chat' "$he/groups.tsv" >"$he/groups.tsv.next"
+mv "$he/groups.tsv.next" "$he/groups.tsv"
+printf 'R\t%s\n' "$gid" >"$he/group-registry.pending"
+chmod 0600 "$he/groups.tsv" "$he/group-registry.pending"
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-duplicate-1"}\n' "$gid" "$friend_key" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"group.invite.failed"' "$fa" |
+	   grep -a '"code":"already_member"' |
+	   grep -a -q '"request":"gi-phase3-duplicate-1"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+if [ "$i" -ge 30 ]; then
+	echo "phase3: duplicate member invite was not rejected for friend key $friend_key" >&2
+	grep -a '"event":"group.member"' "$fa" | tail -4 >&2 || true
+	tail -n 20 -- "$fa.err" "$fb.err" >&2 || true
+	exit 1
+fi
+if grep -a '"event":"group.invite.sent"' "$fa" |
+   grep -a -q '"request":"gi-phase3-duplicate-1"'; then
+	echo "phase3: duplicate member invite was reported sent" >&2
 	exit 1
 fi
 sent_replays_before=$(grep -a '"event":"group.invite.sent"' "$fa" |
@@ -406,6 +522,16 @@ if [ -n "$member_key" ]; then
 		sleep 0.1
 	done
 	[ "$i" -lt 30 ] || { echo "phase3: kicked member remained in initiator cache" >&2; exit 1; }
+	i=0
+	while [ "$i" -lt 40 ]; do
+		if ! grep -E -q "^E[[:space:]]${gid}[[:space:]][0-9a-f]{16}[[:space:]]${friend_key}[[:space:]]${member_key}[[:space:]]" \
+		   "$sa/group-bind.pending"; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ "$i" -lt 40 ] || { echo "phase3: removed member debt was not retried" >&2; exit 1; }
 
 	# A kicked member must be able to receive and accept a fresh targeted invite.
 	reinvite_requests_before=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
@@ -453,6 +579,17 @@ if [ -n "$member_key" ]; then
 		sleep 0.2
 	done
 	[ "$i" -lt 40 ] || { echo "phase3: rejoined member group projection missing" >&2; exit 1; }
+	i=0
+	while [ "$i" -lt 60 ]; do
+		if grep -a '"event":"group.member"' "$fa" |
+		   grep -a '"group":"'"$gid"'"' | grep -a '"self":false' | tail -1 |
+		   grep -a -q '"friendKey":"'"$friend_key"'"'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	[ "$i" -lt 60 ] || { echo "phase3: rejoined member binding missing" >&2; exit 1; }
 fi
 
 # A failed registry pre-commit must not execute the irreversible Tox leave.
@@ -483,6 +620,41 @@ while [ "$i" -lt 30 ]; do
 done
 [ "$i" -lt 30 ] || { echo "phase3: failed leave mutated the group" >&2; exit 1; }
 
+fault_groups_before=$(grep -a -c '"action":"create"' "$fa" 2>/dev/null || true)
+printf '%s\n' '{"op":"group.create","title":"Persistence fault"}' >&3
+i=0
+fault_gid=""
+while [ "$i" -lt 40 ]; do
+	fault_groups_after=$(grep -a -c '"action":"create"' "$fa" 2>/dev/null || true)
+	if [ "$fault_groups_after" -gt "$fault_groups_before" ]; then
+		fault_gid=$(grep -a '"event":"group.changed"' "$fa" | grep -a '"action":"create"' |
+			tail -1 | sed -n 's/.*"group":"\([^"]*\)".*/\1/p')
+		[ -n "$fault_gid" ] && break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ -n "$fault_gid" ] || { echo "phase3: persistence-fault group missing" >&2; exit 1; }
+chmod 0500 "$sa"
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-persist-fail"}\n' \
+	"$fault_gid" "$friend_key" >&3
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"group.invite.failed"' "$fa" |
+	   grep -a '"code":"group_registry_failed"' |
+	   grep -a -q '"request":"gi-phase3-persist-fail"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+chmod 0700 "$sa"
+[ "$i" -lt 50 ] || {
+	echo "phase3: group binding persistence failure was not correlated" >&2
+	tail -n 30 -- "$fa" "$fb" "$fa.err" "$fb.err" >&2 || true
+	exit 1
+}
+
 echo "{\"op\":\"group.dissolve\",\"group\":\"$gid\"}" >&3
 i=0
 ok=0
@@ -496,6 +668,73 @@ while [ "$i" -lt 20 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase3: dissolve missing" >&2; exit 1; }
 
+mkfifo "$holdd"
+OMAQ_HOME="$hd" OMAQ_STATE="$sd" "$bin" >"$fd" 2>"$fd.err" <"$holdd" &
+pd=$!
+exec 6>"$holdd"
+i=0
+while [ "$i" -lt 40 ]; do
+	[ -f "$sd/group-bind.pending" ] &&
+	[ ! -s "$sd/group-bind.pending" ] && break
+	if ! kill -0 "$pd" 2>/dev/null; then
+		echo "phase3: pre-accept recovery helper failed" >&2
+		tail -n 20 -- "$fd" "$fd.err" >&2 || true
+		exit 1
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase3: pre-accept journal was not recovered" >&2; exit 1; }
+printf '{"op":"status","id":"phase3-preaccept-recovery"}\n' >&6
+i=0
+while [ "$i" -lt 30 ]; do
+	grep -a -q '"request":"phase3-preaccept-recovery"' "$fd" && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: recovered helper did not answer" >&2; exit 1; }
+if grep -a '"event":"group.info"' "$fd" | grep -a -q '"group":"'"$gid"'"'; then
+	echo "phase3: incomplete accepted group survived journal recovery" >&2
+	exit 1
+fi
+exec 6>&-
+kill "$pd" 2>/dev/null || true
+wait "$pd" 2>/dev/null || true
+pd=""
+
+mkfifo "$holde"
+OMAQ_HOME="$he" OMAQ_STATE="$se" "$bin" >"$fe" 2>"$fe.err" <"$holde" &
+pe=$!
+exec 7>"$holde"
+i=0
+while [ "$i" -lt 50 ]; do
+	if [ ! -e "$he/group-registry.pending" ] &&
+	   ! grep -a -q "^${gid#g:}[[:space:]]" "$he/groups.tsv" 2>/dev/null &&
+	   ! grep -a -q "^${gid}[[:space:]]" "$he/group-friends.tsv" 2>/dev/null; then
+		break
+	fi
+	if ! kill -0 "$pe" 2>/dev/null; then
+		echo "phase3: registry transaction recovery helper failed" >&2
+		tail -n 20 -- "$fe" "$fe.err" >&2 || true
+		exit 1
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 50 ] || { echo "phase3: split registry transaction was not recovered" >&2; exit 1; }
+printf '{"op":"status","id":"phase3-registry-recovery"}\n' >&7
+i=0
+while [ "$i" -lt 30 ]; do
+	grep -a -q '"request":"phase3-registry-recovery"' "$fe" && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: registry recovery helper did not answer" >&2; exit 1; }
+exec 7>&-
+kill "$pe" 2>/dev/null || true
+wait "$pe" 2>/dev/null || true
+pe=""
+
 set +e
 OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" --hold
 rc=$?
@@ -507,5 +746,9 @@ if ! kill -0 "$pa" 2>/dev/null; then
 	exit 1
 fi
 
+if grep -R -a -q 'OQX1|gmb' "$ha/history" "$hb/history" 2>/dev/null; then
+	echo "phase3: group binding control leaked into history" >&2
+	exit 1
+fi
 echo "phase3: ok"
 exit 0

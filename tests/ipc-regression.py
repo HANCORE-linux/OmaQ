@@ -18,9 +18,9 @@ OLD_URGENT_LIMIT = 4096 * 1024
 BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
-EVENT = b'{"event":"snapshot","protocol":7,"unread":0,"conversations":[],"call":null}\n'
+EVENT = b'{"event":"snapshot","protocol":8,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
-STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":7,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":8,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 HISTORY_A_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-a"}\n'
 HISTORY_A_EVENT = b'{"event":"history","conversation":"7","request":"history-a","unread":0,"items":[]}\n'
 HISTORY_B_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-b"}\n'
@@ -50,6 +50,32 @@ MESSAGE_ESCAPED_CONV_EVENT = (
 FILE_REJECT_COMMAND = b'{"op":"file.send","conversation":"7","path":"/tmp/missing","id":"request-7"}\n'
 FILE_REJECT_EVENTS = (
     b'{"event":"file.failed","id":"","conversation":"7","dir":"out","request":"request-7","code":"unsupported"}\n'
+)
+GROUP_INVITE_UNSUPPORTED_COMMAND = (
+    b'{"op":"invite.create","kind":"group","group":"g:'
+    + b'a' * 64
+    + b'","id":"0","key":"'
+    + b'b' * 64
+    + b'","request":"gi-no-tox-1"}\n'
+)
+GROUP_INVITE_UNSUPPORTED_EVENT = (
+    b'{"event":"group.invite.failed","group":"g:'
+    + b'a' * 64
+    + b'","friend":"0","request":"gi-no-tox-1","code":"unsupported"}\n'
+)
+NICKNAME_UNSUPPORTED_COMMAND = (
+    b'{"op":"nickname.set","nickname":"Offline name","id":"nickname-no-tox"}\n'
+)
+NICKNAME_UNSUPPORTED_EVENT = (
+    b'{"event":"error","code":"unsupported","request":"nickname-no-tox"}\n'
+)
+IDENTITY_UNSUPPORTED = (
+    (b'{"op":"identity.unlock","passphrase":"legacy","id":"identity-unlock-1"}\n',
+     b'{"event":"error","code":"unsupported","request":"identity-unlock-1"}\n'),
+    (b'{"op":"identity.protect","passphrase":"long-enough","id":"identity-protect-1"}\n',
+     b'{"event":"error","code":"unsupported","request":"identity-protect-1"}\n'),
+    (b'{"op":"identity.unprotect","passphrase":"legacy","id":"identity-unprotect-1"}\n',
+     b'{"event":"error","code":"unsupported","request":"identity-unprotect-1"}\n'),
 )
 INSTANCE_FIELD = re.compile(br',"instance":"([0-9a-f]{32})"')
 
@@ -165,6 +191,40 @@ def main() -> int:
                 response += chunk
             if response != FILE_REJECT_EVENTS:
                 raise RuntimeError(f"file rejection correlation mismatch: {response!r}")
+            for command, expected in IDENTITY_UNSUPPORTED:
+                framing_client.sendall(command)
+                response = b""
+                while b"\n" not in response:
+                    chunk = framing_client.recv(4096)
+                    if not chunk:
+                        break
+                    response += chunk
+                if response != expected:
+                    raise RuntimeError(
+                        f"identity rejection correlation mismatch: {response!r}"
+                    )
+            framing_client.sendall(GROUP_INVITE_UNSUPPORTED_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != GROUP_INVITE_UNSUPPORTED_EVENT:
+                raise RuntimeError(
+                    f"group invite rejection correlation mismatch: {response!r}"
+                )
+            framing_client.sendall(NICKNAME_UNSUPPORTED_COMMAND)
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != NICKNAME_UNSUPPORTED_EVENT:
+                raise RuntimeError(
+                    f"nickname rejection correlation mismatch: {response!r}"
+                )
             framing_client.sendall(STATUS_NONCE_COMMAND)
             response = b""
             while b"\n" not in response:
@@ -338,6 +398,9 @@ def main() -> int:
         expected = (
             EVENT
             + FILE_REJECT_EVENTS
+            + b"".join(expected for _, expected in IDENTITY_UNSUPPORTED)
+            + GROUP_INVITE_UNSUPPORTED_EVENT
+            + NICKNAME_UNSUPPORTED_EVENT
             + STATUS_NONCE_EVENT
             + HISTORY_A_EVENT
             + HISTORY_BAD_EVENT

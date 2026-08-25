@@ -669,7 +669,9 @@ static void test_identity_files(void)
 {
 	char dir[] = "/tmp/omaq-id-XXXXXX";
 	char src[256], dst[256], other[256], linkpath[256], temp_path[320];
-	char registry[256], bundle[256], fresh[256], fresh_tox[300], fresh_registry[300];
+	char registry[256], bindings[256], bundle[256], v1_bundle[256], fresh[256];
+	char fresh_tox[300], fresh_registry[300], fresh_bindings[300], fresh_v1[300];
+	char fresh_v1_tox[320], fresh_v1_registry[320], fresh_v1_bindings[320];
 	char tox_alias[300];
 	FILE *f;
 
@@ -682,11 +684,25 @@ static void test_identity_files(void)
 	    snprintf(other, sizeof(other), "%s/other.save", dir) >= (int)sizeof(other) ||
 	    snprintf(linkpath, sizeof(linkpath), "%s/link.save", dir) >= (int)sizeof(linkpath) ||
 	    snprintf(registry, sizeof(registry), "%s/groups.tsv", dir) >= (int)sizeof(registry) ||
+	    snprintf(bindings, sizeof(bindings), "%s/group-friends.tsv", dir) >=
+		    (int)sizeof(bindings) ||
 	    snprintf(bundle, sizeof(bundle), "%s/bundle.save", dir) >= (int)sizeof(bundle) ||
+	    snprintf(v1_bundle, sizeof(v1_bundle), "%s/bundle-v1.save", dir) >=
+		    (int)sizeof(v1_bundle) ||
 	    snprintf(fresh, sizeof(fresh), "%s/fresh", dir) >= (int)sizeof(fresh) ||
 	    snprintf(fresh_tox, sizeof(fresh_tox), "%s/tox.save", fresh) >= (int)sizeof(fresh_tox) ||
 	    snprintf(fresh_registry, sizeof(fresh_registry), "%s/groups.tsv", fresh) >=
 		    (int)sizeof(fresh_registry) ||
+	    snprintf(fresh_bindings, sizeof(fresh_bindings), "%s/group-friends.tsv", fresh) >=
+		    (int)sizeof(fresh_bindings) ||
+	    snprintf(fresh_v1, sizeof(fresh_v1), "%s/fresh-v1", dir) >=
+		    (int)sizeof(fresh_v1) ||
+	    snprintf(fresh_v1_tox, sizeof(fresh_v1_tox), "%s/tox.save", fresh_v1) >=
+		    (int)sizeof(fresh_v1_tox) ||
+	    snprintf(fresh_v1_registry, sizeof(fresh_v1_registry), "%s/groups.tsv", fresh_v1) >=
+		    (int)sizeof(fresh_v1_registry) ||
+	    snprintf(fresh_v1_bindings, sizeof(fresh_v1_bindings), "%s/group-friends.tsv", fresh_v1) >=
+		    (int)sizeof(fresh_v1_bindings) ||
 	    snprintf(tox_alias, sizeof(tox_alias), "%s/./tox.save", dir) >=
 		    (int)sizeof(tox_alias) ||
 	    snprintf(temp_path, sizeof(temp_path), "%s.tmp.%ld", linkpath, (long)getpid()) >=
@@ -710,9 +726,20 @@ static void test_identity_files(void)
 	}
 	fputs("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup\n", f);
 	fclose(f);
+	f = fopen(bindings, "w");
+	if (!f) {
+		fail("id bindings write");
+		return;
+	}
+	fputs("OMAQGF1\n", f);
+	fputs("g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t"
+	      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t"
+	      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", f);
+	fclose(f);
 	if (omaq_identity_bundle_export(dir, src) == 0 ||
 	    omaq_identity_bundle_export(dir, tox_alias) == 0 ||
-	    omaq_identity_bundle_export(dir, registry) == 0)
+	    omaq_identity_bundle_export(dir, registry) == 0 ||
+	    omaq_identity_bundle_export(dir, bindings) == 0)
 		fail("identity bundle source alias");
 	if (mkdir(fresh, 0700) != 0 ||
 	    omaq_identity_bundle_export(dir, bundle) != 0 ||
@@ -723,8 +750,42 @@ static void test_identity_files(void)
 		if (read_file(fresh_tox, copied, sizeof(copied)) != 0 ||
 		    strcmp(copied, "SAVE-A") != 0 ||
 		    read_file(fresh_registry, copied, sizeof(copied)) != 0 ||
-		    !strstr(copied, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup"))
+		    !strstr(copied, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup") ||
+		    read_file(fresh_bindings, copied, sizeof(copied)) != 0 ||
+		    !strstr(copied, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
 			fail("identity bundle group registry");
+	}
+	{
+		static const char v1_registry[] =
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tGroup\n";
+		unsigned char header[16] = {
+			'O', 'M', 'A', 'Q', 'I', 'D', '1', '\n', 0, 0, 0, 6, 0, 0, 0,
+			(unsigned char)(sizeof(v1_registry) - 1)
+		};
+		char copied[256];
+		int fixture_ok = 0;
+		f = fopen(v1_bundle, "wb");
+		if (f) {
+			fixture_ok = fwrite(header, 1, sizeof(header), f) == sizeof(header) &&
+				fwrite("SAVE-A", 1, 6, f) == 6 &&
+				fwrite(v1_registry, 1, sizeof(v1_registry) - 1, f) ==
+					sizeof(v1_registry) - 1;
+			if (fclose(f) != 0)
+				fixture_ok = 0;
+			f = NULL;
+		}
+		if (!fixture_ok) {
+			fail("identity v1 fixture");
+		} else if (mkdir(fresh_v1, 0700) != 0 ||
+			   omaq_identity_bundle_import(fresh_v1, v1_bundle, 0) != 0 ||
+			   read_file(fresh_v1_tox, copied, sizeof(copied)) != 0 ||
+			   strcmp(copied, "SAVE-A") != 0 ||
+			   read_file(fresh_v1_registry, copied, sizeof(copied)) != 0 ||
+			   !strstr(copied, "\tGroup") ||
+			   read_file(fresh_v1_bindings, copied, sizeof(copied)) != 0 ||
+			   strcmp(copied, "OMAQGF1") != 0) {
+			fail("identity v1 compatibility");
+		}
 	}
 	if (omaq_identity_export_exclusive(dir, dst) == 0 ||
 	    omaq_identity_export_exclusive(dir, other) != 0)
@@ -783,10 +844,16 @@ static void test_pass_ok(void)
 {
 	if (omaq_identity_pass_ok("") || omaq_identity_pass_ok(NULL))
 		fail("pass empty");
-	if (omaq_identity_pass_ok("has\nnl"))
-		fail("pass newline");
+	if (omaq_identity_pass_ok("has\nnl") ||
+	    omaq_identity_pass_ok("has\001control"))
+		fail("pass control");
 	if (!omaq_identity_pass_ok("ok-pass-1"))
 		fail("pass ok");
+	if (omaq_identity_new_pass_ok("short7") ||
+	    omaq_identity_new_pass_ok("äääääää") ||
+	    !omaq_identity_new_pass_ok("eight-ok") ||
+	    !omaq_identity_new_pass_ok("ääääääää"))
+		fail("new pass minimum");
 }
 
 static void test_expire(void)

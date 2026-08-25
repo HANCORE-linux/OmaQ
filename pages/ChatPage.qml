@@ -89,6 +89,15 @@ FocusScope {
     var revision = Number(root.service.groupsTick || 0)
     return revision >= 0 ? root.service.groupMembers(root.conversation) : []
   }
+  readonly property var groupInviteCandidates: {
+    if (!root.groupConversation || !root.service ||
+        typeof root.service.groupInviteCandidates !== "function")
+      return []
+    var revision = Number(root.service.groupsTick || 0) +
+      Number(root.service.friendsTick || 0)
+    return revision >= 0
+      ? root.service.groupInviteCandidates(root.conversation) : []
+  }
   readonly property int groupPeerCount: {
     var count = 0
     for (var i = 0; i < root.groupMembers.length; i++)
@@ -238,8 +247,10 @@ FocusScope {
     focusable: true
 
     OmaqTooltip {
-      visible: !chatButton.suppressHelp &&
-        (chatButton.hot || chatButton.activeFocus) && chatButton.helpText !== ""
+      visible: !chatButton.suppressHelp && chatButton.helpText !== "" &&
+        (chatButton.hot || (chatButton.activeFocus &&
+          (chatButton.activeFocusReason === Qt.TabFocusReason ||
+           chatButton.activeFocusReason === Qt.BacktabFocusReason)))
       text: chatButton.helpText
     }
   }
@@ -1904,7 +1915,9 @@ FocusScope {
           String(root.service.lastGroupInviteFailedRequest || "") !== root.groupInviteRequest)
         return
       root.groupInviteFeedback = root.service.lastGroupInviteFailedCode === "busy"
-        ? "Recipient is handling another group invite" : "Group invite failed"
+        ? "Recipient is handling another group invite"
+        : (root.service.lastGroupInviteFailedCode === "already_member"
+          ? "Contact is already a group member" : "Group invite failed")
     }
     function onLastErrorTickChanged() {
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
@@ -2156,7 +2169,7 @@ FocusScope {
         Text {
           width: parent.width
           text: root.groupInviteFeedback !== "" ? root.groupInviteFeedback :
-            ((root.service && root.service.friends && root.service.friends.length > 0)
+            (root.groupInviteCandidates.length > 0
               ? "Invite a contact" : "No contacts available")
           color: root.groupInviteFeedback === "Group invite failed"
             ? (root.theme.unread || root.accent) : root.accent
@@ -2167,7 +2180,7 @@ FocusScope {
 
         Flickable {
           id: inviteFriendsFlick
-          visible: root.service && root.service.friends && root.service.friends.length > 0
+          visible: root.groupInviteCandidates.length > 0
           width: parent.width
           height: visible ? Style.space(30) : 0
           contentWidth: inviteFriendRow.width
@@ -2182,7 +2195,7 @@ FocusScope {
             spacing: Style.space(4)
 
             Repeater {
-              model: root.service ? (root.service.friends || []) : []
+              model: root.groupInviteCandidates
               delegate: Item {
                 id: inviteFriend
                 required property var modelData
@@ -2269,6 +2282,7 @@ FocusScope {
               model: root.groupMembers
               delegate: Item {
                 id: memberButton
+                required property int index
                 required property var modelData
                 height: parent ? parent.height : Style.space(30)
                 width: memberContent.implicitWidth + Style.space(4)
@@ -2299,6 +2313,15 @@ FocusScope {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(4)
 
+                  Text {
+                    visible: memberButton.index > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "·"
+                    color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.52)
+                    font.family: root.fontFamily
+                    font.pixelSize: root.smileTextPx
+                  }
+
                   Rectangle {
                     visible: !memberButton.modelData.self
                     anchors.verticalCenter: parent.verticalCenter
@@ -2316,8 +2339,10 @@ FocusScope {
                     color: memberButton.modelData.self || memberButton.modelData.online
                       ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.58)
                     font.family: "Material Symbols Rounded"
-                    font.pixelSize: Style.font.iconSmall
-                    font.variableAxes: ({ "FILL": 1, "wght": 500 })
+                    font.pixelSize: Style.font.icon + Style.space(2)
+                    font.variableAxes: ({ "FILL": 0, "wght": 600 })
+                    renderType: Text.QtRendering
+                    font.hintingPreference: Font.PreferNoHinting
                   }
 
                   Text {

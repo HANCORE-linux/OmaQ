@@ -15,6 +15,7 @@ Item {
   property string statusText: "OmaQ"
   property string lastError: ""
   property string lastErrorConv: ""
+  property string lastErrorRequest: ""
   property int lastErrorTick: 0
   property bool attached: false
   property bool procReady: false
@@ -39,7 +40,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 7
+  readonly property int requiredHelperProtocol: 8
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -47,12 +48,21 @@ Item {
     /^[0-9a-f]{32}$/.test(root.helperProtocolInstance)
   property string identityFingerprint: ""
   property string inviteUrl: ""
+  property double inviteExpiresAt: 0
+  property string lastInviteAction: ""
+  property string lastInviteRequest: ""
+  property int inviteActionTick: 0
   property string qrPath: ""
   property string safetyCode: ""
   property string safetyConv: ""
   property bool pending: false
   property string lastConversation: "0"
   property string lastDirectId: ""
+  property string selectedConversation: ""
+  property string selectedDirectId: ""
+  property string selectedDirectKey: ""
+  property string safetyRequest: ""
+  property int safetyRequestSequence: 0
   property string lastAddr: ""
   property string lastGroup: ""
   property bool pendingGroup: false
@@ -170,12 +180,21 @@ Item {
   property string pendingFriendGeneration: ""
   property var pendingFriendBuild: []
   property var searchItems: []
+  property string searchConversation: ""
+  property string searchRequest: ""
+  property int searchRequestSequence: 0
   property int searchTick: 0
   property string selfAvatar: ""
   property int avatarTick: 0
   property string selfNickname: ""
+  property string lastNicknameRequest: ""
   property int nicknameTick: 0
   property int identityTick: 0
+  property int identityActionTick: 0
+  property string lastIdentityOp: ""
+  property string lastIdentityPath: ""
+  property string lastIdentityRequest: ""
+  property bool lastIdentityProtected: false
   property bool selfOnline: false
   property string connectionState: "starting"
   property bool everOnline: false
@@ -229,24 +248,60 @@ Item {
 
   function applyFriendSnapshot(items) {
     root.friends = items || []
-    if (!root.lastDirectId)
-      return
-    var stillFriend = false
+    var stillFriend = root.lastDirectId === ""
+    var selectedStillValid = root.selectedDirectId === ""
     for (var i = 0; i < root.friends.length; i++) {
-      if (String(root.friends[i].id) === String(root.lastDirectId)) {
+      var friendId = String(root.friends[i].id || "")
+      var friendKey = String(root.friends[i].key || "")
+      if (friendId === String(root.lastDirectId))
         stillFriend = true
-        break
-      }
+      if (friendId === root.selectedDirectId &&
+          friendKey === root.selectedDirectKey)
+        selectedStillValid = true
     }
     if (!stillFriend) {
       var removedDirectId = String(root.lastDirectId)
       root.lastDirectId = ""
       if (String(root.lastConversation || "") === removedDirectId)
         root.lastConversation = ""
-      if (String(root.safetyConv || "") === removedDirectId) {
-        root.safetyCode = ""
-        root.safetyConv = ""
-      }
+    }
+    if (!selectedStillValid) {
+      var removedSelectedId = root.selectedDirectId
+      root.selectedDirectId = ""
+      root.selectedDirectKey = ""
+      root.safetyRequest = ""
+      if (root.selectedConversation === removedSelectedId)
+        root.selectedConversation = ""
+      root.safetyCode = ""
+      root.safetyConv = ""
+    }
+  }
+
+  function identityErrorCode(code) {
+    return ["locked", "identity_changed", "identity_exists",
+      "identity_passphrase_required", "identity_import_failed", "busy",
+      "forbidden", "identity_backup_failed", "identity_state_archive_failed",
+      "identity_rollback_failed", "identity_backup_cleanup_failed",
+      "group_registry_failed", "unsupported"].indexOf(
+        String(code || "")) >= 0
+  }
+
+  function clearRequestError(request) {
+    var requestId = String(request || "")
+    if (requestId !== "" && root.lastErrorRequest === requestId) {
+      root.lastError = ""
+      root.lastErrorRequest = ""
+      root.lastErrorTick = root.lastErrorTick + 1
+    }
+  }
+
+  function clearIdentityError(request) {
+    var requestId = String(request || "")
+    if (requestId !== "" && root.lastErrorRequest === requestId &&
+        root.identityErrorCode(root.lastError)) {
+      root.lastError = ""
+      root.lastErrorRequest = ""
+      root.lastErrorTick = root.lastErrorTick + 1
     }
   }
 
@@ -263,6 +318,8 @@ Item {
     if (root.helperCompatibility === "incompatible" && !recoveryLifecycle)
       return
     if (root.awaitingHelperInstance && ev.event !== "snapshot" && !recoveryLifecycle) {
+      if (ev.event === "invite")
+        return
       if (!root.handshakeEventOverflow) {
         var bufferedLine = String(line)
         var bufferedBytes = bufferedLine.length * 3 + 1
@@ -389,6 +446,7 @@ Item {
       root.selfOnline = root.connectionState === "online"
     }
     if (ev.event === "nickname") {
+      root.lastNicknameRequest = String(ev.request || "")
       root.selfNickname = String(ev.value || "")
       if (root.lastError !== "helper_down" && root.lastError !== "helper_incompatible" &&
           root.lastError !== "identity_rollback_failed" &&
@@ -399,7 +457,10 @@ Item {
     if (ev.event === "error") {
       root.lastError = ev.code || "error"
       root.lastErrorConv = ev.conversation || ""
+      root.lastErrorRequest = String(ev.request || "")
       root.lastErrorTick = root.lastErrorTick + 1
+      if (ev.code === "identity_rollback_failed")
+        root.failQueuedGroupInvites("identity_rollback_failed")
       if (ev.code === "locked") {
         root.locked = true
         root.connectionState = "locked"
@@ -465,12 +526,21 @@ Item {
       }
     }
     if (ev.event === "identity") {
+      root.lastIdentityOp = String(ev.op || "")
+      root.lastIdentityPath = String(ev.path || "")
+      root.lastIdentityRequest = String(ev.request || "")
+      root.lastIdentityProtected = ev.protected === true
+      root.identityActionTick = root.identityActionTick + 1
+      if (root.lastErrorRequest !== "" && root.identityErrorCode(root.lastError)) {
+        root.lastError = ""
+        root.lastErrorRequest = ""
+      }
       if (ev.op === "recovered" && root.lastError === "identity_rollback_failed")
         root.lastError = ""
       if (ev.op === "unlock")
         root.locked = false
       if (ev.op === "import") {
-        root.resetStateForIdentity()
+        root.resetStateForIdentity(true)
         root.identityFingerprint = ""
         root.identityTick = root.identityTick + 1
       }
@@ -554,7 +624,9 @@ Item {
       root.messageTick = root.messageTick + 1
     }
     if (ev.event === "search") {
-      if (ev.conversation && root.lastConversation && String(ev.conversation) !== String(root.lastConversation))
+      if (!ev.conversation || !ev.request ||
+          String(ev.conversation) !== root.searchConversation ||
+          String(ev.request) !== root.searchRequest)
         return
       root.searchItems = ev.items || []
       root.searchTick = root.searchTick + 1
@@ -694,10 +766,22 @@ Item {
       root.surfacesTick = root.surfacesTick + 1
     }
     if (ev.event === "invite") {
-      if (ev.url)
-        root.inviteUrl = ev.url
+      if (ev.url !== undefined)
+        root.inviteUrl = String(ev.url || "")
+      if (ev.expires !== undefined) {
+        var inviteExpiry = Number(ev.expires || 0)
+        root.inviteExpiresAt = Number.isFinite(inviteExpiry) && inviteExpiry > 0
+          ? Math.floor(inviteExpiry) : 0
+      }
       if (ev.qr)
         root.qrPath = ev.qr
+      else if (ev.url !== undefined && String(ev.url || "") === "")
+        root.qrPath = ""
+      if (ev.op && ev.request) {
+        root.lastInviteAction = String(ev.op)
+        root.lastInviteRequest = String(ev.request)
+        root.inviteActionTick = root.inviteActionTick + 1
+      }
     }
     if (ev.event === "request") {
       root.pending = true
@@ -744,6 +828,7 @@ Item {
         members.push({
           peer: String(ev.peer || ""),
           key: String(ev.key || ""),
+          friendKey: String(ev.friendKey || ""),
           name: String(ev.name || "Member"),
           role: String(ev.role || "member"),
           online: !!ev.online,
@@ -802,14 +887,11 @@ Item {
       if (ev.action === "create" || ev.action === "join")
         root.lastConversation = ev.group || root.lastConversation
     }
-    if (ev.event === "safety") {
-      root.safetyCode = ev.code || ""
-      root.safetyConv = ev.conversation || root.lastConversation
-      if (ev.conversation) {
-        root.lastConversation = ev.conversation
-        if (String(ev.conversation).charAt(0) !== "g")
-          root.lastDirectId = String(ev.conversation)
-      }
+    if (ev.event === "safety" && ev.conversation && ev.request &&
+        String(ev.conversation) === root.selectedDirectId &&
+        String(ev.request) === root.safetyRequest) {
+      root.safetyCode = String(ev.code || "")
+      root.safetyConv = String(ev.conversation)
     }
     if (ev.event === "file.offer") {
       root.lastFileState = "offer"
@@ -1173,15 +1255,77 @@ Item {
     return true
   }
 
-  function createInvite() { sendOp({ op: "invite.create", kind: "direct", ttlSec: 86400 }) }
-  function revokeInvite() { sendOp({ op: "invite.revoke" }); root.inviteUrl = ""; root.qrPath = "" }
-  function setAvatar(path) { sendOp({ op: "avatar.set", path: path }) }
-  function setNickname(value) {
-    var nickname = String(value || "").trim()
-    if (!nickname || nickname.length > 128)
+  function sendImmediateOp(obj) {
+    if (root.helperCompatibility === "incompatible" || root.awaitingHelperInstance)
       return false
-    sendOp({ op: "nickname.set", nickname: nickname })
+    var line = JSON.stringify(obj) + "\n"
+    if (sock.connected) {
+      sock.write(line)
+      return true
+    }
+    if (root.procReady) {
+      proc.write(line)
+      return true
+    }
+    return false
+  }
+
+  function createInvite(request) {
+    return sendImmediateOp({ op: "invite.create", kind: "direct", ttlSec: 86400,
+      request: String(request || "") })
+  }
+  function revokeInvite(request) {
+    return sendImmediateOp({ op: "invite.revoke", request: String(request || "") })
+  }
+  function setAvatar(path) { sendOp({ op: "avatar.set", path: path }) }
+  function nicknameValid(value) {
+    var nickname = String(value || "").trim()
+    var characters = 0
+    if (nickname === "")
+      return false
+    for (var i = 0; i < nickname.length; i++) {
+      var code = nickname.charCodeAt(i)
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f))
+        return false
+      if (code >= 0xd800 && code <= 0xdbff) {
+        if (i + 1 >= nickname.length)
+          return false
+        var low = nickname.charCodeAt(i + 1)
+        if (low < 0xdc00 || low > 0xdfff)
+          return false
+        i++
+      } else if (code >= 0xdc00 && code <= 0xdfff) {
+        return false
+      }
+      characters++
+      if (characters > 18)
+        return false
+    }
     return true
+  }
+  function limitNickname(value, limit) {
+    var nickname = String(value || "")
+    var maximum = Math.max(0, Number(limit || 0))
+    var characters = 0
+    var end = 0
+    while (end < nickname.length && characters < maximum) {
+      var code = nickname.charCodeAt(end)
+      if (code >= 0xd800 && code <= 0xdbff && end + 1 < nickname.length) {
+        var low = nickname.charCodeAt(end + 1)
+        end += low >= 0xdc00 && low <= 0xdfff ? 2 : 1
+      } else {
+        end++
+      }
+      characters++
+    }
+    return nickname.slice(0, end)
+  }
+  function setNickname(value, request) {
+    var nickname = String(value || "").trim()
+    var requestId = String(request || "")
+    if (!root.nicknameValid(nickname) || requestId === "")
+      return false
+    return sendImmediateOp({ op: "nickname.set", nickname: nickname, id: requestId })
   }
   function confirmAutoOpenMigration() {
     if (root.identityFingerprint)
@@ -1372,12 +1516,22 @@ Item {
   function rotateNospam() {
     sendOp({ op: "nospam.rotate" })
     root.inviteUrl = ""
+    root.inviteExpiresAt = 0
     root.qrPath = ""
   }
-  function getSafety() {
-    if (!root.lastDirectId)
-      return
-    sendOp({ op: "safety.get", conversation: root.lastDirectId })
+  function getSafety(conversation) {
+    var selected = String(conversation || root.selectedDirectId || "")
+    if (selected === "" || selected !== root.selectedDirectId ||
+        !/^[0-9a-f]{64}$/.test(root.selectedDirectKey))
+      return false
+    root.safetyRequestSequence++
+    root.safetyRequest = Date.now().toString(36) + "-safety-" +
+      root.safetyRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    root.safetyCode = ""
+    root.safetyConv = selected
+    return sendOp({ op: "safety.get", conversation: selected,
+      key: root.selectedDirectKey, id: root.safetyRequest })
   }
   function groupById(groupId) {
     var key = String(groupId || "")
@@ -1394,6 +1548,23 @@ Item {
     var group = root.groupById(groupId)
     return group ? (group.members || []) : []
   }
+  function groupInviteCandidates(groupId) {
+    var members = root.groupMembers(groupId)
+    var memberKeys = ({})
+    var candidates = []
+    var i
+    for (i = 0; i < members.length; i++) {
+      var memberKey = String(members[i].friendKey || "")
+      if (/^[0-9a-f]{64}$/.test(memberKey))
+        memberKeys[memberKey] = true
+    }
+    for (i = 0; i < root.friends.length; i++) {
+      var friendKey = String(root.friends[i].key || "")
+      if (/^[0-9a-f]{64}$/.test(friendKey) && !memberKeys[friendKey])
+        candidates.push(root.friends[i])
+    }
+    return candidates
+  }
   function groupSelfRole(groupId) {
     var members = root.groupMembers(groupId)
     for (var i = 0; i < members.length; i++)
@@ -1409,12 +1580,41 @@ Item {
         count++
     return count
   }
-  function selectGroup(groupId) {
+  function selectDirect(friendId) {
+    var key = String(friendId || "")
+    var foundKey = ""
+    for (var i = 0; i < root.friends.length; i++)
+      if (String(root.friends[i].id || "") === key) {
+        foundKey = String(root.friends[i].key || "")
+        break
+      }
+    if (!/^[0-9a-f]{64}$/.test(foundKey))
+      return false
+    root.lastConversation = key
+    root.lastDirectId = key
+    root.selectedConversation = key
+    root.selectedDirectId = key
+    root.selectedDirectKey = foundKey
+    root.safetyRequest = ""
+    root.safetyCode = ""
+    root.safetyConv = ""
+    return true
+  }
+
+  function selectGroup(groupId, userSelected) {
     var key = String(groupId || "")
     if (!root.groupById(key))
       return false
     root.lastGroup = key
     root.lastConversation = key
+    if (userSelected === true) {
+      root.selectedConversation = key
+      root.selectedDirectId = ""
+      root.selectedDirectKey = ""
+      root.safetyRequest = ""
+      root.safetyCode = ""
+      root.safetyConv = ""
+    }
     return true
   }
   function groupTitleOk(title) {
@@ -1499,28 +1699,50 @@ Item {
   function setSurface(conv, mon, x, y, pinned) {
     sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
   }
-  function exportIdentity() {
-    sendOp({ op: "identity.export" })
+  function exportIdentity(path, request) {
+    var o = { op: "identity.export", id: String(request || "") }
+    if (path)
+      o.path = String(path)
+    return sendImmediateOp(o)
   }
-  function importIdentity(path, replace, passphrase) {
-    var o = { op: "identity.import", path: path }
+  function inspectIdentity(path, passphrase, request) {
+    var o = { op: "identity.inspect", path: path, id: String(request || "") }
+    if (passphrase)
+      o.passphrase = String(passphrase)
+    return sendImmediateOp(o)
+  }
+  function importIdentity(path, replace, passphrase, request) {
+    var o = { op: "identity.import", path: path, id: String(request || "") }
     if (replace)
       o.replace = true
     if (passphrase)
       o.passphrase = String(passphrase)
-    sendOp(o)
+    return sendImmediateOp(o)
   }
-  function searchChat(q) {
-    sendOp({ op: "search", conversation: root.lastConversation, text: q, limit: 20 })
+  function searchChat(q, selectedConversation) {
+    var conversation = String(selectedConversation || root.selectedConversation || "")
+    root.searchItems = []
+    root.searchConversation = conversation
+    root.searchRequestSequence++
+    root.searchRequest = Date.now().toString(36) + "-search-" +
+      root.searchRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    if (conversation === "")
+      return false
+    return sendOp({ op: "search", conversation: conversation, text: q,
+      limit: 20, id: root.searchRequest })
   }
-  function unlockIdentity(pass) {
-    sendOp({ op: "identity.unlock", passphrase: pass })
+  function unlockIdentity(pass, request) {
+    return sendImmediateOp({ op: "identity.unlock", passphrase: pass,
+      id: String(request || "") })
   }
-  function protectIdentity(pass) {
-    sendOp({ op: "identity.protect", passphrase: pass })
+  function protectIdentity(pass, request) {
+    return sendImmediateOp({ op: "identity.protect", passphrase: pass,
+      id: String(request || "") })
   }
-  function unprotectIdentity(pass) {
-    sendOp({ op: "identity.unprotect", passphrase: pass })
+  function unprotectIdentity(pass, request) {
+    return sendImmediateOp({ op: "identity.unprotect", passphrase: pass,
+      id: String(request || "") })
   }
   function sendFile(path, conv) {
     var c = String(conv || root.lastConversation || "")
@@ -1630,10 +1852,11 @@ Item {
     root.requestHelperStatus()
   }
 
-  function resetStateForIdentity() {
+  function resetStateForIdentity(expectedImport) {
     root.failActiveOutgoingFiles("identity_replaced")
     root.failInFlightMessages("delivery_unknown")
     root.failQueuedMessages("identity_changed")
+    root.failQueuedGroupInvites("identity_changed")
     root.pendingOps = []
     root.pendingHandshakeEvents = []
     root.pendingHandshakeBytes = 0
@@ -1651,6 +1874,9 @@ Item {
     root.lastHistoryUnreadConv = ""
     root.lastHistoryUnreadCount = 0
     root.searchItems = []
+    root.searchConversation = ""
+    root.searchRequest = ""
+    root.lastNicknameRequest = ""
     root.lastChatText = ""
     root.lastChatId = ""
     root.lastChatReply = ""
@@ -1695,6 +1921,10 @@ Item {
     root.selfAvatar = ""
     root.lastConversation = ""
     root.lastDirectId = ""
+    root.selectedConversation = ""
+    root.selectedDirectId = ""
+    root.selectedDirectKey = ""
+    root.safetyRequest = ""
     root.lastAddr = ""
     root.lastGroup = ""
     root.groups = []
@@ -1715,6 +1945,7 @@ Item {
     root.pending = false
     root.pendingGroup = false
     root.inviteUrl = ""
+    root.inviteExpiresAt = 0
     root.qrPath = ""
     root.safetyCode = ""
     root.safetyConv = ""
@@ -1732,9 +1963,11 @@ Item {
     root.pendingFriendBuild = []
     root.surfaces = []
     root.surfacesTick = root.surfacesTick + 1
-    root.lastError = "identity_changed"
+    root.lastError = expectedImport ? "" : "identity_changed"
+    root.lastErrorRequest = ""
     root.lastErrorConv = ""
-    root.lastErrorTick = root.lastErrorTick + 1
+    if (!expectedImport)
+      root.lastErrorTick = root.lastErrorTick + 1
   }
 
   function failActiveOutgoingFiles(reason) {
@@ -1784,6 +2017,7 @@ Item {
   function scheduleRestart() {
     helperStatusTimer.stop()
     root.failInFlightMessages("delivery_unknown")
+    root.failQueuedGroupInvites("helper_restarted")
     root.reconnectGeneration = root.reconnectGeneration + 1
     root.helperCompatibility = "unknown"
     root.legacyHandshakeAttempts = 0
@@ -1794,6 +2028,9 @@ Item {
     root.connectionState = "reconnecting"
     root.selfOnline = false
     root.applyCallSnapshot(null)
+    root.inviteUrl = ""
+    root.inviteExpiresAt = 0
+    root.qrPath = ""
     if (root.lastError !== "identity_rollback_failed" &&
         root.lastError !== "identity_backup_cleanup_failed")
       root.lastError = "helper_down"

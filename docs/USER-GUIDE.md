@@ -23,7 +23,7 @@ To begin, you need a private `omaq://` invite from the other person.
 4. Click **Join chat**.
 5. The other person accepts **Someone wants to chat**.
 
-The invite and the explicit **Accept** step are the trust decision. Confirm the person through another trusted channel.
+The invite and the explicit **Accept** step are the trust decision. Confirm the person through another trusted channel. The Invite view shows how long the current link remains valid. If a link was shared with the wrong person, use **Revoke** to invalidate it or **New link** to revoke it and create a replacement; both actions require confirmation. Revocation cannot undo an invitation that was already accepted—remove that contact separately if necessary. For an existing direct contact, **Show safety code** displays an identity code: compare it with that contact over a trusted channel. Matching codes verify that both sides selected the same two Tox identities.
 
 ## 2. Open a chat
 
@@ -32,6 +32,8 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 1. Click **Chat**.
 2. Click the accepted friend.
 3. The floating chat window opens.
+
+Your own panel nickname can contain up to 18 valid characters. Longer remote or legacy names are shortened visually with an ellipsis and never cross the panel border.
 
 ## 3. Chat controls
 
@@ -93,12 +95,12 @@ Groups are private and limited to 10 members.
 
 1. Open **Advanced** → **Groups**.
 2. Enter a name and choose **Create**.
-3. Select a named group, choose a contact, then use **Invite Contact**. You can also use the **Add member** icon directly in the group-chat header. Internal identifiers such as `g0` are not shown as group names.
+3. Select a named group, choose a contact, then use **Invite Contact**. You can also use the **Add member** icon directly in the group-chat header, where contacts already present in the group are excluded. Internal identifiers such as `g0` are not shown as group names.
 4. Use **Open** to enter the selected group chat, or use the confirmed **Leave** action for that named group.
 5. The member strip in a group chat shows every cached member's name, role, and online/offline status at the normal composer text size.
 6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation. A removed member may receive and accept a later fresh invite.
 
-Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. The member strip uses plain status entries: your entry is `You` with its role icon, while other members show a green or gray presence dot, role icon, and name. Every role can leave from the `logout` action in the group-chat header after confirmation. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
+Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. The member strip uses plain, middle-dot-separated status entries: your entry is `You` with a full-size role icon, while other members show a green or gray presence dot, role icon, and name. Every role can leave from the `logout` action in the group-chat header after confirmation. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
 
 ## 8. Protect and move your identity
 
@@ -107,13 +109,13 @@ Group chats support message formatting, replies, editing, deletion, reactions, u
 Your OmaQ identity is local. The private identity is not stored on a central chat server.
 
 1. Open **Advanced** → **Identity**.
-2. Enter a passphrase in **Passphrase for identity file**.
+2. Enter a new passphrase with at least 8 characters and at most 128 UTF-8 bytes.
 3. Click **Protect**.
-4. Use **Export** to create a private identity bundle.
+4. Use **Export** and choose where to save the private identity bundle.
 5. Move that file securely to the new computer.
-6. Open **Advanced** → **Identity** there and use **Import**.
-7. If the imported identity is encrypted, enter its passphrase first. Use **Replace** only when intentionally replacing an existing identity, then confirm **Replace now**. OmaQ validates a staged copy, creates a unique recovery backup, and restores the current identity if replacement fails.
+6. Open **Advanced** → **Identity** there and use **Import** to select and validate the bundle without changing the active identity.
+7. If the imported identity is encrypted, enter its passphrase before Import or Replace. Use **Replace** only when intentionally activating the selected identity, then confirm **Replace now**. OmaQ validates a staged copy, creates a unique recovery backup, and restores the current identity if replacement fails.
 
-The identity file is stored locally at `~/.local/share/omaq/tox.save`. Export creates a versioned bundle containing that saved identity and its private group mappings. The passphrase encrypts the Tox identity data; filesystem permissions protect the bundle and group metadata. It does not encrypt chat history.
+The identity file is stored locally at `~/.local/share/omaq/tox.save`. Export creates a versioned bundle containing that saved identity and its private group mappings. Finish any active group invitation or member-binding confirmation before exporting; OmaQ reports `busy` rather than creating an incomplete bundle. The passphrase encrypts the Tox identity data; filesystem permissions protect the bundle and group metadata. It does not encrypt chat history.
 
 Never send the identity bundle through a public channel. Transfer it securely and delete extra copies. Tox does not restore a missing private-group membership from a Chat ID; OmaQ reports and removes such orphaned mappings instead of fabricating a public join, so another member may need to invite the imported identity again. Do not copy private ratchet state or chat history unless you deliberately want to move that local data as well.

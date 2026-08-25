@@ -223,17 +223,49 @@ done:
 
 static int nickname_ok(const char *name)
 {
-	size_t i, n;
+	const unsigned char *text = (const unsigned char *)name;
+	size_t chars = 0, i = 0, n;
 
 	if (!name || !name[0])
 		return -1;
 	n = strlen(name);
 	if (n > TOX_MAX_NAME_LENGTH)
 		return -1;
-	for (i = 0; i < n; i++) {
-		unsigned char c = (unsigned char)name[i];
-		if (c < 0x20 || c == 0x7f)
+	while (i < n) {
+		unsigned char c = text[i++];
+
+		chars++;
+		if (chars > OMAQ_NICKNAME_MAX_CHARS || c < 0x20 || c == 0x7f)
 			return -1;
+		if (c < 0x80)
+			continue;
+		if (c >= 0xc2 && c <= 0xdf) {
+			if (i >= n || text[i] < 0x80 || text[i] > 0xbf ||
+			    (c == 0xc2 && text[i] <= 0x9f))
+				return -1;
+			i++;
+			continue;
+		}
+		if (c >= 0xe0 && c <= 0xef) {
+			if (i + 1 >= n || text[i] < 0x80 || text[i] > 0xbf ||
+			    text[i + 1] < 0x80 || text[i + 1] > 0xbf ||
+			    (c == 0xe0 && text[i] < 0xa0) ||
+			    (c == 0xed && text[i] > 0x9f))
+				return -1;
+			i += 2;
+			continue;
+		}
+		if (c >= 0xf0 && c <= 0xf4) {
+			if (i + 2 >= n || text[i] < 0x80 || text[i] > 0xbf ||
+			    text[i + 1] < 0x80 || text[i + 1] > 0xbf ||
+			    text[i + 2] < 0x80 || text[i + 2] > 0xbf ||
+			    (c == 0xf0 && text[i] < 0x90) ||
+			    (c == 0xf4 && text[i] > 0x8f))
+				return -1;
+			i += 3;
+			continue;
+		}
+		return -1;
 	}
 	return 0;
 }

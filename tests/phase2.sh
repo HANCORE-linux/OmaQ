@@ -90,9 +90,34 @@ if ! grep -a -q '"addr"' "$fa"; then
 fi
 
 # Accept first while B is not yet a friend, then compare safety codes.
-echo '{"op":"invite.create","ttlSec":86400,"kind":"direct"}' >&3
+before=$(wc -l <"$fa")
+echo '{"op":"invite.create","ttlSec":86400,"kind":"bogus","request":"invite-phase2-bogus"}' >&3
+sleep 0.2
+tail -n +"$((before + 1))" "$fa" | grep -a '"code":"unsupported"' |
+	grep -a -q '"request":"invite-phase2-bogus"' || {
+	echo "phase2: malformed invite kind was accepted or uncorrelated" >&2
+	exit 1
+}
+if tail -n +"$((before + 1))" "$fa" | grep -a -q '"event":"invite","url":"omaq://'; then
+	echo "phase2: malformed invite kind created a link" >&2
+	exit 1
+fi
+echo '{"op":"invite.create","ttlSec":2147483647,"kind":"direct","request":"invite-phase2-first"}' >&3
 sleep 0.3
 url=$(grep -a '"url"' "$fa" | tail -1 | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+invite_event=$(grep -a '"event":"invite"' "$fa" | tail -1)
+printf '%s\n' "$invite_event" |
+	grep -E -a -q '"expires":[1-9][0-9]*.*"op":"create","request":"invite-phase2-first"' || {
+	echo "phase2: invite expiry/request correlation missing" >&2
+	exit 1
+}
+invite_expiry=$(printf '%s\n' "$invite_event" |
+	sed -n 's/.*"expires":\([0-9]*\).*/\1/p')
+invite_remaining=$((invite_expiry - $(date +%s)))
+[ "$invite_remaining" -ge 86395 ] && [ "$invite_remaining" -le 86400 ] || {
+	echo "phase2: helper did not enforce the 24-hour invite lifetime" >&2
+	exit 1
+}
 if [ -z "$url" ]; then
 	echo "phase2: no invite url" >&2
 	exit 1
@@ -118,8 +143,29 @@ if [ "$ok" -ne 1 ]; then
 fi
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
 sleep 1
-echo '{"op":"safety.get","conversation":"0"}' >&3
-echo '{"op":"safety.get","conversation":"0"}' >&4
+grep -a '"event":"invite"' "$fa" | tail -1 |
+	grep -a -q '"url":"","expires":0,"op":"clear"' || {
+	echo "phase2: accepted invite state was not cleared" >&2
+	exit 1
+}
+key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ "${#key_a}" -eq 64 ] && [ "${#key_b}" -eq 64 ] || {
+	echo "phase2: stable friend keys missing" >&2
+	exit 1
+}
+before=$(wc -l <"$fa")
+printf '%s\n' '{"op":"safety.get","conversation":"0","key":"0000000000000000000000000000000000000000000000000000000000000000","id":"safety-stale-key"}' >&3
+sleep 0.2
+tail -n +"$((before + 1))" "$fa" | grep -a '"code":"forbidden"' |
+	grep -a -q '"request":"safety-stale-key"' || {
+	echo "phase2: stale safety key was accepted" >&2
+	exit 1
+}
+printf '{"op":"safety.get","conversation":"0","key":"%s","id":"safety-a"}\n' "$key_a" >&3
+printf '{"op":"safety.get","conversation":"0","key":"%s","id":"safety-b"}\n' "$key_b" >&4
 i=0
 ca=""
 cb=""
@@ -136,15 +182,12 @@ if [ -z "$ca" ] || [ "$ca" != "$cb" ]; then
 	echo "phase2: safety codes differ" >&2
 	exit 1
 fi
-
-key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | tail -1 |
-	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
-key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' | tail -1 |
-	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
-[ "${#key_a}" -eq 64 ] && [ "${#key_b}" -eq 64 ] || {
-	echo "phase2: stable friend keys missing" >&2
+grep -a '"event":"safety"' "$fa" | tail -1 | grep -a -q '"request":"safety-a"' &&
+grep -a '"event":"safety"' "$fb" | tail -1 | grep -a -q '"request":"safety-b"' || {
+	echo "phase2: safety request correlation missing" >&2
 	exit 1
 }
+
 forbidden_before=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
 echo '{"op":"contact.remove","id":"0","key":"0000000000000000000000000000000000000000000000000000000000000000"}' >&3
 i=0
@@ -163,18 +206,23 @@ if ! kill -0 "$pa" 2>/dev/null; then
 	exit 1
 fi
 
-# Revoke: B may knock; A must not emit request.
-req_before=$(grep -a -c '"request"' "$fa" 2>/dev/null || true)
+# Revoke: B may knock; A must not emit a contact request.
+req_before=$(grep -a '"event":"request"' "$fa" | grep -a -c '"kind":"direct"' || true)
 req_before=${req_before:-0}
-echo '{"op":"invite.create","ttlSec":86400,"kind":"direct"}' >&3
+echo '{"op":"invite.create","ttlSec":86400,"kind":"direct","request":"invite-phase2-revoke-source"}' >&3
 sleep 0.3
 url2=$(grep -a '"url"' "$fa" | tail -1 | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
-echo '{"op":"invite.revoke"}' >&3
+echo '{"op":"invite.revoke","request":"invite-phase2-revoke"}' >&3
 sleep 0.2
+grep -a '"event":"invite"' "$fa" | tail -1 |
+	grep -a -q '"url":"","expires":0,"op":"revoke","request":"invite-phase2-revoke"' || {
+	echo "phase2: invite revoke was not correlated" >&2
+	exit 1
+}
 printf '{"op":"invite.redeem","payload":"%s"}\n' "$url2" >&4
 i=0
 while [ "$i" -lt 8 ]; do
-	req_now=$(grep -a -c '"request"' "$fa" 2>/dev/null || true)
+	req_now=$(grep -a '"event":"request"' "$fa" | grep -a -c '"kind":"direct"' || true)
 	req_now=${req_now:-0}
 	if [ "$req_now" -gt "$req_before" ]; then
 		echo "phase2: revoked invite still requested" >&2
