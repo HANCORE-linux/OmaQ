@@ -192,6 +192,12 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "member") == 0) {
 			if (parse_string(&p, out->member, sizeof(out->member)) != 0)
 				return -1;
+		} else if (strcmp(key, "key") == 0) {
+			if (parse_string(&p, out->key, sizeof(out->key)) != 0)
+				return -1;
+		} else if (strcmp(key, "request") == 0) {
+			if (parse_string(&p, out->request, sizeof(out->request)) != 0)
+				return -1;
 		} else if (strcmp(key, "role") == 0) {
 			if (parse_string(&p, out->role, sizeof(out->role)) != 0)
 				return -1;

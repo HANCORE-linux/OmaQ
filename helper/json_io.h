@@ -17,6 +17,8 @@ typedef struct {
 	char reply[80];
 	char group[80];
 	char member[80];
+	char key[80];
+	char request[80];
 	char role[16];
 	char state[16];
 	char path[OMAQ_JSON_STR_MAX];

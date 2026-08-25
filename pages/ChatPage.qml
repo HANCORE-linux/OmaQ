@@ -6,12 +6,14 @@ import Quickshell
 import Quickshell.Io
 import qs.Ui
 import qs.Commons
+import ".." as OmaQ
 
 FocusScope {
   // Keep the live plugin parser cache tied to the current source revision.
   id: root
   property var service: null
   property var theme: ({ bg: "", fg: "", accent: "", unread: "" })
+  property real messageScale: 1.0
   property string conversation: ""
   property string peerName: ""
   property string peerAvatar: ""
@@ -29,6 +31,12 @@ FocusScope {
   property bool readActive: false
   property bool clearConfirm: false
   property bool groupMembersOpen: false
+  property bool groupInviteOpen: false
+  property string groupInviteFriendId: ""
+  property string groupInviteFriendKey: ""
+  property string groupInviteRequest: ""
+  property int groupInviteGeneration: -1
+  property string groupInviteFeedback: ""
   property string groupActionConfirm: ""
   property string groupActionMemberKey: ""
   property string groupActionName: ""
@@ -157,6 +165,8 @@ FocusScope {
 
   readonly property int smilePx: Math.max(56, Style.font.display * 2)
   readonly property int smileTextPx: Style.font.body
+  readonly property int messageTextPx: Math.max(Style.font.caption,
+    Math.round(smileTextPx * messageScale))
   readonly property string filePickerScript:
     "if command -v zenity >/dev/null 2>&1; then\n" +
     "  exec zenity --file-selection --title='Send file'\n" +
@@ -920,6 +930,32 @@ FocusScope {
       (selfRole === "admin" && targetRole === "member")
   }
 
+  function inviteGroupFriend(friend) {
+    if (!root.groupConversation || !root.service || !friend)
+      return
+    var friendId = String(friend.id || "")
+    if (!friendId)
+      return
+    var friendKey = String(friend.key || "")
+    root.groupInviteFriendId = friendId
+    root.groupInviteFriendKey = friendKey
+    root.groupInviteRequest = root.service.nextGroupInviteRequest()
+    root.groupInviteGeneration = Number(root.service.helperInstanceGeneration || 0)
+    root.groupInviteFeedback = "Sending group invite…"
+    if (!root.service.inviteToGroup(friendId, friendKey, root.conversation,
+          root.groupInviteRequest))
+      root.groupInviteFeedback = "Group invite failed"
+  }
+
+  function closeGroupInvite() {
+    root.groupInviteOpen = false
+    root.groupInviteFriendId = ""
+    root.groupInviteFriendKey = ""
+    root.groupInviteRequest = ""
+    root.groupInviteGeneration = -1
+    root.groupInviteFeedback = ""
+  }
+
   function requestGroupMemberAction(action, member) {
     if (!root.groupConversation || !member || !root.mayManageGroupMember(member))
       return
@@ -1219,7 +1255,7 @@ FocusScope {
       longest = Math.max(longest, sourceLines[i].length)
     // Size from the complete logical line, not a single-word minimum. This
     // keeps short three-word messages on one line when the window allows it.
-    var estimated = longest * root.smileTextPx * 0.72 + Style.space(16)
+    var estimated = longest * root.messageTextPx * 0.72 + Style.space(16)
     if (withReceipt)
       estimated += Style.space(24)
     var minimum = hasCode ? Style.space(180) : Style.space(52)
@@ -1447,8 +1483,8 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service)
-      service.answerCall(root.conversation)
+    if (service && service.answerCall(root.conversation))
+      OmaQ.CallTone.stopAll()
   }
 
   function hangUp() {
@@ -1462,8 +1498,8 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service)
-      service.stopCall(root.conversation)
+    if (service && service.stopCall(root.conversation))
+      OmaQ.CallTone.stopAll()
   }
 
   function attachFile() {
@@ -1818,6 +1854,23 @@ FocusScope {
         return
       root.failReadReceipt(root.service.lastReceiptFailedId)
     }
+    function onHelperInstanceGenerationChanged() {
+      if (root.groupInviteFeedback === "Sending group invite…" && root.service &&
+          root.groupInviteGeneration >= 0 &&
+          root.groupInviteGeneration !== Number(root.service.helperInstanceGeneration || 0)) {
+        root.groupInviteFeedback = "Group invite failed"
+        root.groupInviteRequest = ""
+        root.groupInviteGeneration = -1
+      }
+    }
+    function onHelperCompatibilityChanged() {
+      if (root.groupInviteFeedback === "Sending group invite…" && root.service &&
+          root.service.helperCompatibility === "incompatible") {
+        root.groupInviteFeedback = "Group invite failed"
+        root.groupInviteRequest = ""
+        root.groupInviteGeneration = -1
+      }
+    }
     function onHelperHandshakeTickChanged() {
       root.retryReadReceipts()
       if (!root.demo && root.service && root.conversation)
@@ -1834,6 +1887,36 @@ FocusScope {
       root.reactionStatus = "Chat history could not be loaded"
       reactionStatusTimer.interval = 6000
       reactionStatusTimer.restart()
+    }
+    function onFriendsChanged() {
+      if (!root.service || root.groupInviteFriendId === "")
+        return
+      var matches = false
+      for (var i = 0; i < root.service.friends.length; i++)
+        if (String(root.service.friends[i].id || "") === root.groupInviteFriendId &&
+            String(root.service.friends[i].key || "") === root.groupInviteFriendKey) {
+          matches = true
+          break
+        }
+      if (!matches)
+        root.closeGroupInvite()
+    }
+    function onGroupInviteSentTickChanged() {
+      if (root.groupInviteFeedback !== "Sending group invite…" || !root.service ||
+          String(root.service.lastGroupInviteSentGroup || "") !== String(root.conversation) ||
+          String(root.service.lastGroupInviteSentFriend || "") !== root.groupInviteFriendId ||
+          String(root.service.lastGroupInviteSentRequest || "") !== root.groupInviteRequest)
+        return
+      root.groupInviteFeedback = "Group invite sent"
+    }
+    function onGroupInviteFailedTickChanged() {
+      if (root.groupInviteFeedback !== "Sending group invite…" || !root.service ||
+          String(root.service.lastGroupInviteFailedGroup || "") !== String(root.conversation) ||
+          String(root.service.lastGroupInviteFailedFriend || "") !== root.groupInviteFriendId ||
+          String(root.service.lastGroupInviteFailedRequest || "") !== root.groupInviteRequest)
+        return
+      root.groupInviteFeedback = root.service.lastGroupInviteFailedCode === "busy"
+        ? "Recipient is handling another group invite" : "Group invite failed"
     }
     function onLastErrorTickChanged() {
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
@@ -1893,6 +1976,7 @@ FocusScope {
     root.fileStatusPath = ""
     root.reactionStatus = ""
     root.groupMembersOpen = root.groupConversation
+    root.closeGroupInvite()
     root.clearGroupMemberAction()
     mediaPlayer.stop()
     root.activeAudioPath = ""
@@ -1924,6 +2008,7 @@ FocusScope {
 
   Component.onCompleted: {
     root.groupMembersOpen = root.groupConversation
+    root.closeGroupInvite()
     if (root.demo)
       root.resetDemo()
   }
@@ -1995,6 +2080,24 @@ FocusScope {
         }
 
         FormatBtn {
+          visible: root.groupConversation && root.groupSelfRole() !== "member" &&
+            !root.clearConfirm
+          materialIcon: "person_add"
+          helpText: root.groupInviteOpen ? "Close Add member" : "Add member"
+          selected: root.groupInviteOpen
+          onClicked: {
+            root.groupInviteOpen = !root.groupInviteOpen
+            if (!root.groupInviteOpen) {
+              root.groupInviteFriendId = ""
+              root.groupInviteFriendKey = ""
+              root.groupInviteRequest = ""
+              root.groupInviteGeneration = -1
+              root.groupInviteFeedback = ""
+            }
+          }
+        }
+
+        FormatBtn {
           visible: root.groupConversation && !root.clearConfirm
           materialIcon: "group"
           helpText: (root.groupMembersOpen ? "Hide" : "Show") + " group members"
@@ -2034,10 +2137,67 @@ FocusScope {
         }
       }
 
+      Column {
+        id: groupInvitePanel
+        visible: root.groupConversation && root.groupSelfRole() !== "member" &&
+          root.groupInviteOpen
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? implicitHeight : 0
+        spacing: Style.space(3)
+
+        Text {
+          width: parent.width
+          text: root.groupInviteFeedback !== "" ? root.groupInviteFeedback :
+            ((root.service && root.service.friends && root.service.friends.length > 0)
+              ? "Invite a contact" : "No contacts available")
+          color: root.groupInviteFeedback === "Group invite failed"
+            ? (root.theme.unread || root.accent) : root.accent
+          font.family: root.fontFamily
+          font.pixelSize: root.smileTextPx
+          elide: Text.ElideRight
+        }
+
+        Flickable {
+          visible: root.service && root.service.friends && root.service.friends.length > 0
+          width: parent.width
+          height: visible ? Style.space(30) : 0
+          contentWidth: inviteFriendRow.width
+          contentHeight: height
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.HorizontalFlick
+          clip: true
+
+          Row {
+            id: inviteFriendRow
+            height: parent.height
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.service ? (root.service.friends || []) : []
+              delegate: ChatBtn {
+                required property var modelData
+                height: parent ? parent.height : implicitHeight
+                text: String(modelData && modelData.name ||
+                  ("Friend " + String(modelData && modelData.id || "")))
+                helpText: "Invite " + text
+                fontSize: root.smileTextPx
+                horizontalPadding: Style.space(8)
+                verticalPadding: 0
+                bordered: true
+                enabled: root.groupInviteFeedback !== "Sending group invite…"
+                selected: String(modelData && modelData.id || "") ===
+                  root.groupInviteFriendId
+                onClicked: root.inviteGroupFriend(modelData)
+              }
+            }
+          }
+        }
+      }
+
       Item {
         visible: root.groupConversation && root.groupMembersOpen
         Layout.fillWidth: true
-        Layout.preferredHeight: visible ? Style.space(32) : 0
+        Layout.preferredHeight: visible ? Style.space(30) : 0
         clip: true
 
         Flickable {
@@ -2061,12 +2221,16 @@ FocusScope {
                 height: parent ? parent.height : implicitHeight
                 text: String(modelData.name || "Member") + " · " +
                   String(modelData.role || "member") + " · " +
-                  (modelData.online ? "online" : "offline")
+                  (modelData.online ? "online" : "offline") +
+                  (modelData.self ? " · you" : "")
                 helpText: String(modelData.name || "Member") + " is " +
                   (modelData.online ? "online" : "offline")
                 foreground: modelData.online ? root.accent : root.fg
+                fontSize: root.smileTextPx
+                horizontalPadding: Style.space(8)
+                verticalPadding: 0
                 bordered: true
-                selected: !!modelData.self
+                selected: false
                 onClicked: memberMenu.popup()
                 TapHandler {
                   acceptedButtons: Qt.RightButton
@@ -2482,7 +2646,7 @@ FocusScope {
               linkColor: root.accent
               color: root.fg
               font.family: root.fontFamily
-              font.pixelSize: root.smileTextPx
+              font.pixelSize: root.messageTextPx
               font.hintingPreference: Font.PreferNoHinting
               renderType: Text.QtRendering
               wrapMode: Text.Wrap
@@ -2759,10 +2923,10 @@ FocusScope {
             anchors.leftMargin: Style.space(6)
             width: reactionBadgeRow.implicitWidth + Style.space(8)
             height: Style.space(20)
-            radius: height / 2
-            color: Qt.darker(root.bg, 1.08)
-            border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.2)
-            border.width: 1
+            radius: 0
+            color: "transparent"
+            border.color: "transparent"
+            border.width: 0
             z: 4
 
             Row {

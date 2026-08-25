@@ -1,0 +1,5 @@
+module OmaQ
+Panel 1.0 Panel.qml
+ChatSurface 1.0 ChatSurface.qml
+Service 1.0 Service.qml
+singleton CallTone 1.0 CallTone.qml

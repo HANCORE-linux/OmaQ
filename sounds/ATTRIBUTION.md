@@ -1,5 +1,20 @@
 # Sound attribution
 
+## Call ringing tone
+
+`phone.oga` is a transcoded call-progress tone used only while an incoming or outgoing direct call is ringing.
+
+- Source: [bruit tonalité du telephone](https://pixabay.com/sound-effects/film-special-effects-bruit-tonalit%C3%A9-du-telephone-223780/)
+- Creator: [u_bfmec9l9lj](https://pixabay.com/users/u_bfmec9l9lj-44888647/)
+- Source notice: AI generated; published July 12, 2024
+- License: [Pixabay Content License](PIXABAY-CONTENT-LICENSE.md)
+- Original MP3 SHA-256: `a51b326f6b4b721351ea63010b5bfe230b336dcbcf879fcb7c5f924b9d4f8975`
+- OmaQ `phone.oga` SHA-256: `84eb3dd0376dab5fd6cb54dca8d11e8576bc10e42809007e814a1e7474972015`
+- Transformation: decoded, metadata removed, and encoded as 48 kHz stereo Ogg Vorbis
+- Retrieved: August 25, 2026
+
+## Notification presets
+
 The notification presets below are unmodified audio files from KDE's Ocean Sound Theme. The short `QQ style`, `WeChat style`, `Skype style`, and `MSN style` labels describe OmaQ presets only; these are not audio assets from, endorsed by, or affiliated with those products or their owners.
 
 - Source: https://github.com/KDE/ocean-sound-theme

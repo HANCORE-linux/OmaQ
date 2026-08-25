@@ -39,7 +39,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 5
+  readonly property int requiredHelperProtocol: 6
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -63,11 +63,14 @@ Item {
   property int groupsTick: 0
   property string lastGroupInviteSentGroup: ""
   property string lastGroupInviteSentFriend: ""
+  property string lastGroupInviteSentRequest: ""
   property int groupInviteSentTick: 0
   property string lastGroupInviteFailedGroup: ""
   property string lastGroupInviteFailedFriend: ""
+  property string lastGroupInviteFailedRequest: ""
   property string lastGroupInviteFailedCode: ""
   property int groupInviteFailedTick: 0
+  property int groupInviteRequestSequence: 0
   property bool groupsReady: false
   property string lastRemovedGroup: ""
   property int removedGroupTick: 0
@@ -118,6 +121,7 @@ Item {
   property var historyRequestByConversation: ({})
   property int historyRequestSequence: 0
   property int reconnectGeneration: 0
+  property int helperInstanceGeneration: 0
   property bool peerTyping: false
   property string lastTypingConv: ""
   property string lastReceiptConv: ""
@@ -153,6 +157,7 @@ Item {
   property bool incomingCall: false
   property string lastCallState: ""
   property string lastCallConv: ""
+  property bool callToneSuppressed: false
   property int callDurationSeconds: 0
   property bool locked: false
   property bool saveProtected: false
@@ -208,6 +213,7 @@ Item {
     if (!state)
       root.callDurationSeconds = 0
     root.incomingCall = state === "incoming"
+    root.callToneSuppressed = state !== "incoming" && state !== "ringing"
     root.lastCallState = state
     root.lastCallConv = conv
     if (conv) {
@@ -227,11 +233,15 @@ Item {
         break
       }
     }
-    if (!stillFriend && root.lastConversation === root.lastDirectId) {
+    if (!stillFriend) {
+      var removedDirectId = String(root.lastDirectId)
       root.lastDirectId = ""
-      root.lastConversation = ""
-      root.safetyCode = ""
-      root.safetyConv = ""
+      if (String(root.lastConversation || "") === removedDirectId)
+        root.lastConversation = ""
+      if (String(root.safetyConv || "") === removedDirectId) {
+        root.safetyCode = ""
+        root.safetyConv = ""
+      }
     }
   }
 
@@ -283,8 +293,11 @@ Item {
         var nextIdentity = String(ev.addr || "").slice(0, 64)
         var identityChanged = root.identityFingerprint !== "" && nextIdentity !== "" &&
           root.identityFingerprint !== nextIdentity
-        if (processChanged)
+        if (processChanged) {
           root.failActiveOutgoingFiles("helper_restarted")
+          root.failQueuedGroupInvites("helper_restarted")
+          root.helperInstanceGeneration = root.helperInstanceGeneration + 1
+        }
         if (identityChanged)
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
@@ -396,6 +409,7 @@ Item {
       var friendBuild = root.pendingFriendBuild.slice()
       friendBuild.push({
         id: String(ev.id || ""),
+        key: String(ev.key || ""),
         name: String(ev.name || ("Friend " + String(ev.id || ""))),
         avatar: String(ev.avatar || ""),
         online: !!ev.online,
@@ -749,11 +763,13 @@ Item {
     if (ev.event === "group.invite.sent") {
       root.lastGroupInviteSentGroup = String(ev.group || "")
       root.lastGroupInviteSentFriend = String(ev.friend || "")
+      root.lastGroupInviteSentRequest = String(ev.request || "")
       root.groupInviteSentTick = root.groupInviteSentTick + 1
     }
     if (ev.event === "group.invite.failed") {
       root.lastGroupInviteFailedGroup = String(ev.group || "")
       root.lastGroupInviteFailedFriend = String(ev.friend || "")
+      root.lastGroupInviteFailedRequest = String(ev.request || "")
       root.lastGroupInviteFailedCode = String(ev.code || "forbidden")
       root.groupInviteFailedTick = root.groupInviteFailedTick + 1
     }
@@ -884,6 +900,7 @@ Item {
     }
     if (ev.event === "call.incoming") {
       root.incomingCall = true
+      root.callToneSuppressed = false
       root.callDurationSeconds = 0
       root.lastCallState = "incoming"
       if (ev.conversation)
@@ -899,6 +916,8 @@ Item {
            String(root.lastCallConv || "") !== String(ev.conversation || "")))
         root.callDurationSeconds = 0
       root.lastCallState = nextCallState
+      root.callToneSuppressed = nextCallState !== "incoming" &&
+        nextCallState !== "ringing"
       if (ev.state === "ended" || ev.state === "") {
         root.incomingCall = false
         root.callDurationSeconds = 0
@@ -1042,6 +1061,28 @@ Item {
     }
   }
 
+  function failQueuedGroupInvites(reason) {
+    var remaining = []
+    for (var i = 0; i < root.pendingOps.length; i++) {
+      var queued
+      try { queued = JSON.parse(root.pendingOps[i]) } catch (e) {
+        remaining.push(root.pendingOps[i])
+        continue
+      }
+      if (!queued || queued.op !== "invite.create" || queued.kind !== "group" ||
+          !queued.id || !queued.request) {
+        remaining.push(root.pendingOps[i])
+        continue
+      }
+      root.lastGroupInviteFailedGroup = String(queued.group || "")
+      root.lastGroupInviteFailedFriend = String(queued.id || "")
+      root.lastGroupInviteFailedRequest = String(queued.request || "")
+      root.lastGroupInviteFailedCode = String(reason || "helper_down")
+      root.groupInviteFailedTick = root.groupInviteFailedTick + 1
+    }
+    root.pendingOps = remaining
+  }
+
   function failQueuedMessages(reason) {
     var code = String(reason || "helper_down")
     for (var i = 0; i < root.pendingOps.length; i++) {
@@ -1063,6 +1104,8 @@ Item {
     root.helperStatusNonce = ""
     root.failActiveOutgoingFiles("helper_incompatible")
     root.failQueuedMessages("helper_incompatible")
+    root.failQueuedGroupInvites("helper_incompatible")
+    root.helperInstanceGeneration = root.helperInstanceGeneration + 1
     root.pendingOps = []
     root.pendingHandshakeEvents = []
     root.pendingHandshakeBytes = 0
@@ -1282,12 +1325,27 @@ Item {
     sendOp({ op: "contact.decide", id: "x", accept: !!ok })
     root.pending = false
   }
-  function removeContact() {
-    if (!root.lastDirectId)
-      return
-    sendOp({ op: "contact.remove", id: root.lastDirectId })
-    root.safetyCode = ""
-    root.safetyConv = ""
+  function removeContact(contactId, expectedKey) {
+    var id = String(contactId || "")
+    var key = String(expectedKey || "")
+    var found = false
+    if (!/^(0|[1-9][0-9]*)$/.test(id) || !/^[0-9a-f]{64}$/.test(key))
+      return false
+    for (var i = 0; i < root.friends.length; i++)
+      if (String(root.friends[i].id || "") === id &&
+          String(root.friends[i].key || "") === key) {
+        found = true
+        break
+      }
+    if (!found)
+      return false
+    if (!sendOp({ op: "contact.remove", id: id, key: key }))
+      return false
+    if (String(root.safetyConv || "") === id) {
+      root.safetyCode = ""
+      root.safetyConv = ""
+    }
+    return true
   }
   function rotateNospam() {
     sendOp({ op: "nospam.rotate" })
@@ -1357,16 +1415,34 @@ Item {
       return false
     return sendOp({ op: "group.create", title: name })
   }
-  function inviteToGroup(friendId, groupId) {
+  function nextGroupInviteRequest() {
+    root.groupInviteRequestSequence = root.groupInviteRequestSequence + 1
+    return "gi-" + Date.now().toString(36) + "-" +
+      root.groupInviteRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+  }
+  function inviteToGroup(friendId, expectedKey, groupId, requestId) {
     var group = String(groupId || root.lastGroup || "")
     var friend = String(friendId || root.lastDirectId || "")
+    var friendKey = String(expectedKey || "")
+    var request = String(requestId || "")
     var selected = root.groupById(group)
-    if (!selected || !friend || Number(selected.memberCount || 0) >= Number(selected.limit || 10))
+    var matches = false
+    for (var i = 0; i < root.friends.length; i++)
+      if (String(root.friends[i].id || "") === friend &&
+          String(root.friends[i].key || "") === friendKey) {
+        matches = true
+        break
+      }
+    if (!selected || !matches || !/^[0-9a-f]{64}$/.test(friendKey) ||
+        !/^gi-[a-z0-9-]{8,70}$/.test(request) ||
+        Number(selected.memberCount || 0) >= Number(selected.limit || 10))
       return false
     root.lastGroup = group
     root.lastDirectId = friend
     return sendOp({ op: "invite.create", kind: "group", group: group,
-      role: "member", id: friend, ttlSec: 86400 })
+      role: "member", id: friend, key: friendKey, request: request,
+      ttlSec: 86400 })
   }
   function dissolveGroup(groupId) {
     var group = String(groupId || root.lastGroup || "")
@@ -1488,19 +1564,26 @@ Item {
     var c = String(conv || root.lastConversation || "")
     if (!c || c.charAt(0) === "g")
       return false
+    root.callToneSuppressed = false
     return sendOp({ op: "call.start", conversation: c })
   }
   function answerCall(conv) {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
     if (!c || c.charAt(0) === "g")
       return false
-    return sendOp({ op: "call.answer", conversation: c })
+    if (!sendOp({ op: "call.answer", conversation: c }))
+      return false
+    root.callToneSuppressed = true
+    return true
   }
   function stopCall(conv) {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
     if (!c || c.charAt(0) === "g")
       return false
-    return sendOp({ op: "call.stop", conversation: c })
+    if (!sendOp({ op: "call.stop", conversation: c }))
+      return false
+    root.callToneSuppressed = true
+    return true
   }
 
   function resetBackoff() {
@@ -1594,6 +1677,14 @@ Item {
     root.lastGroup = ""
     root.groups = []
     root.groupsReady = false
+    root.lastGroupInviteSentGroup = ""
+    root.lastGroupInviteSentFriend = ""
+    root.lastGroupInviteSentRequest = ""
+    root.lastGroupInviteFailedGroup = ""
+    root.lastGroupInviteFailedFriend = ""
+    root.lastGroupInviteFailedRequest = ""
+    root.lastGroupInviteFailedCode = ""
+    root.groupInviteRequestSequence = 0
     root.lastRemovedGroup = ""
     root.pendingGroupBuild = ({})
     root.pendingGroupOrder = []
@@ -1612,6 +1703,7 @@ Item {
     root.connectionState = "starting"
     root.lastCallState = ""
     root.lastCallConv = ""
+    root.callToneSuppressed = true
     root.callDurationSeconds = 0
     root.friends = []
     root.pendingFriendGeneration = ""

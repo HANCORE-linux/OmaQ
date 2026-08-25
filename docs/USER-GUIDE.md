@@ -44,7 +44,8 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 5. Hover over your own message and click the edit icon, or select it with the keyboard and press `E`.
 6. The right-click menu provides **Copy**, **Reply**, and confirmed **Delete** actions.
 7. A message that could not be delivered stays visible with an error marker. Use its **Resend** action, or select it with the keyboard and press `R` or `Enter`.
-8. Receipt markers use the active system palette: `·` in the foreground while sending, `✓` in `color05` when sent, `✓✓` in `color04` when delivered, and circled `✓✓` in `color03` when read. Hover a marker for its text status.
+8. Receipt markers use the active system palette: `·` in the foreground while sending, `✓` in `color05` when sent, `✓✓` in `color04` when delivered, and unframed `✓✓` in `color03` when read. Hover a marker for its text status.
+9. Use the `format_size` panel action to set chat-message text to `85%`, `90%`, `100%`, `110%`, or `120%`. Composer, controls, and member labels keep their normal size.
 
 Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallback.
 
@@ -71,6 +72,7 @@ The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_
 - **Sounds** offers short notification presets and previews the selected sound.
 - **Mute** changes sound only and does not disable unread badges, unread state, encryption, or delivery.
 - **Connecting…** or **Reconnecting…** is shown while the local helper is establishing service.
+- The new-message widget badge uses palette `color01`. Unread entries for unavailable contacts or groups are removed after the authoritative registries load.
 
 Unread messages are marked in the chat with a **New messages** divider.
 
@@ -91,10 +93,10 @@ Groups are private and limited to 10 members.
 
 1. Open **Advanced** → **Groups**.
 2. Enter a name and choose **Create**.
-3. Select a named group, choose a contact, then use **Invite Contact**. Internal identifiers such as `g0` are not shown as group names.
+3. Select a named group, choose a contact, then use **Invite Contact**. You can also use the **Add member** icon directly in the group-chat header. Internal identifiers such as `g0` are not shown as group names.
 4. Use **Open** to enter the selected group chat, or use the confirmed **Leave** action for that named group.
-5. The member strip in a group chat shows every cached member's name, role, and online/offline status.
-6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation.
+5. The member strip in a group chat shows every cached member's name, role, and online/offline status at the normal composer text size.
+6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation. A removed member may receive and accept a later fresh invite.
 
 Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
 

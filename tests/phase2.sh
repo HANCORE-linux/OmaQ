@@ -137,8 +137,26 @@ if [ -z "$ca" ] || [ "$ca" != "$cb" ]; then
 	exit 1
 fi
 
-echo '{"op":"contact.remove","id":"0"}' >&3
-echo '{"op":"contact.remove","id":"0"}' >&4
+key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ "${#key_a}" -eq 64 ] && [ "${#key_b}" -eq 64 ] || {
+	echo "phase2: stable friend keys missing" >&2
+	exit 1
+}
+forbidden_before=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
+echo '{"op":"contact.remove","id":"0","key":"0000000000000000000000000000000000000000000000000000000000000000"}' >&3
+i=0
+while [ "$i" -lt 20 ]; do
+	forbidden_after=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
+	[ "$forbidden_after" -gt "$forbidden_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase2: stale friend key was not rejected" >&2; exit 1; }
+printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$key_a" >&3
+printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$key_b" >&4
 sleep 0.4
 if ! kill -0 "$pa" 2>/dev/null; then
 	echo "phase2: helper A died" >&2
@@ -165,7 +183,7 @@ while [ "$i" -lt 8 ]; do
 	i=$((i + 1))
 	sleep 0.5
 done
-echo '{"op":"contact.remove","id":"0"}' >&4
+printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$key_b" >&4
 sleep 0.3
 
 # Nospam changes the address and voids the live token.

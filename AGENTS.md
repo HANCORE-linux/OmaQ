@@ -52,6 +52,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - In the bar panel, the global `Mute` action is below the `Demo` action. It must show its current `Mute`/`Unmute` state.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.
 - The Clear chat action is a right-aligned `delete` icon. It requires an explicit confirmation and affects only the current conversation.
+- Chat message scaling uses only the fixed `85%`, `90%`, `100%`, `110%`, and `120%` steps and changes message-body text only. Composer, controls, receipts, and group member labels retain normal sizing.
 
 ## Composer and context-menu UX
 
@@ -73,6 +74,10 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Avatar images use safe local file URLs, a `person` Material fallback, and a revision/cache refresh when a file is replaced.
 - Self and friend avatars are transferred only through the helper's validated avatar protocol. Never fake a friend avatar from a local identity.
 - Panel buttons such as Invite, Add, Chat, Theme, More, safety display, and confirmations are transient UI state. Reset them when the panel closes so reopening does not leave stale `selected` states.
+- Panel action buttons share one slim height, normal font weight, bounded labels, and the active shell theme's radius token.
+- The logo, Friends/Groups list, and two-column icon rail use matching thin frames and equal section spacing. Identity is directly below Danger zone; the old Identity slot opens chat-message size.
+- Friend status dots are green online, medium gray for AFK, and dim gray offline. The new-message widget badge uses `color01`.
+- `Remove contact` requires selecting a currently projected contact and confirming that exact contact immediately before removal. Bind the confirmation to its stable public key and require the helper to recheck that key before deleting the numeric friend id.
 - The hero action grid uses stable per-column widths. Changing a label such as `Mute` ↔ `Unmute` must not move or resize neighboring buttons.
 - Current functional state such as global Mute may remain selected after reopening; that is not a stale transient selection.
 - Every destructive or privacy-impacting action requires an explicit confirmation immediately before execution, including contact removal, personal-ID/nospam rotation, clearing chat history, and equivalent future actions.
@@ -97,6 +102,9 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Escape all JSON fields and reject path traversal, invalid IDs, unsupported actions, and malformed payloads.
 - Helper event fan-out must not block Tox iteration on a stale or slow IPC client. Prefer non-blocking client sockets and drop clients that cannot accept an event; persisted history remains the recovery source.
 - Never commit credentials, private keys, Tox saves, Ratchet state, local chat history, temporary screenshots, or downloaded audit data.
+- A self-disconnected or kicked group member must remove the stale local Tox group so a fresh, Signal-authorized native invite can be displayed and accepted later.
+- Group invitation remains stable-key- and request-bound and helper-authoritative whether initiated from the Panel or the group-chat `Add member` action. Replay bounded terminal results after a same-instance IPC reconnect; never infer failure from an unrelated connection or helper error.
+- One process-wide tone owner loops `phone.oga` only while a direct call is incoming or ringing and stops immediately on answer, decline, hangup, or any terminal call state. Multiple monitor surfaces must not layer playback. Notification mute does not suppress this call-progress tone.
 
 ## Change workflow
 

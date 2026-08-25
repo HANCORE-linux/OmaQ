@@ -8,6 +8,7 @@ import qs.Ui
 import qs.Commons
 import "pages" as Pages
 import "Model.js" as Model
+import "." as OmaQ
 
 Item {
   id: root
@@ -22,6 +23,10 @@ Item {
   readonly property string soundName: String(setting("sound", "icq-message"))
   readonly property string soundCustom: String(setting("soundCustomPath", ""))
   readonly property string chatTheme: String(setting("chatTheme", "system"))
+  readonly property real messageScale: {
+    var value = Number(setting("messageScale", 1.0))
+    return [0.85, 0.9, 1.0, 1.1, 1.2].indexOf(value) >= 0 ? value : 1.0
+  }
   readonly property bool formatToolbarEnabled: !!setting("formatToolbar", false)
   signal formatToolbarToggled(bool enabled)
 
@@ -33,6 +38,10 @@ Item {
   property string focusConversation: ""
   property int focusRequestTick: 0
   readonly property bool muted: service ? service.muted : false
+  readonly property bool callToneNeeded: service && !service.callToneSuppressed &&
+    (service.lastCallState === "incoming" || service.lastCallState === "ringing")
+  readonly property bool callTonePlaying: OmaQ.CallTone.playing
+  property string callToneOwner: ""
   property var autoOpenByConversation: ({})
   property bool autoOpenLoaded: false
   property bool autoOpenUnavailable: false
@@ -61,6 +70,9 @@ Item {
     ? String(service.lastChatConv || service.lastConversation || "") : ""
   readonly property color headerNameColor: root.paletteColor("color03", root.theme().accent || Color.accent)
   readonly property color headerStatusColor: root.paletteColor("color02", root.theme().accent || Color.accent)
+
+  onCallToneNeededChanged:
+    OmaQ.CallTone.setRequested(root.callToneOwner, root.callToneNeeded)
 
   function setting(name, fallback) {
     var s = settings || (service ? service.settings : {})
@@ -373,10 +385,14 @@ Item {
   }
 
   Component.onCompleted: {
+    root.callToneOwner = OmaQ.CallTone.acquireOwner()
+    OmaQ.CallTone.setRequested(root.callToneOwner, root.callToneNeeded)
     root.floatOmaQWindows()
     if (service)
       service.sendOp({ op: "surface.list" })
   }
+  Component.onDestruction:
+    OmaQ.CallTone.setRequested(root.callToneOwner, false)
 
   component SurfaceBtn: Button {
     id: surfaceButton
@@ -757,6 +773,7 @@ Item {
               anchors.topMargin: Style.space(30)
               service: root.service
               theme: root.theme()
+              messageScale: root.messageScale
               conversation: card.modelData.conversation
               peerName: root.friendLabel(card.modelData.conversation)
               peerAvatar: root.friendAvatar(card.modelData.conversation)
@@ -832,6 +849,7 @@ Item {
         Layout.fillHeight: true
         service: root.service
         theme: root.theme()
+        messageScale: root.messageScale
         conversation: root.notificationConversation
         peerName: root.friendLabel(root.notificationConversation)
         peerAvatar: root.friendAvatar(root.notificationConversation)
@@ -953,6 +971,7 @@ Item {
           Layout.fillHeight: true
           service: root.service
           theme: root.theme()
+          messageScale: root.messageScale
           conversation: pinWin.modelData.conversation
           peerName: root.friendLabel(pinWin.modelData ? pinWin.modelData.conversation : "",
             pinWin.modelData ? pinWin.modelData.name : "")
@@ -1044,6 +1063,7 @@ Item {
         demo: true
         service: root.service
         theme: root.theme()
+        messageScale: root.messageScale
         conversation: "demo"
         receiptSentColor: root.receiptSentColor
         receiptDeliveredColor: root.receiptDeliveredColor

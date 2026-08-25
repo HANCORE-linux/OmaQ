@@ -181,6 +181,32 @@ int omaq_unread_clear(omaq_unread_state *state, const char *conversation)
 	return 0;
 }
 
+int omaq_unread_prune(omaq_unread_state *state, omaq_unread_available_fn available,
+		      void *userdata)
+{
+	omaq_unread_state next;
+	int removed = 0;
+
+	if (!state || !available)
+		return -1;
+	omaq_unread_init(&next);
+	for (size_t i = 0; i < state->length; i++) {
+		int keep = available(state->entries[i].id, userdata);
+
+		if (keep < 0 || (keep > 0 &&
+		    omaq_unread_set(&next, state->entries[i].id,
+				    state->entries[i].count) != 0)) {
+			omaq_unread_destroy(&next);
+			return -1;
+		}
+		if (keep == 0)
+			removed++;
+	}
+	omaq_unread_destroy(state);
+	*state = next;
+	return removed;
+}
+
 unsigned omaq_unread_count(const omaq_unread_state *state, const char *conversation)
 {
 	int index = unread_find(state, conversation);

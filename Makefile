@@ -177,7 +177,9 @@ verify-4: test arch helper
 	test -f sounds/ripple.oga
 	test -f sounds/glow.oga
 	test -f sounds/halo.oga
+	test -f sounds/phone.oga
 	test -f sounds/ATTRIBUTION.md
+	test -f sounds/PIXABAY-CONTENT-LICENSE.md
 	test -f sounds/LICENSES/CC-BY-SA-4.0.txt
 	test -f sounds/LICENSES/CC-BY-4.0.txt
 	test -f sounds/LICENSES/CC0-1.0.txt
@@ -185,6 +187,7 @@ verify-4: test arch helper
 		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \
 		'd557539df68e771cc1eedcc91d13f70fca930e508d11eedcafa4b15db49e3744  sounds/LICENSES/CC-BY-4.0.txt' \
 		'a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  sounds/LICENSES/CC0-1.0.txt' \
+		'9dd354243ce155dff84ebba498dcd8c4abd8c2e6fa8b143f4fad2f8b11a53929  sounds/PIXABAY-CONTENT-LICENSE.md' \
 		'868716bbd51231a9f1be986f94cc441e2fd5ba61877a10abad8cbde356505a11  sounds/bell.wav' \
 		'fa13f711d61b01a6db2f9097159019606e14d0ef8075a00def7bb97ae8bdd332  sounds/click.wav' \
 		'8b54813baa31e51324e865aed8c5dfd6ecd674bab87236a8fb1df301cb92a7ae  sounds/knock.wav' \
@@ -195,6 +198,7 @@ verify-4: test arch helper
 		'4a75ec07365aee8dded5a65125b8540d5913ff659083e7f02360ba78b6680b20  sounds/glow.oga' \
 		'16a4b5c49d9d01bcf2e46ad6c789f6849802447103776d8b1fe58cf1348ca024  sounds/halo.oga' \
 		'97f5477244c3912a1ee9cb9200ec8daa9701aa01d6a658e118d7a80c49e593c6  sounds/msn.oga' \
+		'84eb3dd0376dab5fd6cb54dca8d11e8576bc10e42809007e814a1e7474972015  sounds/phone.oga' \
 		'e4694324dbf00d407a0475ff166b284cc2919a5c940bfafea5765d14a0923710  sounds/qq.oga' \
 		'113094308abc743f8e525d346c9c33c61ffe91c7f494d4a1a522b5d05168038f  sounds/ripple.oga' \
 		'd434cf3ad9c565605c2aa4b72b4cb51d4b6662a34526ec88f6b1551d08cd1e6a  sounds/skype.oga' \

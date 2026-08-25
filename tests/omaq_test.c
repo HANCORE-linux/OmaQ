@@ -170,6 +170,10 @@ static void test_json(void)
 	if (omaq_json_parse_op("{\"op\":\"message.react\",\"id\":\"msg-1\",\"text\":\"\"}", &op) != 0 ||
 	    !op.has_text || strcmp(op.text, "") != 0)
 		fail("json empty reaction text");
+	if (omaq_json_parse_op("{\"op\":\"contact.remove\",\"id\":\"7\",\"key\":\"abcdef\",\"request\":\"gi-test-1\"}", &op) != 0 ||
+	    strcmp(op.id, "7") != 0 || strcmp(op.key, "abcdef") != 0 ||
+	    strcmp(op.request, "gi-test-1") != 0)
+		fail("json contact key");
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
 	if (omaq_json_parse_op("{", &op) == 0)
@@ -449,6 +453,15 @@ static void test_mutate(void)
 	closedir(d);
 }
 
+static int unread_available_fixture(const char *conversation, void *userdata)
+{
+	int fail_closed = userdata ? *(int *)userdata : 0;
+
+	if (fail_closed && strcmp(conversation, "1") == 0)
+		return -1;
+	return conversation[0] == 'g' ? 0 : 1;
+}
+
 static void test_conv(void)
 {
 	omaq_conv c;
@@ -484,6 +497,22 @@ static void test_conv(void)
 	    loaded.length != 2 || omaq_unread_total(&loaded) != 3 ||
 	    omaq_unread_clear(&loaded, "0") != 0 || omaq_unread_total(&loaded) != 1)
 		fail("unread state");
+	{
+		omaq_unread_state pruned;
+		int fail_closed = 1;
+
+		omaq_unread_init(&pruned);
+		if (omaq_unread_increment(&pruned, "0") != 0 ||
+		    omaq_unread_increment(&pruned,
+			"g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 0 ||
+		    omaq_unread_prune(&pruned, unread_available_fixture, NULL) != 1 ||
+		    pruned.length != 1 || omaq_unread_total(&pruned) != 1 ||
+		    omaq_unread_increment(&pruned, "1") != 0 ||
+		    omaq_unread_prune(&pruned, unread_available_fixture, &fail_closed) != -1 ||
+		    pruned.length != 2 || omaq_unread_total(&pruned) != 2)
+			fail("unread unavailable prune");
+		omaq_unread_destroy(&pruned);
+	}
 	if (snprintf(path, sizeof(path), "%s/unread.tsv", dir) >= (int)sizeof(path) ||
 	    !(f = fopen(path, "w"))) {
 		fail("unread malformed fixture");

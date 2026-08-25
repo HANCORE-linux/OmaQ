@@ -82,6 +82,9 @@ while [ "$i" -lt 90 ]; do
 	sleep 1
 done
 [ "$i" -lt 90 ] || { echo "phase3: direct contacts did not come online" >&2; exit 1; }
+friend_key=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ "${#friend_key}" -eq 64 ] || { echo "phase3: stable friend key missing" >&2; exit 1; }
 
 # Group numbers are process-local. Give B a pre-existing g0 so A's room must
 # still authorize correctly when B allocates a different local number.
@@ -117,7 +120,39 @@ greq_before=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
 greq_before=${greq_before:-0}
 group_url_before=$(grep -a '"event":"invite"' "$fa" | grep -a -c 'k=group' || true)
 group_url_before=${group_url_before:-0}
-printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0"}\n' "$gid" >&3
+stale_invites_before=$(grep -a '"event":"group.invite.failed"' "$fa" |
+	grep -a -c '"code":"forbidden"' || true)
+stale_invites_before=${stale_invites_before:-0}
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"0000000000000000000000000000000000000000000000000000000000000000","request":"gi-phase3-stale-1"}\n' "$gid" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	stale_invites_after=$(grep -a '"event":"group.invite.failed"' "$fa" |
+		grep -a -c '"code":"forbidden"' || true)
+	stale_invites_after=${stale_invites_after:-0}
+	[ "$stale_invites_after" -gt "$stale_invites_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: stale invite friend key was not rejected" >&2; exit 1; }
+busy_invites_before=$(grep -a '"event":"group.invite.failed"' "$fa" |
+	grep -a -c '"code":"busy"' || true)
+busy_invites_before=${busy_invites_before:-0}
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-first-1"}\n' "$gid" "$friend_key" >&3
+printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-second-1"}\n' "$gid" "$friend_key" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	busy_invites_after=$(grep -a '"event":"group.invite.failed"' "$fa" |
+		grep -a -c '"code":"busy"' || true)
+	busy_invites_after=${busy_invites_after:-0}
+	if [ "$busy_invites_after" -gt "$busy_invites_before" ] &&
+	   grep -a '"event":"group.invite.failed"' "$fa" | grep -a '"code":"busy"' |
+	   tail -1 | grep -a -q '"group":"'"$gid"'","friend":"0","request":"gi-phase3-second-1"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: parallel group invite busy result missing" >&2; exit 1; }
 # The helper bootstraps the direct Ratchet when necessary, sends the token only
 # inside that encrypted session, then releases the native invite for approval.
 ok=0
@@ -168,6 +203,28 @@ if [ "$i" -ge 90 ]; then
 	tail -n 20 -- "$fa.err" "$fb.err" >&2
 	exit 1
 fi
+grep -a '"event":"group.invite.sent"' "$fa" |
+	grep -a -q '"request":"gi-phase3-first-1"' || {
+	echo "phase3: first invite success was not request-correlated" >&2
+	exit 1
+}
+if grep -a '"event":"group.invite.sent"' "$fa" |
+   grep -a -q '"request":"gi-phase3-second-1"'; then
+	echo "phase3: busy second invite was reported sent" >&2
+	exit 1
+fi
+sent_replays_before=$(grep -a '"event":"group.invite.sent"' "$fa" |
+	grep -a -c '"request":"gi-phase3-first-1"' || true)
+echo '{"op":"status","id":"phase3-invite-replay"}' >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	sent_replays_after=$(grep -a '"event":"group.invite.sent"' "$fa" |
+		grep -a -c '"request":"gi-phase3-first-1"' || true)
+	[ "$sent_replays_after" -gt "$sent_replays_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: terminal invite result was not replayed" >&2; exit 1; }
 grep -a '"event":"group.info"' "$fa" | grep -a '"title":"room"' |
 	grep -a -q '"limit":10' || { echo "phase3: group info/limit missing" >&2; exit 1; }
 grep -a '"event":"group.member"' "$fa" | grep -a -q '"online":true' || {
@@ -203,6 +260,7 @@ fi
 # never fabricate a disconnected phantom group.
 cp -a "$ha/." "$hc/"
 rm -f "$hc/tox.save"
+printf '%s\t1\n' "$gid" >"$sc/unread.tsv"
 mkdir -p "$hc/history/g7"
 printf '%s\n' '{"id":"legacy","text":"archived"}' >"$hc/history/g7/messages.jsonl"
 mkfifo "$holdc"
@@ -221,7 +279,9 @@ while [ "$i" -lt 50 ]; do
 	sleep 0.2
 done
 if [ "$i" -ge 50 ] ||
-   grep -a '"event":"group.info"' "$fc" | grep -a -q '"group":"'"$gid"'"'; then
+   grep -a '"event":"group.info"' "$fc" | grep -a -q '"group":"'"$gid"'"' ||
+   grep -a '"event":"snapshot"' "$fc" | tail -1 | grep -a -vq '"unread":0' ||
+   grep -a -q "^$gid" "$sc/unread.tsv" 2>/dev/null; then
 	echo "phase3: orphaned private group was not pruned" >&2
 	tail -30 "$fc" >&2
 	tail -n 20 -- "$fc.err" >&2
@@ -298,6 +358,17 @@ read_events_after=$(grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$messag
 }
 
 if [ -n "$member_key" ]; then
+	echo '{"op":"status","id":"phase3-before-kick"}' >&4
+	i=0
+	while [ "$i" -lt 30 ]; do
+		if grep -a '"event":"snapshot"' "$fb" | grep -a '"request":"phase3-before-kick"' |
+		   tail -1 | grep -E -a -q '"unread":[1-9]'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ "$i" -lt 30 ] || { echo "phase3: pre-kick unread fixture missing" >&2; exit 1; }
 	printf '{"op":"group.member.setRole","group":"%s","member":"%s","role":"member"}\n' "$gid" "$member_key" >&3
 	sleep 0.5
 	self_leave_before=$(grep -a '"event":"group.changed"' "$fb" | grep -a '"group":"'"$gid"'"' |
@@ -314,6 +385,17 @@ if [ -n "$member_key" ]; then
 		sleep 0.2
 	done
 	[ "$i" -lt 50 ] || { echo "phase3: kicked self group was not removed" >&2; exit 1; }
+	echo '{"op":"status","id":"phase3-after-kick"}' >&4
+	i=0
+	while [ "$i" -lt 30 ]; do
+		if grep -a '"event":"snapshot"' "$fb" | grep -a '"request":"phase3-after-kick"' |
+		   tail -1 | grep -a -q '"unread":0'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ "$i" -lt 30 ] || { echo "phase3: kicked group unread was not cleared" >&2; exit 1; }
 	i=0
 	while [ "$i" -lt 30 ]; do
 		if grep -a '"event":"group.info"' "$fa" | grep -a '"group":"'"$gid"'"' |
@@ -324,6 +406,53 @@ if [ -n "$member_key" ]; then
 		sleep 0.1
 	done
 	[ "$i" -lt 30 ] || { echo "phase3: kicked member remained in initiator cache" >&2; exit 1; }
+
+	# A kicked member must be able to receive and accept a fresh targeted invite.
+	reinvite_requests_before=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
+	reinvite_requests_before=${reinvite_requests_before:-0}
+	rejoins_before=$(grep -a '"event":"group.changed"' "$fa" |
+		grep -a -c '"action":"member.join"' || true)
+	rejoins_before=${rejoins_before:-0}
+	printf '{"op":"invite.create","ttlSec":86400,"kind":"group","group":"%s","role":"member","id":"0","key":"%s","request":"gi-phase3-reinvite-1"}\n' "$gid" "$friend_key" >&3
+	i=0
+	while [ "$i" -lt 150 ]; do
+		reinvite_requests_after=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
+		reinvite_requests_after=${reinvite_requests_after:-0}
+		if [ "$reinvite_requests_after" -gt "$reinvite_requests_before" ]; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	if [ "$i" -ge 150 ]; then
+		echo "phase3: removed member did not receive a fresh invite" >&2
+		tail -40 "$fa" >&2
+		tail -40 "$fb" >&2
+		exit 1
+	fi
+	echo '{"op":"contact.decide","accept":true}' >&4
+	i=0
+	while [ "$i" -lt 90 ]; do
+		rejoins_after=$(grep -a '"event":"group.changed"' "$fa" |
+			grep -a -c '"action":"member.join"' || true)
+		rejoins_after=${rejoins_after:-0}
+		if [ "$rejoins_after" -gt "$rejoins_before" ]; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	[ "$i" -lt 90 ] || { echo "phase3: removed member did not rejoin" >&2; exit 1; }
+	i=0
+	while [ "$i" -lt 40 ]; do
+		if grep -a '"event":"group.info"' "$fb" | grep -a '"group":"'"$gid"'"' |
+		   tail -1 | grep -a -q '"members":2'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	[ "$i" -lt 40 ] || { echo "phase3: rejoined member group projection missing" >&2; exit 1; }
 fi
 
 # A failed registry pre-commit must not execute the irreversible Tox leave.

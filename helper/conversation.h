@@ -29,12 +29,16 @@ typedef struct {
 	size_t capacity;
 } omaq_unread_state;
 
+typedef int (*omaq_unread_available_fn)(const char *conversation, void *userdata);
+
 void omaq_unread_init(omaq_unread_state *state);
 void omaq_unread_destroy(omaq_unread_state *state);
 int omaq_unread_clone(omaq_unread_state *destination, const omaq_unread_state *source);
 int omaq_unread_set(omaq_unread_state *state, const char *conversation, unsigned count);
 int omaq_unread_increment(omaq_unread_state *state, const char *conversation);
 int omaq_unread_clear(omaq_unread_state *state, const char *conversation);
+int omaq_unread_prune(omaq_unread_state *state, omaq_unread_available_fn available,
+		      void *userdata);
 unsigned omaq_unread_count(const omaq_unread_state *state, const char *conversation);
 unsigned omaq_unread_total(const omaq_unread_state *state);
 

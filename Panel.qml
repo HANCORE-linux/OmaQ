@@ -8,6 +8,7 @@ import Quickshell.Wayland
 import qs.Ui
 import qs.Commons
 import "Model.js" as Model
+import "." as OmaQ
 
 BarWidget {
   id: root
@@ -17,6 +18,9 @@ BarWidget {
   property string redeemDraft: ""
   property bool nospamConfirm: false
   property bool removeContactConfirm: false
+  property bool removeContactPickerOpen: false
+  property string removeContactId: ""
+  property string removeContactKey: ""
   property bool replaceIdentityConfirm: false
   property string replaceIdentityPath: ""
   property bool showJoin: false
@@ -27,6 +31,7 @@ BarWidget {
   property bool settingsOpen: false
   property bool themeOpen: false
   property bool soundOpen: false
+  property bool fontSizeOpen: false
   property bool copied: false
   property bool safetyCodeVisible: false
   property bool safetyCopied: false
@@ -34,7 +39,11 @@ BarWidget {
   property bool nicknameSubmitPending: false
   property bool avatarRestorePending: false
   property bool avatarRestoreMore: false
+  property string groupInviteGroupId: ""
   property string groupInviteFriendId: ""
+  property string groupInviteFriendKey: ""
+  property string groupInviteRequest: ""
+  property int groupInviteGeneration: -1
   property string groupInviteFeedback: ""
   property bool groupLeaveConfirm: false
   property string groupLeaveTarget: ""
@@ -81,8 +90,11 @@ BarWidget {
     ? Number(shibumiTokens.panelRadius) : Style.cornerRadius
   readonly property color controlForeground: bar ? bar.foreground : Color.popups.text
   readonly property color controlAccent: bar ? bar.urgent : Color.accent
-  readonly property real controlRadius: shibumiTokens && shibumiTokens.tileRadius !== undefined
-    ? Number(shibumiTokens.tileRadius) : Style.cornerRadius
+  readonly property real controlRadius: {
+    var themeRevision = root.systemThemeName
+    return shibumiTokens && shibumiTokens.tileRadius !== undefined
+      ? Number(shibumiTokens.tileRadius) : Style.cornerRadius
+  }
   readonly property color controlBorder: shibumiTokens && shibumiTokens.separator !== undefined
     ? shibumiTokens.separator : Qt.rgba(controlForeground.r, controlForeground.g, controlForeground.b, 0.18)
   readonly property color controlFill: shibumiTokens && shibumiTokens.fillIdle !== undefined
@@ -94,7 +106,9 @@ BarWidget {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property real btnGap: Style.space(8)
+  readonly property real btnGap: Style.space(6)
+  readonly property real panelSectionGap: Style.space(8)
+  readonly property real framePadding: Style.space(6)
   readonly property int pad: Style.spacing.popupPadding
   readonly property real nicknameControlHeight: Style.space(28)
   readonly property int friendPageCount: Math.max(1,
@@ -103,10 +117,11 @@ BarWidget {
     friendPage * 30, friendPage * 30 + 30)
   readonly property int friendColumnCount: Math.min(3, Math.max(1,
     Math.ceil(Math.max(1, friendPageItems.length) / 10)))
-  readonly property int cardWidth: Style.space(340 + (friendColumnCount - 1) * 140)
-  readonly property real railIconWidth: Style.space(34)
-  readonly property real railWidth: railIconWidth * 2
-  readonly property real actionButtonHeight: Style.space(36)
+  readonly property int cardWidth: Style.space(320 + (friendColumnCount - 1) * 130)
+  readonly property real railIconWidth: Style.space(30)
+  readonly property real railWidth: railIconWidth * 2 + framePadding * 2
+  readonly property real actionButtonHeight: Style.space(30)
+  readonly property color onlineStatusColor: "#7dce6a"
   readonly property bool primaryMenuOpen: root.inviteOpen || root.showJoin ||
     root.chatPickerOpen || root.settingsOpen || root.moreOpen || omaq.pending
   readonly property int visibleUnreadCount: Math.max(omaq.unreadCount, omaq.localUnreadTotal())
@@ -272,6 +287,10 @@ BarWidget {
 
     readonly property bool hot: mouseArea.containsMouse
     readonly property color actionColor: accent
+    readonly property real contentSpacing: iconText !== "" && text !== "" ? Style.space(4) : 0
+    readonly property real naturalContentWidth:
+      (iconText !== "" ? buttonIcon.implicitWidth : 0) +
+      (text !== "" ? buttonLabel.implicitWidth : 0) + contentSpacing
     readonly property var normalBorder: bordered
       ? Border.flat(root.controlBorder, 1) : Border.none()
     readonly property var activeBorder: Border.flat(actionColor, 1)
@@ -281,10 +300,11 @@ BarWidget {
     Keys.onEnterPressed: if (focusable) tokenButton.clicked()
     Keys.onSpacePressed: if (focusable) tokenButton.clicked()
 
-    implicitWidth: row.implicitWidth + horizontalPadding * 2
+    implicitWidth: naturalContentWidth + horizontalPadding * 2
     implicitHeight: Math.max(root.actionButtonHeight,
-                             row.implicitHeight + verticalPadding * 2)
-    radius: root.controlRadius
+                             Math.max(buttonIcon.implicitHeight, buttonLabel.implicitHeight) +
+                             verticalPadding * 2)
+    radius: root.themedRadius(height > 0 ? height : implicitHeight)
     color: mouseArea.pressed ? root.controlActiveFill
       : selected || active ? root.controlActiveFill
       : hot ? root.controlHoverFill : root.controlFill
@@ -295,9 +315,12 @@ BarWidget {
     Row {
       id: row
       anchors.centerIn: parent
-      spacing: iconText !== "" && text !== "" ? Style.space(5) : 0
+      width: Math.min(tokenButton.naturalContentWidth,
+                      Math.max(0, tokenButton.width - tokenButton.horizontalPadding * 2))
+      spacing: tokenButton.contentSpacing
 
       Text {
+        id: buttonIcon
         visible: tokenButton.iconText !== ""
         text: tokenButton.iconText
         color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
@@ -307,13 +330,41 @@ BarWidget {
       }
 
       Text {
+        id: buttonLabel
         visible: tokenButton.text !== ""
+        width: Math.max(0, row.width -
+          (buttonIcon.visible ? buttonIcon.implicitWidth + row.spacing : 0))
         text: tokenButton.text
         color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
         font.family: tokenButton.fontFamily
         font.pixelSize: tokenButton.fontSize
-        font.bold: tokenButton.selected
+        font.bold: false
+        elide: Text.ElideRight
         anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Controls.ToolTip {
+      id: tokenTooltip
+      visible: tokenButton.hot &&
+        (tokenButton.tooltipText !== "" || buttonLabel.truncated)
+      text: tokenButton.tooltipText !== "" ? tokenButton.tooltipText : tokenButton.text
+      delay: 450
+      timeout: 2600
+      padding: Style.space(5)
+      background: Rectangle {
+        radius: root.themedRadius(height)
+        color: Qt.darker(root.panelBackground, 1.08)
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g,
+                              root.foreground.b, 0.24)
+        border.width: 1
+      }
+      contentItem: Text {
+        text: tokenTooltip.text
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        renderType: Text.QtRendering
       }
     }
 
@@ -339,11 +390,12 @@ BarWidget {
     property string materialIcon: ""
     property string label: ""
     property bool selected: false
+    property bool fillSelected: true
     property color activeColor: root.systemColors[3] || root.controlAccent
     signal clicked()
 
     implicitWidth: root.railIconWidth
-    implicitHeight: Style.space(34)
+    implicitHeight: Style.space(30)
     opacity: enabled ? 1 : 0.35
     activeFocusOnTab: enabled
     Accessible.role: Accessible.Button
@@ -359,8 +411,9 @@ BarWidget {
       color: railIcon.selected || railHover.hovered || railIcon.activeFocus
         ? railIcon.activeColor : root.dim
       font.family: "Material Symbols Rounded"
-      font.pixelSize: Style.font.icon + Style.space(5)
-      font.variableAxes: ({ "FILL": railIcon.selected ? 1 : 0, "wght": 500 })
+      font.pixelSize: Style.font.icon + Style.space(3)
+      font.variableAxes: ({ "FILL": railIcon.selected && railIcon.fillSelected ? 1 : 0,
+                            "wght": 500 })
       renderType: Text.QtRendering
       font.hintingPreference: Font.PreferNoHinting
     }
@@ -406,12 +459,13 @@ BarWidget {
     foreground: root.controlForeground
     accent: root.controlAccent
     font.family: root.fontFamily
+    font.pixelSize: Style.font.bodySmall
     background: BorderSurface {
       anchors.fill: parent
       color: root.controlFill
       borderSpec: Border.flat(
         parent.activeFocus || parent.hovered ? root.controlAccent : root.controlBorder, 1)
-      radius: root.controlRadius
+      radius: root.themedRadius(parent.height)
     }
   }
 
@@ -420,13 +474,12 @@ BarWidget {
     foreground: root.controlForeground
     accent: root.controlAccent
     fontFamily: root.fontFamily
-    radius: root.controlRadius
     bordered: true
     focusable: true
-    iconSize: Math.round(Style.font.subtitle * 1.5)
-    fontSize: Style.font.body
-    horizontalPadding: Style.space(8)
-    verticalPadding: Style.space(4)
+    iconSize: Style.font.icon
+    fontSize: Style.font.bodySmall
+    horizontalPadding: Style.space(6)
+    verticalPadding: Style.space(2)
   }
 
   function open() {
@@ -451,16 +504,23 @@ BarWidget {
     root.settingsOpen = false
     root.themeOpen = false
     root.soundOpen = false
+    root.fontSizeOpen = false
     root.safetyCodeVisible = false
     root.safetyCopied = false
     root.copied = false
     root.nospamConfirm = false
+    root.removeContactPickerOpen = false
     root.removeContactConfirm = false
+    root.removeContactId = ""
+    root.removeContactKey = ""
     root.replaceIdentityConfirm = false
     root.replaceIdentityPath = ""
     root.nicknameEditOpen = false
     root.nicknameSubmitPending = false
+    root.groupInviteGroupId = ""
     root.groupInviteFriendId = ""
+    root.groupInviteFriendKey = ""
+    root.groupInviteRequest = ""
     root.groupInviteFeedback = ""
     root.groupLeaveConfirm = false
     root.groupLeaveTarget = ""
@@ -489,6 +549,7 @@ BarWidget {
     root.settingsOpen = false
     root.themeOpen = false
     root.soundOpen = false
+    root.fontSizeOpen = false
     root.moreOpen = false
     root.moreSection = ""
     root.safetyCodeVisible = false
@@ -497,10 +558,16 @@ BarWidget {
     root.nicknameEditOpen = false
     root.nicknameSubmitPending = false
     root.nospamConfirm = false
+    root.removeContactPickerOpen = false
     root.removeContactConfirm = false
+    root.removeContactId = ""
+    root.removeContactKey = ""
     root.replaceIdentityConfirm = false
     root.replaceIdentityPath = ""
+    root.groupInviteGroupId = ""
     root.groupInviteFriendId = ""
+    root.groupInviteFriendKey = ""
+    root.groupInviteRequest = ""
     root.groupInviteFeedback = ""
     root.groupLeaveConfirm = false
     root.groupLeaveTarget = ""
@@ -527,7 +594,10 @@ BarWidget {
     root.moreSection = root.moreSection === section ? "" : section
     if (root.moreSection !== "danger") {
       root.nospamConfirm = false
+      root.removeContactPickerOpen = false
       root.removeContactConfirm = false
+      root.removeContactId = ""
+      root.removeContactKey = ""
     }
     if (root.moreSection !== "identity") {
       root.replaceIdentityConfirm = false
@@ -657,6 +727,13 @@ BarWidget {
     }
   }
 
+  function openRailFontSize() {
+    var open = !(root.settingsOpen && root.fontSizeOpen)
+    root.dismissTransientSections()
+    root.settingsOpen = open
+    root.fontSizeOpen = open
+  }
+
   function openRailTheme() {
     var open = !(root.settingsOpen && root.themeOpen)
     root.dismissTransientSections()
@@ -680,13 +757,46 @@ BarWidget {
     return friend && friend.online ? "online" : "offline"
   }
 
+  function friendStatusDotColor(friend) {
+    var status = root.friendStatus(friend)
+    if (status === "online")
+      return root.onlineStatusColor
+    if (status === "afk")
+      return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.56)
+    return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.30)
+  }
+
   function friendStatusColor(friend) {
     var status = root.friendStatus(friend)
     if (status === "online")
-      return root.systemColors[4] || root.foreground
+      return root.foreground
     if (status === "afk")
-      return root.systemColors[3] || root.controlAccent
-    return root.systemColors[1] || root.dim
+      return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.72)
+    return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.48)
+  }
+
+  function friendKey(id) {
+    var friendId = String(id || "")
+    var friends = omaq.friends || []
+    for (var i = 0; i < friends.length; i++)
+      if (String(friends[i].id || "") === friendId)
+        return String(friends[i].key || "")
+    return ""
+  }
+
+  function friendMatches(id, expectedKey) {
+    var key = String(expectedKey || "")
+    return /^[0-9a-f]{64}$/.test(key) && root.friendKey(id) === key
+  }
+
+  function themedRadius(height) {
+    var value = Number(root.controlRadius)
+    var limit = Math.max(0, Number(height || root.actionButtonHeight) / 2)
+    if (!isFinite(value) || value < 0)
+      value = Number(root.panelRadius)
+    if (!isFinite(value) || value < 0)
+      value = 0
+    return Math.min(value, limit)
   }
 
   function localFileUrl(path) {
@@ -791,6 +901,18 @@ BarWidget {
     root.persistSettings({ chatTheme: name })
   }
 
+  readonly property real messageScale: {
+    var value = Number(root.settings && root.settings.messageScale)
+    return [0.85, 0.9, 1.0, 1.1, 1.2].indexOf(value) >= 0 ? value : 1.0
+  }
+
+  function setMessageScale(value) {
+    var scale = Number(value)
+    if ([0.85, 0.9, 1.0, 1.1, 1.2].indexOf(scale) < 0)
+      return
+    root.persistSettings({ messageScale: scale })
+  }
+
   readonly property string notificationSound: {
     var value = root.settings && root.settings.sound
     return value ? String(value) : "icq-message"
@@ -805,14 +927,18 @@ BarWidget {
 
   function toggleThemeSettings() {
     root.themeOpen = !root.themeOpen
-    if (root.themeOpen)
+    if (root.themeOpen) {
       root.soundOpen = false
+      root.fontSizeOpen = false
+    }
   }
 
   function toggleSoundSettings() {
     root.soundOpen = !root.soundOpen
-    if (root.soundOpen)
+    if (root.soundOpen) {
       root.themeOpen = false
+      root.fontSizeOpen = false
+    }
   }
 
   function openRepo() {
@@ -970,26 +1096,60 @@ BarWidget {
 
   Connections {
     target: omaq
+    function onFriendsChanged() {
+      if (root.removeContactPickerOpen || root.removeContactConfirm) {
+        root.removeContactPickerOpen = false
+        root.removeContactConfirm = false
+        root.removeContactId = ""
+        root.removeContactKey = ""
+      }
+      if (root.groupInviteFriendId !== "" &&
+          root.friendKey(root.groupInviteFriendId) !== root.groupInviteFriendKey) {
+        root.groupInviteGroupId = ""
+        root.groupInviteFriendId = ""
+        root.groupInviteFriendKey = ""
+        root.groupInviteRequest = ""
+        root.groupInviteGeneration = -1
+        root.groupInviteFeedback = ""
+      }
+    }
     function onInviteUrlChanged() {
       if (omaq.inviteUrl !== "")
         omaq.saveQr()
     }
     function onGroupInviteSentTickChanged() {
-      if (String(omaq.lastGroupInviteSentGroup || "") === String(omaq.lastGroup || "") &&
-          String(omaq.lastGroupInviteSentFriend || "") === root.groupInviteFriendId)
+      if (root.groupInviteFeedback === "Sending group invite…" &&
+          String(omaq.lastGroupInviteSentGroup || "") === root.groupInviteGroupId &&
+          String(omaq.lastGroupInviteSentFriend || "") === root.groupInviteFriendId &&
+          String(omaq.lastGroupInviteSentRequest || "") === root.groupInviteRequest)
         root.groupInviteFeedback = "Group invite sent to " +
           root.friendName(root.groupInviteFriendId)
     }
     function onGroupInviteFailedTickChanged() {
-      if (String(omaq.lastGroupInviteFailedGroup || "") === String(omaq.lastGroup || "") &&
-          String(omaq.lastGroupInviteFailedFriend || "") === root.groupInviteFriendId)
+      if (root.groupInviteFeedback === "Sending group invite…" &&
+          String(omaq.lastGroupInviteFailedGroup || "") === root.groupInviteGroupId &&
+          String(omaq.lastGroupInviteFailedFriend || "") === root.groupInviteFriendId &&
+          String(omaq.lastGroupInviteFailedRequest || "") === root.groupInviteRequest)
         root.groupInviteFeedback = omaq.lastGroupInviteFailedCode === "busy"
           ? "Recipient is handling another group invite"
           : "Group invite failed"
     }
-    function onLastErrorTickChanged() {
-      if (root.groupInviteFeedback === "Sending group invite…")
+    function onHelperInstanceGenerationChanged() {
+      if (root.groupInviteFeedback === "Sending group invite…" &&
+          root.groupInviteGeneration >= 0 &&
+          root.groupInviteGeneration !== Number(omaq.helperInstanceGeneration || 0)) {
+          root.groupInviteFeedback = "Group invite failed"
+          root.groupInviteRequest = ""
+          root.groupInviteGeneration = -1
+        }
+    }
+    function onHelperCompatibilityChanged() {
+      if (root.groupInviteFeedback === "Sending group invite…" &&
+          omaq.helperCompatibility === "incompatible") {
         root.groupInviteFeedback = "Group invite failed"
+        root.groupInviteRequest = ""
+        root.groupInviteGeneration = -1
+      }
     }
   }
 
@@ -1018,6 +1178,9 @@ BarWidget {
   BarIconButton {
     id: button
     property real callPulseOpacity: 1.0
+    slotSize: Math.max(Style.bar.iconCanvas + Style.space(6),
+                       Style.bar.iconSlot - Style.space(2))
+    opticalSize: Style.bar.iconCanvas + Style.space(2)
     anchors.fill: parent
     bar: root.bar
     text: omaq.incomingCall ? "call" : (omaq.pending ? "" : "󰭹")
@@ -1058,7 +1221,7 @@ BarWidget {
     width: Math.max(Style.space(12), unreadBadgeText.implicitWidth + Style.space(6))
     height: Style.space(12)
     radius: height / 2
-    color: root.urgent
+    color: root.systemColors[1] || root.urgent
     border.width: 0
     anchors.verticalCenter: button.verticalCenter
     anchors.verticalCenterOffset: -Style.space(6)
@@ -1299,7 +1462,8 @@ BarWidget {
       id: card
       width: root.cardWidth
       height: Math.min(Math.max(column.implicitHeight,
-                                actionRail.implicitHeight + Style.space(52)) + root.pad * 2,
+                                actionRail.implicitHeight + heroVisual.height +
+                                root.panelSectionGap) + root.pad * 2,
                        popup.screen ? Math.max(Style.space(260), popup.screen.height - Style.space(24)) : Style.space(720))
       color: root.connectedSurfaceEnabled ? "transparent" : root.panelBackground
       borderSpec: root.connectedSurfaceEnabled
@@ -1330,15 +1494,28 @@ BarWidget {
         focus: root.opened
         Keys.onEscapePressed: root.close()
 
-        Row {
+        Rectangle {
           id: actionRail
           anchors.top: parent.top
-          anchors.topMargin: root.pad + Style.space(48)
+          anchors.topMargin: root.pad + heroVisual.height + root.panelSectionGap
           anchors.right: parent.right
-          spacing: 0
+          anchors.rightMargin: root.pad
+          implicitWidth: railColumns.implicitWidth + root.framePadding * 2
+          implicitHeight: railColumns.implicitHeight + root.framePadding * 2
+          width: implicitWidth
+          height: implicitHeight
+          radius: root.themedRadius(height)
+          color: "transparent"
+          border.color: root.controlBorder
+          border.width: 1
           z: 20
 
-          Column {
+          Row {
+            id: railColumns
+            anchors.centerIn: parent
+            spacing: 0
+
+            Column {
             spacing: Style.space(2)
 
             RailIcon {
@@ -1376,10 +1553,10 @@ BarWidget {
               onClicked: root.openRailAdvanced("chat")
             }
             RailIcon {
-              materialIcon: "badge"
-              label: "Identity"
-              selected: root.moreOpen && root.moreSection === "identity"
-              onClicked: root.openRailAdvanced("identity")
+              materialIcon: "format_size"
+              label: "Chat message size"
+              selected: root.settingsOpen && root.fontSizeOpen
+              onClicked: root.openRailFontSize()
             }
           }
 
@@ -1411,11 +1588,19 @@ BarWidget {
               selected: chatSurface && chatSurface.muted
               onClicked: if (chatSurface) chatSurface.toggleMute()
             }
-            RailIcon {
-              materialIcon: "warning"
-              label: "Danger zone"
-              selected: root.moreOpen && root.moreSection === "danger"
-              onClicked: root.openRailAdvanced("danger")
+              RailIcon {
+                materialIcon: "warning_amber"
+                label: "Danger zone"
+                selected: root.moreOpen && root.moreSection === "danger"
+                fillSelected: false
+                onClicked: root.openRailAdvanced("danger")
+              }
+              RailIcon {
+                materialIcon: "badge"
+                label: "Identity"
+                selected: root.moreOpen && root.moreSection === "identity"
+                onClicked: root.openRailAdvanced("identity")
+              }
             }
           }
         }
@@ -1443,23 +1628,28 @@ BarWidget {
 
           Column {
             id: column
-            width: Math.max(0, panelScroll.width - root.railWidth)
-            spacing: Style.space(12)
+            width: Math.max(0, panelScroll.width - root.railWidth -
+                            root.panelSectionGap)
+            spacing: root.panelSectionGap
 
           Item {
             id: heroRow
             width: panelScroll.width
             implicitHeight: heroVisual.height
 
-            Item {
+            Rectangle {
               id: heroVisual
               width: parent.width
-              height: Style.space(48)
+              height: Style.space(40)
+              radius: root.themedRadius(height)
+              color: "transparent"
+              border.color: root.controlBorder
+              border.width: 1
               clip: true
               property real logoPulse: 0
 
               Image {
-                width: Math.min(parent.width - Style.space(32), Style.space(38) * 751 / 230)
+                width: Math.min(parent.width - Style.space(24), Style.space(32) * 751 / 230)
                 height: width * 230 / 751
                 anchors.centerIn: parent
                 source: Qt.resolvedUrl("assets/OmaQ_Final-panel.png")
@@ -1743,6 +1933,24 @@ BarWidget {
               }
             }
 
+            Rectangle {
+              id: contactsFrame
+              visible: (omaq.friends && omaq.friends.length > 0) ||
+                (omaq.groups && omaq.groups.length > 0)
+              width: parent.width
+              implicitHeight: contactsColumn.implicitHeight + root.framePadding * 2
+              height: implicitHeight
+              radius: root.themedRadius(height)
+              color: "transparent"
+              border.color: root.controlBorder
+              border.width: 1
+
+              Column {
+                id: contactsColumn
+                anchors.fill: parent
+                anchors.margins: root.framePadding
+                spacing: Style.space(4)
+
             Text {
               visible: omaq.friends && omaq.friends.length > 0
               text: "FRIENDS"
@@ -1789,7 +1997,7 @@ BarWidget {
                     width: Style.space(6)
                     height: width
                     radius: width / 2
-                    color: root.friendStatusColor(friendDelegate.modelData)
+                    color: root.friendStatusDotColor(friendDelegate.modelData)
                     border.width: 0
                   }
 
@@ -1967,6 +2175,52 @@ BarWidget {
                   }
                 }
               }
+            }
+              }
+            }
+          }
+
+          Column {
+            visible: root.settingsOpen && root.fontSizeOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "CHAT MESSAGE SIZE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: [
+                  { label: "85%", value: 0.85 },
+                  { label: "90%", value: 0.9 },
+                  { label: "100%", value: 1.0 },
+                  { label: "110%", value: 1.1 },
+                  { label: "120%", value: 1.2 }
+                ]
+                delegate: ActionButton {
+                  required property var modelData
+                  width: Math.max(0, (parent.width - parent.spacing * 4) / 5)
+                  text: String(modelData.label)
+                  selected: root.messageScale === Number(modelData.value)
+                  tooltipText: "Chat messages: " + text
+                  onClicked: root.setMessageScale(modelData.value)
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "Changes message text only."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -2172,14 +2426,20 @@ BarWidget {
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: omaq.answerCall(omaq.lastCallConv)
+                onClicked: {
+                  if (omaq.answerCall(omaq.lastCallConv))
+                    OmaQ.CallTone.stopAll()
+                }
               }
               TokenButton {
                 text: "Decline call"
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: omaq.stopCall(omaq.lastCallConv)
+                onClicked: {
+                  if (omaq.stopCall(omaq.lastCallConv))
+                    OmaQ.CallTone.stopAll()
+                }
               }
             }
 
@@ -2493,13 +2753,18 @@ BarWidget {
                     text: String(modelData.title || "Group") + " · " +
                       String(modelData.memberCount || 0) + "/" + String(modelData.limit || 10)
                     selected: String(modelData.id || "") === String(omaq.lastGroup || "")
+                    enabled: root.groupInviteFeedback !== "Sending group invite…"
                     bordered: true
                     focusable: true
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     onClicked: {
                       omaq.selectGroup(modelData.id)
+                      root.groupInviteGroupId = ""
                       root.groupInviteFriendId = ""
+                      root.groupInviteFriendKey = ""
+                      root.groupInviteRequest = ""
+                      root.groupInviteGeneration = -1
                       root.groupInviteFeedback = ""
                       root.groupLeaveConfirm = false
                       root.groupLeaveTarget = ""
@@ -2538,10 +2803,17 @@ BarWidget {
                     required property var modelData
                     text: String(modelData.name || ("Friend " + modelData.id))
                     selected: String(modelData.id || "") === root.groupInviteFriendId
+                    enabled: root.groupInviteFeedback !== "Sending group invite…"
                     focusable: true
                     foreground: root.foreground
                     fontFamily: root.fontFamily
-                    onClicked: root.groupInviteFriendId = String(modelData.id || "")
+                    onClicked: {
+                      root.groupInviteFriendId = String(modelData.id || "")
+                      root.groupInviteFriendKey = String(modelData.key || "")
+                      root.groupInviteRequest = ""
+                      root.groupInviteGeneration = -1
+                      root.groupInviteFeedback = ""
+                    }
                   }
                 }
               }
@@ -2552,10 +2824,17 @@ BarWidget {
                 text: root.groupInviteFriendId
                   ? "Invite contact · " + root.friendName(root.groupInviteFriendId)
                   : "Select a contact"
-                enabled: root.groupInviteFriendId !== ""
+                enabled: root.friendMatches(root.groupInviteFriendId,
+                  root.groupInviteFriendKey) &&
+                  root.groupInviteFeedback !== "Sending group invite…"
                 onClicked: {
+                  root.groupInviteGroupId = String(omaq.lastGroup || "")
+                  root.groupInviteRequest = omaq.nextGroupInviteRequest()
+                  root.groupInviteGeneration = Number(omaq.helperInstanceGeneration || 0)
                   root.groupInviteFeedback = "Sending group invite…"
-                  if (!omaq.inviteToGroup(root.groupInviteFriendId, omaq.lastGroup))
+                  if (!omaq.inviteToGroup(root.groupInviteFriendId,
+                        root.groupInviteFriendKey, root.groupInviteGroupId,
+                        root.groupInviteRequest))
                     root.groupInviteFeedback = "Group invite failed"
                 }
               }
@@ -2822,18 +3101,24 @@ BarWidget {
 
               GridLayout {
                 visible: root.moreSection === "danger" &&
-                  !root.nospamConfirm && !root.removeContactConfirm
+                  !root.nospamConfirm && !root.removeContactPickerOpen &&
+                  !root.removeContactConfirm
                 width: parent.width
                 columns: 2
                 columnSpacing: root.btnGap
                 rowSpacing: Style.space(4)
 
                 ActionButton {
-                  visible: omaq.lastDirectId !== ""
+                  visible: omaq.friends && omaq.friends.length > 0
                   Layout.fillWidth: true
-                  iconText: "󰆴"
+                  iconText: "person_remove"
+                  iconFontFamily: "Material Symbols Rounded"
                   text: "Remove contact"
-                  onClicked: root.removeContactConfirm = true
+                  onClicked: {
+                    root.removeContactId = ""
+                    root.removeContactKey = ""
+                    root.removeContactPickerOpen = true
+                  }
                 }
 
                 ActionButton {
@@ -2844,10 +3129,57 @@ BarWidget {
                 }
               }
 
+              Column {
+                visible: root.moreSection === "danger" && root.removeContactPickerOpen
+                width: parent.width
+                spacing: Style.space(4)
+
+                Text {
+                  width: parent.width
+                  text: "Select the contact to remove"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                }
+
+                Repeater {
+                  model: omaq.friends || []
+                  delegate: ActionButton {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    iconText: "person"
+                    iconFontFamily: "Material Symbols Rounded"
+                    text: String(modelData && modelData.name ||
+                      ("Friend " + String(modelData && modelData.id || "")))
+                    tooltipText: text
+                    enabled: /^[0-9a-f]{64}$/.test(String(modelData && modelData.key || ""))
+                    onClicked: {
+                      root.removeContactId = String(modelData && modelData.id || "")
+                      root.removeContactKey = String(modelData && modelData.key || "")
+                      root.removeContactPickerOpen = false
+                      root.removeContactConfirm = root.friendMatches(
+                        root.removeContactId, root.removeContactKey)
+                    }
+                  }
+                }
+
+                ActionButton {
+                  width: parent.width
+                  text: "Cancel"
+                  onClicked: {
+                    root.removeContactPickerOpen = false
+                    root.removeContactId = ""
+                    root.removeContactKey = ""
+                  }
+                }
+              }
+
               Text {
                 visible: root.moreSection === "danger" && root.removeContactConfirm
                 width: parent.width
-                text: "Remove this contact? Chat history stays on this machine."
+                text: "Remove " + root.friendName(root.removeContactId) +
+                  "? Chat history stays on this machine."
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -2863,16 +3195,27 @@ BarWidget {
                 ActionButton {
                   Layout.fillWidth: true
                   text: "Cancel"
-                  onClicked: root.removeContactConfirm = false
+                  onClicked: {
+                    root.removeContactConfirm = false
+                    root.removeContactId = ""
+                    root.removeContactKey = ""
+                  }
                 }
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "󰆴"
+                  iconText: "person_remove"
+                  iconFontFamily: "Material Symbols Rounded"
                   text: "Remove"
                   accent: root.urgent
+                  enabled: root.friendMatches(root.removeContactId, root.removeContactKey)
                   onClicked: {
-                    omaq.removeContact()
+                    var selectedContact = root.removeContactId
+                    var selectedKey = root.removeContactKey
+                    if (root.friendMatches(selectedContact, selectedKey))
+                      omaq.removeContact(selectedContact, selectedKey)
                     root.removeContactConfirm = false
+                    root.removeContactId = ""
+                    root.removeContactKey = ""
                     root.safetyCodeVisible = false
                   }
                 }

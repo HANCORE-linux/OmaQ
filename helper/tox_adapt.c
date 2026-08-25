@@ -431,8 +431,9 @@ static void on_gexit(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Group_Exit_Type
 	(void)plen;
 	if (t->on_gpeer)
 		t->on_gpeer(t->ud, gnum, peer, 0,
-			    xt == TOX_GROUP_EXIT_TYPE_QUIT ||
-			    xt == TOX_GROUP_EXIT_TYPE_KICK);
+			    xt == TOX_GROUP_EXIT_TYPE_SELF_DISCONNECTED ? 2 :
+			    (xt == TOX_GROUP_EXIT_TYPE_QUIT ||
+			     xt == TOX_GROUP_EXIT_TYPE_KICK));
 }
 
 static int role_to_tox(int r)
@@ -857,13 +858,13 @@ int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max)
 	uint32_t *all;
 
 	if (!t || !t->tox || !out || max == 0)
-		return 0;
+		return -1;
 	n = tox_self_get_friend_list_size(t->tox);
 	if (n == 0)
 		return 0;
 	all = calloc(n, sizeof(*all));
 	if (!all)
-		return 0;
+		return -1;
 	tox_self_get_friend_list(t->tox, all);
 	if (n > max)
 		n = max;
