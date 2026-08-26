@@ -137,6 +137,7 @@ BarWidget {
   readonly property real framePadding: Style.space(6)
   readonly property int pad: Style.spacing.popupPadding
   readonly property real nicknameControlHeight: Style.space(18)
+  readonly property real nicknameEditorHeight: Style.space(30)
   readonly property int friendColumnCount: Math.min(3, Math.max(1,
     Math.ceil(Math.max(1, omaq.friends ? omaq.friends.length : 0) / 5)))
   readonly property int cardWidth: Style.space(320 + (friendColumnCount - 1) * 130)
@@ -541,7 +542,7 @@ BarWidget {
       anchors.fill: parent
       color: root.controlFill
       borderSpec: Border.flat(
-        parent.activeFocus || parent.hovered ? root.controlAccent : root.controlBorder, 1)
+        parent.activeFocus || parent.hovered ? tokenField.accent : root.controlBorder, 1)
       radius: root.themedRadius(parent.height)
     }
   }
@@ -2222,13 +2223,15 @@ BarWidget {
               Row {
                 visible: omaq.selfNickname === "" || root.nicknameEditOpen
                 width: parent.width
-                height: root.nicknameControlHeight
+                height: root.nicknameEditorHeight
                 spacing: root.btnGap
                 TokenTextField {
                   id: nicknameField
                   width: parent.width - nicknameButton.implicitWidth - root.btnGap
                   height: parent.height
                   foreground: root.controlForeground
+                  accent: root.nicknameFeedbackError ? root.urgent : root.controlAccent
+                  font.pixelSize: Style.font.body
                   placeholderText: "Nickname · max 18"
                   maximumLength: 36
                   text: omaq.selfNickname
@@ -2242,6 +2245,15 @@ BarWidget {
                       text = limited
                   }
                   onAccepted: if (nicknameButton.enabled) nicknameButton.clicked()
+
+                  Controls.ToolTip {
+                    id: nicknameFeedbackTooltip
+                    visible: (omaq.selfNickname === "" || root.nicknameEditOpen) &&
+                      root.nicknameFeedback !== ""
+                    text: root.nicknameFeedback
+                    delay: 0
+                    timeout: -1
+                  }
                 }
                 TokenButton {
                   id: nicknameButton
@@ -2283,7 +2295,8 @@ BarWidget {
 
               RowLayout {
                 id: selfStatusRow
-                visible: root.nicknameFeedback === ""
+                visible: root.nicknameFeedback === "" &&
+                  omaq.selfNickname !== "" && !root.nicknameEditOpen
                 width: parent.width
                 height: Style.space(16)
                 spacing: Style.space(3)
@@ -2361,7 +2374,9 @@ BarWidget {
               }
 
               Text {
-                visible: root.nicknameFeedback !== ""
+                id: nicknameFeedbackText
+                visible: root.nicknameFeedback !== "" &&
+                  omaq.selfNickname !== "" && !root.nicknameEditOpen
                 width: parent.width
                 height: Style.space(16)
                 verticalAlignment: Text.AlignVCenter
