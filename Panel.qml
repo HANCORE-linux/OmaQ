@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Shapes
+import QtQuick.Effects
 import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
@@ -135,17 +136,19 @@ BarWidget {
   readonly property real panelSectionGap: Style.space(8)
   readonly property real framePadding: Style.space(6)
   readonly property int pad: Style.spacing.popupPadding
-  readonly property real nicknameControlHeight: Style.space(28)
+  readonly property real nicknameControlHeight: Style.space(18)
   readonly property int friendColumnCount: Math.min(3, Math.max(1,
     Math.ceil(Math.max(1, omaq.friends ? omaq.friends.length : 0) / 5)))
   readonly property int cardWidth: Style.space(320 + (friendColumnCount - 1) * 130)
   readonly property real railIconWidth: Style.space(30)
   readonly property real railWidth: railIconWidth * 2 + framePadding * 2
-  readonly property real headerHeight: Style.space(66)
+  readonly property real headerHeight: Style.space(48)
+  readonly property real supportGlyphSize: Style.font.icon + Style.space(3)
   readonly property real basePrimaryAreaHeight: Math.max(
     identityContactsFrame.implicitHeight, actionRail.implicitHeight)
   readonly property real primaryAreaHeight: root.primaryMenuOpen
-    ? Math.max(column.implicitHeight, root.basePrimaryAreaHeight)
+    ? Math.max(column.implicitHeight + root.framePadding * 2,
+               root.basePrimaryAreaHeight)
     : root.basePrimaryAreaHeight
   readonly property real actionButtonHeight: Style.space(24)
   readonly property color onlineStatusColor: "#7dce6a"
@@ -337,6 +340,7 @@ BarWidget {
     property bool active: false
     property bool focusable: false
     property bool bordered: false
+    property bool borderless: false
     property string accessibleName: tooltipText !== "" ? tooltipText : text
     property color foreground: root.controlForeground
     property color accent: root.controlAccent
@@ -372,10 +376,12 @@ BarWidget {
                              Math.max(buttonIcon.implicitHeight, buttonLabel.implicitHeight) +
                              verticalPadding * 2)
     radius: root.themedRadius(height > 0 ? height : implicitHeight)
-    color: mouseArea.pressed ? root.controlActiveFill
+    color: borderless ? "transparent"
+      : mouseArea.pressed ? root.controlActiveFill
       : selected || active ? root.controlActiveFill
       : hot ? root.controlHoverFill : root.controlFill
-    borderSpec: activeFocus || hot || selected || active ? activeBorder : normalBorder
+    borderSpec: borderless ? Border.none()
+      : activeFocus || hot || selected || active ? activeBorder : normalBorder
 
     Behavior on color { ColorAnimation { duration: 100 } }
 
@@ -390,7 +396,8 @@ BarWidget {
         id: buttonIcon
         visible: tokenButton.iconText !== ""
         text: tokenButton.iconText
-        color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
+        color: tokenButton.selected || tokenButton.hot || tokenButton.activeFocus
+          ? tokenButton.actionColor : tokenButton.foreground
         font.family: tokenButton.iconFontFamily
         font.pixelSize: tokenButton.iconSize
         anchors.verticalCenter: parent.verticalCenter
@@ -402,7 +409,8 @@ BarWidget {
         width: Math.max(0, row.width -
           (buttonIcon.visible ? buttonIcon.implicitWidth + row.spacing : 0))
         text: tokenButton.text
-        color: tokenButton.selected || tokenButton.hot ? tokenButton.actionColor : tokenButton.foreground
+        color: tokenButton.selected || tokenButton.hot || tokenButton.activeFocus
+          ? tokenButton.actionColor : tokenButton.foreground
         font.family: tokenButton.fontFamily
         font.pixelSize: tokenButton.fontSize
         font.bold: false
@@ -2178,7 +2186,7 @@ BarWidget {
             AvatarPic {
               id: selfHeaderAvatar
               anchors.verticalCenter: parent.verticalCenter
-              px: Style.space(42)
+              px: Style.space(34)
               path: omaq.selfAvatar
               online: omaq.selfOnline
               revision: omaq.avatarTick
@@ -2275,8 +2283,9 @@ BarWidget {
 
               RowLayout {
                 id: selfStatusRow
+                visible: root.nicknameFeedback === ""
                 width: parent.width
-                height: Style.space(18)
+                height: Style.space(16)
                 spacing: Style.space(3)
 
                 Text {
@@ -2354,6 +2363,8 @@ BarWidget {
               Text {
                 visible: root.nicknameFeedback !== ""
                 width: parent.width
+                height: Style.space(16)
+                verticalAlignment: Text.AlignVCenter
                 text: root.nicknameFeedback
                 color: root.nicknameFeedbackError ? root.urgent
                   : (root.systemColors[3] || root.onlineStatusColor)
@@ -2380,39 +2391,70 @@ BarWidget {
           z: 20
 
           Row {
+            id: supportGlyphRow
             anchors.centerIn: parent
-            spacing: Style.space(5)
+            spacing: 0
 
             TokenButton {
+              id: githubSupportButton
               width: root.railIconWidth
-              height: root.railIconWidth
+              height: Style.space(30)
+              borderless: true
+              accent: root.systemColors[3] || root.controlAccent
               tooltipText: "Open OmaQ on GitHub"
               accessibleName: tooltipText
               focusable: true
-              horizontalPadding: Style.space(3)
-              verticalPadding: Style.space(3)
+              horizontalPadding: Style.space(2)
+              verticalPadding: Style.space(2)
               onClicked: root.openRepo()
 
               Image {
-                anchors.fill: parent
-                anchors.margins: Style.space(3)
+                id: hancoreSupportIcon
+                anchors.centerIn: parent
+                width: root.supportGlyphSize
+                height: root.supportGlyphSize
                 source: Qt.resolvedUrl("assets/hancore-link.png")
                 fillMode: Image.PreserveAspectFit
                 smooth: true
                 mipmap: true
+                layer.enabled: githubSupportButton.hot || githubSupportButton.activeFocus
+                layer.effect: MultiEffect {
+                  id: hancoreSupportHover
+                  colorization: 1
+                  colorizationColor: root.systemColors[3] || root.controlAccent
+                }
               }
             }
 
             TokenButton {
+              id: kofiSupportButton
               width: root.railIconWidth
-              height: root.railIconWidth
-              iconText: "local_cafe"
-              iconFontFamily: "Material Symbols Rounded"
-              iconSize: Style.font.icon + Style.space(3)
+              height: Style.space(30)
+              borderless: true
+              accent: root.systemColors[3] || root.controlAccent
               tooltipText: "Support HANCORE on Ko-fi"
               accessibleName: tooltipText
               focusable: true
+              horizontalPadding: Style.space(2)
+              verticalPadding: Style.space(2)
               onClicked: root.openKoFi()
+
+              Image {
+                id: kofiSupportIcon
+                anchors.centerIn: parent
+                width: root.supportGlyphSize
+                height: root.supportGlyphSize
+                source: Qt.resolvedUrl("assets/kofi-mono.svg")
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+                layer.enabled: kofiSupportButton.hot || kofiSupportButton.activeFocus
+                layer.effect: MultiEffect {
+                  id: kofiSupportHover
+                  colorization: 1
+                  colorizationColor: root.systemColors[3] || root.controlAccent
+                }
+              }
             }
           }
         }
@@ -2570,6 +2612,22 @@ BarWidget {
           }
         }
 
+        Rectangle {
+          id: activeMenuFrame
+          visible: root.primaryMenuOpen
+          anchors.top: parent.top
+          anchors.topMargin: root.pad + heroVisual.height + root.panelSectionGap
+          anchors.left: parent.left
+          anchors.leftMargin: root.pad
+          width: heroVisual.width
+          height: panelScroll.height
+          radius: root.themedRadius(height)
+          color: "transparent"
+          border.color: root.controlBorder
+          border.width: 1
+          z: 10
+        }
+
         Flickable {
           id: panelScroll
           anchors.top: parent.top
@@ -2581,7 +2639,8 @@ BarWidget {
           height: Math.max(0, card.height - root.pad * 2 - heroVisual.height -
                            root.panelSectionGap)
           contentWidth: width
-          contentHeight: column.implicitHeight
+          contentHeight: column.y + column.implicitHeight +
+            (root.primaryMenuOpen ? root.framePadding : 0)
           clip: true
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
@@ -2614,8 +2673,11 @@ BarWidget {
 
           Column {
             id: column
+            x: root.primaryMenuOpen ? root.framePadding : 0
+            y: root.primaryMenuOpen ? root.framePadding : 0
             width: Math.max(0, panelScroll.width - root.railWidth -
-                            root.panelSectionGap)
+                            root.panelSectionGap -
+                            (root.primaryMenuOpen ? root.framePadding * 2 : 0))
             spacing: root.panelSectionGap
 
           GridLayout {

@@ -33,7 +33,7 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 2. Click the accepted friend.
 3. The floating chat window opens.
 
-Your own panel nickname can contain up to 18 valid characters. It appears with your avatar in the fixed panel header. Friends and groups begin immediately at the top of the lower-left frame; longer remote or legacy panel names are shortened visually with an ellipsis and never cross the border. Friend names switch to `color03` on pointer hover or keyboard focus. The two fixed support icons above the right rail open the OmaQ GitHub repository and HANCORE's Ko-fi page.
+Your own panel nickname can contain up to 18 valid characters. It appears with your avatar in the compact fixed panel header. Friends and groups begin immediately at the top of the lower-left frame; longer remote or legacy panel names are shortened visually with an ellipsis and never cross the border. Every rail menu remains inside that same thin left frame. Friend names switch to `color03` on pointer hover or keyboard focus. The two borderless support glyphs above the right rail use the same size and spacing as the rail icons below, open the OmaQ GitHub repository and HANCORE's Ko-fi page, and change to `color03` on pointer hover or keyboard focus.
 
 ## 3. Chat controls
 
