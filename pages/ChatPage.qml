@@ -232,7 +232,7 @@ FocusScope {
     background: BorderSurface {
       color: Color.tooltip.background
       borderSpec: omaqTooltip.tokenBorderSpec
-      radius: 0
+      radius: Style.cornerRadius
     }
 
     contentItem: Text {

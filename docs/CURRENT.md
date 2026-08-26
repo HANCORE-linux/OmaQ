@@ -9,16 +9,16 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Manifest version:** `0.7.0`
 - **Source:** `/home/hancore/Projects/omaq`
 - **Live plugins:** `~/.config/omarchy/plugins/hancore.omaq` on machine and `/home/drdeltree/.config/omarchy/plugins/hancore.omaq` on machine2
-- **Source commit:** local `main` and `origin/main` are both `3c0cf904`; the current follow-up is an uncommitted worktree and has not been deployed
-- **Live machine:** remains on the Protocol-8 deployment; deployed helper SHA-256 `58e2f8758a49a4404531f8163bad1052f326db36b4e524361c0bc67bbc64352d`
-- **Live machine2:** remains on the same Protocol-8 deployment at `192.168.2.108`; deployed helper SHA-256 `58e2f8758a49a4404531f8163bad1052f326db36b4e524361c0bc67bbc64352d`
+- **Source commit:** local `main` and `origin/main` are both `a497b521`; the current floating/no-animation and panel-close correction is an uncommitted worktree and has not been deployed
+- **Live machine:** Protocol 9 at `a497b521`; deployed helper SHA-256 `5349d1d4425e8323b70a9b0e788af876c3280fc36f03d2157e991385ab799879`
+- **Live machine2:** the same Protocol-9 deployment at `192.168.2.108`; deployed helper SHA-256 `5349d1d4425e8323b70a9b0e788af876c3280fc36f03d2157e991385ab799879`
 - **AUR:** paused; no registration or upload
 - **User guide:** [`USER-GUIDE.md`](USER-GUIDE.md)
 
 ## Working functionality
 
 - **Pairing:** `Invite` creates a one-use, time-limited QR/link. The recipient uses `Add`; the sender explicitly accepts the request.
-- **Direct chat:** floating chat window, Signal Double Ratchet, no plaintext fallback.
+- **Direct chat:** first-map floating chat windows without window animations, Signal Double Ratchet, no plaintext fallback. Manual tiling remains unchanged by focus and reopen operations.
 - **Messages:** unmodified Enter sends while modified Enter inserts a line break, request-correlated delivery failures provide safe Resend, compact receipt spacing, a borderless Send action, a horizontally scrollable emoji/tool rail, persisted message-only text scaling, hover reactions, hover and keyboard editing, confirmed deletion, formatting, keyboard navigation, unread badges, and a `New messages` divider.
 - **Files:** paused offer, explicit Accept/Decline, cancelable outgoing transfers, default downloads under `~/Downloads/omaq/`, fully decoded and canonically rewritten bounded avatars, in-chat playback for received audio files, and helper-validated 56×56 PNG/JPEG/WebP previews that open the complete local image. Selected, dropped, and clipboard images use private helper-created staging, canonical PNG adoption, request-correlated discard debt, and restart cleanup; video previews remain unavailable.
 - **Notifications:** the per-conversation action reads `Auto-off` while enabled and `Auto-open` while disabled, with the on/off state repeated in its tooltip; unread counts remain until the relevant chat is actively opened.
@@ -36,7 +36,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 ## Open points
 
-### Committed and deployed in `ca109a9`
+### Earlier committed functionality
 
 - The helper transactionally prunes unread entries that no loaded friend or active group can expose, so unavailable groups cannot keep a non-actionable widget badge alive.
 - Protocol 7 makes read state helper-authoritative with an fsync-backed recovery journal, persistent bounded receipt outbox, capability-gated application acknowledgements, batched retries, restart recovery, authoritative history unread snapshots, and a bounded legacy path.
@@ -47,7 +47,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The helper continues to bind `Remove contact` and targeted group invitations to the selected contact's stable public key, which it rechecks immediately before destructive or transport actions.
 - A process-wide owner loops the bundled `phone.oga` progress tone for incoming and outgoing ringing, stops it on answer, decline, hangup, or terminal state, and prevents duplicate playback across monitor surfaces.
 
-### Implemented locally; pending deployment
+### Committed and deployed in `a497b521`
 
 - Normal file cancellation is projected to both peers as `file.canceled`, with a persistent dismissible status instead of a silent clear or generic failure. Correlated group-invite success remains visible as sent and waiting for acceptance. Incoming and legacy avatars pass exclusive no-follow staging, full PNG/JPEG/WebP decoding, dimension and decoded-memory bounds, adaptive canonical-PNG sizing, atomic installation, and crash-temp cleanup before they are exposed to QML.
 - Direct history, avatars, Ratchet pins, Signal identities, Signal sessions, unread counts, and receipt debt use the contact's canonical Tox public key instead of the unstable numeric friend handle. A versioned private binding file authorizes legacy migration before Ratchet startup and after unlock; unbound numeric state is archived with a reinvite warning, while collisions, malformed input, oversized friend lists, and symlinked paths fail closed. Per-peer one-time prekeys are unique, peer-bound, persisted before publication, durably consumed, and replay-safe across restart. Exact, canonical `OQB2` requests and durable responses recover half-sessions and lost prekeys without duplicate ping-pong; malformed records, wrong-peer consumption, interrupted writes, and failed session rollback fail closed.

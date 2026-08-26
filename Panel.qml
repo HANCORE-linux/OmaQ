@@ -2328,7 +2328,8 @@ BarWidget {
             }
 
             Column {
-              width: Math.max(0, parent.width - selfHeaderAvatar.width - parent.spacing)
+              width: Math.max(0, parent.width - selfHeaderAvatar.width -
+                              panelCloseButton.width - parent.spacing * 2)
               anchors.verticalCenter: parent.verticalCenter
               spacing: 0
 
@@ -2521,6 +2522,24 @@ BarWidget {
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
               }
+            }
+
+            TokenButton {
+              id: panelCloseButton
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(24)
+              height: Style.space(30)
+              borderless: true
+              iconText: "close"
+              iconFontFamily: "Material Symbols Rounded"
+              tooltipText: "Close panel"
+              accessibleName: tooltipText
+              focusable: true
+              foreground: root.foreground
+              accent: root.systemColors[3] || root.controlAccent
+              horizontalPadding: Style.space(2)
+              verticalPadding: Style.space(2)
+              onClicked: root.close()
             }
           }
         }

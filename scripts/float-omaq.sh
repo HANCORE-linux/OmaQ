@@ -26,8 +26,10 @@ RULE_FLAG="$RULE_DIR/rules.${INSTANCE_KEY}"
 
 install_rules() {
   if (( LUA )); then
-    hyprctl eval 'hl.window_rule({ name = "omaq-float-demo", match = { title = "^OmaQ demo$" }, float = true })' >/dev/null || return 1
-    hyprctl eval 'hl.window_rule({ name = "omaq-float-chat", match = { title = "^OmaQ chat" }, float = true })' >/dev/null || return 1
+    # Named Lua rules are removed when their returned handles are collected.
+    # Retain both handles in Hyprland's global Lua state across hyprctl calls.
+    hyprctl eval 'omaq_window_rules = omaq_window_rules or {}; if omaq_window_rules.demo_v4 == nil then omaq_window_rules.demo_v4 = hl.window_rule({ name = "omaq-float-demo-v4", match = { initial_title = "^OmaQ demo$" }, float = true, no_anim = true }) else omaq_window_rules.demo_v4:set_enabled(true) end' >/dev/null || return 1
+    hyprctl eval 'omaq_window_rules = omaq_window_rules or {}; if omaq_window_rules.chat_v5 == nil then omaq_window_rules.chat_v5 = hl.window_rule({ name = "omaq-float-chat-v5", match = { initial_title = "^OmaQ chat.*$" }, float = true, no_anim = true }) else omaq_window_rules.chat_v5:set_enabled(true) end' >/dev/null || return 1
     return 0
   fi
 
@@ -46,7 +48,9 @@ install_rules() {
   previous=$(cat -- "$RULE_FLAG" 2>/dev/null || true)
   if [[ "$previous" != "$generation" ]]; then
     if ! hyprctl keyword 'windowrulev2 = float, title:^(OmaQ demo)$' >/dev/null ||
-       ! hyprctl keyword 'windowrulev2 = float, title:^(OmaQ chat)' >/dev/null; then
+       ! hyprctl keyword 'windowrulev2 = noanim, title:^(OmaQ demo)$' >/dev/null ||
+       ! hyprctl keyword 'windowrulev2 = float, title:^(OmaQ chat.*)$' >/dev/null ||
+       ! hyprctl keyword 'windowrulev2 = noanim, title:^(OmaQ chat.*)$' >/dev/null; then
       flock -u 9
       exec 9>&-
       return 1
