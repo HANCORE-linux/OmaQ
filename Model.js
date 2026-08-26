@@ -118,35 +118,3 @@ function themeColors(id) {
     var t = themeFor(id)
     return t.colors || []
 }
-
-function decodeEntities(s) {
-    if (typeof s !== "string")
-        return ""
-    return s
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, "\"")
-        .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'")
-}
-
-function parseOmarchyNews(html) {
-    if (typeof html !== "string" || html.indexOf("news-card") < 0)
-        return []
-    var out = []
-    var re = /<article class="news-card">[\s\S]*?datetime="([^"]*)"[\s\S]*?<h2 class="news-card__title">([\s\S]*?)<\/h2>[\s\S]*?class="news-card__link" href="(\/news\/[^"]+)"/g
-    var m
-    while ((m = re.exec(html)) !== null && out.length < 1) {
-        var title = decodeEntities(String(m[2]).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim())
-        var path = m[3]
-        if (!title || !path)
-            continue
-        out.push({
-            date: m[1] || "",
-            title: title,
-            href: "https://omarchy.org" + path
-        })
-    }
-    return out
-}

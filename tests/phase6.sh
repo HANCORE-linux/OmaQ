@@ -142,7 +142,7 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$sent" -eq 1 ] || { echo "phase6: not connected" >&2; exit 1; }
 
-printf '{"op":"file.send","conversation":"0","path":"%s"}\n' "$src" >&3
+printf '{"op":"file.send","conversation":"0","path":"%s","id":"phase6-file-send"}\n' "$src" >&3
 ok=0
 fid=""
 i=0

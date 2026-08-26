@@ -1,8 +1,10 @@
 # OmaQ — see docs/PLAN.md.
 
 CC       ?= gcc
-CFLAGS   ?= -std=c11 -Wall -Werror -O1
+CFLAGS   ?= -std=c11 -Wall -Werror -O2
 SANFLAGS ?= -fsanitize=address,undefined
+HARDEN_CFLAGS ?= -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fPIE
+HARDEN_LDFLAGS ?= -Wl,-z,relro,-z,now -pie
 PKG_CONFIG ?= pkg-config
 
 TOX_OK := $(shell $(PKG_CONFIG) --exists libtoxcore && echo yes || \
@@ -92,7 +94,8 @@ $(BIN_RATCHET_PREKEY_TEST): tests/ratchet_prekey_test.c helper/ratchet.c helper/
 
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
-		-DOMAQ_STDOUT_SPOOL_MAX=5242880u -o $@ $(HELPER_SRC)
+		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
+		$(AVATAR_LIBS)
 
 check-signal:
 	@if [ "$(SIG_OK)" != "yes" ]; then \
@@ -115,7 +118,7 @@ check-images:
 	fi
 
 $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
-	$(CC) $(CFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
+	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(BIN_IPC_TEST_HELPER)
 	./$(BIN_TEST)
@@ -124,9 +127,15 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	./$(BIN_AV_STATE_TEST)
 	@if [ "$(SIG_OK)" = "yes" ]; then ./$(BIN_RATCHET_PREKEY_TEST); fi
 	sh tests/float-script.sh
+	sh tests/nonblocking-invite.sh
+	sh tests/input-mask.sh
+	sh tests/surface-owner.sh
+	sh tests/paste-image.sh
+	sh tests/uninstall.sh
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 
 helper: $(BIN_HELP)
+	sh tests/helper-hardening.sh $(BIN_HELP)
 
 arch:
 	sh scripts/arch-check.sh

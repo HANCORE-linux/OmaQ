@@ -58,6 +58,17 @@ FocusScope {
   property bool filePickerClosing: false
   property int filePickerExitCode: -1
   property bool filePickerStreamDone: false
+  property string pendingImagePath: ""
+  property string pendingImageStageRequest: ""
+  property string pendingImageSendRequest: ""
+  property int pendingImageSendGeneration: -1
+  property string attachmentInspectionPath: ""
+  property string attachmentInspectionRequest: ""
+  property string clipboardMime: ""
+  property string clipboardStageRequest: ""
+  property string clipboardStagePath: ""
+  property int clipboardTypeExitCode: -1
+  property bool clipboardTypeStreamDone: false
   property string replyToId: ""
   property string replyToText: ""
   property string editingId: ""
@@ -75,6 +86,8 @@ FocusScope {
   readonly property color bg: theme.bg || Color.background
   readonly property color accent: theme.accent || Color.accent
   readonly property string fontFamily: terminalLook ? "monospace" : Style.font.family
+  readonly property string pasteImageScriptPath:
+    String(Qt.resolvedUrl("../scripts/paste-image.sh")).replace(/^file:\/\//, "")
   readonly property string mediaPath: {
     if (!service)
       return ""
@@ -173,6 +186,7 @@ FocusScope {
   property string typingConversation: ""
 
   readonly property int smilePx: Math.max(56, Style.font.display * 2)
+  readonly property int inlineImagePx: 56
   readonly property int smileTextPx: Style.font.body
   readonly property int messageTextPx: Math.max(Style.font.caption,
     Math.round(smileTextPx * messageScale))
@@ -449,6 +463,45 @@ FocusScope {
     }
   }
 
+  component EmojiPickerBtn: ChatBtn {
+    id: emojiButton
+    property string emojiValue: ""
+    text: ""
+    helpText: emojiValue
+    horizontalPadding: 0
+    verticalPadding: 0
+    implicitWidth: Style.space(30)
+    implicitHeight: Style.space(30)
+
+    Image {
+      id: emojiPickerImage
+      anchors.centerIn: parent
+      width: Style.font.icon + Style.space(2)
+      height: width
+      source: root.smileSrc(emojiButton.emojiValue)
+      fillMode: Image.PreserveAspectFit
+      sourceSize.width: width * 2
+      sourceSize.height: height * 2
+      smooth: true
+      mipmap: true
+      asynchronous: true
+      cache: true
+    }
+
+    Text {
+      anchors.fill: parent
+      visible: emojiPickerImage.status === Image.Error ||
+        emojiPickerImage.status === Image.Null
+      text: emojiButton.emojiValue
+      color: root.fg
+      font.family: "Noto Color Emoji"
+      font.pixelSize: root.smileTextPx
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+      renderType: Text.QtRendering
+    }
+  }
+
   function splitSmiles(t) {
     var s = String(t || "")
     var out = []
@@ -554,6 +607,21 @@ FocusScope {
     for (i = 0; i < parts.length; i++)
       parts[i] = encodeURIComponent(parts[i])
     return "file://" + parts.join("/")
+  }
+
+  function localPathFromUrl(url) {
+    var value = String(url || "")
+    if (value.slice(0, 8) !== "file:///")
+      return ""
+    try {
+      var path = decodeURIComponent(value.slice(7))
+      if (path.charAt(0) !== "/" || path.length >= 512 ||
+          path.indexOf("\u0000") >= 0)
+        return ""
+      return path
+    } catch (error) {
+      return ""
+    }
   }
 
   function copyText(value) {
@@ -1096,12 +1164,44 @@ FocusScope {
       composerMenu.close()
       return true
     }
+    if (root.clipboardStageRequest !== "" || clipboardTypeProbe.running ||
+        clipboardImageWriter.running) {
+      clipboardTypeProbe.running = false
+      clipboardImageWriter.running = false
+      root.discardClipboardStage()
+      root.cancelAttachmentInspection()
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+      return true
+    }
+    if (root.pendingImagePath !== "" && root.pendingImageSendRequest === "") {
+      root.clearPendingImage()
+      return true
+    }
+    if (root.attachmentInspectionRequest !== "") {
+      root.cancelAttachmentInspection()
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+      return true
+    }
     if (root.showFile) {
       root.closeFileChooser()
       return true
     }
     if (root.emojiOpen) {
       root.emojiOpen = false
+      return true
+    }
+    if (root.groupActionConfirm !== "") {
+      root.clearGroupMemberAction()
+      return true
+    }
+    if (root.groupInviteOpen) {
+      root.closeGroupInvite()
+      return true
+    }
+    if (root.groupMembersOpen) {
+      root.groupMembersOpen = false
       return true
     }
     if (root.groupLeaveConfirm) {
@@ -1414,15 +1514,40 @@ FocusScope {
     typingStop.restart()
   }
 
+  function sendPendingImage() {
+    var path = String(root.pendingImagePath || "")
+    if (!path || root.demo || root.groupConversation || !root.service)
+      return false
+    if (!root.service.sendFile(path, root.conversation, "image")) {
+      root.fileStatus = "A file is already sending"
+      root.fileStatusPath = path
+      fileStatusTimer.interval = 3000
+      fileStatusTimer.restart()
+      return false
+    }
+    var transfer = root.service.outgoingFile(root.conversation)
+    root.pendingImageSendRequest = String(transfer.request || "")
+    root.pendingImageSendGeneration = Number(
+      root.service.helperInstanceGeneration || 0)
+    root.showFile = false
+    filePath.text = ""
+    root.fileStatus = "Sending…"
+    root.fileStatusPath = path
+    return true
+  }
+
   function send() {
     var t = input.text
-    if (!t)
+    var hasImage = root.pendingImagePath !== ""
+    if (!t && !hasImage)
       return
     if (!root.demo && !service)
       return
     root.stopTyping()
     root.followLatest = true
     if (root.editingId) {
+      if (!t)
+        return
       var editId = root.editingId
       var editText = t
       root.editingId = ""
@@ -1431,21 +1556,22 @@ FocusScope {
         service.editMessage(root.conversation, editId, editText)
       return
     }
-    input.text = ""
-    root.emojiOpen = false
-    var replyId = root.replyToId
-    root.clearReply()
-    var clientKey = root.newLocalMessageKey()
-    root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, failed: false, failureCode: "", clientKey: clientKey, ack: root.demo ? 1 : 0 })
-    root.restoreLatestPosition()
-    if (root.demo) {
-      demoReply.restart()
-      return
+    if (t) {
+      input.text = ""
+      root.emojiOpen = false
+      var replyId = root.replyToId
+      root.clearReply()
+      var clientKey = root.newLocalMessageKey()
+      root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, failed: false, failureCode: "", clientKey: clientKey, ack: root.demo ? 1 : 0 })
+      root.restoreLatestPosition()
+      if (root.demo) {
+        demoReply.restart()
+      } else if (!service.sendOp({ op: "msg.send", conversation: root.conversation || service.lastConversation, text: t, reply: replyId, id: clientKey })) {
+        root.applyMessageFailure(clientKey, service.lastError || "helper_incompatible", false)
+      }
     }
-    if (!service)
-      return
-    if (!service.sendOp({ op: "msg.send", conversation: root.conversation || service.lastConversation, text: t, reply: replyId, id: clientKey }))
-      root.applyMessageFailure(clientKey, service.lastError || "helper_incompatible", false)
+    if (hasImage)
+      root.sendPendingImage()
   }
 
   function formatCallDuration(value) {
@@ -1534,13 +1660,8 @@ FocusScope {
       return
     if (root.filePickerExitCode === 0) {
       var picked = String(filePickerOutput.text || "").trim()
-      if (picked !== "") {
-        filePath.text = picked
-        if (!root.restoreOutgoingFileStatus()) {
-          root.fileStatus = ""
-          root.fileStatusPath = ""
-        }
-      }
+      if (picked !== "")
+        root.inspectSelectedAttachment(picked)
     } else if (root.filePickerExitCode === 2) {
       root.fileStatus = "No file picker found — enter a path manually"
     }
@@ -1564,11 +1685,171 @@ FocusScope {
     root.showFile = false
     root.filePickerExitCode = -1
     root.filePickerStreamDone = false
+    if (root.clipboardStageRequest === "")
+      root.cancelAttachmentInspection()
     filePath.text = ""
     if (!root.restoreOutgoingFileStatus()) {
       root.fileStatus = ""
       root.fileStatusPath = ""
     }
+  }
+
+  function cancelAttachmentInspection() {
+    if (root.attachmentInspectionRequest !== "" && root.service)
+      root.service.discardAttachmentStage("", root.attachmentInspectionRequest)
+    root.attachmentInspectionPath = ""
+    root.attachmentInspectionRequest = ""
+    attachmentInspectionTimer.stop()
+  }
+
+  function inspectSelectedAttachment(path) {
+    var selectedPath = String(path || "").trim()
+    if (!selectedPath)
+      return
+    if (root.pendingImageSendRequest !== "" ||
+        (root.service && root.service.fileSendingFor(root.conversation))) {
+      root.fileStatus = "A file is already sending"
+      return
+    }
+    clipboardTypeProbe.running = false
+    clipboardImageWriter.running = false
+    root.discardClipboardStage()
+    root.cancelAttachmentInspection()
+    root.clearPendingImage()
+    filePath.text = selectedPath
+    root.attachmentInspectionPath = selectedPath
+    root.attachmentInspectionRequest = root.newLocalMessageKey()
+    root.fileStatus = "Checking image…"
+    root.fileStatusPath = selectedPath
+    if (!root.service || !root.service.inspectAttachment(selectedPath,
+          root.attachmentInspectionRequest)) {
+      root.attachmentInspectionPath = ""
+      root.attachmentInspectionRequest = ""
+      root.fileStatus = "Ready to send as a file"
+      return
+    }
+    attachmentInspectionTimer.restart()
+  }
+
+  function finishAttachmentInspection(accepted) {
+    var path = root.attachmentInspectionPath
+    var stagedRequest = accepted ? root.attachmentInspectionRequest :
+      root.clipboardStageRequest
+    attachmentInspectionTimer.stop()
+    root.attachmentInspectionPath = ""
+    root.attachmentInspectionRequest = ""
+    if (!accepted) {
+      if (stagedRequest !== "") {
+        root.discardClipboardStage()
+        root.fileStatus = "Clipboard does not contain a supported PNG, JPEG, or WebP image"
+        root.fileStatusPath = ""
+      } else {
+        root.fileStatus = "Ready to send as a file"
+        root.fileStatusPath = path
+        root.showFile = true
+      }
+      return
+    }
+    root.clearPendingImage()
+    root.pendingImagePath = path
+    root.pendingImageStageRequest = stagedRequest
+    root.clipboardMime = ""
+    root.clipboardStageRequest = ""
+    root.clipboardStagePath = ""
+    root.showFile = false
+    filePath.text = ""
+    root.fileStatus = ""
+    root.fileStatusPath = ""
+    input.forceActiveFocus()
+  }
+
+  function clearPendingImage() {
+    if (root.pendingImageSendRequest !== "")
+      return
+    if (root.pendingImageStageRequest !== "" && root.pendingImagePath !== "" &&
+        root.service)
+      root.service.discardAttachmentStage(root.pendingImagePath,
+        root.pendingImageStageRequest)
+    root.pendingImagePath = ""
+    root.pendingImageStageRequest = ""
+    root.pendingImageSendGeneration = -1
+    root.restoreLatestPosition()
+  }
+
+  function releasePendingImageAfterSend() {
+    root.pendingImageStageRequest = ""
+    root.pendingImageSendRequest = ""
+    root.pendingImageSendGeneration = -1
+    root.pendingImagePath = ""
+    root.restoreLatestPosition()
+  }
+
+  function discardClipboardStage() {
+    if (root.clipboardStageRequest !== "" && root.service)
+      root.service.discardAttachmentStage(root.clipboardStagePath,
+        root.clipboardStageRequest)
+    root.clipboardMime = ""
+    root.clipboardStageRequest = ""
+    root.clipboardStagePath = ""
+  }
+
+  function finishClipboardTypeProbe() {
+    if (root.clipboardTypeExitCode < 0 || !root.clipboardTypeStreamDone)
+      return
+    var code = root.clipboardTypeExitCode
+    var formats = String(clipboardTypeOutput.text || "").split(/\r?\n/)
+    var supported = ["image/png", "image/jpeg", "image/webp"]
+    var mime = ""
+    root.clipboardTypeExitCode = -1
+    root.clipboardTypeStreamDone = false
+    if (code === 0) {
+      for (var i = 0; i < supported.length && mime === ""; i++)
+        if (formats.indexOf(supported[i]) >= 0)
+          mime = supported[i]
+    }
+    if (mime === "") {
+      input.paste()
+      return
+    }
+    root.clearPendingImage()
+    root.discardClipboardStage()
+    root.clipboardMime = mime
+    root.clipboardStageRequest = root.newLocalMessageKey()
+    root.attachmentInspectionRequest = root.clipboardStageRequest
+    root.attachmentInspectionPath = ""
+    root.fileStatus = "Reading clipboard image…"
+    root.fileStatusPath = ""
+    if (!root.service || !root.service.createAttachmentStage(
+          root.clipboardStageRequest)) {
+      root.discardClipboardStage()
+      root.attachmentInspectionRequest = ""
+      root.attachmentInspectionPath = ""
+      root.fileStatus = "Clipboard image staging is unavailable"
+      return
+    }
+    attachmentInspectionTimer.restart()
+  }
+
+  function pasteComposer() {
+    if (root.demo || root.groupConversation || !root.service) {
+      input.paste()
+      return
+    }
+    if (clipboardTypeProbe.running || clipboardImageWriter.running ||
+        root.clipboardStageRequest !== "" || root.pendingImageSendRequest !== "" ||
+        root.service.fileSendingFor(root.conversation)) {
+      root.fileStatus = "An attachment action is already running"
+      return
+    }
+    root.clipboardTypeExitCode = -1
+    root.clipboardTypeStreamDone = false
+    clipboardTypeProbe.running = true
+  }
+
+  function openImage(path) {
+    var selectedPath = String(path || "")
+    if (selectedPath)
+      Quickshell.execDetached(["xdg-open", selectedPath])
   }
 
   function insertEmoji(glyph) {
@@ -1648,6 +1929,26 @@ FocusScope {
   }
 
   Timer {
+    id: attachmentInspectionTimer
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (root.clipboardStageRequest !== "") {
+        root.discardClipboardStage()
+        root.cancelAttachmentInspection()
+        root.fileStatus = "Clipboard image check timed out"
+        root.fileStatusPath = ""
+      } else if (root.attachmentInspectionRequest !== "") {
+        var timedOutPath = root.attachmentInspectionPath
+        root.cancelAttachmentInspection()
+        root.fileStatus = "Ready to send as a file"
+        root.fileStatusPath = timedOutPath
+        root.showFile = true
+      }
+    }
+  }
+
+  Timer {
     id: typingStop
     interval: 3500
     repeat: false
@@ -1681,6 +1982,57 @@ FocusScope {
       if (root.readActive && !root.readRetryBlocked && root.service &&
           root.service.unreadFor(root.conversation) > 0)
         root.markRead()
+    }
+  }
+
+  Process {
+    id: clipboardTypeProbe
+    command: ["bash", "-c",
+      "command -v wl-paste >/dev/null 2>&1 && exec wl-paste --list-types || exit 127",
+      "omaq-clipboard-types"]
+    running: false
+    stdout: StdioCollector {
+      id: clipboardTypeOutput
+      waitForEnd: true
+      onStreamFinished: {
+        root.clipboardTypeStreamDone = true
+        root.finishClipboardTypeProbe()
+      }
+    }
+    onExited: function(code) {
+      root.clipboardTypeExitCode = code
+      root.finishClipboardTypeProbe()
+    }
+  }
+
+  Process {
+    id: clipboardImageWriter
+    running: false
+    onExited: function(code) {
+      if (root.clipboardStageRequest === "" || root.clipboardStagePath === "")
+        return
+      if (code !== 0 || !root.service) {
+        attachmentInspectionTimer.stop()
+        root.discardClipboardStage()
+        root.attachmentInspectionRequest = ""
+        root.attachmentInspectionPath = ""
+        root.fileStatus = "Could not read the clipboard image"
+        root.fileStatusPath = ""
+        return
+      }
+      root.attachmentInspectionRequest = root.clipboardStageRequest
+      root.attachmentInspectionPath = root.clipboardStagePath
+      root.fileStatus = "Checking image…"
+      if (!root.service.commitAttachmentStage(root.clipboardStagePath,
+            root.clipboardStageRequest)) {
+        attachmentInspectionTimer.stop()
+        root.discardClipboardStage()
+        root.attachmentInspectionRequest = ""
+        root.attachmentInspectionPath = ""
+        root.fileStatus = "Clipboard image staging is unavailable"
+        return
+      }
+      attachmentInspectionTimer.restart()
     }
   }
 
@@ -1767,7 +2119,7 @@ FocusScope {
           text: "Paste"
           materialIcon: "content_paste"
           onTriggered: {
-            input.paste()
+            root.pasteComposer()
             composerMenu.close()
           }
         }
@@ -1788,6 +2140,47 @@ FocusScope {
     target: root.service
     enabled: !root.demo && root.service !== null
     function onMessageTickChanged() { root.pushLive() }
+    function onAttachmentStageTickChanged() {
+      if (!root.service || root.clipboardStageRequest === "" ||
+          String(root.service.lastAttachmentStageRequest || "") !==
+            root.clipboardStageRequest)
+        return
+      var path = String(root.service.lastAttachmentStagePath || "")
+      if (path === "") {
+        attachmentInspectionTimer.stop()
+        root.discardClipboardStage()
+        root.attachmentInspectionRequest = ""
+        root.attachmentInspectionPath = ""
+        root.fileStatus = "Clipboard image staging is unavailable"
+        return
+      }
+      root.clipboardStagePath = path
+      clipboardImageWriter.command = [root.pasteImageScriptPath,
+        root.clipboardMime, path]
+      clipboardImageWriter.running = true
+      attachmentInspectionTimer.restart()
+    }
+    function onAttachmentInspectionTickChanged() {
+      if (!root.service || root.attachmentInspectionRequest === "" ||
+          String(root.service.lastAttachmentInspectionRequest || "") !==
+            root.attachmentInspectionRequest)
+        return
+      var responsePath = String(root.service.lastAttachmentInspectionPath || "")
+      if (root.clipboardStageRequest !== "") {
+        if (root.service.lastAttachmentInspectionAccepted)
+          root.attachmentInspectionPath = responsePath
+        root.finishAttachmentInspection(
+          !!root.service.lastAttachmentInspectionAccepted)
+        return
+      }
+      if (!root.service.lastAttachmentInspectionAccepted &&
+          responsePath !== root.attachmentInspectionPath)
+        return
+      if (root.service.lastAttachmentInspectionAccepted)
+        root.attachmentInspectionPath = responsePath
+      root.finishAttachmentInspection(
+        !!root.service.lastAttachmentInspectionAccepted)
+    }
     function onMessageFailedTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastMessageFailedConv))
         return
@@ -1889,6 +2282,14 @@ FocusScope {
       }
     }
     function onHelperInstanceGenerationChanged() {
+      if (root.pendingImageSendRequest !== "" && root.service &&
+          root.pendingImageSendGeneration >= 0 &&
+          root.pendingImageSendGeneration !==
+            Number(root.service.helperInstanceGeneration || 0)) {
+        root.releasePendingImageAfterSend()
+        root.fileStatus = "Image send status is unknown after helper restart"
+        root.fileStatusPath = ""
+      }
       if (root.groupInviteFeedback === "Sending group invite…" && root.service &&
           root.groupInviteGeneration >= 0 &&
           root.groupInviteGeneration !== Number(root.service.helperInstanceGeneration || 0)) {
@@ -1953,7 +2354,7 @@ FocusScope {
           String(root.service.lastGroupInviteFailedRequest || "") !== root.groupInviteRequest)
         return
       root.groupInviteFeedback = root.service.lastGroupInviteFailedCode === "busy"
-        ? "Recipient is handling another group invite"
+        ? "Recipient still has a group invitation waiting for a decision"
         : (root.service.lastGroupInviteFailedCode === "already_member"
           ? "Contact is already a group member" : "Group invite failed")
     }
@@ -1973,6 +2374,20 @@ FocusScope {
     function onLastFileTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastFileConv))
         return
+      var trackedImage = root.service.outgoingFile(root.conversation)
+      if (root.pendingImageSendRequest !== "" &&
+          String(trackedImage.request || "") === root.pendingImageSendRequest) {
+        if (root.service.lastFileState === "sending" ||
+            root.service.lastFileState === "done" ||
+            root.service.lastFileState === "canceled" ||
+            (root.service.lastFileState === "failed" &&
+             String(trackedImage.id || "") !== "")) {
+          root.releasePendingImageAfterSend()
+        } else if (root.service.lastFileState === "failed") {
+          root.pendingImageSendRequest = ""
+          root.pendingImageSendGeneration = -1
+        }
+      }
       if (root.service.lastFileDir === "in") {
         root.closeFileChooser()
         if (root.restoreOutgoingFileStatus())
@@ -2021,6 +2436,14 @@ FocusScope {
     root.clearDeleteConfirm()
     root.fileStatus = ""
     root.fileStatusPath = ""
+    clipboardTypeProbe.running = false
+    clipboardImageWriter.running = false
+    if (root.pendingImageSendRequest !== "")
+      root.releasePendingImageAfterSend()
+    else
+      root.clearPendingImage()
+    root.discardClipboardStage()
+    root.cancelAttachmentInspection()
     root.reactionStatus = ""
     root.groupMembersOpen = root.groupConversation
     root.closeGroupInvite()
@@ -2044,6 +2467,47 @@ FocusScope {
 
   onReadActiveChanged: if (root.readActive) root.markRead()
 
+  DropArea {
+    id: imageDropArea
+    anchors.fill: parent
+    z: 1000
+    enabled: !root.demo && !root.groupConversation
+    onEntered: function(drag) {
+      drag.accepted = drag.hasUrls && drag.urls.length === 1 &&
+        root.localPathFromUrl(drag.urls[0]) !== ""
+    }
+    onDropped: function(drop) {
+      if (!drop.hasUrls || drop.urls.length !== 1) {
+        drop.accepted = false
+        return
+      }
+      var path = root.localPathFromUrl(drop.urls[0])
+      if (path === "") {
+        drop.accepted = false
+        return
+      }
+      drop.acceptProposedAction()
+      root.inspectSelectedAttachment(path)
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      visible: imageDropArea.containsDrag
+      color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
+      border.color: root.accent
+      border.width: 1
+      radius: Style.cornerRadius
+
+      Text {
+        anchors.centerIn: parent
+        text: "Drop image or file"
+        color: root.accent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+    }
+  }
+
   Keys.onPressed: function(event) {
     root.markRead()
     if (event.key === Qt.Key_Escape && root.handleEscape()) {
@@ -2062,6 +2526,12 @@ FocusScope {
     root.restoreFileNotice()
     if (root.demo)
       root.resetDemo()
+  }
+
+  Component.onDestruction: {
+    root.clearPendingImage()
+    root.discardClipboardStage()
+    root.cancelAttachmentInspection()
   }
 
   Rectangle {
@@ -2762,9 +3232,13 @@ FocusScope {
           readonly property string contextText: String(model.text || "")
           readonly property string contextId: String(model.id || "")
           readonly property string messageKind: String(model.kind || "")
-          readonly property bool fileMessage: model.dir === "in" && !model.deleted &&
-            (line.messageKind === "file" || (root.mediaPath !== "" && line.contextText === root.mediaPath))
-          readonly property bool audioMessage: line.fileMessage && root.isAudioPath(line.contextText)
+          readonly property bool fileMessage: !model.deleted &&
+            (line.messageKind === "file" || line.messageKind === "image" ||
+             (model.dir === "in" && root.mediaPath !== "" && line.contextText === root.mediaPath))
+          readonly property bool imageMessage: line.fileMessage &&
+            line.messageKind === "image"
+          readonly property bool audioMessage: line.fileMessage && !line.imageMessage &&
+            root.isAudioPath(line.contextText)
           readonly property bool deleted: !!model.deleted
           readonly property bool edited: !!model.edited
           readonly property bool failed: !!model.failed
@@ -2814,13 +3288,17 @@ FocusScope {
             width: Math.max(
               line.showGroupSender
                 ? Math.min(parent.width, groupSenderMetrics.advanceWidth + Style.space(16)) : 0,
-              line.fileMessage
-                ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
-                : (line.smileOnly ? line.smileWidth :
-                  root.bubbleWidth(model.text, line.hasCode,
-                    model.dir === "out" && model.ack !== undefined, parent.width)))
+              line.imageMessage
+                ? root.inlineImagePx + Style.space(12)
+                : (line.fileMessage
+                  ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
+                  : (line.smileOnly ? line.smileWidth :
+                    root.bubbleWidth(model.text, line.hasCode,
+                      model.dir === "out" && model.ack !== undefined, parent.width))))
             implicitHeight: Math.max(
-              line.fileMessage ? fileMessageRow.implicitHeight : (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight),
+              line.imageMessage ? root.inlineImagePx :
+                (line.fileMessage ? fileMessageRow.implicitHeight :
+                  (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight)),
               line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) +
               (line.showGroupSender ? groupSenderLabel.implicitHeight + Style.space(3) : 0) +
               Style.space(12)
@@ -2873,7 +3351,7 @@ FocusScope {
 
             RowLayout {
               id: fileMessageRow
-              visible: line.fileMessage
+              visible: line.fileMessage && !line.imageMessage
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -2945,6 +3423,67 @@ FocusScope {
               Item { Layout.fillWidth: true }
             }
 
+            Item {
+              id: inlineImageMessage
+              visible: line.imageMessage
+              anchors.left: parent.left
+              anchors.top: line.showGroupSender ? groupSenderLabel.bottom : parent.top
+              anchors.leftMargin: Style.space(6)
+              anchors.topMargin: line.showGroupSender ? Style.space(3) : Style.space(6)
+              width: root.inlineImagePx
+              height: root.inlineImagePx
+              activeFocusOnTab: visible
+              Accessible.role: Accessible.Button
+              Accessible.name: "Open image " + root.fileDisplayName(line.contextText)
+              Accessible.onPressAction: root.openImage(line.contextText)
+              Keys.onReturnPressed: root.openImage(line.contextText)
+              Keys.onEnterPressed: root.openImage(line.contextText)
+              Keys.onSpacePressed: root.openImage(line.contextText)
+
+              Image {
+                id: inlineImageContent
+                anchors.fill: parent
+                source: line.imageMessage ? root.localFileUrl(line.contextText) : ""
+                fillMode: Image.PreserveAspectFit
+                sourceSize.width: root.inlineImagePx * 2
+                sourceSize.height: root.inlineImagePx * 2
+                smooth: true
+                mipmap: true
+                asynchronous: true
+                cache: false
+              }
+
+              Text {
+                anchors.centerIn: parent
+                visible: inlineImageContent.status === Image.Error ||
+                  inlineImageContent.status === Image.Null
+                text: "broken_image"
+                color: root.accent
+                font.family: "Material Symbols Rounded"
+                font.pixelSize: Style.font.icon
+              }
+
+              Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.color: inlineImageHover.hovered || parent.activeFocus
+                  ? root.accent : "transparent"
+                border.width: 1
+                radius: Style.cornerRadius
+              }
+
+              HoverHandler {
+                id: inlineImageHover
+                cursorShape: Qt.PointingHandCursor
+              }
+              TapHandler {
+                onTapped: {
+                  root.markRead()
+                  root.openImage(line.contextText)
+                }
+              }
+            }
+
             Controls.Menu {
               id: messageFileMenu
               width: Style.space(250)
@@ -2985,7 +3524,8 @@ FocusScope {
             }
 
             ReceiptMark {
-              visible: model.dir === "out" && model.ack !== undefined && !line.hasCode
+              visible: model.dir === "out" && model.ack !== undefined &&
+                !line.hasCode && !line.fileMessage
               anchors.right: parent.right
               anchors.bottom: parent.bottom
               anchors.rightMargin: Style.space(6)
@@ -3453,7 +3993,8 @@ FocusScope {
 
       Column {
         id: composerCol
-        readonly property real composerHeight: replyBar.height + emojiFlow.height + formatFlow.height + composerRow.implicitHeight + spacing * 3
+        readonly property real composerHeight: replyBar.height + pendingImagePreview.height +
+          emojiFlow.height + formatFlow.height + composerRow.implicitHeight + spacing * 4
         Layout.fillWidth: true
         Layout.preferredHeight: composerHeight
         spacing: Style.space(4)
@@ -3498,23 +4039,144 @@ FocusScope {
           }
         }
 
-        Flow {
+        Item {
+          id: pendingImagePreview
+          x: inputBox.x
+          width: inputBox.width
+          height: visible ? root.inlineImagePx : 0
+          visible: root.pendingImagePath !== ""
+
+          BorderSurface {
+            anchors.fill: parent
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
+            borderSpec: Border.controlSpec("normal", root.fg, root.accent)
+            radius: Style.cornerRadius
+          }
+
+          Image {
+            id: pendingImage
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: root.inlineImagePx
+            height: root.inlineImagePx
+            source: root.pendingImagePath !== ""
+              ? root.localFileUrl(root.pendingImagePath) : ""
+            fillMode: Image.PreserveAspectFit
+            sourceSize.width: root.inlineImagePx * 2
+            sourceSize.height: root.inlineImagePx * 2
+            smooth: true
+            mipmap: true
+            asynchronous: true
+            cache: false
+
+            TapHandler {
+              onTapped: root.openImage(root.pendingImagePath)
+            }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+          }
+
+          Text {
+            anchors.left: pendingImage.right
+            anchors.right: clearPendingImageButton.left
+            anchors.leftMargin: Style.space(6)
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.fileDisplayName(root.pendingImagePath)
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideMiddle
+          }
+
+          FormatBtn {
+            id: clearPendingImageButton
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(3)
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "close"
+            helpText: root.pendingImageSendRequest !== ""
+              ? "Image send is starting" : "Remove image"
+            enabled: root.pendingImageSendRequest === ""
+            onClicked: root.clearPendingImage()
+          }
+        }
+
+        Item {
           id: emojiFlow
           x: inputBox.x
           width: inputBox.width
-          height: visible ? implicitHeight : 0
-          spacing: Style.space(3)
+          height: visible ? Style.space(30) : 0
           visible: root.emojiOpen
+          clip: true
+          onVisibleChanged: if (!visible) emojiFlick.contentX = 0
 
-          Repeater {
-            model: root.emojiSet
-            ChatBtn {
-              required property int index
-              readonly property string emojiValue: String(root.emojiSet[index] || "")
-              text: emojiValue
-              helpText: emojiValue
-              onClicked: root.insertEmoji(emojiValue)
+          Flickable {
+            id: emojiFlick
+            anchors.fill: parent
+            clip: true
+            contentWidth: emojiRow.width
+            contentHeight: height
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.HorizontalFlick
+            interactive: true
+
+            Row {
+              id: emojiRow
+              height: parent.height
+              spacing: Style.space(3)
+
+              Repeater {
+                model: root.emojiSet
+                EmojiPickerBtn {
+                  required property int index
+                  emojiValue: String(root.emojiSet[index] || "")
+                  onClicked: root.insertEmoji(emojiValue)
+                }
+              }
             }
+          }
+
+          Rectangle {
+            visible: emojiFlick.contentX > 0
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Style.space(34)
+            color: root.bg
+            z: 1
+          }
+
+          FormatBtn {
+            visible: emojiFlick.contentX > 0
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "chevron_left"
+            helpText: "Previous emoji"
+            z: 2
+            onClicked: emojiFlick.contentX = Math.max(0,
+              emojiFlick.contentX - Style.space(90))
+          }
+
+          Rectangle {
+            visible: emojiFlick.contentX < emojiFlick.contentWidth - emojiFlick.width - 1
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Style.space(34)
+            color: root.bg
+            z: 1
+          }
+
+          FormatBtn {
+            visible: emojiFlick.contentX < emojiFlick.contentWidth - emojiFlick.width - 1
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "chevron_right"
+            helpText: "More emoji"
+            z: 2
+            onClicked: emojiFlick.contentX = Math.min(
+              Math.max(0, emojiFlick.contentWidth - emojiFlick.width),
+              emojiFlick.contentX + Style.space(90))
           }
         }
 
@@ -3665,7 +4327,7 @@ FocusScope {
                 wrapMode: TextEdit.Wrap
                 verticalAlignment: Text.AlignVCenter
                 activeFocusOnTab: true
-                placeholderText: root.demo ? "Demo message" : "Message (Ctrl+Enter to send)"
+                placeholderText: root.demo ? "Demo message" : "Message (Enter to send)"
                 onTextChanged: root.updateTyping()
                 persistentSelection: true
                 background: BorderSurface {
@@ -3676,8 +4338,16 @@ FocusScope {
                   radius: Style.cornerRadius
                 }
                 Keys.onPressed: function(event) {
-                  if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
-                      (event.modifiers & Qt.ControlModifier)) {
+                  var blockedModifiers = Qt.ShiftModifier | Qt.ControlModifier |
+                    Qt.AltModifier | Qt.MetaModifier
+                  if (event.key === Qt.Key_V &&
+                      (event.modifiers & Qt.ControlModifier) &&
+                      !(event.modifiers & (Qt.ShiftModifier | Qt.AltModifier |
+                        Qt.MetaModifier))) {
+                    root.pasteComposer()
+                    event.accepted = true
+                  } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
+                      !(event.modifiers & blockedModifiers)) {
                     root.send()
                     event.accepted = true
                   }
@@ -3720,7 +4390,7 @@ FocusScope {
 
             FormatBtn {
               materialIcon: "send"
-              helpText: "Send (Ctrl+Enter)"
+              helpText: "Send (Enter)"
               onClicked: root.send()
             }
         }

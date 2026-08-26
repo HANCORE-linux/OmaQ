@@ -629,14 +629,16 @@ int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 	}
 	if (!data)
 		return -1;
-	if (pos + len > xf[i].size)
+	if (pos > xf[i].size || len > xf[i].size - pos)
 		return -1;
 	if (fseeko(xf[i].fp, (off_t)pos, SEEK_SET) != 0)
 		return -1;
 	if (fwrite(data, 1, len, xf[i].fp) != len)
 		return -1;
-	if (pos + len > xf[i].got)
-		xf[i].got = pos + len;
+	if ((uint64_t)len > UINT64_MAX - pos)
+		return -1;
+	if (pos + (uint64_t)len > xf[i].got)
+		xf[i].got = pos + (uint64_t)len;
 	return 0;
 }
 

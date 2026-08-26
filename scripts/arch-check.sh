@@ -68,6 +68,12 @@ if find . -name '*.qml' | grep -q .; then
 	fi
 fi
 
+for runtime_script in scripts/float-omaq.sh scripts/uninstall-omaq.sh scripts/paste-image.sh; do
+	if [ ! -f "$runtime_script" ] || [ ! -x "$runtime_script" ]; then
+		die "missing executable runtime script: $runtime_script"
+	fi
+done
+
 if [ "$fail" -ne 0 ]; then
 	warn "make arch failed"
 	exit 1

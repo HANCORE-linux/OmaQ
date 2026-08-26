@@ -975,11 +975,16 @@ int omaq_store_tail(const char *home, const char *conv_id, int limit, char **out
 	acc = malloc(total + 1);
 	if (!acc)
 		goto fail;
-	acc[0] = '\0';
-	for (i = start; i < n; i++) {
-		strcat(acc, lines[i]);
-		if (i + 1 < n)
-			strcat(acc, "\n");
+	{
+		char *cursor = acc;
+		for (i = start; i < n; i++) {
+			size_t length = strlen(lines[i]);
+			memcpy(cursor, lines[i], length);
+			cursor += length;
+			if (i + 1 < n)
+				*cursor++ = '\n';
+		}
+		*cursor = '\0';
 	}
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -1060,7 +1065,8 @@ int omaq_store_unread_receipt_ids(const char *home, const char *conv_id,
 		if (!strstr(line, "\"dir\":\"in\""))
 			continue;
 		incoming++;
-		if (strstr(line, "\"kind\":\"file\""))
+		if (strstr(line, "\"kind\":\"file\"") ||
+		    strstr(line, "\"kind\":\"image\""))
 			continue;
 		if (result_count >= slots) {
 			overflow = 1;
@@ -1213,11 +1219,16 @@ int omaq_store_search(const char *home, const char *conv_id, const char *needle,
 	acc = malloc(total + 1);
 	if (!acc)
 		goto sfail;
-	acc[0] = '\0';
-	for (i = 0; i < nhit; i++) {
-		strcat(acc, lines[hit[i]]);
-		if (i + 1 < nhit)
-			strcat(acc, "\n");
+	{
+		char *cursor = acc;
+		for (i = 0; i < nhit; i++) {
+			size_t length = strlen(lines[hit[i]]);
+			memcpy(cursor, lines[hit[i]], length);
+			cursor += length;
+			if (i + 1 < nhit)
+				*cursor++ = '\n';
+		}
+		*cursor = '\0';
 	}
 	for (i = 0; i < n; i++)
 		free(lines[i]);

@@ -4,16 +4,13 @@
 #include "json_io.h"
 #include "store.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
 #include <time.h>
-#include <unistd.h>
 
-static unsigned message_seq;
-static uint64_t message_nonce;
-static int message_nonce_ready;
 
 int omaq_message_id_ok(const char *id)
 {
@@ -35,23 +32,25 @@ int omaq_message_id_ok(const char *id)
 
 int omaq_message_id_new(char *out, size_t outn)
 {
-	struct timespec now;
+	unsigned char random_id[16];
+	static const char hex[] = "0123456789abcdef";
+	size_t offset = 0;
 
-	if (!out || outn == 0)
+	if (!out || outn < sizeof(random_id) * 2u + 1u)
 		return -1;
-	if (!message_nonce_ready) {
-		if (getrandom(&message_nonce, sizeof(message_nonce), 0) != (ssize_t)sizeof(message_nonce)) {
-			if (clock_gettime(CLOCK_REALTIME, &now) != 0)
-				return -1;
-			message_nonce = ((uint64_t)now.tv_sec << 32) ^ (uint64_t)now.tv_nsec ^ (uint64_t)getpid();
-		}
-		message_nonce_ready = 1;
+	while (offset < sizeof(random_id)) {
+		ssize_t got = getrandom(random_id + offset, sizeof(random_id) - offset, 0);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			return -1;
+		offset += (size_t)got;
 	}
-	message_seq++;
-	if (snprintf(out, outn, "%llu-%u-%016llx",
-			     (unsigned long long)time(NULL), message_seq,
-			     (unsigned long long)message_nonce) >= (int)outn)
-		return -1;
+	for (size_t i = 0; i < sizeof(random_id); i++) {
+		out[i * 2u] = hex[random_id[i] >> 4];
+		out[i * 2u + 1u] = hex[random_id[i] & 0x0fu];
+	}
+	out[sizeof(random_id) * 2u] = '\0';
 	return 0;
 }
 
@@ -67,7 +66,8 @@ static int message_append_id_reply_kind(const char *home, const char *conv_id,
 
 	if (!from || !text || !dir || !omaq_message_id_ok(message_id) ||
 	    (reply[0] && !omaq_message_id_ok(reply)) ||
-	    (message_kind[0] && strcmp(message_kind, "file") != 0))
+	    (message_kind[0] && strcmp(message_kind, "file") != 0 &&
+	     strcmp(message_kind, "image") != 0))
 		return -1;
 	if (strchr(from, '\n'))
 		return -1;
@@ -82,8 +82,9 @@ static int message_append_id_reply_kind(const char *home, const char *conv_id,
 			      esc_id, (long long)time(NULL), esc_from, esc_text, dir, esc_reply);
 	else if (message_kind[0])
 		wr = snprintf(line, sizeof(line),
-			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"file\"}",
-			      esc_id, (long long)time(NULL), esc_from, esc_text, dir);
+			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\"}",
+			      esc_id, (long long)time(NULL), esc_from, esc_text, dir,
+			      message_kind);
 	else
 		wr = snprintf(line, sizeof(line),
 			      "{\"id\":\"%s\",\"ts\":%lld,\"from\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
@@ -122,20 +123,31 @@ int omaq_message_append_with_id(const char *home, const char *conv_id, const cha
 	return 0;
 }
 
-int omaq_message_append_file_with_id(const char *home, const char *conv_id,
-				     const char *from, const char *path, const char *dir,
-				     char *id_out, size_t id_outn)
+int omaq_message_append_attachment_with_id(const char *home, const char *conv_id,
+					   const char *from, const char *path,
+					   const char *dir, const char *kind,
+					   char *id_out, size_t id_outn)
 {
 	char id[64];
 
-	if (!path || path[0] != '/' || strchr(path, '\n') || !dir || strcmp(dir, "in") != 0 ||
+	if (!path || path[0] != '/' || strchr(path, '\n') || !dir ||
+	    (strcmp(dir, "in") != 0 && strcmp(dir, "out") != 0) || !kind ||
+	    (strcmp(kind, "file") != 0 && strcmp(kind, "image") != 0) ||
 	    omaq_message_id_new(id, sizeof(id)) != 0 ||
 	    omaq_store_message_id_used(home, conv_id, id) != 0 ||
-	    message_append_id_reply_kind(home, conv_id, from, path, dir, id, "", "file") != 0)
+	    message_append_id_reply_kind(home, conv_id, from, path, dir, id, "", kind) != 0)
 		return -1;
 	if (id_out && id_outn && snprintf(id_out, id_outn, "%s", id) >= (int)id_outn)
 		return -1;
 	return 0;
+}
+
+int omaq_message_append_file_with_id(const char *home, const char *conv_id,
+				     const char *from, const char *path, const char *dir,
+				     char *id_out, size_t id_outn)
+{
+	return omaq_message_append_attachment_with_id(home, conv_id, from, path, dir,
+					      "file", id_out, id_outn);
 }
 
 int omaq_message_edit(const char *home, const char *conv_id, const char *id, const char *text)

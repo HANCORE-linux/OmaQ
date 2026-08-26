@@ -61,6 +61,7 @@ void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
 			      omaq_on_group_message msg, omaq_on_group_peer peer, void *ud);
 
 int omaq_tox_group_new(struct omaq_tox *t, const char *title, uint32_t *gnum);
+/* Returns 0 on success, 1 for a transient send failure, and -1 permanently. */
 int omaq_tox_group_invite_friend(struct omaq_tox *t, uint32_t gnum, uint32_t friend);
 int omaq_tox_group_invite_accept(struct omaq_tox *t, uint32_t friend,
 				 const uint8_t *data, size_t len, uint32_t *gnum);

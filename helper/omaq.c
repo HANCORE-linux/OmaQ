@@ -48,7 +48,7 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
-#define OMAQ_PROTOCOL_VERSION 8
+#define OMAQ_PROTOCOL_VERSION 9
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -72,6 +72,10 @@ static struct {
 	uint64_t sequence;
 	char request[80];
 	char state[12];
+	int pending_attachment;
+	int managed_attachment;
+	char kind[8];
+	char path[512];
 } g_file_requests[FILE_REQUEST_CACHE];
 static uint64_t g_file_request_sequence;
 static uint64_t g_identity_backup_sequence;
@@ -120,6 +124,11 @@ static char g_group_invite_send_friend_key[65];
 static char g_group_invite_send_request[80];
 static char g_group_invite_send_url[OMAQ_URL_MAX];
 static int64_t g_group_invite_send_deadline;
+static int g_group_invite_native_pending;
+static int g_group_invite_cleanup_pending;
+static char g_group_invite_cleanup_code[32];
+static unsigned g_group_invite_native_attempts;
+static int64_t g_group_invite_native_retry_ms;
 static char g_group_invite_result_cache[GROUP_INVITE_RESULT_CACHE_MAX][340];
 static size_t g_group_invite_result_cache_next;
 static size_t g_group_invite_result_cache_count;
@@ -219,7 +228,7 @@ static int g_stdout_closed;
 static omaq_line_reader g_stdin_reader;
 static int g_stdin_closed;
 static int g_fatal_io;
-static int g_shutdown_after_drain;
+static volatile sig_atomic_t g_shutdown_after_drain;
 static int g_identity_recovered;
 static int g_unread_load_failed;
 static int g_identity_backup_cleanup_failed;
@@ -230,6 +239,12 @@ static int g_backend_started;
 static char g_instance_id[33];
 
 static void drop_client(size_t i);
+
+static void request_shutdown_signal(int signal_number)
+{
+	(void)signal_number;
+	g_shutdown_after_drain = 1;
+}
 static void emit_unread_failed(const char *conversation, const char *code);
 #ifdef HAVE_TOX
 static int group_registry_save(void);
@@ -246,27 +261,26 @@ static int group_binding_expect(const char *group, const char *invite_id,
 static int group_binding_forget_expect(const char *group, const char *invite_id);
 #endif
 
-static void init_instance_id(void)
+static int init_instance_id(void)
 {
 	unsigned char bytes[16];
 	static const char digits[] = "0123456789abcdef";
-	size_t i;
+	size_t i, offset = 0;
 
-	if (getrandom(bytes, sizeof(bytes), 0) != (ssize_t)sizeof(bytes)) {
-		struct timespec now;
-		if (clock_gettime(CLOCK_REALTIME, &now) != 0)
-			memset(bytes, 0, sizeof(bytes));
-		else {
-			for (i = 0; i < sizeof(bytes); i++)
-				bytes[i] = (unsigned char)(((uint64_t)now.tv_nsec >> ((i % 8) * 8)) ^
-							   ((uint64_t)getpid() >> ((i % 4) * 8)) ^ i);
-		}
+	while (offset < sizeof(bytes)) {
+		ssize_t got = getrandom(bytes + offset, sizeof(bytes) - offset, 0);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			return -1;
+		offset += (size_t)got;
 	}
 	for (i = 0; i < sizeof(bytes); i++) {
 		g_instance_id[i * 2] = digits[bytes[i] >> 4];
 		g_instance_id[i * 2 + 1] = digits[bytes[i] & 0x0f];
 	}
 	g_instance_id[32] = '\0';
+	return 0;
 }
 
 static const char *home_dir(void)
@@ -910,6 +924,34 @@ static void fail_direct_state_backend(void)
 }
 #endif
 
+static int ensure_private_directory(const char *path, const char *label)
+{
+	struct stat status;
+
+	if (!path || !label || path[0] != '/') {
+		fprintf(stderr, "omaq: %s must be an absolute path\n", label ? label : "directory");
+		return -1;
+	}
+	if (mkdir(path, 0700) != 0 && errno != EEXIST) {
+		fprintf(stderr, "omaq: could not create %s at %s: %s\n",
+			label, path, strerror(errno));
+		return -1;
+	}
+	if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
+	    status.st_uid != geteuid()) {
+		fprintf(stderr, "omaq: %s must be a real directory owned by uid %lu: %s\n",
+			label, (unsigned long)geteuid(), path);
+		return -1;
+	}
+	if ((status.st_mode & 0077) != 0) {
+		fprintf(stderr,
+			"omaq: %s permissions are %03o; run: chmod 700 -- '%s'\n",
+			label, (unsigned)(status.st_mode & 0777), path);
+		return -1;
+	}
+	return 0;
+}
+
 static int ensure_state_dir(void)
 {
 	const char *state = state_dir();
@@ -918,9 +960,8 @@ static int ensure_state_dir(void)
 	size_t len;
 	int fd;
 
-	if (!state || strlen(state) >= sizeof(parent))
-		return -1;
-	if (mkdir(state, 0700) != 0 && errno != EEXIST)
+	if (!state || strlen(state) >= sizeof(parent) ||
+	    ensure_private_directory(state, "OMAQ_STATE") != 0)
 		return -1;
 	memcpy(parent, state, strlen(state) + 1);
 	len = strlen(parent);
@@ -945,6 +986,24 @@ static int ensure_state_dir(void)
 	return 0;
 }
 
+static int uninstall_marker_present(void)
+{
+	char path[512];
+	struct stat status;
+
+	if (snprintf(path, sizeof(path), "%s/omaq.uninstalling", state_dir()) >=
+	    (int)sizeof(path))
+		return -1;
+	if (lstat(path, &status) != 0)
+		return errno == ENOENT ? 0 : -1;
+	if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+	    status.st_nlink != 1 || (status.st_mode & 0077) != 0) {
+		fprintf(stderr, "omaq: unsafe uninstall marker: %s\n", path);
+		return -1;
+	}
+	return 1;
+}
+
 static int take_lock(void)
 {
 	const char *home = home_dir();
@@ -953,13 +1012,20 @@ static int take_lock(void)
 
 	if (!home)
 		return -1;
-	if (mkdir(home, 0700) != 0 && errno != EEXIST)
-		return -1;
 	if (snprintf(path, sizeof(path), "%s/omaq.lock", home) >= (int)sizeof(path))
 		return -1;
-	fd = open(path, O_RDWR | O_CREAT, 0600);
+	fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd < 0)
 		return -1;
+	{
+		struct stat status;
+		if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+		    status.st_uid != geteuid() || status.st_nlink != 1 ||
+		    fchmod(fd, 0600) != 0) {
+			close(fd);
+			return -1;
+		}
+	}
 	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
 		close(fd);
 		return 2;
@@ -1063,13 +1129,50 @@ static int write_pid(void)
 	}
 }
 
+static int process_start_ticks(unsigned long long *start_ticks)
+{
+	char buffer[4096], *cursor, *end = NULL;
+	ssize_t length;
+	int fd;
+
+	if (!start_ticks)
+		return -1;
+	fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
+		return -1;
+	length = read(fd, buffer, sizeof(buffer) - 1);
+	close(fd);
+	if (length <= 0 || length >= (ssize_t)sizeof(buffer))
+		return -1;
+	buffer[length] = '\0';
+	cursor = strrchr(buffer, ')');
+	if (!cursor || cursor[1] != ' ')
+		return -1;
+	cursor += 2;
+	for (int field = 3; field < 22; field++) {
+		cursor = strchr(cursor, ' ');
+		if (!cursor)
+			return -1;
+		cursor++;
+	}
+	errno = 0;
+	*start_ticks = strtoull(cursor, &end, 10);
+	if (errno != 0 || end == cursor || (*end != ' ' && *end != '\n') ||
+	    *start_ticks == 0)
+		return -1;
+	return 0;
+}
+
 static int write_protocol_marker(void)
 {
 	char path[512], tmp[560];
 	const char *nonce = getenv("OMAQ_PROTOCOL_NONCE");
 	FILE *f;
 	size_t i;
+	unsigned long long start_ticks;
 
+	if (process_start_ticks(&start_ticks) != 0)
+		return -1;
 	if (!nonce)
 		nonce = "";
 	if (strlen(nonce) > 80)
@@ -1097,8 +1200,9 @@ static int write_protocol_marker(void)
 	{
 		int failed = fchmod(fileno(f), 0600) != 0;
 		if (!failed && fprintf(f,
-		    "{\"pid\":%ld,\"version\":%d,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
-		    (long)getpid(), OMAQ_PROTOCOL_VERSION, g_instance_id, nonce) < 0)
+		    "{\"pid\":%ld,\"start\":%llu,\"version\":%d,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
+		    (long)getpid(), start_ticks, OMAQ_PROTOCOL_VERSION,
+		    g_instance_id, nonce) < 0)
 			failed = 1;
 		if (!failed && fflush(f) != 0)
 			failed = 1;
@@ -1647,7 +1751,7 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 {
 	char esc_conv[128], esc_id[128], esc_reply[128], esc_request[512],
 		esc_text[2800], ev[3800];
-	int has_id, has_reply, has_request, is_file;
+	int has_id, has_reply, has_request, is_attachment;
 
 	if (!conversation || !text || !dir ||
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
@@ -1657,7 +1761,8 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 	has_reply = reply && reply[0] && omaq_json_escape(reply, esc_reply, sizeof(esc_reply)) == 0;
 	has_request = request && request[0] &&
 		omaq_json_escape(request, esc_request, sizeof(esc_request)) == 0;
-	is_file = kind && strcmp(kind, "file") == 0;
+	is_attachment = kind &&
+		(strcmp(kind, "file") == 0 || strcmp(kind, "image") == 0);
 	if (has_id && has_reply && has_request) {
 		snprintf(ev, sizeof(ev),
 			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
@@ -1670,10 +1775,10 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 		snprintf(ev, sizeof(ev),
 			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
 			 esc_conv, esc_id, esc_reply, esc_text, dir);
-	} else if (has_id && is_file) {
+	} else if (has_id && is_attachment) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"file\"}",
-			 esc_conv, esc_id, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\"}",
+			 esc_conv, esc_id, esc_text, dir, kind);
 	} else if (has_id) {
 		snprintf(ev, sizeof(ev),
 			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
@@ -2161,6 +2266,11 @@ static void clear_pending_group_invite(void)
 	g_group_invite_send_request[0] = '\0';
 	g_group_invite_send_url[0] = '\0';
 	g_group_invite_send_deadline = 0;
+	g_group_invite_native_pending = 0;
+	g_group_invite_cleanup_pending = 0;
+	g_group_invite_cleanup_code[0] = '\0';
+	g_group_invite_native_attempts = 0;
+	g_group_invite_native_retry_ms = 0;
 }
 
 static int send_group_invite_response(uint32_t friend, const char *prefix,
@@ -2278,23 +2388,107 @@ static void complete_pending_group_invite(uint32_t friend,
 		emit_group_invite_result(friend, group, g_group_invite_send_request,
 					 "group.invite.failed",
 					 binding_rc == -2 ? "group_registry_failed" : "busy");
-	} else if (omaq_group_invite_friend(g_tox, group, friend, self,
-					    ROLE_MEMBER) != 0) {
-		(void)group_binding_forget_expect(group, invite_id);
-		emit_group_invite_result(friend, group, g_group_invite_send_request,
-					 "group.invite.failed", "forbidden");
 	} else {
-		emit_group_invite_result(friend, group, g_group_invite_send_request,
-					 "group.invite.sent", NULL);
+		/* Native delivery runs from the main loop after this tox callback returns. */
+		g_group_invite_native_pending = 1;
+		g_group_invite_native_attempts = 0;
+		g_group_invite_native_retry_ms = 0;
+		g_group_invite_send_deadline = (int64_t)time(NULL) + 30;
+		return;
 	}
 	clear_pending_group_invite();
 }
 
+static int64_t monotonic_millis(void)
+{
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+		return -1;
+	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static void fail_pending_native_group_invite(const char *code)
+{
+	g_group_invite_native_pending = 0;
+	if (group_binding_forget_expect(g_group_invite_send_group,
+					g_group_invite_send_id) != 0) {
+		g_group_invite_cleanup_pending = 1;
+		snprintf(g_group_invite_cleanup_code,
+			 sizeof(g_group_invite_cleanup_code), "%s", code);
+		g_group_invite_native_retry_ms = monotonic_millis() + 250;
+		return;
+	}
+	emit_group_invite_result(g_group_invite_send_friend,
+				 g_group_invite_send_group,
+				 g_group_invite_send_request,
+				 "group.invite.failed", code);
+	clear_pending_group_invite();
+}
+
+static void retry_pending_native_group_invite(void)
+{
+	omaq_role self = ROLE_MEMBER;
+	int64_t now;
+	int rc;
+
+	if (!g_group_invite_send_pending ||
+	    (!g_group_invite_native_pending && !g_group_invite_cleanup_pending))
+		return;
+	now = monotonic_millis();
+	if (now < 0) {
+		fail_pending_native_group_invite("forbidden");
+		return;
+	}
+	if (g_group_invite_native_retry_ms > now)
+		return;
+	if (g_group_invite_cleanup_pending) {
+		if (group_binding_forget_expect(g_group_invite_send_group,
+						g_group_invite_send_id) != 0) {
+			g_group_invite_native_retry_ms = now + 250;
+			return;
+		}
+		emit_group_invite_result(g_group_invite_send_friend,
+					 g_group_invite_send_group,
+					 g_group_invite_send_request,
+					 "group.invite.failed",
+					 g_group_invite_cleanup_code[0]
+					 ? g_group_invite_cleanup_code : "forbidden");
+		clear_pending_group_invite();
+		return;
+	}
+	if (!pending_group_invite_friend_matches(g_group_invite_send_friend) ||
+	    omaq_group_self_role(g_tox, g_group_invite_send_group, &self) != 0) {
+		fail_pending_native_group_invite("forbidden");
+		return;
+	}
+	rc = omaq_group_invite_friend(g_tox, g_group_invite_send_group,
+				      g_group_invite_send_friend, self, ROLE_MEMBER);
+	g_group_invite_native_attempts++;
+	if (rc == 0) {
+		emit_group_invite_result(g_group_invite_send_friend,
+					 g_group_invite_send_group,
+					 g_group_invite_send_request,
+					 "group.invite.sent", NULL);
+		clear_pending_group_invite();
+		return;
+	}
+	if (rc < 0 || g_group_invite_native_attempts >= 25) {
+		fail_pending_native_group_invite("forbidden");
+		return;
+	}
+	g_group_invite_native_retry_ms = now + 40;
+}
+
 static void expire_pending_group_invite(void)
 {
-	if (!g_group_invite_send_pending ||
+	if (!g_group_invite_send_pending || g_group_invite_cleanup_pending ||
 	    (int64_t)time(NULL) < g_group_invite_send_deadline)
 		return;
+	if (g_group_invite_native_pending) {
+		fail_pending_native_group_invite("forbidden");
+		return;
+	}
 	emit_group_invite_result(g_group_invite_send_friend,
 				 g_group_invite_send_group,
 				 g_group_invite_send_request,
@@ -2827,6 +3021,11 @@ static void reset_identity_runtime_state(void)
 	g_group_invite_send_request[0] = '\0';
 	g_group_invite_send_url[0] = '\0';
 	g_group_invite_send_deadline = 0;
+	g_group_invite_native_pending = 0;
+	g_group_invite_cleanup_pending = 0;
+	g_group_invite_cleanup_code[0] = '\0';
+	g_group_invite_native_attempts = 0;
+	g_group_invite_native_retry_ms = 0;
 	g_group_registry_pruned = 0;
 	g_group_registry_pruned_count = 0;
 	memset(g_group_registry_pruned_ids, 0,
@@ -5057,7 +5256,416 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		(void)send_receipt_wire(friend, conv, wire_id, "delivered");
 #endif
 }
+#endif
 
+static int attachment_directory_open(char *path, size_t pathn)
+{
+	struct stat status;
+	int fd;
+
+	if (!path || snprintf(path, pathn, "%s/attachments", home_dir()) >= (int)pathn)
+		return -1;
+	if (mkdir(path, 0700) != 0 && errno != EEXIST)
+		return -1;
+	if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
+	    status.st_uid != geteuid() || (status.st_mode & 0077) != 0)
+		return -1;
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0 || fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode) ||
+	    status.st_uid != geteuid() || (status.st_mode & 0077) != 0) {
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+static int attachment_stage_names(const char *request, char *staging,
+				  size_t stagingn, char *final, size_t finaln)
+{
+	if (!omaq_message_id_ok(request) || strlen(request) >= 80 ||
+	    snprintf(staging, stagingn, ".staging-%s", request) >= (int)stagingn ||
+	    snprintf(final, finaln, "%s.png", request) >= (int)finaln)
+		return -1;
+	return 0;
+}
+
+static int attachment_pending_name(const char *request, char *pending, size_t pendingn)
+{
+	if (!omaq_message_id_ok(request) || strlen(request) >= 80 ||
+	    snprintf(pending, pendingn, ".pending-%s", request) >= (int)pendingn)
+		return -1;
+	return 0;
+}
+
+static int attachment_stage_create(const char *request, char *path, size_t pathn)
+{
+	char directory[512], staging[128], final[128], pending[128];
+	struct stat status;
+	int directory_fd, fd = -1, rc = -1;
+
+	if (attachment_stage_names(request, staging, sizeof(staging), final,
+				   sizeof(final)) != 0 ||
+	    attachment_pending_name(request, pending, sizeof(pending)) != 0 ||
+	    (directory_fd = attachment_directory_open(directory, sizeof(directory))) < 0)
+		return -1;
+	if (fstatat(directory_fd, final, &status, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+		goto done;
+	if (fstatat(directory_fd, pending, &status, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+		goto done;
+	fd = openat(directory_fd, staging,
+		    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0 || fsync(fd) != 0 || close(fd) != 0) {
+		fd = -1;
+		goto done;
+	}
+	fd = -1;
+	if (fsync(directory_fd) != 0 ||
+	    snprintf(path, pathn, "%s/%s", directory, staging) >= (int)pathn)
+		goto done;
+	rc = 0;
+done:
+	if (fd >= 0)
+		close(fd);
+	if (rc != 0)
+		(void)unlinkat(directory_fd, staging, 0);
+	close(directory_fd);
+	return rc;
+}
+
+static int attachment_stage_path_matches(const char *request, const char *path,
+					 int final_path, char *expected,
+					 size_t expectedn, int *directory_fd_out,
+					 char *name, size_t namen)
+{
+	char directory[512], staging[128], final[128];
+	int directory_fd;
+
+	if (!path || attachment_stage_names(request, staging, sizeof(staging), final,
+					    sizeof(final)) != 0 ||
+	    (directory_fd = attachment_directory_open(directory, sizeof(directory))) < 0)
+		return -1;
+	if (snprintf(name, namen, "%s", final_path ? final : staging) >= (int)namen ||
+	    snprintf(expected, expectedn, "%s/%s", directory, name) >= (int)expectedn ||
+	    strcmp(path, expected) != 0) {
+		close(directory_fd);
+		return -1;
+	}
+	*directory_fd_out = directory_fd;
+	return 0;
+}
+
+static int attachment_stage_commit(const char *request, const char *path,
+				   char *final_path, size_t final_pathn)
+{
+	char expected[512], staging[128], final[128], pending[128];
+	struct stat status;
+	int directory_fd, pending_fd = -1, linked = 0, rc = -1;
+
+	if (attachment_stage_path_matches(request, path, 0, expected, sizeof(expected),
+					  &directory_fd, staging, sizeof(staging)) != 0 ||
+	    attachment_stage_names(request, staging, sizeof(staging), final,
+				   sizeof(final)) != 0 ||
+	    attachment_pending_name(request, pending, sizeof(pending)) != 0)
+		return -1;
+	if (fstatat(directory_fd, staging, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+	    !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+	    status.st_nlink != 1 || (status.st_mode & 0077) != 0 ||
+	    status.st_size <= 0 || status.st_size > OMAQ_FILE_MAX ||
+	    omaq_inline_image_canonicalize_file(expected) != 0)
+		goto done;
+	pending_fd = openat(directory_fd, pending,
+			    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (pending_fd < 0 || fsync(pending_fd) != 0 || close(pending_fd) != 0) {
+		pending_fd = -1;
+		goto done;
+	}
+	pending_fd = -1;
+	if (linkat(directory_fd, staging, directory_fd, final, 0) != 0)
+		goto done;
+	linked = 1;
+	if (unlinkat(directory_fd, staging, 0) != 0 || fsync(directory_fd) != 0 ||
+	    snprintf(final_path, final_pathn, "%s/attachments/%s", home_dir(), final) >=
+		(int)final_pathn)
+		goto done;
+	rc = 0;
+done:
+	if (pending_fd >= 0)
+		close(pending_fd);
+	if (rc != 0) {
+		(void)unlinkat(directory_fd, staging, 0);
+		if (linked)
+			(void)unlinkat(directory_fd, final, 0);
+		(void)unlinkat(directory_fd, pending, 0);
+		(void)fsync(directory_fd);
+	}
+	close(directory_fd);
+	return rc;
+}
+
+static int attachment_stage_discard(const char *request, const char *path)
+{
+	char directory[512], staging[128], final[128], pending[128];
+	char staging_path[512], final_path[512];
+	struct stat status;
+	int directory_fd, pending_exists = 0;
+
+	if (attachment_stage_names(request, staging, sizeof(staging), final,
+				   sizeof(final)) != 0 ||
+	    attachment_pending_name(request, pending, sizeof(pending)) != 0 ||
+	    (directory_fd = attachment_directory_open(directory, sizeof(directory))) < 0)
+		return -1;
+	if (snprintf(staging_path, sizeof(staging_path), "%s/%s", directory, staging) >=
+		(int)sizeof(staging_path) ||
+	    snprintf(final_path, sizeof(final_path), "%s/%s", directory, final) >=
+		(int)sizeof(final_path) ||
+	    (path && path[0] && strcmp(path, staging_path) != 0 &&
+	     strcmp(path, final_path) != 0))
+		goto invalid;
+	if (fstatat(directory_fd, pending, &status, AT_SYMLINK_NOFOLLOW) == 0) {
+		if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+		    status.st_nlink != 1 || (status.st_mode & 0077) != 0)
+			goto invalid;
+		pending_exists = 1;
+	} else if (errno != ENOENT) {
+		goto invalid;
+	}
+	if (fstatat(directory_fd, staging, &status, AT_SYMLINK_NOFOLLOW) == 0) {
+		if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+		    status.st_nlink != 1 || (status.st_mode & 0077) != 0 ||
+		    unlinkat(directory_fd, staging, 0) != 0)
+			goto invalid;
+	} else if (errno != ENOENT) {
+		goto invalid;
+	}
+	if (fstatat(directory_fd, final, &status, AT_SYMLINK_NOFOLLOW) == 0) {
+		if (!pending_exists || !S_ISREG(status.st_mode) ||
+		    status.st_uid != geteuid() || status.st_nlink != 1 ||
+		    (status.st_mode & 0077) != 0 || unlinkat(directory_fd, final, 0) != 0)
+			goto invalid;
+	} else if (errno != ENOENT) {
+		goto invalid;
+	}
+	if (pending_exists && unlinkat(directory_fd, pending, 0) != 0)
+		goto invalid;
+	if (fsync(directory_fd) != 0)
+		goto invalid;
+	close(directory_fd);
+	return 0;
+invalid:
+	close(directory_fd);
+	return -1;
+}
+
+static int attachment_stage_cleanup(void)
+{
+	char directory[512];
+	struct dirent *entry;
+	struct stat status;
+	DIR *stream;
+	int directory_fd, scan_fd, rc = 0;
+
+	directory_fd = attachment_directory_open(directory, sizeof(directory));
+	if (directory_fd < 0)
+		return -1;
+	scan_fd = dup(directory_fd);
+	stream = scan_fd >= 0 ? fdopendir(scan_fd) : NULL;
+	if (!stream) {
+		if (scan_fd >= 0)
+			close(scan_fd);
+		close(directory_fd);
+		return -1;
+	}
+	while ((entry = readdir(stream)) != NULL) {
+		char staging[128], final[128];
+		const char *request;
+		int pending = 0;
+
+		if (strncmp(entry->d_name, ".staging-", 9) == 0)
+			request = entry->d_name + 9;
+		else if (strncmp(entry->d_name, ".pending-", 9) == 0) {
+			request = entry->d_name + 9;
+			pending = 1;
+		} else {
+			continue;
+		}
+		if (!omaq_message_id_ok(request) || strlen(request) >= 80 ||
+		    attachment_stage_names(request, staging, sizeof(staging), final,
+					   sizeof(final)) != 0 ||
+		    fstatat(directory_fd, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+		    !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+		    status.st_nlink != 1 || (status.st_mode & 0077) != 0) {
+			rc = -1;
+			continue;
+		}
+		if (pending && fstatat(directory_fd, final, &status,
+				       AT_SYMLINK_NOFOLLOW) == 0) {
+			if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+			    status.st_nlink != 1 || (status.st_mode & 0077) != 0 ||
+			    unlinkat(directory_fd, final, 0) != 0) {
+				rc = -1;
+				continue;
+			}
+		} else if (pending && errno != ENOENT) {
+			rc = -1;
+			continue;
+		}
+		if (unlinkat(directory_fd, entry->d_name, 0) != 0)
+			rc = -1;
+	}
+	if (closedir(stream) != 0 || fsync(directory_fd) != 0)
+		rc = -1;
+	close(directory_fd);
+	return rc;
+}
+
+static int attachment_pending_update(const char *path, int finish_mode)
+{
+	char directory[512], expected[512], staging[128], final[128];
+	char pending[128], request[80];
+	const char *basename;
+	struct stat status;
+	size_t request_length, path_prefix;
+	int directory_fd, rc = -1;
+
+	if (!path || finish_mode < 0 || finish_mode > 2 ||
+	    (directory_fd = attachment_directory_open(directory,
+							 sizeof(directory))) < 0)
+		return -1;
+	path_prefix = strlen(directory);
+	if (strncmp(path, directory, path_prefix) != 0 || path[path_prefix] != '/') {
+		close(directory_fd);
+		return 0;
+	}
+	basename = path + path_prefix + 1;
+	request_length = strlen(basename);
+	if (request_length <= 4 || strcmp(basename + request_length - 4, ".png") != 0 ||
+	    request_length - 4 >= sizeof(request)) {
+		close(directory_fd);
+		return 0;
+	}
+	request_length -= 4;
+	memcpy(request, basename, request_length);
+	request[request_length] = '\0';
+	if (attachment_stage_names(request, staging, sizeof(staging), final,
+				   sizeof(final)) != 0 ||
+	    attachment_pending_name(request, pending, sizeof(pending)) != 0 ||
+	    snprintf(expected, sizeof(expected), "%s/%s", directory, final) >=
+		(int)sizeof(expected) || strcmp(path, expected) != 0) {
+		close(directory_fd);
+		return 0;
+	}
+	if (fstatat(directory_fd, pending, &status, AT_SYMLINK_NOFOLLOW) != 0) {
+		rc = errno == ENOENT ? 0 : -1;
+		goto done;
+	}
+	if (!S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+	    status.st_nlink != 1 || (status.st_mode & 0077) != 0 ||
+	    fstatat(directory_fd, final, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+	    !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+	    status.st_nlink != 1 || (status.st_mode & 0077) != 0)
+		goto done;
+	if (finish_mode == 0) {
+		rc = 1;
+		goto done;
+	}
+	if ((finish_mode == 2 && unlinkat(directory_fd, final, 0) != 0) ||
+	    unlinkat(directory_fd, pending, 0) != 0 || fsync(directory_fd) != 0)
+		goto done;
+	rc = 1;
+done:
+	close(directory_fd);
+	return rc;
+}
+
+static int attachment_managed_remove(const char *path)
+{
+	char directory[512], expected[512], staging[128], final[128], request[80];
+	const char *basename;
+	struct stat status;
+	size_t prefix, length;
+	int directory_fd;
+
+	if (!path || (directory_fd = attachment_directory_open(directory,
+							 sizeof(directory))) < 0)
+		return -1;
+	prefix = strlen(directory);
+	if (strncmp(path, directory, prefix) != 0 || path[prefix] != '/')
+		goto invalid;
+	basename = path + prefix + 1;
+	length = strlen(basename);
+	if (length <= 4 || strcmp(basename + length - 4, ".png") != 0 ||
+	    length - 4 >= sizeof(request))
+		goto invalid;
+	length -= 4;
+	memcpy(request, basename, length);
+	request[length] = '\0';
+	if (attachment_stage_names(request, staging, sizeof(staging), final,
+				   sizeof(final)) != 0 ||
+	    snprintf(expected, sizeof(expected), "%s/%s", directory, final) >=
+		(int)sizeof(expected) || strcmp(expected, path) != 0 ||
+	    fstatat(directory_fd, final, &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+	    !S_ISREG(status.st_mode) || status.st_uid != geteuid() ||
+	    status.st_nlink != 1 || (status.st_mode & 0077) != 0 ||
+	    unlinkat(directory_fd, final, 0) != 0 || fsync(directory_fd) != 0)
+		goto invalid;
+	close(directory_fd);
+	return 0;
+invalid:
+	close(directory_fd);
+	return -1;
+}
+
+static void emit_attachment_discarded(const char *request)
+{
+	char escaped_request[80 * 6 + 1], event[640];
+
+	if (!request || !request[0] ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"attachment.discarded\",\"request\":\"%s\"}",
+		 escaped_request);
+	emit(event);
+}
+
+static void emit_attachment_stage(const char *request, const char *path)
+{
+	char escaped_request[80 * 6 + 1], escaped_path[OMAQ_JSON_STR_MAX * 6 + 1];
+	char event[OMAQ_JSON_STR_MAX * 6 + 800];
+
+	if (!request || !request[0] || !path ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0 ||
+	    omaq_json_escape(path, escaped_path, sizeof(escaped_path)) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"attachment.stage\",\"request\":\"%s\",\"path\":\"%s\"}",
+		 escaped_request, escaped_path);
+	emit(event);
+}
+
+static void emit_attachment_inspection(const char *request, const char *path,
+				       int accepted)
+{
+	char escaped_request[80 * 6 + 1], escaped_path[OMAQ_JSON_STR_MAX * 6 + 1];
+	char event[OMAQ_JSON_STR_MAX * 6 + 800];
+
+	if (!request || !request[0] || !path ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0 ||
+	    omaq_json_escape(path, escaped_path, sizeof(escaped_path)) != 0)
+		return;
+	if (accepted)
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"attachment.inspected\",\"request\":\"%s\",\"path\":\"%s\",\"kind\":\"image\"}",
+			 escaped_request, escaped_path);
+	else
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"attachment.rejected\",\"request\":\"%s\",\"path\":\"%s\",\"code\":\"unsupported_image\"}",
+			 escaped_request, escaped_path);
+	emit(event);
+}
+
+#ifdef HAVE_TOX
 static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
 		      const char *name, uint64_t size, const char *path, const char *dir,
 		      const char *request)
@@ -5122,13 +5730,16 @@ static int file_request_find(const char *request)
 	return -1;
 }
 
-static int file_request_begin(uint32_t friend, uint32_t fnum, const char *request)
+static int file_request_begin(uint32_t friend, uint32_t fnum,
+			      const char *request, const char *path,
+			      const char *kind)
 {
 	int i, slot = -1;
 	uint64_t oldest = UINT64_MAX;
 
-	if (!request || !request[0])
-		return 0;
+	if (!request || !request[0] || !path || !path[0] || !kind ||
+	    (strcmp(kind, "file") != 0 && strcmp(kind, "image") != 0))
+		return -1;
 	i = file_request_find(request);
 	if (i >= 0)
 		return -1;
@@ -5165,6 +5776,80 @@ static int file_request_begin(uint32_t friend, uint32_t fnum, const char *reques
 		 "%s", request);
 	snprintf(g_file_requests[slot].state, sizeof(g_file_requests[slot].state),
 		 "sending");
+	snprintf(g_file_requests[slot].kind, sizeof(g_file_requests[slot].kind),
+		 "%s", kind);
+	if (snprintf(g_file_requests[slot].path,
+		     sizeof(g_file_requests[slot].path), "%s", path) >=
+	    (int)sizeof(g_file_requests[slot].path)) {
+		memset(&g_file_requests[slot], 0, sizeof(g_file_requests[slot]));
+		return -1;
+	}
+	return 0;
+}
+
+static int file_request_path(uint32_t friend, uint32_t fnum, char *path, size_t pathn)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++) {
+		if (!g_file_requests[i].used || g_file_requests[i].friend != friend ||
+		    g_file_requests[i].fnum != fnum || !g_file_requests[i].path[0])
+			continue;
+		return snprintf(path, pathn, "%s", g_file_requests[i].path) < (int)pathn
+			? 0 : -1;
+	}
+	return -1;
+}
+
+static const char *file_request_kind(uint32_t friend, uint32_t fnum)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++)
+		if (g_file_requests[i].used && g_file_requests[i].friend == friend &&
+		    g_file_requests[i].fnum == fnum && g_file_requests[i].kind[0])
+			return g_file_requests[i].kind;
+	return "file";
+}
+
+static int file_request_mark_pending(uint32_t friend, uint32_t fnum, int pending)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++)
+		if (g_file_requests[i].used && g_file_requests[i].friend == friend &&
+		    g_file_requests[i].fnum == fnum &&
+		    strcmp(g_file_requests[i].state, "sending") == 0) {
+			g_file_requests[i].pending_attachment = pending ? 1 : 0;
+			g_file_requests[i].managed_attachment = pending ? 1 : 0;
+			return 0;
+		}
+	return -1;
+}
+
+static int file_request_finish_pending(uint32_t friend, uint32_t fnum, int keep)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++) {
+		if (!g_file_requests[i].used || g_file_requests[i].friend != friend ||
+		    g_file_requests[i].fnum != fnum ||
+		    !g_file_requests[i].pending_attachment)
+			continue;
+		if (attachment_pending_update(g_file_requests[i].path, keep ? 1 : 2) != 1)
+			return -1;
+		g_file_requests[i].pending_attachment = 0;
+		if (!keep)
+			g_file_requests[i].managed_attachment = 0;
+		return 0;
+	}
+	return 0;
+}
+
+static int file_request_remove_managed(uint32_t friend, uint32_t fnum)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++) {
+		if (!g_file_requests[i].used || g_file_requests[i].friend != friend ||
+		    g_file_requests[i].fnum != fnum ||
+		    !g_file_requests[i].managed_attachment)
+			continue;
+		if (attachment_managed_remove(g_file_requests[i].path) != 0)
+			return -1;
+		g_file_requests[i].managed_attachment = 0;
+		return 1;
+	}
 	return 0;
 }
 
@@ -5218,6 +5903,7 @@ static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t po
 	if (omaq_file_chunk_out(g_tox, friend, fnum, pos, len) != 0) {
 		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_ERROR);
 		cancel_file_after_error(friend, fnum);
+		(void)file_request_finish_pending(friend, fnum, 0);
 		request = file_request_finish(friend, fnum, "failed");
 		if (event == OMAQ_FILE_EVENT_FAILED)
 			emit_file("failed", friend, fnum, NULL, 0, NULL, "out", request);
@@ -5225,8 +5911,30 @@ static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t po
 	}
 	event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
 	if (len == 0 && event == OMAQ_FILE_EVENT_DONE) {
+		char conv[16], state_conv[OMAQ_DIRECT_STATE_ID_MAX], path[512], mid[64];
+		const char *kind;
+		int stored = 0;
+
+		path[0] = '\0';
+		(void)file_request_path(friend, fnum, path, sizeof(path));
+		snprintf(conv, sizeof(conv), "%u", friend);
+		kind = file_request_kind(friend, fnum);
+		if (file_request_finish_pending(friend, fnum, 1) == 0 && path[0] &&
+		    direct_state_for_friend(friend, state_conv,
+						     sizeof(state_conv)) == 0 &&
+		    omaq_message_append_attachment_with_id(home_dir(), state_conv, "me",
+						   path, "out", kind, mid,
+						   sizeof(mid)) == 0) {
+			stored = 1;
+			(void)file_request_mark_pending(friend, fnum, 0);
+			emit_message_event_kind(conv, mid, "", path, "out", kind, NULL);
+		} else if (file_request_remove_managed(friend, fnum) == 1) {
+			path[0] = '\0';
+		}
 		request = file_request_finish(friend, fnum, "done");
-		emit_file("done", friend, fnum, NULL, 0, NULL, "out", request);
+		emit_file("done", friend, fnum, NULL, 0, path, "out", request);
+		if (!stored)
+			emit_error_conv("history_failed", conv);
 	}
 }
 
@@ -5266,12 +5974,16 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 			emit_friends();
 			return;
 		}
-		stored = direct_state_for_friend(friend, state_conv, sizeof(state_conv)) == 0 &&
-			omaq_message_append_file_with_id(home_dir(), state_conv, "peer", dest,
-							 "in", mid, sizeof(mid)) == 0;
-		if (stored) {
-			(void)note_unread(conv);
-			emit_message_event_kind(conv, mid, "", dest, "in", "file", NULL);
+		{
+			const char *kind = omaq_inline_image_canonicalize_file(dest) == 0
+				? "image" : "file";
+			stored = direct_state_for_friend(friend, state_conv, sizeof(state_conv)) == 0 &&
+				omaq_message_append_attachment_with_id(home_dir(), state_conv,
+					"peer", dest, "in", kind, mid, sizeof(mid)) == 0;
+			if (stored) {
+				(void)note_unread(conv);
+				emit_message_event_kind(conv, mid, "", dest, "in", kind, NULL);
+			}
 		}
 		emit_file("done", friend, fnum, NULL, 0, dest, "in", NULL);
 		if (!stored)
@@ -5329,6 +6041,8 @@ static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control
 				    OMAQ_FILE_OUTCOME_CANCEL);
 	omaq_file_offer_drop(friend, fnum);
 	cancel_file_after_error(friend, fnum);
+	if (sending)
+		(void)file_request_finish_pending(friend, fnum, 0);
 	request = sending ? file_request_finish(friend, fnum,
 			event == OMAQ_FILE_EVENT_CANCELED ? "canceled" : "failed") : NULL;
 	if (event == OMAQ_FILE_EVENT_CANCELED)
@@ -6489,6 +7203,50 @@ static int load_tox(const char *pass)
 
 static int handle_op(const omaq_op *op, int *identity_ready)
 {
+	if (strcmp(op->op, "helper.probe") == 0) {
+		char escaped_request[80 * 6 + 1], event[768];
+		if (!op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
+		    !omaq_message_id_ok(op->request) ||
+		    omaq_json_escape(op->request, escaped_request,
+				     sizeof(escaped_request)) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+#ifdef OMAQ_IPC_TEST
+		emit("{\"event\":\"test.noise\"}");
+#endif
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"helper.probe\",\"instance\":\"%s\",\"request\":\"%s\"}",
+			 g_instance_id, escaped_request);
+		emit(event);
+		return 0;
+	}
+	if (strcmp(op->op, "helper.shutdown") == 0) {
+		char escaped_request[80 * 6 + 1];
+		if (!op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
+		    !omaq_message_id_ok(op->request) ||
+		    omaq_json_escape(op->request, escaped_request,
+				     sizeof(escaped_request)) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		g_shutdown_after_drain = 1;
+		if (g_listen >= 0) {
+			close(g_listen);
+			g_listen = -1;
+		}
+		{
+			char event[768];
+#ifdef OMAQ_IPC_TEST
+			emit("{\"event\":\"test.noise\"}");
+#endif
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"helper.shutdown\",\"instance\":\"%s\",\"request\":\"%s\"}",
+				 g_instance_id, escaped_request);
+			emit(event);
+		}
+		return 0;
+	}
 #ifdef HAVE_TOX
 	if (g_identity_recovery_required) {
 		if (targeted_group_invite_op(op))
@@ -8319,6 +9077,49 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		emit_identity_action("export", op->id, path, -1);
 		return 0;
 	}
+	if (strcmp(op->op, "attachment.stage.create") == 0) {
+		char path[512];
+		if (!op->id[0] || attachment_stage_create(op->id, path, sizeof(path)) != 0)
+			emit_attachment_inspection(op->id, "", 0);
+		else
+			emit_attachment_stage(op->id, path);
+		return 0;
+	}
+	if (strcmp(op->op, "attachment.stage.commit") == 0) {
+		char final_path[512];
+		if (!op->id[0] || attachment_stage_commit(op->id, op->path,
+							 final_path, sizeof(final_path)) != 0)
+			emit_attachment_inspection(op->id, op->path, 0);
+		else
+			emit_attachment_inspection(op->id, final_path, 1);
+		return 0;
+	}
+	if (strcmp(op->op, "attachment.stage.discard") == 0) {
+		if (attachment_stage_discard(op->id, op->path) == 0)
+			emit_attachment_discarded(op->id);
+		return 0;
+	}
+	if (strcmp(op->op, "attachment.inspect") == 0) {
+		char staging[512], final_path[512];
+		int accepted = 0;
+
+		staging[0] = '\0';
+		if (op->id[0] && omaq_message_id_ok(op->id) &&
+		    omaq_file_path_ok(op->path) &&
+		    attachment_stage_create(op->id, staging, sizeof(staging)) == 0 &&
+		    omaq_inline_image_import_file(op->path, staging) == 0 &&
+		    attachment_stage_commit(op->id, staging, final_path,
+					    sizeof(final_path)) == 0)
+			accepted = 1;
+		if (accepted)
+			emit_attachment_inspection(op->id, final_path, 1);
+		else {
+			if (staging[0])
+				(void)attachment_stage_discard(op->id, staging);
+			emit_attachment_inspection(op->id, op->path, 0);
+		}
+		return 0;
+	}
 	if (strcmp(op->op, "file.send") == 0) {
 #ifdef HAVE_TOX
 		if (g_tox) {
@@ -8331,18 +9132,37 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				return 0;
 			}
 			fn = direct_id_number(cid);
-			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0) {
+			if (!op->path[0] || omaq_file_basename(op->path, name, sizeof(name)) != 0 ||
+			    (op->kind[0] && strcmp(op->kind, "file") != 0 &&
+			     strcmp(op->kind, "image") != 0)) {
 				emit_file_rejected(cid, op->id, "unsupported");
+				return 0;
+			}
+			if (strcmp(op->kind, "image") == 0 &&
+			    omaq_inline_image_validate_file(op->path) != 0) {
+				emit_file_rejected(cid, op->id, "invalid_image");
 				return 0;
 			}
 			if (omaq_file_send_begin(g_tox, fn, op->path, &fnum) != 0) {
 				emit_file_rejected(cid, op->id, "forbidden");
 				return 0;
 			}
-			if (file_request_begin(fn, fnum, op->id) != 0) {
+			if (file_request_begin(fn, fnum, op->id, op->path,
+					       op->kind[0] ? op->kind : "file") != 0) {
 				cancel_file_after_error(fn, fnum);
 				emit_file_rejected(cid, op->id, "busy");
 				return 0;
+			}
+			{
+				int pending_attachment = attachment_pending_update(op->path, 0);
+				if (pending_attachment < 0 ||
+				    file_request_mark_pending(fn, fnum,
+						      pending_attachment == 1) != 0) {
+					cancel_file_after_error(fn, fnum);
+					(void)file_request_finish(fn, fnum, "failed");
+					emit_file_rejected(cid, op->id, "forbidden");
+					return 0;
+				}
 			}
 			(void)name;
 			emit_file("sending", fn, fnum, NULL, 0, NULL, "out", op->id);
@@ -8439,6 +9259,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			{
 				int sending = omaq_file_is_sending(fn, fnum);
 				const char *request;
+				if (sending)
+					(void)file_request_finish_pending(fn, fnum, 0);
 				if (omaq_file_cancel(g_tox, fn, fnum) != 0) {
 					omaq_file_drop(fn, fnum);
 					request = sending ? file_request_finish(fn, fnum, "failed") : NULL;
@@ -9011,6 +9833,8 @@ int main(int argc, char **argv)
 #endif
 
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGTERM, request_shutdown_signal);
+	signal(SIGINT, request_shutdown_signal);
 	{
 		int flags = fcntl(STDOUT_FILENO, F_GETFL, 0);
 		if (flags >= 0)
@@ -9033,8 +9857,12 @@ int main(int argc, char **argv)
 	omaq_rate_init(&g_reaction_rate);
 	omaq_rate_init(&g_reaction_out_rate);
 	omaq_line_reader_init(&g_stdin_reader);
-	if (ensure_state_dir() != 0)
+	if (ensure_private_directory(home_dir(), "OMAQ_HOME") != 0 ||
+	    ensure_state_dir() != 0)
 		return 1;
+	rc = uninstall_marker_present();
+	if (rc != 0)
+		return rc > 0 ? 0 : 1;
 	rc = take_state_lock();
 	if (rc == 2)
 		return 2;
@@ -9045,6 +9873,10 @@ int main(int argc, char **argv)
 		return 2;
 	if (rc != 0)
 		return 1;
+	if (attachment_stage_cleanup() != 0) {
+		fprintf(stderr, "omaq: attachment staging cleanup failed\n");
+		return 1;
+	}
 #ifdef HAVE_TOX
 	if (cleanup_orphan_identity_stages() != 0)
 		recovery_rc = -1;
@@ -9077,7 +9909,10 @@ int main(int argc, char **argv)
 		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
 			 "unread_state_invalid");
 	}
-	init_instance_id();
+	if (init_instance_id() != 0) {
+		fprintf(stderr, "omaq: secure instance-id generation failed\n");
+		return 1;
+	}
 	if (bind_sock() != 0)
 		return 1;
 	if (write_pid() != 0 || write_protocol_marker() != 0)
@@ -9104,7 +9939,7 @@ int main(int argc, char **argv)
 	if (!g_replay_mode && !g_shutdown_after_drain)
 		start_backend();
 	if (hold && !g_shutdown_after_drain) {
-		for (;;) {
+		while (!g_shutdown_after_drain) {
 #ifdef HAVE_TOX
 			if (g_tox) {
 				omaq_tox_iterate(g_tox);
@@ -9112,6 +9947,7 @@ int main(int argc, char **argv)
 				expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
 				expire_pending_group_invite();
+				retry_pending_native_group_invite();
 #endif
 				if (omaq_group_take_save_error())
 					emit_error("group_registry_failed");
@@ -9187,6 +10023,7 @@ int main(int argc, char **argv)
 			expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
 			expire_pending_group_invite();
+			retry_pending_native_group_invite();
 #endif
 			if (omaq_group_take_save_error())
 				emit_error("group_registry_failed");
@@ -9265,6 +10102,14 @@ int main(int argc, char **argv)
 #endif
 	omaq_unread_destroy(&g_unread);
 	omaq_stdout_spool_close(g_stdout_spool);
+	{
+		char runtime_path[512];
+		const char *runtime_names[] = { "omaq.sock", "omaq.pid", "omaq.protocol" };
+		for (size_t i = 0; i < sizeof(runtime_names) / sizeof(runtime_names[0]); i++)
+			if (snprintf(runtime_path, sizeof(runtime_path), "%s/%s", state_dir(),
+				     runtime_names[i]) < (int)sizeof(runtime_path))
+				(void)unlink(runtime_path);
+	}
 	if (g_lockfd >= 0)
 		close(g_lockfd);
 	if (g_state_lockfd >= 0)

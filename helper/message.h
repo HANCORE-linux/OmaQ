@@ -12,6 +12,10 @@ int omaq_message_append_id(const char *home, const char *conv_id, const char *fr
 			   const char *text, const char *dir, const char *message_id);
 int omaq_message_append_with_id(const char *home, const char *conv_id, const char *from,
 				const char *text, const char *dir, char *id_out, size_t id_outn);
+int omaq_message_append_attachment_with_id(const char *home, const char *conv_id,
+					   const char *from, const char *path,
+					   const char *dir, const char *kind,
+					   char *id_out, size_t id_outn);
 int omaq_message_append_file_with_id(const char *home, const char *conv_id,
 				     const char *from, const char *path, const char *dir,
 				     char *id_out, size_t id_outn);

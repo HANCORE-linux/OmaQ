@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -18,9 +19,9 @@ OLD_URGENT_LIMIT = 4096 * 1024
 BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
-EVENT = b'{"event":"snapshot","protocol":8,"unread":0,"conversations":[],"call":null}\n'
+EVENT = b'{"event":"snapshot","protocol":9,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
-STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":8,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":9,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 HISTORY_A_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-a"}\n'
 HISTORY_A_EVENT = b'{"event":"history","conversation":"7","request":"history-a","unread":0,"items":[]}\n'
 HISTORY_B_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-b"}\n'
@@ -234,6 +235,84 @@ def main() -> int:
                 response += chunk
             if normalize_instances(response) != STATUS_NONCE_EVENT or not INSTANCE_FIELD.search(response):
                 raise RuntimeError(f"status nonce correlation mismatch: {response!r}")
+            stage_path = Path(home) / "attachments" / ".staging-stage-ipc-1"
+            framing_client.sendall(
+                b'{"op":"attachment.stage.create","id":"stage-ipc-1"}\n'
+            )
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            expected_stage = (
+                '{"event":"attachment.stage","request":"stage-ipc-1","path":"'
+                + str(stage_path) + '"}\n'
+            ).encode()
+            if response != expected_stage or not stage_path.is_file():
+                raise RuntimeError(f"attachment stage creation mismatch: {response!r}")
+            stage_info = stage_path.stat()
+            if stat.S_IMODE(stage_info.st_mode) != 0o600 or stage_info.st_uid != os.geteuid():
+                raise RuntimeError("attachment stage permissions are unsafe")
+            framing_client.sendall(
+                ('{"op":"attachment.stage.discard","id":"stage-ipc-1","path":"'
+                 + str(stage_path) + '"}\n').encode()
+            )
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            expected_stage_discard = (
+                b'{"event":"attachment.discarded","request":"stage-ipc-1"}\n'
+            )
+            if response != expected_stage_discard:
+                raise RuntimeError(f"attachment stage discard mismatch: {response!r}")
+            wait_for(lambda: not stage_path.exists(), 2, "attachment stage was not discarded")
+            image_source = Path(home) / "inspection-source.png"
+            image_source.write_bytes(bytes.fromhex(
+                "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c02"
+                "0000000b4944415478da6364f80f00010501012718e3660000000049454e44"
+                "ae426082") + b"TRAILING-PAYLOAD")
+            image_source.chmod(0o600)
+            inspected_path = Path(home) / "attachments" / "inspect-ipc-1.png"
+            pending_path = Path(home) / "attachments" / ".pending-inspect-ipc-1"
+            framing_client.sendall(
+                ('{"op":"attachment.inspect","id":"inspect-ipc-1","path":"'
+                 + str(image_source) + '"}\n').encode()
+            )
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            expected_inspection = (
+                '{"event":"attachment.inspected","request":"inspect-ipc-1",'
+                '"path":"' + str(inspected_path) + '","kind":"image"}\n'
+            ).encode()
+            if response != expected_inspection or not inspected_path.is_file() or not pending_path.is_file():
+                raise RuntimeError(f"attachment inspection mismatch: {response!r}")
+            if b"TRAILING-PAYLOAD" in inspected_path.read_bytes():
+                raise RuntimeError("attachment inspection retained trailing polyglot bytes")
+            framing_client.sendall(
+                ('{"op":"attachment.stage.discard","id":"inspect-ipc-1","path":"'
+                 + str(inspected_path) + '"}\n').encode()
+            )
+            response = b""
+            while b"\n" not in response:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            expected_inspection_discard = (
+                b'{"event":"attachment.discarded","request":"inspect-ipc-1"}\n'
+            )
+            if response != expected_inspection_discard:
+                raise RuntimeError(f"inspected attachment discard mismatch: {response!r}")
+            wait_for(lambda: not inspected_path.exists() and not pending_path.exists(),
+                     2, "inspected attachment was not discarded")
             framing_client.sendall(HISTORY_A_COMMAND)
             response = b""
             while b"\n" not in response:
@@ -346,6 +425,15 @@ def main() -> int:
         first = None
         if first_stderr:
             raise RuntimeError(f"first helper diagnostics: {first_stderr.decode(errors='replace')}")
+        attachments = Path(home) / "attachments"
+        pending_orphan = attachments / ".pending-cleanup-1"
+        final_orphan = attachments / "cleanup-1.png"
+        staging_orphan = attachments / ".staging-cleanup-2"
+        pending_orphan.write_bytes(b"")
+        final_orphan.write_bytes(b"orphan")
+        staging_orphan.write_bytes(b"partial")
+        for orphan in (pending_orphan, final_orphan, staging_orphan):
+            orphan.chmod(0o600)
 
         # Restart with a writable stdout and require replay of the complete FIFO.
         with replay_path.open("wb") as replay:
@@ -385,6 +473,9 @@ def main() -> int:
                 30,
                 "restarted helper did not drain the critical stdout spool",
             )
+            if any(path.exists() for path in
+                   (pending_orphan, final_orphan, staging_orphan)):
+                raise RuntimeError("restart did not clean orphan attachment staging")
             second_stdout, second_stderr = stop(second)
             second = None
             if second_stdout:
@@ -402,6 +493,10 @@ def main() -> int:
             + GROUP_INVITE_UNSUPPORTED_EVENT
             + NICKNAME_UNSUPPORTED_EVENT
             + STATUS_NONCE_EVENT
+            + expected_stage
+            + expected_stage_discard
+            + expected_inspection
+            + expected_inspection_discard
             + HISTORY_A_EVENT
             + HISTORY_BAD_EVENT
             + MESSAGE_REJECT_EVENT

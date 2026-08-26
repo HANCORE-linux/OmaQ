@@ -403,10 +403,16 @@ static void test_store(void)
 			fail("stable group history isolation");
 		if (omaq_message_append_file_with_id(dir, "c1", "peer", "/tmp/song.mp3", "in",
 						     id, sizeof(id)) != 0 ||
+		    omaq_message_append_attachment_with_id(dir, "c1", "me", "/tmp/picture.png",
+							  "out", "image", id, sizeof(id)) != 0 ||
+		    omaq_message_append_attachment_with_id(dir, "c1", "me", "/tmp/bad",
+							  "out", "video", id, sizeof(id)) == 0 ||
 		    omaq_message_history(dir, "c1", 20, &updated, &updated_n) != 0 ||
 		    !updated || !strstr(updated, "\"text\":\"/tmp/song.mp3\"") ||
-		    !strstr(updated, "\"kind\":\"file\""))
-			fail("file message kind");
+		    !strstr(updated, "\"kind\":\"file\"") ||
+		    !strstr(updated, "\"text\":\"/tmp/picture.png\"") ||
+		    !strstr(updated, "\"dir\":\"out\",\"kind\":\"image\""))
+			fail("attachment message kinds");
 		free(updated);
 	}
 	{
@@ -1855,6 +1861,20 @@ static void test_receipts(void)
 	if (!omaq_message_id_ok("msg-1") || omaq_message_id_ok("msg|1") ||
 	    omaq_message_id_ok("msg\n1") || omaq_message_id_ok(too_long))
 		fail("message id validation");
+	{
+		char first[33], second[33];
+		int canonical = 1;
+		if (omaq_message_id_new(first, sizeof(first)) != 0 ||
+		    omaq_message_id_new(second, sizeof(second)) != 0 ||
+		    strlen(first) != 32 || strlen(second) != 32 || strcmp(first, second) == 0)
+			canonical = 0;
+		for (size_t i = 0; canonical && i < 32; i++)
+			if (!((first[i] >= '0' && first[i] <= '9') ||
+			      (first[i] >= 'a' && first[i] <= 'f')))
+				canonical = 0;
+		if (!canonical)
+			fail("message ids are independent 128-bit lowercase hex values");
+	}
 	if (read_file("tests/gold/receipt/message-wire.txt", expected, sizeof(expected)) != 0 ||
 	    omaq_message_wire_pack(wire, sizeof(wire), "msg-1", "reply-1", "hello|world") != 0 ||
 	    strcmp(wire, expected) != 0 ||
@@ -2070,6 +2090,22 @@ static void test_avatar(void)
 				fail("avatar fixture write");
 			fclose(f);
 		}
+		if (omaq_inline_image_validate_file(src) != 0 ||
+		    omaq_inline_image_canonicalize_file(src) != 0)
+			fail("inline image validation and canonicalization");
+		f = fopen(src, "rb");
+		if (!f) {
+			fail("inline image canonical open");
+		} else {
+			unsigned char canonical[1024];
+			size_t canonical_size = fread(canonical, 1, sizeof(canonical), f);
+			fclose(f);
+			if (memmem(canonical, canonical_size, "TRAILING-PAYLOAD", 16) != NULL)
+				fail("inline image canonical trailing payload");
+		}
+		f = fopen(src, "ab");
+		if (!f || fwrite("TRAILING-PAYLOAD", 1, 16, f) != 16 || fclose(f) != 0)
+			fail("avatar trailing payload restore");
 		if (omaq_avatar_install("/tmp/omaq-av", "self", src, d, sizeof(d)) != 0 ||
 		    stat("/tmp/omaq-av/avatars/self.png", &st) != 0 || st.st_size <= 0 ||
 		    omaq_avatar_validate_file("/tmp/omaq-av/avatars/self.png") != 0)
@@ -2101,10 +2137,32 @@ static void test_avatar(void)
 		}
 		f = fopen("/tmp/omaq-av/avatars/self.png", "wb");
 		if (!f || fwrite("not-an-image", 1, 12, f) != 12 || fclose(f) != 0 ||
+		    omaq_inline_image_validate_file("/tmp/omaq-av/avatars/self.png") == 0 ||
+		    omaq_inline_image_canonicalize_file("/tmp/omaq-av/avatars/self.png") == 0 ||
 		    omaq_avatar_validate_file("/tmp/omaq-av/avatars/self.png") == 0 ||
 		    omaq_avatar_reconcile("/tmp/omaq-av", "self") != -1 ||
 		    access("/tmp/omaq-av/avatars/self.png", F_OK) == 0)
 			fail("avatar received decode validation");
+		f = fopen("/tmp/omaq-inline-invalid.png", "wb");
+		if (!f || fwrite(image, 1, 8, f) != 8 ||
+		    fwrite("invalid-body", 1, 12, f) != 12 || fclose(f) != 0 ||
+		    chmod("/tmp/omaq-inline-invalid.png", 0600) != 0 ||
+		    omaq_inline_image_validate_file("/tmp/omaq-inline-invalid.png") == 0 ||
+		    omaq_inline_image_canonicalize_file("/tmp/omaq-inline-invalid.png") == 0)
+			fail("inline image spoofed magic rejection");
+		unlink("/tmp/omaq-inline-invalid.png");
+		f = fopen("/tmp/omaq-inline-limit.png", "wb");
+		if (!f || fwrite(image, 1, sizeof(image), f) != sizeof(image) ||
+		    fflush(f) != 0 || ftruncate(fileno(f), OMAQ_INLINE_IMAGE_SOURCE_MAX) != 0 ||
+		    fclose(f) != 0 || chmod("/tmp/omaq-inline-limit.png", 0600) != 0 ||
+		    omaq_inline_image_validate_file("/tmp/omaq-inline-limit.png") != 0)
+			fail("inline image exact source limit");
+		f = fopen("/tmp/omaq-inline-limit.png", "r+b");
+		if (!f || ftruncate(fileno(f), OMAQ_INLINE_IMAGE_SOURCE_MAX + 1u) != 0 ||
+		    fclose(f) != 0 ||
+		    omaq_inline_image_validate_file("/tmp/omaq-inline-limit.png") == 0)
+			fail("inline image source over limit");
+		unlink("/tmp/omaq-inline-limit.png");
 #ifdef HAVE_AVATAR_DECODERS
 		{
 			char wide[] = "/tmp/omaq-avatar-wide.png";
@@ -2136,11 +2194,19 @@ static void test_avatar(void)
 			    write_avatar_webp(sources[1], pixels, noisy_width, noisy_height) != 0)
 				fail("compressed avatar fixtures");
 			for (int format = 0; format < 2; format++) {
-				char output[256];
+				char output[256], inline_output[256];
 				struct stat output_status;
 				png_image output_image;
 				memset(&output_image, 0, sizeof(output_image));
 				output_image.version = PNG_IMAGE_VERSION;
+				if (snprintf(inline_output, sizeof(inline_output),
+					     "/tmp/omaq-inline-%d.png", format) >=
+						(int)sizeof(inline_output) ||
+				    write_private_test_file(inline_output, "staging") != 0 ||
+				    omaq_inline_image_import_file(sources[format], inline_output) != 0 ||
+				    omaq_inline_image_validate_file(inline_output) != 0)
+					fail("compressed inline image canonical import");
+				unlink(inline_output);
 				if (omaq_avatar_install("/tmp/omaq-av", ids[format], sources[format],
 							output, sizeof(output)) != 0 ||
 				    stat(output, &output_status) != 0 ||

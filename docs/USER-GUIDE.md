@@ -23,7 +23,7 @@ To begin, you need a private `omaq://` invite from the other person.
 4. Click **Join chat**.
 5. The other person uses the pending-request controls beside `YOU · <STATE>` in the fixed panel header to accept or decline.
 
-The invite and the explicit **Accept** step are the trust decision. Confirm the person through another trusted channel. The Invite view shows how long the current link remains valid. If a link was shared with the wrong person, use **Revoke** to invalidate it or **New link** to revoke it and create a replacement; both actions require confirmation. Revocation cannot undo an invitation that was already accepted—remove that contact separately if necessary. For an existing direct contact, **Show safety code** displays an identity code: compare it with that contact over a trusted channel. Matching codes verify that both sides selected the same two Tox identities.
+The invite and the explicit **Accept** step are the trust decision. Confirm the person through another trusted channel. A new link expires exactly 24 hours after the helper issues it; closing the panel, restarting the helper, or reconnecting does not restart that lifetime. The Invite view derives its countdown from the helper-issued absolute expiry. If a link was shared with the wrong person, use **Revoke** to invalidate it or **New link** to revoke it and create a replacement; both actions require confirmation, and New link completes the old revocation before creating its replacement. Revocation cannot undo an invitation that was already accepted—remove that contact separately if necessary. For an existing direct contact, **Show safety code** displays an identity code: compare it with that contact over a trusted channel. Matching codes verify that both sides selected the same two Tox identities.
 
 ## 2. Open a chat
 
@@ -40,7 +40,7 @@ Your own panel nickname can contain up to 18 valid characters. It appears with y
 ![Chat controls](images/03-chat-controls.png)
 
 1. Move the pointer into the message field or focus it with the keyboard, then type.
-2. Press **Send** or `Ctrl+Enter`.
+2. Press **Send** or unmodified `Enter`. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` to insert a line break.
 3. The formatting toolbar is hidden by default. Use the formatting toggle immediately left of the emoji button to show or hide it. OmaQ saves this preference globally instead of resetting it for each chat window.
 4. Hover over a direct message to use the compact reaction controls beside it. Applied reactions overlap the message's lower-left edge without covering its contents.
 5. Hover over your own message and click the edit icon, or select it with the keyboard and press `E`.
@@ -61,7 +61,9 @@ Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallb
 4. A completed transfer keeps its success message and local file path visible until dismissed or replaced by the next file action.
 5. The recipient chooses **Accept** or **Decline**. Canceling or declining a normal file leaves a **File transfer canceled** status with a close action in both chats until each user dismisses it.
 6. Accepted files are stored in `~/Downloads/omaq/` by default.
-7. Received audio files provide an in-chat Play/Pause control. Image and video previews are not shown inside the chat.
+7. Received audio files provide an in-chat Play/Pause control.
+8. PNG, JPEG, and WebP files selected, dropped, or pasted into a direct chat appear as a 56×56 preview in the composer and message history. Click the preview to open the complete local image. OmaQ transfers the attachment through the normal encrypted direct-file path; the receiver validates and canonically rewrites it before QML displays it. Clipboard staging remains private and is discarded if it is canceled or abandoned before sending.
+9. Video previews are not shown. Images, videos, and other files remain unavailable in group chats.
 
 The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_DIR`.
 
@@ -124,6 +126,6 @@ Direct-chat storage is bound to each contact's stable Tox public key rather than
 
 ## 9. Uninstall and retained data
 
-Run `~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh` to unload and remove the plugin while printing the data locations that remain. Omarchy deletes a Git-managed plugin folder, including local modifications inside it, while a plain plugin folder is moved to the exact hidden backup path printed by the wrapper. Uninstalling does not delete `~/.local/share/omaq/`, `~/.local/state/omaq/`, `~/Downloads/omaq/`, optional `~/.local/state/omaq-deploy-backups/`, or the dependency packages `toxcore`, `libsignal-protocol-c`, `libpulse`, `libpng`, `libjpeg-turbo`, `libwebp`, `ttf-material-symbols-variable`, and `qrencode`; the optional verification tool `zbar` also remains when installed for testing.
+Run `~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh` to unload and remove the plugin while printing the data locations that remain. Before removal, the wrapper prevents respawn, verifies the exact running helper instance, requests a clean shutdown, and uses SIGTERM only as a verified fallback. It refuses removal if it cannot safely distinguish the helper from another process. Omarchy deletes a Git-managed plugin folder, including local modifications inside it, while a plain plugin folder is moved to the exact hidden backup path printed by the wrapper. Uninstalling does not delete `~/.local/share/omaq/`, `~/.local/state/omaq/`, `~/Downloads/omaq/`, optional `~/.local/state/omaq-deploy-backups/`, or the dependency packages `toxcore`, `libsignal-protocol-c`, `libpulse`, `libpng`, `libjpeg-turbo`, `libwebp`, `ttf-material-symbols-variable`, and `qrencode`; the optional verification tool `zbar` also remains when installed for testing.
 
 Retaining these locations protects your identity, Ratchet state, groups, history, preferences, receipts, and downloaded files if you reinstall. The wrapper prints independent manual commands for inspecting and permanently deleting each retained data directory and any exact plugin-backup path later. It also shows how to inspect dependency packages and remove them only when no other application needs them. Deleting `~/.local/share/omaq/` permanently destroys the local identity and chat data; deleting `~/Downloads/omaq/` removes received files. Each deletion is irreversible, so remove only data you no longer need.

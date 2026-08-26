@@ -1366,8 +1366,7 @@ BarWidget {
     if (!id || !omaq.selectDirect(String(id)))
       return
     if (chatSurface) {
-      chatSurface.ensureCard(String(id), name || "")
-      chatSurface.requestChatFocus(String(id))
+      chatSurface.openConversation(String(id), name || "")
     }
     omaq.markConversationRead(String(id))
     root.close()
@@ -1378,8 +1377,7 @@ BarWidget {
     if (!omaq.selectGroup(groupId, true))
       return
     if (chatSurface) {
-      chatSurface.ensureCard(groupId, omaq.groupName(groupId))
-      chatSurface.requestChatFocus(groupId)
+      chatSurface.openConversation(groupId, omaq.groupName(groupId))
     }
     omaq.markConversationRead(groupId)
     root.close()
@@ -1666,6 +1664,8 @@ BarWidget {
       root.avatarPickExitCode = code
       root.finishAvatarPicker()
     }
+    onRunningChanged: if (!running && root.opened)
+      Qt.callLater(function() { if (root.opened) panelFocus.forceActiveFocus() })
   }
 
   Process {
@@ -1685,6 +1685,8 @@ BarWidget {
       root.identityPickerExitCode = code
       root.finishIdentityPicker()
     }
+    onRunningChanged: if (!running && root.opened)
+      Qt.callLater(function() { if (root.opened) panelFocus.forceActiveFocus() })
   }
 
   Timer {
@@ -1862,7 +1864,7 @@ BarWidget {
           String(omaq.lastGroupInviteFailedFriend || "") === root.groupInviteFriendId &&
           String(omaq.lastGroupInviteFailedRequest || "") === root.groupInviteRequest)
         root.groupInviteFeedback = omaq.lastGroupInviteFailedCode === "busy"
-          ? "Recipient is handling another group invite"
+          ? "Recipient still has a group invitation waiting for a decision"
           : "Group invite failed"
     }
     function onReconnectGenerationChanged() {
@@ -2027,51 +2029,53 @@ BarWidget {
     exclusionMode: ExclusionMode.Ignore
     screen: button.QsWindow && button.QsWindow.window ? button.QsWindow.window.screen : null
 
+    property bool observedActiveFocus: false
+    readonly property bool backingWindowActive: {
+      var window = panelFocus.QsWindow.window
+      return !!(window && window.active)
+    }
+
     WlrLayershell.namespace: "omaq-panel"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: root.opened ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
     anchors { top: true; bottom: true; left: true; right: true }
 
-    readonly property rect passThroughBar: {
-      var t = root.barThickness
-      var w = popup.screen ? popup.screen.width : 0
-      var h = popup.screen ? popup.screen.height : 0
-      if (root.barPos === "bottom")
-        return Qt.rect(0, 0, w, Math.max(0, h - t))
-      if (root.barPos === "left")
-        return Qt.rect(t, 0, Math.max(0, w - t), h)
-      if (root.barPos === "right")
-        return Qt.rect(0, 0, Math.max(0, w - t), h)
-      return Qt.rect(0, t, w, Math.max(0, h - t))
-    }
+    // A stuck panel must never retain a desktop-sized Wayland input region.
+    // Only the visible card is clickable; clicks elsewhere pass through.
+    mask: Region { item: card }
 
-    mask: Region {
-      x: popup.passThroughBar.x
-      y: popup.passThroughBar.y
-      width: popup.passThroughBar.width
-      height: popup.passThroughBar.height
-    }
-
-    onVisibleChanged: if (visible) {
+    onVisibleChanged: {
+      if (!visible) {
+        observedActiveFocus = false
+        return
+      }
       root.cardHeightLimit = 0
       Qt.callLater(function() {
+        if (!root.opened)
+          return
         root.placeCard()
         root.publishConnectedGeometry()
         panelFocus.forceActiveFocus()
+      })
+    }
+    onBackingWindowActiveChanged: {
+      if (backingWindowActive) {
+        observedActiveFocus = true
+        return
+      }
+      if (!observedActiveFocus || !root.opened || avatarPick.running || identityPick.running)
+        return
+      Qt.callLater(function() {
+        if (root.opened && !popup.backingWindowActive &&
+            !avatarPick.running && !identityPick.running)
+          root.close()
       })
     }
 
     Connections {
       target: popup.screen
       function onGeometryChanged() { if (root.opened) root.placeCard() }
-    }
-
-    MouseArea {
-      anchors.fill: parent
-      enabled: root.opened
-      acceptedButtons: Qt.AllButtons
-      onClicked: root.close()
     }
 
     Item {
@@ -2291,11 +2295,22 @@ BarWidget {
                           root.panelSectionGap)
           height: root.headerHeight
           radius: root.themedRadius(height)
-          color: "transparent"
-          border.color: root.controlBorder
+          color: omaq.pending
+            ? Qt.rgba((root.systemColors[3] || root.controlAccent).r,
+                (root.systemColors[3] || root.controlAccent).g,
+                (root.systemColors[3] || root.controlAccent).b,
+                pendingHeaderHover.hovered ? 0.16 : 0.09)
+            : "transparent"
+          border.color: omaq.pending
+            ? (root.systemColors[3] || root.controlAccent) : root.controlBorder
           border.width: 1
           clip: true
           z: 20
+
+          HoverHandler {
+            id: pendingHeaderHover
+            enabled: omaq.pending
+          }
 
           Row {
             anchors.fill: parent
@@ -2422,12 +2437,16 @@ BarWidget {
                 Text {
                   Layout.fillWidth: true
                   Layout.alignment: Qt.AlignVCenter
-                  text: "YOU · " + root.connectionLabel().toUpperCase()
-                  color: omaq.connectionState === "online"
-                    ? root.onlineStatusColor : root.dim
+                  text: omaq.pending
+                    ? (omaq.pendingGroup ? "GROUP INVITATION" : "CONTACT REQUEST")
+                    : ("YOU · " + root.connectionLabel().toUpperCase())
+                  color: omaq.pending
+                    ? (root.systemColors[3] || root.controlAccent)
+                    : (omaq.connectionState === "online"
+                      ? root.onlineStatusColor : root.dim)
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
-                  font.bold: omaq.connectionState !== "online"
+                  font.bold: omaq.pending || omaq.connectionState !== "online"
                   font.letterSpacing: 0.8
                   elide: Text.ElideRight
                 }
@@ -2435,17 +2454,9 @@ BarWidget {
                 Text {
                   visible: omaq.pending
                   Layout.alignment: Qt.AlignVCenter
-                  text: "|"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                Text {
-                  visible: omaq.pending
-                  Layout.alignment: Qt.AlignVCenter
                   text: omaq.pendingGroup ? "group_add" : "person_add"
                   color: root.systemColors[3] || root.controlAccent
+                  opacity: pendingHeaderHover.hovered ? 1.0 : 0.86
                   font.family: "Material Symbols Rounded"
                   font.pixelSize: Style.font.icon
                   Accessible.name: omaq.pendingGroup
@@ -2466,6 +2477,9 @@ BarWidget {
                   tooltipText: omaq.pendingGroup ? "Accept group invitation" : "Accept contact request"
                   accessibleName: tooltipText
                   focusable: true
+                  foreground: root.foreground
+                  accent: root.systemColors[3] || root.controlAccent
+                  selected: true
                   horizontalPadding: Style.space(2)
                   verticalPadding: 0
                   onClicked: omaq.decide(true)
@@ -2485,6 +2499,8 @@ BarWidget {
                   tooltipText: omaq.pendingGroup ? "Decline group invitation" : "Decline contact request"
                   accessibleName: tooltipText
                   focusable: true
+                  foreground: root.foreground
+                  accent: root.systemColors[3] || root.controlAccent
                   horizontalPadding: Style.space(2)
                   verticalPadding: 0
                   onClicked: omaq.decide(false)
@@ -3791,7 +3807,7 @@ BarWidget {
                 visible: root.moreSection === "chat" && omaq.selectedDirectId !== "" &&
                   (!root.safetyCodeVisible || root.currentSafetyCode === "")
                 width: parent.width
-                text: "Compare it with your contact. Matching codes verify both identities."
+                text: "Matching codes verify the same two transport identities."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

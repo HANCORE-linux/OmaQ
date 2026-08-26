@@ -19,6 +19,17 @@ case "$home" in
 esac
 
 export OMAQ_HOME="$home" OMAQ_STATE="$state"
+chmod 755 "$home"
+set +e
+permission_error=$("$bin" --hold 2>&1)
+permission_rc=$?
+set -e
+if [ "$permission_rc" -ne 1 ] ||
+   ! printf '%s\n' "$permission_error" | grep -q 'OMAQ_HOME permissions are 755'; then
+	echo "lock-elect: insecure OMAQ_HOME was not rejected clearly" >&2
+	exit 1
+fi
+chmod 700 "$home"
 "$bin" --hold &
 pid=$!
 sleep 0.15

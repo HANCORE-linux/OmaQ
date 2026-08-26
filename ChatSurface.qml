@@ -34,7 +34,13 @@ Item {
   property var openCards: []
   property bool surfacesHydrated: false
   property string pulseConv: ""
-  property bool demoOpen: false
+  readonly property bool demoOpen: OmaQ.SurfaceCoordinator.demoOpen
+  readonly property bool isSurfaceOwner: OmaQ.SurfaceCoordinator.owner === root
+  property bool ownershipTeardown: false
+  property bool floatRulesReady: false
+  property bool floatRuleReloadBlocked: false
+  property string blockedOpenConversation: ""
+  property string blockedOpenName: ""
   property string lastNotifiedMessageId: ""
   property string focusConversation: ""
   property int focusRequestTick: 0
@@ -42,7 +48,8 @@ Item {
   property var queuedFocusWindow: null
   property string queuedFocusTitle: ""
   readonly property bool muted: service ? service.muted : false
-  readonly property bool callToneNeeded: service && !service.callToneSuppressed &&
+  readonly property bool callToneNeeded: root.isSurfaceOwner && service &&
+    !service.callToneSuppressed &&
     (service.lastCallState === "incoming" || service.lastCallState === "ringing")
   readonly property bool callTonePlaying: OmaQ.CallTone.playing
   property string callToneOwner: ""
@@ -93,17 +100,30 @@ Item {
   }
 
   function openDemo() {
-    if (!root.demoOpen) {
-      root.demoOpen = true
-      Qt.callLater(function() {
-        if (demoPage)
-          demoPage.resetDemo()
-      })
-    }
+    if (root.floatRuleReloadBlocked)
+      OmaQ.SurfaceCoordinator.queueDemo()
+    else
+      OmaQ.SurfaceCoordinator.openDemo()
   }
 
   function closeDemo() {
-    root.demoOpen = false
+    OmaQ.SurfaceCoordinator.closeDemo()
+  }
+
+  function openConversation(conv, name) {
+    OmaQ.SurfaceCoordinator.requestChat(String(conv || ""), String(name || ""))
+  }
+
+  function acceptOpenRequest(conv, name) {
+    if (!root.isSurfaceOwner)
+      return
+    if (root.floatRuleReloadBlocked) {
+      root.blockedOpenConversation = String(conv || "")
+      root.blockedOpenName = String(name || "")
+      return
+    }
+    root.ensureCard(String(conv || ""), String(name || ""))
+    root.requestChatFocus(String(conv || ""))
   }
 
   function requestChatFocus(conv) {
@@ -114,10 +134,6 @@ Item {
     root.focusRequestTick = root.focusRequestTick + 1
   }
 
-  function floatOmaQWindows() {
-    floatOmaQTimer.restart()
-  }
-
   function chatWindowTitle(conversation) {
     var key = String(conversation || "")
     var label = String(root.friendLabel(key) || "Chat")
@@ -125,10 +141,7 @@ Item {
     if (label.length > 48)
       label = label.slice(0, 48)
     var suffix = key.charAt(0) === "g" ? key.slice(0, 10) : key
-    var instance = String(root.instanceName || "default")
-      .replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
-    return "OmaQ chat — " + label + (suffix ? " · " + suffix : "") +
-      " @ " + (instance || "default")
+    return "OmaQ chat — " + label + (suffix ? " · " + suffix : "")
   }
 
   function focusOmaQWindow(windowObject, title) {
@@ -414,18 +427,46 @@ Item {
       next = [next[0]]
     openCards = next
     surfacesHydrated = true
-    root.floatOmaQWindows()
+  }
+
+  function activateSurfaceOwner() {
+    if (!root.isSurfaceOwner)
+      return
+    root.floatRulesReady = false
+    if (!installFloatRules.running)
+      installFloatRules.running = true
+    if (service)
+      service.sendOp({ op: "surface.list" })
+    OmaQ.SurfaceCoordinator.deliverPending()
+  }
+
+  onIsSurfaceOwnerChanged: {
+    if (root.isSurfaceOwner) {
+      root.ownershipTeardown = false
+      root.floatRuleReloadBlocked = false
+      root.activateSurfaceOwner()
+      OmaQ.CallTone.setRequested(root.callToneOwner, root.callToneNeeded)
+    } else {
+      root.ownershipTeardown = true
+      root.floatRuleReloadBlocked = false
+      root.blockedOpenConversation = ""
+      root.blockedOpenName = ""
+      floatRuleWatcher.running = false
+      installFloatRules.running = false
+      installFloatRulesRetry.stop()
+      root.floatRulesReady = false
+      OmaQ.CallTone.setRequested(root.callToneOwner, false)
+    }
   }
 
   Component.onCompleted: {
     root.callToneOwner = OmaQ.CallTone.acquireOwner()
-    OmaQ.CallTone.setRequested(root.callToneOwner, root.callToneNeeded)
-    root.floatOmaQWindows()
-    if (service)
-      service.sendOp({ op: "surface.list" })
+    OmaQ.SurfaceCoordinator.registerHost(root)
   }
-  Component.onDestruction:
+  Component.onDestruction: {
     OmaQ.CallTone.setRequested(root.callToneOwner, false)
+    OmaQ.SurfaceCoordinator.unregisterHost(root)
+  }
 
   component SurfaceBtn: Button {
     id: surfaceButton
@@ -537,7 +578,6 @@ Item {
         }
         if (!openCards[i].pinned)
           root.pin(conv, true)
-        root.floatOmaQWindows()
         return false
       }
     }
@@ -550,7 +590,6 @@ Item {
     openCards = next
     if (surfacesHydrated)
       service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: card.x, y: card.y, pinned: true })
-    root.floatOmaQWindows()
     return true
   }
 
@@ -671,6 +710,7 @@ Item {
 
   Connections {
     target: service
+    enabled: root.isSurfaceOwner
     function handleIncoming() {
       root.onIncoming(service.lastChatConv || service.lastConversation, {
         conversation: service.lastChatConv || service.lastConversation,
@@ -702,7 +742,7 @@ Item {
 
   Loader {
     id: autoOpenLoader
-    active: !!(root.service && root.service.identityFingerprint)
+    active: root.isSurfaceOwner && !!(root.service && root.service.identityFingerprint)
     sourceComponent: Component {
       FileView {
         path: root.autoOpenPath
@@ -749,24 +789,62 @@ Item {
   Process { id: sndProc }
   Process { id: noteProc }
   Process {
-    id: floatOmaQProc
-    command: [root.floatScriptPath]
-    running: true
+    id: installFloatRules
+    command: [root.floatScriptPath, "install-rules"]
+    running: false
+    onExited: function(code) {
+      if (!root.isSurfaceOwner)
+        return
+      if (code !== 0) {
+        console.warn("OmaQ: could not install first-map floating rules; retrying")
+        installFloatRulesRetry.restart()
+        return
+      }
+      root.floatRulesReady = true
+      root.floatRuleReloadBlocked = false
+      OmaQ.SurfaceCoordinator.deliverPendingDemo()
+      if (!floatRuleWatcher.running)
+        floatRuleWatcher.running = true
+      if (root.blockedOpenConversation !== "") {
+        var conversation = root.blockedOpenConversation
+        var name = root.blockedOpenName
+        root.blockedOpenConversation = ""
+        root.blockedOpenName = ""
+        root.acceptOpenRequest(conversation, name)
+      }
+    }
+  }
+  Timer {
+    id: installFloatRulesRetry
+    interval: 2000
+    repeat: false
+    onTriggered: if (root.isSurfaceOwner &&
+                     (!root.floatRulesReady || root.floatRuleReloadBlocked) &&
+                     !installFloatRules.running)
+      installFloatRules.running = true
   }
   Process {
     id: floatRuleWatcher
     command: [root.floatScriptPath, "watch-rules"]
-    running: true
+    running: false
     onExited: function(code) {
-      if (code !== 2)
-        floatRuleWatcherRestart.restart()
+      if (!root.isSurfaceOwner || code === 2)
+        return
+      if (code === 5) {
+        root.floatRuleReloadBlocked = true
+        if (!installFloatRules.running)
+          installFloatRules.running = true
+        return
+      }
+      floatRuleWatcherRestart.restart()
     }
   }
   Timer {
     id: floatRuleWatcherRestart
     interval: 2000
     repeat: false
-    onTriggered: floatRuleWatcher.running = true
+    onTriggered: if (root.isSurfaceOwner && root.floatRulesReady)
+      floatRuleWatcher.running = true
   }
   Process {
     id: focusOmaQProc
@@ -784,16 +862,6 @@ Item {
       }
     }
   }
-  Timer {
-    id: floatOmaQTimer
-    interval: 0
-    repeat: false
-    onTriggered: {
-      floatOmaQProc.running = false
-      floatOmaQProc.running = true
-    }
-  }
-
   function overlayVisibleOn(screenName) {
     var i, c
     for (i = 0; i < openCards.length; i++) {
@@ -807,7 +875,7 @@ Item {
   }
 
   Variants {
-    model: Quickshell.screens
+    model: root.isSurfaceOwner ? Quickshell.screens : []
     PanelWindow {
       id: overlay
       required property var modelData
@@ -891,7 +959,7 @@ Item {
 
   PanelWindow {
     id: rightDock
-    visible: root.notifyRight && service && service.lastChatDir === "in" &&
+    visible: root.isSurfaceOwner && root.notifyRight && service && service.lastChatDir === "in" &&
       service.lastChatText !== "" && root.autoOpenFor(root.notificationConversation)
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
@@ -938,7 +1006,7 @@ Item {
   }
 
   Instantiator {
-    model: root.openCards
+    model: root.isSurfaceOwner && root.floatRulesReady ? root.openCards : []
     delegate: FloatingWindow {
       id: pinWin
       required property var modelData
@@ -989,14 +1057,11 @@ Item {
         if (visible) {
           pinWin.everShown = true
           pinWin.closing = false
-          root.floatOmaQWindows()
-          Qt.callLater(function() {
-            if (pinWin.visible)
-              root.floatOmaQWindows()
-          })
           return
         }
-        if (!pinWin.closing && pinWin.everShown && pinWin.modelData && pinWin.modelData.conversation) {
+        if (root.isSurfaceOwner && !root.ownershipTeardown &&
+            !pinWin.closing && pinWin.everShown && pinWin.modelData &&
+            pinWin.modelData.conversation) {
           if (pinPage.inCall || pinPage.incoming)
             pinPage.hangUp()
           root.dismissCard(pinWin.modelData.conversation)
@@ -1102,7 +1167,7 @@ Item {
 
   FloatingWindow {
     id: demoWin
-    visible: root.demoOpen
+    visible: root.isSurfaceOwner && root.floatRulesReady && root.demoOpen
     title: "OmaQ demo"
     implicitWidth: 420
     implicitHeight: 480
@@ -1111,13 +1176,12 @@ Item {
 
     onVisibleChanged: {
       if (visible) {
-        root.floatOmaQWindows()
         Qt.callLater(function() {
           if (demoPage)
             demoPage.resetDemo()
         })
-      } else if (root.demoOpen) {
-        root.demoOpen = false
+      } else if (root.demoOpen && root.isSurfaceOwner && root.floatRulesReady) {
+        OmaQ.SurfaceCoordinator.closeDemo()
       }
     }
 

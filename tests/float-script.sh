@@ -1,7 +1,7 @@
 #!/bin/sh
-# float-omaq.sh: classic rule generation is bounded and focus moves by address.
+# float-omaq.sh: first-map rules are bounded and focus never re-floats a tiled window.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(unset CDPATH; cd -- "$(dirname "$0")/.." && pwd)
 focus_hooks=$(grep -c 'function onFocusRequestTickChanged()' "$root/ChatSurface.qml")
 [ "$focus_hooks" -eq 1 ] || {
   echo "float-script: expected exactly one existing-chat focus hook" >&2
@@ -23,12 +23,14 @@ printf 'source test\n' >"$tmp/home/.config/hypr/hyprland.conf"
 cat >"$tmp/bin/hyprctl" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$OMAQ_FLOAT_TEST_LOG"
-if [ "$1" = "dispatch" ] && [ "${2:-}" = "hl.dsp" ]; then
-  if [ "${OMAQ_FLOAT_LUA:-0}" = "1" ]; then
-    echo "expected a dispatcher"
-  else
-    echo "classic dispatcher"
-  fi
+if [ "$1" = "keyword" ] && [ -n "${OMAQ_FLOAT_FAIL_MARKER:-}" ]; then
+  count=$(cat "$OMAQ_FLOAT_FAIL_MARKER" 2>/dev/null || printf '0')
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$OMAQ_FLOAT_FAIL_MARKER"
+  [ "$count" -eq 3 ] && exit 1
+fi
+if [ "$1" = "eval" ]; then
+  [ "${OMAQ_FLOAT_LUA:-0}" = "1" ] && exit 0
   exit 1
 fi
 if [ "$1" = "-j" ] && [ "${2:-}" = "clients" ]; then
@@ -147,7 +149,7 @@ first_watcher=""
 second_watcher=""
 unset OMAQ_FLOAT_WATCH_BLOCK
 : >"$OMAQ_FLOAT_TEST_LOG"
-rm -f "$XDG_RUNTIME_DIR"/omaq-hypr-float-rules.*
+rm -rf "$XDG_RUNTIME_DIR/omaq-hypr"
 export OMAQ_FLOAT_WATCH_HOLD=1
 export OMAQ_FLOAT_NO_CLIENTS=1
 "$root/scripts/float-omaq.sh" watch-rules &
@@ -166,15 +168,26 @@ first_watcher=""
 second_watcher=""
 unset OMAQ_FLOAT_WATCH_HOLD
 unset OMAQ_FLOAT_NO_CLIENTS
+rm -rf "$XDG_RUNTIME_DIR/omaq-hypr"
+export OMAQ_FLOAT_FAIL_MARKER="$tmp/fail-once"
+set +e
+"$root/scripts/float-omaq.sh" watch-rules
+reload_status=$?
+set -e
+[ "$reload_status" -eq 5 ] || {
+  echo "float-script: failed reload install did not trigger recovery" >&2
+  exit 1
+}
+unset OMAQ_FLOAT_FAIL_MARKER
 kill "$socket_pid" 2>/dev/null || true
 wait "$socket_pid" 2>/dev/null || true
 socket_pid=""
-[ "$(grep -c '^keyword windowrulev2' "$OMAQ_FLOAT_TEST_LOG")" -eq 6 ] || {
-  echo "float-script: leader and follower did not refresh rules" >&2
+[ "$(grep -c '^keyword windowrulev2' "$OMAQ_FLOAT_TEST_LOG")" -eq 9 ] || {
+  echo "float-script: leader, follower, and failed reload counts differ" >&2
   exit 1
 }
 "$root/scripts/float-omaq.sh" watch-rules
-[ "$(grep -c '^keyword windowrulev2' "$OMAQ_FLOAT_TEST_LOG")" -eq 8 ] || {
+[ "$(grep -c '^keyword windowrulev2' "$OMAQ_FLOAT_TEST_LOG")" -eq 13 ] || {
   echo "float-script: later watcher did not take over after leader exit" >&2
   exit 1
 }
@@ -182,6 +195,10 @@ socket_pid=""
 export OMAQ_FLOAT_LUA=1
 : >"$OMAQ_FLOAT_TEST_LOG"
 "$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
+if grep -q 'dispatch hl.dsp$' "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: invalid Lua capability probe returned" >&2
+  exit 1
+fi
 grep -q 'hl.dsp.window.move({ workspace = "7", window = "address:0xabc", follow = true })' \
   "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: Lua current-workspace move missing" >&2
@@ -192,6 +209,10 @@ grep -q 'hl.dsp.window.bring_to_top({ window = "address:0xabc" })' \
   echo "float-script: Lua focus missing" >&2
   exit 1
 }
+if grep -Eq 'window\.float|setfloating|fullscreenstate' "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: focusing an existing chat changed its tiling state" >&2
+  exit 1
+fi
 export OMAQ_FLOAT_SPECIAL=1
 "$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
 grep -q 'hl.dsp.window.move({ workspace = "special:scratchpad", window = "address:0xabc", follow = true })' \

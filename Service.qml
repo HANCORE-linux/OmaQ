@@ -41,7 +41,7 @@ Item {
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 8
+  readonly property int requiredHelperProtocol: 9
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -172,6 +172,14 @@ Item {
   property var fileNotices: ({})
   property int fileNoticeTick: 0
   property int fileRequestSequence: 0
+  property string lastAttachmentInspectionRequest: ""
+  property string lastAttachmentInspectionPath: ""
+  property bool lastAttachmentInspectionAccepted: false
+  property int attachmentInspectionTick: 0
+  property string lastAttachmentStageRequest: ""
+  property string lastAttachmentStagePath: ""
+  property int attachmentStageTick: 0
+  property var attachmentCleanupDebts: []
   property bool incomingCall: false
   property string lastCallState: ""
   property string lastCallConv: ""
@@ -396,6 +404,7 @@ Item {
         helperStatusTimer.stop()
         root.sendOp({ op: "identity.ready", id: nextInstance })
         root.flushOps()
+        root.retryAttachmentCleanupDebts()
         replayOverflowToReport = !identityChanged && root.handshakeEventOverflow
         replayEventsToApply = identityChanged || replayOverflowToReport
           ? [] : root.pendingHandshakeEvents
@@ -904,6 +913,28 @@ Item {
         String(ev.request) === root.safetyRequest) {
       root.safetyCode = String(ev.code || "")
       root.safetyConv = String(ev.conversation)
+    }
+    if (ev.event === "attachment.discarded") {
+      var discardedRequest = String(ev.request || "")
+      var remainingCleanup = []
+      for (var cleanupIndex = 0;
+           cleanupIndex < root.attachmentCleanupDebts.length; cleanupIndex++)
+        if (String(root.attachmentCleanupDebts[cleanupIndex].request || "") !==
+            discardedRequest)
+          remainingCleanup.push(root.attachmentCleanupDebts[cleanupIndex])
+      root.attachmentCleanupDebts = remainingCleanup
+    }
+    if (ev.event === "attachment.stage") {
+      root.lastAttachmentStageRequest = String(ev.request || "")
+      root.lastAttachmentStagePath = String(ev.path || "")
+      root.attachmentStageTick = root.attachmentStageTick + 1
+    }
+    if (ev.event === "attachment.inspected" || ev.event === "attachment.rejected") {
+      root.lastAttachmentInspectionRequest = String(ev.request || "")
+      root.lastAttachmentInspectionPath = String(ev.path || "")
+      root.lastAttachmentInspectionAccepted = ev.event === "attachment.inspected" &&
+        String(ev.kind || "") === "image"
+      root.attachmentInspectionTick = root.attachmentInspectionTick + 1
     }
     if (ev.event === "file.offer") {
       root.lastFileState = "offer"
@@ -1821,10 +1852,75 @@ Item {
     return sendImmediateOp({ op: "identity.unprotect", passphrase: pass,
       id: String(request || "") })
   }
-  function sendFile(path, conv) {
+  function createAttachmentStage(request) {
+    var requestId = String(request || "")
+    if (!requestId || root.helperCompatibility === "incompatible")
+      return false
+    return sendImmediateOp({ op: "attachment.stage.create", id: requestId })
+  }
+  function commitAttachmentStage(path, request) {
+    var filePath = String(path || "")
+    var requestId = String(request || "")
+    if (!filePath || !requestId || root.helperCompatibility === "incompatible")
+      return false
+    return sendImmediateOp({ op: "attachment.stage.commit", path: filePath,
+      id: requestId })
+  }
+  function rememberAttachmentCleanup(path, request) {
+    var requestId = String(request || "")
+    var filePath = String(path || "")
+    if (!requestId)
+      return
+    var next = []
+    var found = false
+    for (var i = 0; i < root.attachmentCleanupDebts.length; i++) {
+      var debt = root.attachmentCleanupDebts[i]
+      if (String(debt.request || "") === requestId) {
+        next.push({ request: requestId, path: filePath || String(debt.path || "") })
+        found = true
+      } else {
+        next.push(debt)
+      }
+    }
+    if (!found)
+      next.push({ request: requestId, path: filePath })
+    root.attachmentCleanupDebts = next
+  }
+  function retryAttachmentCleanupDebts() {
+    if (root.attachmentCleanupDebts.length === 0 ||
+        root.helperCompatibility !== "compatible" || root.awaitingHelperInstance)
+      return
+    for (var i = 0; i < root.attachmentCleanupDebts.length; i++) {
+      var debt = root.attachmentCleanupDebts[i]
+      sendImmediateOp({ op: "attachment.stage.discard",
+        path: String(debt.path || ""), id: String(debt.request || "") })
+    }
+  }
+  function discardAttachmentStage(path, request) {
+    var filePath = String(path || "")
+    var requestId = String(request || "")
+    if (!requestId)
+      return false
+    root.rememberAttachmentCleanup(filePath, requestId)
+    if (root.helperCompatibility === "incompatible")
+      return false
+    return sendImmediateOp({ op: "attachment.stage.discard", path: filePath,
+      id: requestId })
+  }
+  function inspectAttachment(path, request) {
+    var filePath = String(path || "")
+    var requestId = String(request || "")
+    if (!filePath || !requestId || root.helperCompatibility === "incompatible")
+      return false
+    return sendImmediateOp({ op: "attachment.inspect", path: filePath,
+      id: requestId })
+  }
+  function sendFile(path, conv, attachmentKind) {
     var c = String(conv || root.lastConversation || "")
     var filePath = String(path || "")
+    var kind = String(attachmentKind || "file")
     if (!c || c.charAt(0) === "g" || !filePath ||
+        (kind !== "file" && kind !== "image") ||
         root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
       return false
     root.fileRequestSequence = root.fileRequestSequence + 1
@@ -1838,7 +1934,16 @@ Item {
     root.lastFilePath = filePath
     root.setOutgoingFile(c, { id: "", path: filePath, request: requestId, pending: true, cancelRequested: false })
     root.lastFileTick = root.lastFileTick + 1
-    sendOp({ op: "file.send", conversation: c, path: filePath, id: requestId })
+    var operation = { op: "file.send", conversation: c, path: filePath,
+      kind: kind, id: requestId }
+    var accepted = kind === "image" ? sendImmediateOp(operation) : sendOp(operation)
+    if (!accepted) {
+      root.setOutgoingFile(c, {})
+      root.lastFileState = "failed"
+      root.lastFileError = root.lastError || "helper_unavailable"
+      root.lastFileTick = root.lastFileTick + 1
+      return false
+    }
     return true
   }
   function cancelOutgoingFile(conv) {
@@ -1965,6 +2070,11 @@ Item {
     root.lastChatSender = ""
     root.lastChatRequest = ""
     root.lastChatConv = ""
+    root.lastAttachmentInspectionRequest = ""
+    root.lastAttachmentInspectionPath = ""
+    root.lastAttachmentInspectionAccepted = false
+    root.lastAttachmentStageRequest = ""
+    root.lastAttachmentStagePath = ""
     root.lastMessageFailedConv = ""
     root.lastMessageFailedRequest = ""
     root.lastMessageFailedCode = ""

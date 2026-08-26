@@ -25,6 +25,9 @@
 #define OMAQ_AVATAR_DECODED_MAX (16u * 1024u * 1024u)
 #define OMAQ_AVATAR_CACHE_MAX 65
 
+_Static_assert(OMAQ_INLINE_IMAGE_SOURCE_MAX == OMAQ_FILE_MAX,
+	       "inline image and file-transfer limits must match");
+
 static struct {
 	int used;
 	char path[512];
@@ -127,14 +130,15 @@ int omaq_avatar_is_dest(const char *home, const char *path)
 	return omaq_avatar_id_ok(idbuf);
 }
 
-static int read_private_image(const char *path, unsigned char **buffer, size_t *size)
+static int read_private_image_limited(const char *path, unsigned char **buffer,
+				      size_t *size, uint64_t maximum)
 {
 	struct stat st;
 	unsigned char *data;
 	size_t offset = 0;
 	int fd;
 
-	if (!path || !buffer || !size)
+	if (!path || !buffer || !size || maximum == 0)
 		return -1;
 	*buffer = NULL;
 	*size = 0;
@@ -142,7 +146,7 @@ static int read_private_image(const char *path, unsigned char **buffer, size_t *
 	if (fd < 0)
 		return -1;
 	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
-	    st.st_nlink != 1 || st.st_size <= 0 || (uint64_t)st.st_size > OMAQ_AVATAR_MAX) {
+	    st.st_nlink != 1 || st.st_size <= 0 || (uint64_t)st.st_size > maximum) {
 		close(fd);
 		return -1;
 	}
@@ -166,6 +170,11 @@ static int read_private_image(const char *path, unsigned char **buffer, size_t *
 	*buffer = data;
 	*size = offset;
 	return 0;
+}
+
+static int read_private_image(const char *path, unsigned char **buffer, size_t *size)
+{
+	return read_private_image_limited(path, buffer, size, OMAQ_AVATAR_MAX);
 }
 
 static int decoded_size_ok(uint32_t width, uint32_t height, size_t *bytes)
@@ -386,8 +395,9 @@ static unsigned char *downscale_rgba_half(const unsigned char *source,
 	return result;
 }
 
-static int write_canonical_png(const char *path, const unsigned char *rgba,
-			       uint32_t width, uint32_t height)
+static int write_canonical_png_limited(const char *path, const unsigned char *rgba,
+				       uint32_t width, uint32_t height,
+				       size_t maximum)
 {
 #ifndef HAVE_AVATAR_DECODERS
 	(void)path;
@@ -405,7 +415,7 @@ static int write_canonical_png(const char *path, const unsigned char *rgba,
 	size_t offset = 0;
 	int fd = -1, rc = -1;
 
-	if (!path || !rgba)
+	if (!path || !rgba || maximum == 0)
 		return -1;
 	for (;;) {
 		uint32_t next_width, next_height;
@@ -419,7 +429,7 @@ static int write_canonical_png(const char *path, const unsigned char *rgba,
 		if (!png_image_write_to_memory(&image, NULL, &encoded_size, 0, pixels, 0, NULL) ||
 		    encoded_size == 0)
 			goto done;
-		if (encoded_size <= OMAQ_AVATAR_MAX)
+		if (encoded_size <= maximum)
 			break;
 		if (pixel_width == 1 && pixel_height == 1)
 			goto done;
@@ -468,6 +478,13 @@ done:
 	free(scaled);
 	return rc;
 #endif
+}
+
+static int write_canonical_png(const char *path, const unsigned char *rgba,
+			       uint32_t width, uint32_t height)
+{
+	return write_canonical_png_limited(path, rgba, width, height,
+					   OMAQ_AVATAR_MAX);
 }
 
 static int avatar_cache_matches(const char *path, const struct stat *status)
@@ -673,6 +690,45 @@ int omaq_avatar_validate_file(const char *path)
 	free(rgba);
 	free(input);
 	return rc;
+}
+
+int omaq_inline_image_validate_file(const char *path)
+{
+	unsigned char *input = NULL, *rgba = NULL;
+	uint32_t width = 0, height = 0;
+	size_t input_size = 0;
+	int rc = -1;
+
+	if (read_private_image_limited(path, &input, &input_size,
+				       OMAQ_INLINE_IMAGE_SOURCE_MAX) == 0 &&
+	    decode_image(input, input_size, &rgba, &width, &height) == 0)
+		rc = 0;
+	free(rgba);
+	free(input);
+	return rc;
+}
+
+int omaq_inline_image_import_file(const char *source, const char *destination)
+{
+	unsigned char *input = NULL, *rgba = NULL;
+	uint32_t width = 0, height = 0;
+	size_t input_size = 0;
+	int rc = -1;
+
+	if (read_private_image_limited(source, &input, &input_size,
+				       OMAQ_INLINE_IMAGE_SOURCE_MAX) == 0 &&
+	    decode_image(input, input_size, &rgba, &width, &height) == 0 &&
+	    write_canonical_png_limited(destination, rgba, width, height,
+					OMAQ_FILE_MAX) == 0)
+		rc = 0;
+	free(rgba);
+	free(input);
+	return rc;
+}
+
+int omaq_inline_image_canonicalize_file(const char *path)
+{
+	return omaq_inline_image_import_file(path, path);
 }
 
 int omaq_avatar_commit_received(const char *home, const char *id,

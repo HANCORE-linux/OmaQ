@@ -1002,13 +1002,19 @@ uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32)
 int omaq_tox_nospam_rotate(struct omaq_tox *t)
 {
 	uint32_t nospam = 0, old_nospam;
+	int attempt;
+
 	if (!t || !t->tox)
 		return -1;
-	if (getentropy(&nospam, sizeof(nospam)) != 0)
-		nospam = (uint32_t)getpid() ^ (uint32_t)time(NULL);
 	old_nospam = tox_self_get_nospam(t->tox);
+	for (attempt = 0; attempt < 8; attempt++) {
+		if (getentropy(&nospam, sizeof(nospam)) != 0)
+			return -1;
+		if (nospam != old_nospam)
+			break;
+	}
 	if (nospam == old_nospam)
-		nospam ^= 0x9e3779b9u;
+		return -1;
 	tox_self_set_nospam(t->tox, nospam);
 	if (omaq_tox_save(t) < 0) {
 		tox_self_set_nospam(t->tox, old_nospam);
@@ -1171,20 +1177,16 @@ int omaq_tox_group_new(struct omaq_tox *t, const char *title, uint32_t *gnum)
 
 int omaq_tox_group_invite_friend(struct omaq_tox *t, uint32_t gnum, uint32_t friend)
 {
-	int i;
+	Tox_Err_Group_Invite_Friend err = TOX_ERR_GROUP_INVITE_FRIEND_OK;
+
 	if (!t || !t->tox)
 		return -1;
-	for (i = 0; i < 25; i++) {
-		Tox_Err_Group_Invite_Friend err = TOX_ERR_GROUP_INVITE_FRIEND_OK;
-		if (tox_group_invite_friend(t->tox, gnum, friend, &err))
-			return 0;
-		if (err != TOX_ERR_GROUP_INVITE_FRIEND_DISCONNECTED &&
-		    err != TOX_ERR_GROUP_INVITE_FRIEND_FAIL_SEND &&
-		    err != TOX_ERR_GROUP_INVITE_FRIEND_INVITE_FAIL)
-			return -1;
-		tox_iterate(t->tox, t);
-		usleep(40000);
-	}
+	if (tox_group_invite_friend(t->tox, gnum, friend, &err))
+		return 0;
+	if (err == TOX_ERR_GROUP_INVITE_FRIEND_DISCONNECTED ||
+	    err == TOX_ERR_GROUP_INVITE_FRIEND_FAIL_SEND ||
+	    err == TOX_ERR_GROUP_INVITE_FRIEND_INVITE_FAIL)
+		return 1;
 	return -1;
 }
 
