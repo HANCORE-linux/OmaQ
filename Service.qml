@@ -598,11 +598,11 @@ Item {
         root.finishInFlightMessage(ev.request)
       root.lastChatId = String(ev.id || "")
       root.lastChatReply = String(ev.reply || "")
-      root.lastChatDir = ev.dir === "out" ? "out" : "in"
+      root.lastChatDir = ev.dir === "out" ? "out" : (ev.dir === "sys" ? "sys" : "in")
       root.lastChatKind = String(ev.kind || "")
       root.lastChatSender = String(ev.sender || "")
       root.lastChatRequest = String(ev.request || "")
-      if (root.lastChatDir !== "out" &&
+      if (root.lastChatDir === "in" &&
           (!root.authoritativeUnreadSeen || root.helperCompatibility === "incompatible")) {
         root.unreadCount = root.unreadCount + 1
         var unreadNext = {}

@@ -251,6 +251,18 @@ if [ "$i" -ge 90 ]; then
 	tail -n 20 -- "$fa.err" "$fb.err" >&2
 	exit 1
 fi
+join_notice_count=$(grep -a '"event":"message"' "$fa" | grep -a '"dir":"sys"' |
+	grep -a -c 'joined the group\.' || true)
+[ "$join_notice_count" -eq 1 ] || {
+	echo "phase3: initial member join did not emit exactly one live notice" >&2
+	exit 1
+}
+persisted_join_notice_count=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.jsonl" |
+	grep -a -c 'joined the group\.' || true)
+[ "$persisted_join_notice_count" -eq 1 ] || {
+	echo "phase3: initial member join did not persist exactly one notice" >&2
+	exit 1
+}
 grep -a '"event":"group.invite.sent"' "$fa" |
 	grep -a -q '"request":"gi-phase3-first-1"' || {
 	echo "phase3: first invite success was not request-correlated" >&2
@@ -290,6 +302,7 @@ while [ "$i" -lt 50 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 50 ] || { echo "phase3: binding acknowledgement missing" >&2; exit 1; }
+
 cp -a "$hb/." "$hd/"
 printf 'A\t%s\t1111111111111111\t%s\t-\t0\t0\t0\n' "$gid" \
 	"0000000000000000000000000000000000000000000000000000000000000000" \
@@ -489,6 +502,10 @@ if [ -n "$member_key" ]; then
 	sleep 0.5
 	self_leave_before=$(grep -a '"event":"group.changed"' "$fb" | grep -a '"group":"'"$gid"'"' |
 		grep -a -c '"action":"leave"' || true)
+	leave_notices_before=$(grep -a '"event":"message"' "$fa" | grep -a '"dir":"sys"' |
+		grep -a -c 'left the group\.' || true)
+	persisted_leave_notices_before=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.jsonl" |
+		grep -a -c 'left the group\.' || true)
 	printf '{"op":"group.member.remove","group":"%s","member":"%s"}\n' "$gid" "$member_key" >&3
 	i=0
 	while [ "$i" -lt 50 ]; do
@@ -501,6 +518,18 @@ if [ -n "$member_key" ]; then
 		sleep 0.2
 	done
 	[ "$i" -lt 50 ] || { echo "phase3: kicked self group was not removed" >&2; exit 1; }
+	leave_notices_after=$(grep -a '"event":"message"' "$fa" | grep -a '"dir":"sys"' |
+		grep -a -c 'left the group\.' || true)
+	[ "$leave_notices_after" -eq "$((leave_notices_before + 1))" ] || {
+		echo "phase3: group kick did not emit exactly one live leave notice" >&2
+		exit 1
+	}
+	persisted_leave_notices_after=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.jsonl" |
+		grep -a -c 'left the group\.' || true)
+	[ "$persisted_leave_notices_after" -eq "$((persisted_leave_notices_before + 1))" ] || {
+		echo "phase3: group kick did not persist exactly one leave notice" >&2
+		exit 1
+	}
 	echo '{"op":"status","id":"phase3-after-kick"}' >&4
 	i=0
 	while [ "$i" -lt 30 ]; do
@@ -569,6 +598,18 @@ if [ -n "$member_key" ]; then
 		sleep 1
 	done
 	[ "$i" -lt 90 ] || { echo "phase3: removed member did not rejoin" >&2; exit 1; }
+	rejoin_notice_count=$(grep -a '"event":"message"' "$fa" |
+		grep -a '"dir":"sys"' | grep -a -c 'joined the group\.' || true)
+	[ "$rejoin_notice_count" -eq 2 ] || {
+		echo "phase3: genuine member rejoin did not emit exactly one new notice" >&2
+		exit 1
+	}
+	persisted_rejoin_notice_count=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.jsonl" |
+		grep -a -c 'joined the group\.' || true)
+	[ "$persisted_rejoin_notice_count" -eq 2 ] || {
+		echo "phase3: genuine member rejoin did not persist exactly one new notice" >&2
+		exit 1
+	}
 	i=0
 	while [ "$i" -lt 40 ]; do
 		if grep -a '"event":"group.info"' "$fb" | grep -a '"group":"'"$gid"'"' |

@@ -104,6 +104,7 @@ BarWidget {
   readonly property bool connectedSurfaceEnabled: shellStyle !== "shibumi"
     && (barPos === "top" || barPos === "bottom")
   property real connectionReveal: 0
+  property real cardHeightLimit: 0
   readonly property color panelBackground: shibumiTokens && shibumiTokens.panelBackground !== undefined
     ? shibumiTokens.panelBackground : Color.popups.background
   readonly property color panelBorder: shibumiTokens && shibumiTokens.panelBorder !== undefined
@@ -140,12 +141,17 @@ BarWidget {
   readonly property int cardWidth: Style.space(320 + (friendColumnCount - 1) * 130)
   readonly property real railIconWidth: Style.space(30)
   readonly property real railWidth: railIconWidth * 2 + framePadding * 2
-  readonly property real primaryAreaHeight: Math.max(
+  readonly property real headerHeight: Style.space(66)
+  readonly property real basePrimaryAreaHeight: Math.max(
     identityContactsFrame.implicitHeight, actionRail.implicitHeight)
+  readonly property real primaryAreaHeight: root.primaryMenuOpen
+    ? Math.max(column.implicitHeight, root.basePrimaryAreaHeight)
+    : root.basePrimaryAreaHeight
   readonly property real actionButtonHeight: Style.space(24)
   readonly property color onlineStatusColor: "#7dce6a"
   readonly property bool primaryMenuOpen: root.inviteOpen || root.showJoin ||
-    root.chatPickerOpen || root.settingsOpen || root.moreOpen || omaq.pending
+    root.chatPickerOpen || root.settingsOpen || root.moreOpen || omaq.locked ||
+    omaq.incomingCall
   readonly property int visibleUnreadCount: Math.max(omaq.unreadCount, omaq.localUnreadTotal())
   readonly property string currentSafetyCode:
     String(omaq.safetyConv || "") === String(omaq.selectedDirectId || "")
@@ -544,6 +550,23 @@ BarWidget {
     horizontalPadding: Style.space(4)
     verticalPadding: Style.space(1)
   }
+
+  function refreshPanelLayout() {
+    Qt.callLater(function() {
+      inviteContent.forceLayout()
+      unlockedMenus.forceLayout()
+      column.forceLayout()
+    })
+  }
+
+  onPrimaryMenuOpenChanged: root.refreshPanelLayout()
+  onInviteOpenChanged: root.refreshPanelLayout()
+  onMoreSectionChanged: root.refreshPanelLayout()
+  onThemeOpenChanged: root.refreshPanelLayout()
+  onSoundOpenChanged: root.refreshPanelLayout()
+  onFontSizeOpenChanged: root.refreshPanelLayout()
+  onShowJoinChanged: root.refreshPanelLayout()
+  onChatPickerOpenChanged: root.refreshPanelLayout()
 
   function ensurePanelItemVisible(item) {
     if (!item || !root.opened || !panelScroll.contentItem)
@@ -1418,6 +1441,10 @@ BarWidget {
     Quickshell.execDetached(["xdg-open", "https://github.com/HANCORE-linux/OmaQ"])
   }
 
+  function openKoFi() {
+    Quickshell.execDetached(["xdg-open", "https://ko-fi.com/hancore"])
+  }
+
   function parseSystemColors(raw) {
     var found = ["", "", "", "", "", "", "", ""]
     var lines = String(raw || "").split("\n")
@@ -1469,22 +1496,26 @@ BarWidget {
       return
     var p = button.mapToItem(win.contentItem, 0, 0)
     var gap = connectedSurfaceEnabled ? Style.space(6) : Style.gapsOut
-    var x = p.x + button.width / 2 - card.width / 2
-    var y = p.y + button.height + gap
-    if (root.barPos === "bottom")
-      y = p.y - card.height - gap
-    else if (root.barPos === "left") {
-      x = p.x + button.width + gap
-      y = p.y
-    } else if (root.barPos === "right") {
-      x = p.x - card.width - gap
-      y = p.y
-    }
+    var margin = gap
     var sw = popup.screen.width
     var sh = popup.screen.height
-    var m = gap
-    x = Math.max(m, Math.min(x, sw - card.width - m))
-    y = Math.max(m, Math.min(y, sh - card.height - m))
+    var horizontalBar = root.barPos === "top" || root.barPos === "bottom"
+    root.cardHeightLimit = Math.max(Style.space(260),
+      sh - (horizontalBar ? root.barThickness + gap + margin : margin * 2))
+
+    var x = p.x + button.width / 2 - card.width / 2
+    var y = root.barThickness + gap
+    if (root.barPos === "bottom") {
+      y = sh - root.barThickness - gap - card.height
+    } else if (root.barPos === "left") {
+      x = root.barThickness + gap
+      y = p.y + button.height / 2 - card.height / 2
+    } else if (root.barPos === "right") {
+      x = sw - root.barThickness - gap - card.width
+      y = p.y + button.height / 2 - card.height / 2
+    }
+    x = Math.max(margin, Math.min(x, sw - card.width - margin))
+    y = Math.max(margin, Math.min(y, sh - card.height - margin))
     card.x = Math.round(x)
     card.y = Math.round(y)
   }
@@ -1656,9 +1687,11 @@ BarWidget {
     }
     function onInviteUrlChanged() {
       root.inviteNow = Math.floor(Date.now() / 1000)
+      root.refreshPanelLayout()
       if (omaq.inviteUrl !== "")
         omaq.saveQr()
     }
+    function onQrPathChanged() { root.refreshPanelLayout() }
     function onInviteActionTickChanged() {
       if (!root.inviteActionPending || root.inviteActionRequest === "" ||
           String(omaq.lastInviteRequest || "") !== root.inviteActionRequest)
@@ -1894,11 +1927,17 @@ BarWidget {
     }
 
     onVisibleChanged: if (visible) {
+      root.cardHeightLimit = 0
       Qt.callLater(function() {
         root.placeCard()
         root.publishConnectedGeometry()
         panelFocus.forceActiveFocus()
       })
+    }
+
+    Connections {
+      target: popup.screen
+      function onGeometryChanged() { if (root.opened) root.placeCard() }
     }
 
     MouseArea {
@@ -2083,8 +2122,9 @@ BarWidget {
       width: root.cardWidth
       height: Math.min(heroVisual.height + root.panelSectionGap +
                        root.primaryAreaHeight + root.pad * 2,
-                       popup.screen ? Math.max(Style.space(260),
-                         popup.screen.height - Style.space(24)) : Style.space(720))
+                       root.cardHeightLimit > 0 ? root.cardHeightLimit :
+                         (popup.screen ? Math.max(Style.space(260),
+                           popup.screen.height - Style.space(24)) : Style.space(720)))
       color: root.connectedSurfaceEnabled ? "transparent" : root.panelBackground
       borderSpec: root.connectedSurfaceEnabled
         ? Border.flat("transparent", 0) : Border.flat(root.panelBorder, root.panelBorderWidth)
@@ -2115,6 +2155,311 @@ BarWidget {
         Keys.onEscapePressed: root.close()
 
         Rectangle {
+          id: heroVisual
+          anchors.top: parent.top
+          anchors.topMargin: root.pad
+          anchors.left: parent.left
+          anchors.leftMargin: root.pad
+          width: Math.max(0, parent.width - root.pad * 2 - root.railWidth -
+                          root.panelSectionGap)
+          height: root.headerHeight
+          radius: root.themedRadius(height)
+          color: "transparent"
+          border.color: root.controlBorder
+          border.width: 1
+          clip: true
+          z: 20
+
+          Row {
+            anchors.fill: parent
+            anchors.margins: root.framePadding
+            spacing: Style.space(8)
+
+            AvatarPic {
+              id: selfHeaderAvatar
+              anchors.verticalCenter: parent.verticalCenter
+              px: Style.space(42)
+              path: omaq.selfAvatar
+              online: omaq.selfOnline
+              revision: omaq.avatarTick
+              onClicked: root.pickSelfAvatar()
+            }
+
+            Column {
+              width: Math.max(0, parent.width - selfHeaderAvatar.width - parent.spacing)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: 0
+
+              Text {
+                visible: omaq.selfNickname !== "" && !root.nicknameEditOpen
+                width: parent.width
+                height: root.nicknameControlHeight
+                text: omaq.selfNickname
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.nicknameEditOpen = true
+                    Qt.callLater(function() { nicknameField.forceActiveFocus() })
+                  }
+                }
+              }
+
+              Row {
+                visible: omaq.selfNickname === "" || root.nicknameEditOpen
+                width: parent.width
+                height: root.nicknameControlHeight
+                spacing: root.btnGap
+                TokenTextField {
+                  id: nicknameField
+                  width: parent.width - nicknameButton.implicitWidth - root.btnGap
+                  height: parent.height
+                  foreground: root.controlForeground
+                  placeholderText: "Nickname · max 18"
+                  maximumLength: 36
+                  text: omaq.selfNickname
+                  onTextEdited: {
+                    omaq.clearRequestError(root.nicknameFeedbackRequest)
+                    root.nicknameFeedback = ""
+                    root.nicknameFeedbackRequest = ""
+                    root.nicknameFeedbackError = false
+                    var limited = omaq.limitNickname(text, 18)
+                    if (limited !== text)
+                      text = limited
+                  }
+                  onAccepted: if (nicknameButton.enabled) nicknameButton.clicked()
+                }
+                TokenButton {
+                  id: nicknameButton
+                  iconText: "check"
+                  iconFontFamily: "Material Symbols Rounded"
+                  text: ""
+                  width: implicitWidth
+                  height: parent.height
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  tooltipText: "Save nickname"
+                  accessibleName: "Save nickname"
+                  enabled: !root.nicknameSubmitPending &&
+                    omaq.nicknameValid(nicknameField.text)
+                  onClicked: {
+                    if (root.nicknameSubmitPending || !nicknameButton.enabled)
+                      return
+                    omaq.clearRequestError(root.nicknameFeedbackRequest)
+                    root.nicknameFeedback = ""
+                    root.nicknameFeedbackRequest = ""
+                    root.nicknameFeedbackError = false
+                    root.nicknameRequestSequence++
+                    root.nicknameRequest = Date.now().toString(36) + "-nickname-" +
+                      root.nicknameRequestSequence.toString(36) + "-" +
+                      Math.floor(Math.random() * 0x100000000).toString(36)
+                    root.nicknameSubmitPending = omaq.setNickname(
+                      nicknameField.text, root.nicknameRequest)
+                    if (root.nicknameSubmitPending) {
+                      nicknameSubmitTimer.restart()
+                    } else {
+                      root.nicknameFeedback = "OmaQ is not ready to update the nickname."
+                      root.nicknameFeedbackError = true
+                      root.nicknameRequest = ""
+                    }
+                  }
+                }
+              }
+
+              RowLayout {
+                id: selfStatusRow
+                width: parent.width
+                height: Style.space(18)
+                spacing: Style.space(3)
+
+                Text {
+                  Layout.fillWidth: true
+                  Layout.alignment: Qt.AlignVCenter
+                  text: "YOU · " + root.connectionLabel().toUpperCase()
+                  color: omaq.connectionState === "online"
+                    ? root.onlineStatusColor : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: omaq.connectionState !== "online"
+                  font.letterSpacing: 0.8
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  visible: omaq.pending
+                  Layout.alignment: Qt.AlignVCenter
+                  text: "|"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                Text {
+                  visible: omaq.pending
+                  Layout.alignment: Qt.AlignVCenter
+                  text: omaq.pendingGroup ? "group_add" : "person_add"
+                  color: root.systemColors[3] || root.controlAccent
+                  font.family: "Material Symbols Rounded"
+                  font.pixelSize: Style.font.icon
+                  Accessible.name: omaq.pendingGroup
+                    ? "New group invitation" : "New contact request"
+                }
+
+                TokenButton {
+                  id: pendingAcceptButton
+                  visible: omaq.pending
+                  Layout.minimumWidth: Style.space(22)
+                  Layout.preferredWidth: Style.space(22)
+                  Layout.maximumWidth: Style.space(22)
+                  Layout.minimumHeight: Style.space(18)
+                  Layout.preferredHeight: Style.space(18)
+                  Layout.maximumHeight: Style.space(18)
+                  iconText: "check"
+                  iconFontFamily: "Material Symbols Rounded"
+                  tooltipText: omaq.pendingGroup ? "Accept group invitation" : "Accept contact request"
+                  accessibleName: tooltipText
+                  focusable: true
+                  horizontalPadding: Style.space(2)
+                  verticalPadding: 0
+                  onClicked: omaq.decide(true)
+                }
+
+                TokenButton {
+                  id: pendingDeclineButton
+                  visible: omaq.pending
+                  Layout.minimumWidth: Style.space(22)
+                  Layout.preferredWidth: Style.space(22)
+                  Layout.maximumWidth: Style.space(22)
+                  Layout.minimumHeight: Style.space(18)
+                  Layout.preferredHeight: Style.space(18)
+                  Layout.maximumHeight: Style.space(18)
+                  iconText: "close"
+                  iconFontFamily: "Material Symbols Rounded"
+                  tooltipText: omaq.pendingGroup ? "Decline group invitation" : "Decline contact request"
+                  accessibleName: tooltipText
+                  focusable: true
+                  horizontalPadding: Style.space(2)
+                  verticalPadding: 0
+                  onClicked: omaq.decide(false)
+                }
+              }
+
+              Text {
+                visible: root.nicknameFeedback !== ""
+                width: parent.width
+                text: root.nicknameFeedback
+                color: root.nicknameFeedbackError ? root.urgent
+                  : (root.systemColors[3] || root.onlineStatusColor)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+          }
+        }
+
+        Rectangle {
+          id: supportLinks
+          anchors.top: parent.top
+          anchors.topMargin: root.pad
+          anchors.right: parent.right
+          anchors.rightMargin: root.pad
+          width: root.railWidth
+          height: root.headerHeight
+          radius: root.themedRadius(height)
+          color: "transparent"
+          border.color: root.controlBorder
+          border.width: 1
+          z: 20
+
+          Row {
+            anchors.centerIn: parent
+            spacing: Style.space(5)
+
+            TokenButton {
+              width: root.railIconWidth
+              height: root.railIconWidth
+              tooltipText: "Open OmaQ on GitHub"
+              accessibleName: tooltipText
+              focusable: true
+              horizontalPadding: Style.space(3)
+              verticalPadding: Style.space(3)
+              onClicked: root.openRepo()
+
+              Image {
+                anchors.fill: parent
+                anchors.margins: Style.space(3)
+                source: Qt.resolvedUrl("assets/hancore-link.png")
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+              }
+            }
+
+            TokenButton {
+              width: root.railIconWidth
+              height: root.railIconWidth
+              iconText: "local_cafe"
+              iconFontFamily: "Material Symbols Rounded"
+              iconSize: Style.font.icon + Style.space(3)
+              tooltipText: "Support HANCORE on Ko-fi"
+              accessibleName: tooltipText
+              focusable: true
+              onClicked: root.openKoFi()
+            }
+          }
+        }
+
+        Connections {
+          target: omaq
+          function onSelfNicknameChanged() {
+            if (!root.nicknameEditOpen && !root.nicknameSubmitPending)
+              nicknameField.text = omaq.selfNickname
+          }
+          function onNicknameTickChanged() {
+            if (root.nicknameSubmitPending && root.nicknameRequest !== "" &&
+                String(omaq.lastNicknameRequest || "") === root.nicknameRequest) {
+              root.nicknameSubmitPending = false
+              omaq.clearRequestError(root.nicknameFeedbackRequest)
+              root.nicknameFeedback = ""
+              root.nicknameFeedbackRequest = ""
+              root.nicknameFeedbackError = false
+              root.nicknameRequest = ""
+              nicknameField.text = omaq.selfNickname
+              nicknameSubmitTimer.stop()
+              root.nicknameEditOpen = false
+            }
+          }
+          function onLastErrorTickChanged() {
+            if (!root.nicknameSubmitPending)
+              return
+            var correlated = root.nicknameRequest !== "" &&
+              String(omaq.lastErrorRequest || "") === root.nicknameRequest
+            var helperFailure = ["helper_down", "helper_incompatible",
+              "identity_changed"].indexOf(omaq.lastError) !== -1
+            if (correlated || helperFailure) {
+              root.nicknameSubmitPending = false
+              root.nicknameFeedbackRequest = correlated ? root.nicknameRequest : ""
+              root.nicknameFeedback = omaq.lastError === "unsupported"
+                ? "Nickname update is unavailable."
+                : omaq.lastError === "nickname_invalid"
+                  ? "Nickname must contain 1–18 valid characters."
+                  : "Nickname update failed. Try again."
+              root.nicknameFeedbackError = true
+              root.nicknameRequest = ""
+              nicknameSubmitTimer.stop()
+            }
+          }
+        }
+
+        Rectangle {
           id: actionRail
           anchors.top: parent.top
           anchors.topMargin: root.pad + heroVisual.height + root.panelSectionGap
@@ -2123,7 +2468,7 @@ BarWidget {
           implicitWidth: railColumns.implicitWidth + root.framePadding * 2
           implicitHeight: railColumns.implicitHeight + root.framePadding * 2
           width: implicitWidth
-          height: root.primaryAreaHeight
+          height: root.basePrimaryAreaHeight
           radius: root.themedRadius(height)
           color: "transparent"
           border.color: root.controlBorder
@@ -2227,9 +2572,14 @@ BarWidget {
 
         Flickable {
           id: panelScroll
-          anchors.fill: parent
-          anchors.margins: root.pad
+          anchors.top: parent.top
+          anchors.topMargin: root.pad + heroVisual.height + root.panelSectionGap
+          anchors.left: parent.left
+          anchors.leftMargin: root.pad
+          anchors.right: parent.right
           anchors.rightMargin: root.pad
+          height: Math.max(0, card.height - root.pad * 2 - heroVisual.height -
+                           root.panelSectionGap)
           contentWidth: width
           contentHeight: column.implicitHeight
           clip: true
@@ -2267,57 +2617,6 @@ BarWidget {
             width: Math.max(0, panelScroll.width - root.railWidth -
                             root.panelSectionGap)
             spacing: root.panelSectionGap
-
-          Item {
-            id: heroRow
-            width: panelScroll.width
-            implicitHeight: heroVisual.height
-
-            Rectangle {
-              id: heroVisual
-              width: parent.width
-              height: Style.space(48)
-              radius: root.themedRadius(height)
-              color: "transparent"
-              border.color: root.controlBorder
-              border.width: 1
-              clip: true
-              property real logoPulse: 0
-
-              Image {
-                anchors.fill: parent
-                anchors.margins: Style.space(5)
-                source: Qt.resolvedUrl("assets/OmaQ_Final-panel.svg")
-                fillMode: Image.PreserveAspectFit
-                sourceSize.width: 1400
-                sourceSize.height: 191
-                opacity: 0.93 + heroVisual.logoPulse * 0.07
-                scale: 1 + heroVisual.logoPulse * 0.008
-                transformOrigin: Item.Center
-                smooth: true
-                mipmap: true
-                cache: false
-                asynchronous: true
-              }
-
-              SequentialAnimation on logoPulse {
-                loops: Animation.Infinite
-                NumberAnimation { to: 1; duration: 1400; easing.type: Easing.InOutSine }
-                NumberAnimation { to: 0; duration: 1400; easing.type: Easing.InOutSine }
-                PauseAnimation { duration: 1800 }
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                focus: true
-                activeFocusOnTab: true
-                Keys.onReturnPressed: root.openRepo()
-                Keys.onEnterPressed: root.openRepo()
-                onClicked: root.openRepo()
-              }
-            }
-          }
 
           GridLayout {
             id: heroActions
@@ -2465,7 +2764,7 @@ BarWidget {
             visible: !root.primaryMenuOpen
             width: parent.width
             implicitHeight: identityContactsColumn.implicitHeight + root.framePadding * 2
-            height: root.primaryAreaHeight
+            height: root.basePrimaryAreaHeight
             radius: root.themedRadius(height)
             color: "transparent"
             border.color: root.controlBorder
@@ -2476,175 +2775,6 @@ BarWidget {
               anchors.fill: parent
               anchors.margins: root.framePadding
               spacing: Style.space(6)
-
-              Row {
-                spacing: Style.space(4)
-                Text {
-                  text: "YOU"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  font.letterSpacing: 1.2
-                }
-                Text {
-                  text: "· " + root.connectionLabel().toUpperCase()
-                  color: omaq.connectionState === "online"
-                    ? root.onlineStatusColor : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: omaq.connectionState !== "online"
-                  font.letterSpacing: 1.2
-                }
-              }
-
-            Row {
-              spacing: Style.space(8)
-              AvatarPic {
-                path: omaq.selfAvatar
-                online: omaq.selfOnline
-                revision: omaq.avatarTick
-                onClicked: root.pickSelfAvatar()
-              }
-              Column {
-                width: Style.space(160)
-                y: (parent.height - height) / 2
-                spacing: 0
-                Text {
-                  visible: omaq.selfNickname !== "" && !root.nicknameEditOpen
-                  width: parent.width
-                  height: root.nicknameControlHeight
-                  text: omaq.selfNickname
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  verticalAlignment: Text.AlignVCenter
-                  elide: Text.ElideRight
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.nicknameEditOpen = true
-                      Qt.callLater(function() { nicknameField.forceActiveFocus() })
-                    }
-                  }
-                }
-                Row {
-                  visible: omaq.selfNickname === "" || root.nicknameEditOpen
-                  width: parent.width
-                  height: root.nicknameControlHeight
-                  spacing: root.btnGap
-                  TokenTextField {
-                    id: nicknameField
-                    width: parent.width - nicknameButton.implicitWidth - root.btnGap
-                    height: parent.height
-                    foreground: root.controlForeground
-                    placeholderText: "Nickname · max 18"
-                    maximumLength: 36
-                    text: omaq.selfNickname
-                    onTextEdited: {
-                      omaq.clearRequestError(root.nicknameFeedbackRequest)
-                      root.nicknameFeedback = ""
-                      root.nicknameFeedbackRequest = ""
-                      root.nicknameFeedbackError = false
-                      var limited = omaq.limitNickname(text, 18)
-                      if (limited !== text)
-                        text = limited
-                    }
-                    onAccepted: if (nicknameButton.enabled) nicknameButton.clicked()
-                  }
-                  TokenButton {
-                    id: nicknameButton
-                    iconText: "check"
-                    iconFontFamily: "Material Symbols Rounded"
-                    text: ""
-                    width: implicitWidth
-                    height: parent.height
-                    focusable: true
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    tooltipText: "Save nickname"
-                    accessibleName: "Save nickname"
-                    enabled: !root.nicknameSubmitPending &&
-                      omaq.nicknameValid(nicknameField.text)
-                    onClicked: {
-                      if (root.nicknameSubmitPending || !nicknameButton.enabled)
-                        return
-                      omaq.clearRequestError(root.nicknameFeedbackRequest)
-                      root.nicknameFeedback = ""
-                      root.nicknameFeedbackRequest = ""
-                      root.nicknameFeedbackError = false
-                      root.nicknameRequestSequence++
-                      root.nicknameRequest = Date.now().toString(36) + "-nickname-" +
-                        root.nicknameRequestSequence.toString(36) + "-" +
-                        Math.floor(Math.random() * 0x100000000).toString(36)
-                      root.nicknameSubmitPending = omaq.setNickname(
-                        nicknameField.text, root.nicknameRequest)
-                      if (root.nicknameSubmitPending) {
-                        nicknameSubmitTimer.restart()
-                      } else {
-                        root.nicknameFeedback = "OmaQ is not ready to update the nickname."
-                        root.nicknameFeedbackError = true
-                        root.nicknameRequest = ""
-                      }
-                    }
-                  }
-                }
-              }
-            }
-
-            Text {
-              visible: root.nicknameFeedback !== ""
-              width: parent.width
-              text: root.nicknameFeedback
-              color: root.nicknameFeedbackError ? root.urgent
-                : (root.systemColors[3] || root.onlineStatusColor)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
-            Connections {
-              target: omaq
-              function onSelfNicknameChanged() {
-                if (!root.nicknameEditOpen && !root.nicknameSubmitPending)
-                  nicknameField.text = omaq.selfNickname
-              }
-              function onNicknameTickChanged() {
-                if (root.nicknameSubmitPending && root.nicknameRequest !== "" &&
-                    String(omaq.lastNicknameRequest || "") === root.nicknameRequest) {
-                  root.nicknameSubmitPending = false
-                  omaq.clearRequestError(root.nicknameFeedbackRequest)
-                  root.nicknameFeedback = ""
-                  root.nicknameFeedbackRequest = ""
-                  root.nicknameFeedbackError = false
-                  root.nicknameRequest = ""
-                  nicknameField.text = omaq.selfNickname
-                  nicknameSubmitTimer.stop()
-                  root.nicknameEditOpen = false
-                }
-              }
-              function onLastErrorTickChanged() {
-                if (!root.nicknameSubmitPending)
-                  return
-                var correlated = root.nicknameRequest !== "" &&
-                  String(omaq.lastErrorRequest || "") === root.nicknameRequest
-                var helperFailure = ["helper_down", "helper_incompatible",
-                  "identity_changed"].indexOf(omaq.lastError) !== -1
-                if (correlated || helperFailure) {
-                  root.nicknameSubmitPending = false
-                  root.nicknameFeedbackRequest = correlated ? root.nicknameRequest : ""
-                  root.nicknameFeedback = omaq.lastError === "unsupported"
-                    ? "Nickname update is unavailable."
-                    : omaq.lastError === "nickname_invalid"
-                      ? "Nickname must contain 1–18 valid characters."
-                      : "Nickname update failed. Try again."
-                  root.nicknameFeedbackError = true
-                  root.nicknameRequest = ""
-                  nicknameSubmitTimer.stop()
-                }
-              }
-            }
 
             Item {
               id: contactsFrame
@@ -2692,6 +2822,7 @@ BarWidget {
                   readonly property int unreadCount: omaq.unreadFor(
                     modelData ? modelData.id : "")
                   activeFocusOnTab: true
+                  HoverHandler { id: friendHover }
                   onActiveFocusChanged: if (activeFocus)
                     friendsGrid.positionViewAtIndex(index, GridView.Contain)
                   Accessible.role: Accessible.Button
@@ -2728,7 +2859,9 @@ BarWidget {
                       return friend && friend.name
                         ? String(friend.name) : ("Friend " + (friend ? friend.id : ""))
                     }
-                    color: root.friendStatusColor(friendDelegate.modelData)
+                    color: friendHover.hovered || friendDelegate.activeFocus
+                      ? (root.systemColors[3] || root.controlAccent)
+                      : root.friendStatusColor(friendDelegate.modelData)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                     font.bold: friendDelegate.modelData && friendDelegate.modelData.online
@@ -2749,6 +2882,7 @@ BarWidget {
 
                   MouseArea {
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.openFriend(friendDelegate.modelData ? friendDelegate.modelData.id : "",
                       friendDelegate.modelData ? friendDelegate.modelData.name : "")
@@ -3095,55 +3229,24 @@ BarWidget {
           }
 
           Column {
-            visible: !omaq.locked
+            id: unlockedMenus
+            visible: !omaq.locked && root.primaryMenuOpen
             width: parent.width
-            spacing: Style.space(12)
-
-            BorderSurface {
-              visible: omaq.pending
-              width: parent.width
-              implicitHeight: pendingCol.implicitHeight + Style.space(20)
-              color: Style.hoverFillFor(root.foreground, Color.accent)
-              radius: Style.cornerRadius
-
-              Column {
-                id: pendingCol
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: Style.space(12)
-                anchors.rightMargin: Style.space(12)
-                spacing: Style.space(8)
-
-                Text {
-                  width: parent.width
-                  text: omaq.pendingGroup ? "Group invite received" : "Someone wants to chat"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  wrapMode: Text.WordWrap
-                }
-
-                Row {
-                  spacing: root.btnGap
-                  TokenButton {
-                    text: "Accept"
-                    bordered: true
-                    focusable: true
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    onClicked: omaq.decide(true)
-                  }
-                  TokenButton {
-                    text: "Decline"
-                    focusable: true
-                    foreground: root.foreground
-                    fontFamily: root.fontFamily
-                    onClicked: omaq.decide(false)
-                  }
-                }
+            height: {
+              var total = 0
+              var visibleCount = 0
+              for (var childIndex = 0; childIndex < children.length; childIndex++) {
+                var child = children[childIndex]
+                if (!child.visible)
+                  continue
+                if (visibleCount > 0)
+                  total += spacing
+                total += child.height
+                visibleCount++
               }
+              return total
             }
+            spacing: Style.space(12)
 
             Row {
               visible: omaq.incomingCall
@@ -3172,6 +3275,7 @@ BarWidget {
             }
 
             Column {
+              id: inviteContent
               visible: root.inviteOpen && omaq.inviteUrl !== ""
               width: parent.width
               spacing: Style.space(8)
@@ -3182,14 +3286,22 @@ BarWidget {
                 fontFamily: root.fontFamily
               }
 
-              Image {
-                visible: omaq.qrPath !== ""
-                width: 148
-                height: 148
-                fillMode: Image.PreserveAspectFit
-                source: omaq.qrPath !== "" ? root.localFileUrl(omaq.qrPath) : ""
-                asynchronous: true
-                smooth: false
+              Item {
+                id: inviteQr
+                visible: true
+                width: parent.width
+                height: omaq.qrPath !== "" ? 148 : 0
+
+                Image {
+                  visible: omaq.qrPath !== ""
+                  anchors.left: parent.left
+                  width: 148
+                  height: 148
+                  fillMode: Image.PreserveAspectFit
+                  source: omaq.qrPath !== "" ? root.localFileUrl(omaq.qrPath) : ""
+                  asynchronous: true
+                  smooth: false
+                }
               }
 
               Text {
@@ -3408,14 +3520,13 @@ BarWidget {
                 fontFamily: root.fontFamily
               }
 
-              Row {
+              Column {
                 visible: root.moreSection === "chat"
                 width: parent.width
                 spacing: root.btnGap
                 TokenTextField {
                   id: searchField
-                  width: parent.width - searchBtn.width - root.btnGap
-                  height: root.actionButtonHeight
+                  width: parent.width
                   foreground: root.controlForeground
                   placeholderText: "Search this chat"
                   onAccepted: omaq.searchChat(
@@ -3428,6 +3539,7 @@ BarWidget {
                 }
                 ActionButton {
                   id: searchBtn
+                  width: parent.width
                   height: root.actionButtonHeight
                   iconText: "󰍉"
                   text: "Search"
@@ -3533,15 +3645,14 @@ BarWidget {
                 fontFamily: root.fontFamily
               }
 
-              Row {
+              Column {
                 visible: root.moreSection === "groups"
                 width: parent.width
                 spacing: root.btnGap
 
                 TokenTextField {
                   id: groupNameField
-                  width: parent.width - createGroupButton.width - parent.spacing
-                  height: root.actionButtonHeight
+                  width: parent.width
                   foreground: root.controlForeground
                   placeholderText: "Group name"
                   onAccepted: createGroupButton.clicked()
@@ -3549,6 +3660,7 @@ BarWidget {
 
                 ActionButton {
                   id: createGroupButton
+                  width: parent.width
                   height: root.actionButtonHeight
                   text: "Create"
                   enabled: omaq.groupTitleOk(groupNameField.text)

@@ -730,7 +730,8 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 	if (stat(path, &st) == 0 && st.st_size >= ROTATE_BYTES) {
 		if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 			return -1;
-		rename(path, rot);
+		if (rename(path, rot) != 0)
+			return -1;
 	}
 	f = fopen(path, "a");
 	if (!f)
@@ -743,8 +744,7 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 		fclose(f);
 		return -1;
 	}
-	fclose(f);
-	return 0;
+	return fclose(f) == 0 ? 0 : -1;
 }
 
 static void reset_read_lines(char ***lines, size_t *n, size_t *cap)

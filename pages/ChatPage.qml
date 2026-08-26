@@ -1055,6 +1055,22 @@ FocusScope {
       root.selectMessage(-1, "end")
   }
 
+  function applyReceipt(messageId, state) {
+    var id = String(messageId || "")
+    if (!id)
+      return false
+    var nextAcknowledgement = String(state || "") === "read" ? 3 : 2
+    for (var i = lines.count - 1; i >= 0; i--) {
+      var receiptLine = lines.get(i)
+      if (receiptLine && receiptLine.id === id) {
+        if (nextAcknowledgement > Number(receiptLine.ack || -1))
+          lines.setProperty(i, "ack", nextAcknowledgement)
+        return true
+      }
+    }
+    return false
+  }
+
   function markRead() {
     if (root.demo || !root.service || !root.conversation || root.readRetryBlocked ||
         root.readRequestPending || root.service.unreadFor(root.conversation) <= 0)
@@ -1275,7 +1291,8 @@ FocusScope {
     var t = service.lastChatText || ""
     if (!t)
       return
-    var dir = service.lastChatDir === "out" ? "out" : "in"
+    var dir = service.lastChatDir === "out" ? "out"
+      : (service.lastChatDir === "sys" ? "sys" : "in")
     var request = String(service.lastChatRequest || "")
     var followLatest = root.followLatest
     var i
@@ -1809,13 +1826,7 @@ FocusScope {
     function onReceiptTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastReceiptConv) || !root.service.lastReceiptId)
         return
-      for (var i = lines.count - 1; i >= 0; i--) {
-        var receiptLine = lines.get(i)
-        if (receiptLine && receiptLine.id === root.service.lastReceiptId) {
-          lines.setProperty(i, "ack", root.service.lastReceiptState === "read" ? 3 : 2)
-          break
-        }
-      }
+      root.applyReceipt(root.service.lastReceiptId, root.service.lastReceiptState)
     }
     function onConversationReadTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastConversationReadConv))
@@ -2751,15 +2762,26 @@ FocusScope {
             id: lineHover
           }
 
+          TextMetrics {
+            id: groupSenderMetrics
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            text: line.showGroupSender ? root.groupMemberName(line.senderPeer) : ""
+          }
+
           Rectangle {
             id: bubble
             anchors.left: model.dir === "out" ? undefined : parent.left
             anchors.right: model.dir === "out" ? parent.right : undefined
-            width: line.fileMessage
-              ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
-              : (line.smileOnly ? line.smileWidth :
-                root.bubbleWidth(model.text, line.hasCode,
-                  model.dir === "out" && model.ack !== undefined, parent.width))
+            width: Math.max(
+              line.showGroupSender
+                ? Math.min(parent.width, groupSenderMetrics.advanceWidth + Style.space(16)) : 0,
+              line.fileMessage
+                ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
+                : (line.smileOnly ? line.smileWidth :
+                  root.bubbleWidth(model.text, line.hasCode,
+                    model.dir === "out" && model.ack !== undefined, parent.width)))
             implicitHeight: Math.max(
               line.fileMessage ? fileMessageRow.implicitHeight : (line.smileOnly ? smileRow.implicitHeight : label.implicitHeight),
               line.hasCode ? Math.max(codeFooter.implicitHeight, Style.space(30)) : 0) +
@@ -2787,7 +2809,7 @@ FocusScope {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
-              elide: Text.ElideRight
+              wrapMode: Text.WrapAnywhere
             }
 
             Text {

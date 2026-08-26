@@ -171,6 +171,12 @@ static struct {
 	char member_key[65];
 } g_group_binding_retire[GROUP_BIND_EXPECTED_MAX];
 static int g_group_binding_restore_pending;
+static struct {
+	int used;
+	char group[OMAQ_GROUP_ID_MAX];
+	uint32_t peer;
+	int64_t expires;
+} g_group_leave_notice_suppress[GROUP_FRIEND_BINDING_MAX];
 static omaq_control_rate g_group_control_rate;
 static int g_av_reset_requested;
 static int64_t g_av_reset_next;
@@ -1044,6 +1050,24 @@ static void emit_group_message_event(const char *conversation, const char *id,
 			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\"}",
 			 esc_conv, esc_id, esc_sender, esc_text);
 	emit(ev);
+}
+
+static void emit_group_membership_message(const char *group, const char *name,
+					  int joined)
+{
+	char message[OMAQ_GROUP_MEMBER_NAME_MAX + 40], id[64];
+	const char *display_name = name && name[0] ? name : "A member";
+
+	if (!group ||
+	    snprintf(message, sizeof(message), "%s %s the group.", display_name,
+		     joined ? "joined" : "left") >= (int)sizeof(message))
+		return;
+	if (omaq_message_append_with_id(home_dir(), group, "system", message, "sys",
+					id, sizeof(id)) != 0) {
+		emit_error_conv("history_failed", group);
+		return;
+	}
+	emit_message_event(group, id, "", message, "sys");
 }
 
 static void emit_message_failed(const char *conversation, const char *request,
@@ -2085,6 +2109,8 @@ static void reset_identity_runtime_state(void)
 	memset(g_group_cleanup, 0, sizeof(g_group_cleanup));
 	memset(g_group_binding_retire, 0, sizeof(g_group_binding_retire));
 	g_group_binding_restore_pending = 0;
+	memset(&g_group_leave_notice_suppress, 0,
+	       sizeof(g_group_leave_notice_suppress));
 	memset(g_pending_pk, 0, sizeof(g_pending_pk));
 	memset(g_file_requests, 0, sizeof(g_file_requests));
 	g_file_request_sequence = 0;
@@ -3781,17 +3807,31 @@ static void persist_forced_group_removal(const char *gid)
 
 static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int removed)
 {
-	char gid[OMAQ_GROUP_ID_MAX], removed_key[65] = "";
-	int self = 0;
+	char gid[OMAQ_GROUP_ID_MAX], removed_key[65] = "", peer_key[65] = "";
+	char member_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1] = "";
+	int self = 0, member_known = 0, suppress_leave_notice = 0;
 	(void)ud;
 	if (known_group_id(gnum, gid, sizeof(gid)) != 0)
 		return;
 	if (removed) {
 		self = removed == 2;
+		for (int notice = 0; notice < GROUP_FRIEND_BINDING_MAX; notice++)
+			if (g_group_leave_notice_suppress[notice].used &&
+			    strcmp(g_group_leave_notice_suppress[notice].group, gid) == 0 &&
+			    g_group_leave_notice_suppress[notice].peer == peer) {
+				suppress_leave_notice =
+					g_group_leave_notice_suppress[notice].expires >=
+					(int64_t)time(NULL);
+				memset(&g_group_leave_notice_suppress[notice], 0,
+				       sizeof(g_group_leave_notice_suppress[notice]));
+				break;
+			}
 		for (int member = 0; member < omaq_group_peer_count(gnum); member++)
 			if (omaq_group_peer_at(gnum, member) == peer) {
 				snprintf(removed_key, sizeof(removed_key), "%s",
 					 omaq_group_peer_key(gnum, member));
+				snprintf(member_name, sizeof(member_name), "%s",
+					 omaq_group_peer_name(gnum, member));
 				if (omaq_group_peer_self(gnum, member))
 					self = 1;
 				break;
@@ -3826,6 +3866,8 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int r
 			}
 		} else {
 			persist_forced_group_removal(gid);
+			if (member_name[0] && !suppress_leave_notice)
+				emit_group_membership_message(gid, member_name, 0);
 		}
 		emit_group(gid, self ? "leave" : "member.leave", peer);
 		return;
@@ -3870,19 +3912,44 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int r
 		}
 		g_group_registry_pending = 0;
 	}
+	if (joined == 1) {
+		size_t queried_name_len = 0;
+		int queried_role = 0, queried_online = 0, queried_self = 0;
+		if (omaq_tox_group_peer_info(g_tox, gnum, peer, peer_key,
+					     sizeof(peer_key), member_name,
+					     sizeof(member_name), &queried_name_len,
+					     &queried_role, &queried_online,
+					     &queried_self) == 0) {
+			self = queried_self;
+			for (int member = 0; member < omaq_group_peer_count(gnum); member++)
+				if (strcmp(omaq_group_peer_key(gnum, member), peer_key) == 0) {
+					member_known = 1;
+					break;
+				}
+			if (group_binding_friend(gid, peer_key)[0])
+				member_known = 1;
+		}
+	}
 	for (int member = 0; member < omaq_group_peer_count(gnum); member++)
-		if (omaq_group_peer_at(gnum, member) == peer &&
-		    omaq_group_peer_self(gnum, member))
-			self = 1;
+		if (omaq_group_peer_at(gnum, member) == peer) {
+			member_known = 1;
+			if (omaq_group_peer_self(gnum, member))
+				self = 1;
+		}
 	if (joined > 0) {
 		(void)omaq_group_refresh_member(g_tox, gnum, peer);
 		for (int member = 0; member < omaq_group_peer_count(gnum); member++)
-			if (omaq_group_peer_at(gnum, member) == peer &&
-			    omaq_group_peer_self(gnum, member))
-				self = 1;
+			if (omaq_group_peer_at(gnum, member) == peer) {
+				if (omaq_group_peer_self(gnum, member))
+					self = 1;
+				snprintf(member_name, sizeof(member_name), "%s",
+					 omaq_group_peer_name(gnum, member));
+			}
 	} else {
 		omaq_group_mark_peer_offline(gnum, peer);
 	}
+	if (!self && !member_known && joined == 1)
+		emit_group_membership_message(gid, member_name, 1);
 	if (self && joined > 0 && g_group_bind_proof.used &&
 	    strcmp(g_group_bind_proof.group, gid) == 0) {
 		char proof[OMAQ_INVITE_ID_MAX + 12];
@@ -6488,20 +6555,57 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			const char *gid = op->group[0] ? op->group : op->conversation;
 			const char *member_key = op->member[0] ? op->member : op->id;
 			unsigned char expected_snapshot[sizeof(g_group_bind_expected)];
-			uint32_t peer;
-			if (omaq_group_self_role(g_tox, gid, &self) != 0 ||
+			char member_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1] = "";
+			uint32_t peer, group_number;
+			int notice_slot = -1;
+			if (strlen(gid) >= sizeof(g_group_leave_notice_suppress[0].group) ||
+			    omaq_group_self_role(g_tox, gid, &self) != 0 ||
 			    omaq_group_resolve_member(g_tox, gid, member_key, &peer,
 						      &victim) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
+			if (omaq_group_id_parse(gid, &group_number) == 0)
+				for (int member = 0; member < omaq_group_peer_count(group_number); member++)
+					if (omaq_group_peer_at(group_number, member) == peer) {
+						snprintf(member_name, sizeof(member_name), "%s",
+							 omaq_group_peer_name(group_number, member));
+						break;
+					}
+			for (int notice = 0; notice < GROUP_FRIEND_BINDING_MAX; notice++) {
+				if (g_group_leave_notice_suppress[notice].used &&
+				    strcmp(g_group_leave_notice_suppress[notice].group, gid) == 0 &&
+				    g_group_leave_notice_suppress[notice].peer == peer) {
+					notice_slot = notice;
+					break;
+				}
+				if (notice_slot < 0 &&
+				    (!g_group_leave_notice_suppress[notice].used ||
+				     g_group_leave_notice_suppress[notice].expires < (int64_t)time(NULL)))
+					notice_slot = notice;
+			}
+			if (notice_slot < 0) {
+				emit_error("busy");
+				return 0;
+			}
+			memset(&g_group_leave_notice_suppress[notice_slot], 0,
+			       sizeof(g_group_leave_notice_suppress[notice_slot]));
+			g_group_leave_notice_suppress[notice_slot].used = 1;
+			g_group_leave_notice_suppress[notice_slot].peer = peer;
+			g_group_leave_notice_suppress[notice_slot].expires = (int64_t)time(NULL) + 10;
+			memcpy(g_group_leave_notice_suppress[notice_slot].group, gid,
+			       strlen(gid) + 1u);
 			memcpy(expected_snapshot, g_group_bind_expected,
 			       sizeof(expected_snapshot));
 			if (group_binding_forget_member(gid, member_key) != 0) {
+				memset(&g_group_leave_notice_suppress[notice_slot], 0,
+				       sizeof(g_group_leave_notice_suppress[notice_slot]));
 				emit_error_conv("group_registry_failed", gid);
 				return 0;
 			}
 			if (omaq_group_kick(g_tox, gid, peer, self, victim) != 0) {
+				memset(&g_group_leave_notice_suppress[notice_slot], 0,
+				       sizeof(g_group_leave_notice_suppress[notice_slot]));
 				memcpy(g_group_bind_expected, expected_snapshot,
 				       sizeof(expected_snapshot));
 				g_group_binding_restore_pending =
@@ -6511,6 +6615,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 			group_binding_drop(gid, member_key);
 			persist_forced_group_removal(gid);
+			emit_group_membership_message(gid, member_name, 0);
 			emit_group(gid, "kick", peer);
 			return 0;
 		}

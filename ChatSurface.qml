@@ -822,8 +822,8 @@ Item {
 
   PanelWindow {
     id: rightDock
-    visible: root.notifyRight && service && service.lastChatText !== "" &&
-      root.autoOpenFor(root.notificationConversation)
+    visible: root.notifyRight && service && service.lastChatDir === "in" &&
+      service.lastChatText !== "" && root.autoOpenFor(root.notificationConversation)
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "omaq-dock"

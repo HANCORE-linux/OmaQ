@@ -421,6 +421,16 @@ static void test_store(void)
 		free(out2);
 	}
 	{
+		char live[640], rot[640];
+		if (omaq_store_append(dir, "rotate-fail", "{\"n\":1}") != 0 ||
+		    snprintf(live, sizeof(live), "%s/history/rotate-fail/messages.jsonl", dir) >=
+			(int)sizeof(live) ||
+		    snprintf(rot, sizeof(rot), "%s.1", live) >= (int)sizeof(rot) ||
+		    truncate(live, 2 * 1024 * 1024) != 0 || mkdir(rot, 0700) != 0 ||
+		    omaq_store_append(dir, "rotate-fail", "{\"n\":2}") == 0)
+			fail("store rotation failure propagation");
+	}
+	{
 		omaq_store_message_id *ids = NULL;
 		omaq_receipt_outbox outbox, loaded;
 		size_t count = 0;
