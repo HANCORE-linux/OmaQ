@@ -8,6 +8,9 @@
 
 struct omaq_tox;
 
+#define OMAQ_TOX_ADD_REJECTED (-2)
+#define OMAQ_TOX_ADD_STATE_FAILED (-3)
+
 #define OMAQ_NICKNAME_MAX_CHARS 18
 
 #define OMAQ_TOX_LOCKED 1
@@ -29,6 +32,7 @@ void omaq_tox_discard(struct omaq_tox *t);
 int omaq_tox_friend_accept(struct omaq_tox *t, const uint8_t *pk32);
 int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number);
 uint32_t omaq_tox_friend_by_pk(struct omaq_tox *t, const uint8_t *pk32);
+int omaq_tox_friend_count(struct omaq_tox *t, size_t *count);
 int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max);
 int omaq_tox_friend_name(struct omaq_tox *t, uint32_t friend_number, char *out, size_t n);
 int omaq_tox_friend_online(struct omaq_tox *t, uint32_t friend_number);

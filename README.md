@@ -30,7 +30,7 @@ the generated `helper/omaq` binary; it is built locally so direct messages can
 require the Signal Double Ratchet:
 
 ```bash
-omarchy pkg add toxcore libsignal-protocol-c libpulse ttf-material-symbols-variable && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
+omarchy pkg add toxcore libsignal-protocol-c libpulse ttf-material-symbols-variable qrencode && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
 The one-line command installs OmaQ's required packages, adds and enables the
@@ -39,16 +39,51 @@ refused unless the Signal Ratchet helper is available.
 
 ## Update
 
-Update the plugin and rebuild its local helper:
+Update the plugin, rebuild its local helper, and reload the plugin so the newly built helper replaces the running process:
 
 ```bash
-omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper
+omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper && omarchy-shell shell rescanPlugins
 ```
 
 ## Uninstall
 
+Use OmaQ's wrapper so the terminal also lists every user-data location that is
+intentionally retained:
+
 ```bash
-omarchy plugin remove hancore.omaq
+~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
 ```
+
+This runs `omarchy plugin remove hancore.omaq` and unloads the plugin. Omarchy
+deletes a Git-managed plugin folder, including local modifications inside it; a
+plain plugin folder is moved to the exact hidden backup path printed by the
+wrapper. Data outside the plugin folder remains in these locations:
+
+- `~/.local/share/omaq/` — identity, contacts, groups, avatars, history, and Ratchet state
+- `~/.local/state/omaq/` — preferences, unread state, receipts, surfaces, and recovery state
+- `~/Downloads/omaq/` — received files
+- `~/.local/state/omaq-deploy-backups/` — deployment backups, when present
+
+Keep retained data if you may reinstall OmaQ or still need the identity or
+history. You can permanently delete any retained directory later,
+independently, after inspecting it. For example:
+
+```bash
+rm -rf -- "$HOME/.local/share/omaq"                 # private identity and chat data
+rm -rf -- "$HOME/.local/state/omaq"                 # local state and preferences
+rm -rf -- "$HOME/Downloads/omaq"                    # received files
+rm -rf -- "$HOME/.local/state/omaq-deploy-backups"  # deployment backups
+```
+
+Each deletion is irreversible. Run only the individual commands for data you
+really intend to erase. For a plain plugin folder, the wrapper also prints
+safely quoted inspection and deletion commands for its exact backup path.
+
+The dependency packages `toxcore`, `libsignal-protocol-c`, `libpulse`,
+`ttf-material-symbols-variable`, and `qrencode` remain installed because other
+applications may use them. The optional verification tool `zbar` also remains
+when installed for testing. Inspect packages with `pacman -Qi` first. Only when
+no other application needs them, remove them manually with `omarchy pkg drop`
+as shown by the wrapper.
 
 [Documentation](docs/README.md) · [Illustrated user guide](docs/USER-GUIDE.md)

@@ -188,6 +188,31 @@ grep -a '"event":"safety"' "$fb" | tail -1 | grep -a -q '"request":"safety-b"' |
 	exit 1
 }
 
+# Redeeming an own-identity or duplicate-contact invite is a benign rejection,
+# never a reason to disable Tox or Ratchet.
+forbidden_a=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
+forbidden_b=$(grep -a -c '"event":"error","code":"forbidden"' "$fb" || true)
+printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&3
+printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	forbidden_a_after=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
+	forbidden_b_after=$(grep -a -c '"event":"error","code":"forbidden"' "$fb" || true)
+	[ "$forbidden_a_after" -gt "$forbidden_a" ] &&
+		[ "$forbidden_b_after" -gt "$forbidden_b" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase2: benign direct invite was not rejected" >&2; exit 1; }
+echo '{"op":"status","id":"phase2-after-benign-reject-a"}' >&3
+echo '{"op":"status","id":"phase2-after-benign-reject-b"}' >&4
+sleep 0.2
+grep -a '"request":"phase2-after-benign-reject-a"' "$fa" | tail -1 | grep -a -q '"addr"' &&
+grep -a '"request":"phase2-after-benign-reject-b"' "$fb" | tail -1 | grep -a -q '"addr"' || {
+	echo "phase2: benign direct invite disabled backend" >&2
+	exit 1
+}
+
 forbidden_before=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
 echo '{"op":"contact.remove","id":"0","key":"0000000000000000000000000000000000000000000000000000000000000000"}' >&3
 i=0

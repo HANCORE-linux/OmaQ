@@ -67,7 +67,13 @@ done
 
 echo '{"op":"msg.send","conversation":"0","text":"restart-before","id":"restart-before-1"}' >&4
 sleep 1
-[ -f "$hb/ratchet/sess/0-1" ] || { echo "ratchet-restart: no persisted session" >&2; exit 1; }
+friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
+	tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ "${#friend_key_b}" -eq 64 ] || { echo "ratchet-restart: stable friend key missing" >&2; exit 1; }
+[ -f "$hb/ratchet/sess/d:$friend_key_b-1" ] || {
+	echo "ratchet-restart: no persisted session" >&2
+	exit 1
+}
 
 # Restart only B with the same tox.save, ratchet state, home and state directories.
 exec 4>&-
@@ -75,6 +81,17 @@ kill "$pb" 2>/dev/null || true
 wait "$pb" 2>/dev/null || true
 pb=""
 rm -f "$holdb"
+
+# Simulate the pre-stable-key layout and require startup migration before reuse.
+[ -f "$hb/ratchet/rk/d:$friend_key_b" ] &&
+	mv "$hb/ratchet/rk/d:$friend_key_b" "$hb/ratchet/rk/0"
+[ -f "$hb/ratchet/ident/d:$friend_key_b" ] &&
+	mv "$hb/ratchet/ident/d:$friend_key_b" "$hb/ratchet/ident/0"
+[ -f "$hb/ratchet/sess/d:$friend_key_b-1" ] &&
+	mv "$hb/ratchet/sess/d:$friend_key_b-1" "$hb/ratchet/sess/0-1"
+[ -d "$hb/history/d:$friend_key_b" ] &&
+	mv "$hb/history/d:$friend_key_b" "$hb/history/0"
+
 mkfifo "$holdb2"
 OMAQ_HOME="$hb" OMAQ_STATE="$sb" "$bin" >"$fb2" 2>"$fb2.err" <"$holdb2" &
 pb=$!
@@ -90,6 +107,18 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$i" -lt 60 ] || { echo "ratchet-restart: friend did not reconnect" >&2; exit 1; }
 sleep 1
+[ -f "$hb/ratchet/rk/d:$friend_key_b" ] &&
+	[ -f "$hb/ratchet/ident/d:$friend_key_b" ] &&
+	[ -f "$hb/ratchet/sess/d:$friend_key_b-1" ] &&
+	[ -d "$hb/history/d:$friend_key_b" ] || {
+	echo "ratchet-restart: legacy direct state was not migrated" >&2
+	exit 1
+}
+[ ! -e "$hb/ratchet/rk/0" ] && [ ! -e "$hb/ratchet/ident/0" ] &&
+	[ ! -e "$hb/ratchet/sess/0-1" ] && [ ! -e "$hb/history/0" ] || {
+	echo "ratchet-restart: legacy direct state remained active" >&2
+	exit 1
+}
 
 echo '{"op":"msg.send","conversation":"0","text":"restart-after","id":"restart-after-1"}' >&3
 i=0

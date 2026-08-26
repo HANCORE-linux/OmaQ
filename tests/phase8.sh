@@ -148,7 +148,15 @@ done
 [ "$i" -lt 30 ] || { echo "phase8: parallel message correlation missing" >&2; exit 1; }
 
 # Transport success followed by a local history failure must not invite a duplicate resend.
-history_file="$ha/history/0/messages.jsonl"
+friend_key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' |
+	tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
+	tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+[ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ] || {
+	echo "phase8: stable friend keys missing" >&2
+	exit 1
+}
+history_file="$ha/history/d:$friend_key_a/messages.jsonl"
 [ -f "$history_file" ] || { echo "phase8: sender history missing" >&2; exit 1; }
 chmod 400 "$history_file"
 echo '{"op":"msg.send","conversation":"0","text":"delivered-history-failure","id":"phase8-store-fail"}' >&3
@@ -189,13 +197,24 @@ pa=""
 printf '{"op":"conversation.read","conversation":"0"}\n' >&4
 i=0
 while [ "$i" -lt 30 ]; do
-	if grep -a -q "0[[:space:]]$offline_id" "$sb/read-receipts.tsv" 2>/dev/null; then
+	if grep -a -q "d:$friend_key_b[[:space:]]$offline_id" "$sb/read-receipts.tsv" 2>/dev/null; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 0.2
 done
 [ "$i" -lt 30 ] || { echo "phase8: offline read was not persisted" >&2; exit 1; }
+# Simulate the legacy numeric receipt namespace; the durable friend binding must migrate it.
+sed -i "s/^d:$friend_key_b[[:space:]]/0\t/" "$sb/read-receipts.tsv"
+awk -F '\t' -v OFS='\t' -v stable="d:$friend_key_b" '$1 == "0" { $1 = stable; print }' \
+	"$sb/read-receipts.tsv" >>"$sb/read-receipts.tsv.duplicate"
+cat "$sb/read-receipts.tsv.duplicate" >>"$sb/read-receipts.tsv"
+rm -f "$sb/read-receipts.tsv.duplicate"
+grep -a -q "0[[:space:]]$offline_id" "$sb/read-receipts.tsv" &&
+grep -a -q "d:$friend_key_b[[:space:]]$offline_id" "$sb/read-receipts.tsv" || {
+	echo "phase8: legacy receipt migration fixture failed" >&2
+	exit 1
+}
 exec 4>&-
 kill "$pb" 2>/dev/null || true
 wait "$pb" 2>/dev/null || true
@@ -211,7 +230,7 @@ exec 3>"$holda"
 i=0
 while [ "$i" -lt 90 ]; do
 	if [ ! -s "$sb/read-receipts.tsv" ] &&
-	   grep -a -q '"id":"'"$offline_id"'".*"receipt":"read"' "$ha/history/0/messages.jsonl"; then
+	   grep -a -q '"id":"'"$offline_id"'".*"receipt":"read"' "$history_file"; then
 		break
 	fi
 	i=$((i + 1))

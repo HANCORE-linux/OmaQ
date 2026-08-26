@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define OMAQ_UNREAD_COUNT_MAX 999999u
-
 void omaq_conv_init(omaq_conv *c, const char *id, omaq_conv_kind kind)
 {
 	memset(c, 0, sizeof(*c));
@@ -37,7 +35,7 @@ static int unread_id_ok(const char *id)
 
 	if (!id || !id[0] || strlen(id) >= OMAQ_CONV_ID_MAX)
 		return 0;
-	if (id[0] == 'g') {
+	if (id[0] == 'g' || id[0] == 'd') {
 		if (strlen(id) != 66 || id[1] != ':')
 			return 0;
 		for (i = 2; i < 66; i++)

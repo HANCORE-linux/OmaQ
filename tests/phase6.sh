@@ -174,6 +174,44 @@ got=$(find "$hb/Downloads/omaq" -type f 2>/dev/null | head -1)
 [ -n "$got" ] || { echo "phase6: no dest file" >&2; exit 1; }
 grep -a -q 'omaq-file-probe' "$got" || { echo "phase6: dest mismatch" >&2; exit 1; }
 
+# A recipient decline must produce a visible terminal cancellation on both peers.
+offer_before=$(grep -a -c '"event":"file.offer"' "$fb" || true)
+cancel_a_before=$(grep -a -c '"event":"file.canceled"' "$fa" || true)
+cancel_b_before=$(grep -a -c '"event":"file.canceled"' "$fb" || true)
+printf '{"op":"file.send","conversation":"0","path":"%s","id":"phase6-file-cancel"}\n' "$src" >&3
+i=0
+cancel_fid=""
+while [ "$i" -lt 40 ]; do
+	offer_after=$(grep -a -c '"event":"file.offer"' "$fb" || true)
+	if [ "$offer_after" -gt "$offer_before" ]; then
+		cancel_fid=$(grep -a '"file.offer"' "$fb" | tail -1 |
+			sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+		[ -n "$cancel_fid" ] && break
+	fi
+	i=$((i + 1))
+	sleep 0.25
+done
+[ -n "$cancel_fid" ] || { echo "phase6: cancel offer missing" >&2; exit 1; }
+printf '{"op":"file.cancel","id":"%s"}\n' "$cancel_fid" >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	cancel_a_after=$(grep -a -c '"event":"file.canceled"' "$fa" || true)
+	cancel_b_after=$(grep -a -c '"event":"file.canceled"' "$fb" || true)
+	[ "$cancel_a_after" -gt "$cancel_a_before" ] &&
+		[ "$cancel_b_after" -gt "$cancel_b_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: file cancellation was not visible to both peers" >&2; exit 1; }
+grep -a '"event":"file.canceled"' "$fa" | tail -1 | grep -a -q '"dir":"out"' || {
+	echo "phase6: sender cancellation direction missing" >&2
+	exit 1
+}
+grep -a '"event":"file.canceled"' "$fb" | tail -1 | grep -a -q '"dir":"in"' || {
+	echo "phase6: recipient cancellation direction missing" >&2
+	exit 1
+}
+
 echo '{"op":"call.start","conversation":"0"}' >&3
 ok=0
 i=0

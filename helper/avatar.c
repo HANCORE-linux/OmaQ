@@ -31,6 +31,15 @@ int omaq_avatar_id_ok(const char *id)
 	n = strlen(id);
 	if (n > OMAQ_AVATAR_ID_MAX)
 		return 0;
+	if (n == 66 && id[0] == 'd' && id[1] == ':') {
+		for (i = 2; i < n; i++)
+			if (!((id[i] >= '0' && id[i] <= '9') ||
+			      (id[i] >= 'a' && id[i] <= 'f')))
+				return 0;
+		return 1;
+	}
+	if (id[0] == '0' && id[1])
+		return 0;
 	for (i = 0; i < n; i++) {
 		if (id[i] < '0' || id[i] > '9')
 			return 0;

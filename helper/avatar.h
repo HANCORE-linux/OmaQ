@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define OMAQ_AVATAR_MAX (512u * 1024u)
-#define OMAQ_AVATAR_ID_MAX 16
+#define OMAQ_AVATAR_ID_MAX 66
 
 int omaq_avatar_id_ok(const char *id);
 int omaq_avatar_src_ok(const char *path);

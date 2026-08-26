@@ -773,6 +773,10 @@ BarWidget {
       return "Identity restore failed. The backup was kept in the OmaQ data folder."
     if (code === "group_registry_failed")
       return "Could not safely save private group state."
+    if (code === "direct_state_migration_failed")
+      return "Legacy direct-chat state could not be migrated safely."
+    if (code === "direct_state_reinvite_required")
+      return "Legacy direct-chat state was archived safely. Reinvite contacts, review the archive, then clear its marker."
     return code
   }
 
@@ -1736,8 +1740,7 @@ BarWidget {
           String(omaq.lastGroupInviteSentGroup || "") === root.groupInviteGroupId &&
           String(omaq.lastGroupInviteSentFriend || "") === root.groupInviteFriendId &&
           String(omaq.lastGroupInviteSentRequest || "") === root.groupInviteRequest)
-        root.groupInviteFeedback = "Group invite sent to " +
-          root.friendName(root.groupInviteFriendId)
+        root.groupInviteFeedback = "Invitation sent · waiting for acceptance"
     }
     function onGroupInviteFailedTickChanged() {
       if (root.groupInviteFeedback === "Sending group invite…" &&

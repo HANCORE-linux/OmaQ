@@ -35,13 +35,14 @@ LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/identity.c helper/tox_adapt.c helper/rate.c \
 	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/file.c helper/avatar.c helper/av.c \
-	helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
+	helper/presence.c helper/receipt.c helper/message_action.c helper/direct_state.c \
+	helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
 	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
-	helper/surface.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c helper/ratchet.c \
-	helper/ratchet_pin.c
+	helper/surface.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c \
+	helper/direct_state.c helper/ratchet.c helper/ratchet_pin.c
 
 BIN_TEST := tests/omaq_test
 BIN_SPOOL_TEST := tests/stdout_spool_test

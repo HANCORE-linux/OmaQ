@@ -17,6 +17,133 @@
 #define STORE_LINE_MAX 16384u
 #define GROUP_REACTION_ACTORS_MAX 32
 
+static int open_parent_dir(const char *path, char *base, size_t base_size)
+{
+	char parent[PATH_MAX], *slash, *cursor, *next;
+	int fd;
+
+	if (!path || path[0] != '/' || strlen(path) >= sizeof(parent) || !base ||
+	    base_size == 0)
+		return -1;
+	memcpy(parent, path, strlen(path) + 1);
+	slash = strrchr(parent, '/');
+	if (!slash || !slash[1] || snprintf(base, base_size, "%s", slash + 1) >=
+	    (int)base_size)
+		return -1;
+	*slash = '\0';
+	fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
+		return -1;
+	cursor = parent + 1;
+	while (*cursor) {
+		int child;
+		next = strchr(cursor, '/');
+		if (next)
+			*next = '\0';
+		if (!cursor[0] || strcmp(cursor, ".") == 0 || strcmp(cursor, "..") == 0) {
+			close(fd);
+			return -1;
+		}
+		child = openat(fd, cursor,
+			       O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		if (child < 0) {
+			close(fd);
+			return -1;
+		}
+		close(fd);
+		fd = child;
+		if (!next)
+			break;
+		cursor = next + 1;
+	}
+	return fd;
+}
+
+static FILE *safe_fopen(const char *path, const char *mode)
+{
+	char base[NAME_MAX + 1];
+	struct stat st;
+	int parent_fd, fd, flags;
+	FILE *file;
+
+	if (!mode || !mode[0] || mode[1])
+		return NULL;
+	flags = mode[0] == 'r' ? O_RDONLY :
+		mode[0] == 'a' ? O_WRONLY | O_CREAT | O_APPEND :
+		mode[0] == 'w' ? O_WRONLY | O_CREAT | O_EXCL : -1;
+	if (flags < 0)
+		return NULL;
+	parent_fd = open_parent_dir(path, base, sizeof(base));
+	if (parent_fd < 0)
+		return NULL;
+	fd = openat(parent_fd, base, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
+	close(parent_fd);
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1) {
+		close(fd);
+		return NULL;
+	}
+	file = fdopen(fd, mode);
+	if (!file)
+		close(fd);
+	return file;
+}
+
+static int safe_stat(const char *path, struct stat *st)
+{
+	char base[NAME_MAX + 1];
+	int parent_fd = open_parent_dir(path, base, sizeof(base));
+	int rc;
+
+	if (parent_fd < 0)
+		return -1;
+	rc = fstatat(parent_fd, base, st, AT_SYMLINK_NOFOLLOW);
+	close(parent_fd);
+	if (rc == 0 && (!S_ISREG(st->st_mode) || st->st_uid != geteuid() ||
+			st->st_nlink != 1)) {
+		errno = EINVAL;
+		return -1;
+	}
+	return rc;
+}
+
+static int safe_rename(const char *old_path, const char *new_path)
+{
+	char old_base[NAME_MAX + 1], new_base[NAME_MAX + 1];
+	struct stat old_parent_st, new_parent_st;
+	int old_fd = open_parent_dir(old_path, old_base, sizeof(old_base));
+	int new_fd = open_parent_dir(new_path, new_base, sizeof(new_base));
+	int rc = -1;
+
+	if (old_fd < 0 || new_fd < 0 || fstat(old_fd, &old_parent_st) != 0 ||
+	    fstat(new_fd, &new_parent_st) != 0 ||
+	    old_parent_st.st_dev != new_parent_st.st_dev ||
+	    old_parent_st.st_ino != new_parent_st.st_ino)
+		goto done;
+	rc = renameat(old_fd, old_base, new_fd, new_base);
+done:
+	if (old_fd >= 0)
+		close(old_fd);
+	if (new_fd >= 0)
+		close(new_fd);
+	return rc;
+}
+
+static int safe_unlink(const char *path)
+{
+	char base[NAME_MAX + 1];
+	int parent_fd = open_parent_dir(path, base, sizeof(base));
+	int rc;
+
+	if (parent_fd < 0)
+		return -1;
+	rc = unlinkat(parent_fd, base, 0);
+	close(parent_fd);
+	return rc;
+}
+
 static int fsync_dir(const char *path)
 {
 	int fd, rc;
@@ -211,7 +338,7 @@ static int update_file_message(const char *path, const char *id, const char *tex
 	}
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp))
 		goto fail;
-	f = fopen(tmp, "w");
+	f = safe_fopen(tmp, "w");
 	if (!f)
 		goto fail;
 	if (fchmod(fileno(f), 0600) != 0)
@@ -221,7 +348,7 @@ static int update_file_message(const char *path, const char *id, const char *tex
 			goto close_fail;
 	if (fclose(f) != 0)
 		goto fail_tmp;
-	if (rename(tmp, path) != 0)
+	if (safe_rename(tmp, path) != 0)
 		goto fail;
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -230,7 +357,7 @@ static int update_file_message(const char *path, const char *id, const char *tex
 close_fail:
 	fclose(f);
 fail_tmp:
-	unlink(tmp);
+	safe_unlink(tmp);
 fail:
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -273,7 +400,7 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 		return matched ? 2 : 0;
 	}
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp) ||
-	    !(f = fopen(tmp, "w")))
+	    !(f = safe_fopen(tmp, "w")))
 		goto fail;
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
@@ -282,7 +409,7 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 			goto close_fail;
 	if (fclose(f) != 0)
 		goto fail_tmp;
-	if (rename(tmp, path) != 0)
+	if (safe_rename(tmp, path) != 0)
 		goto fail;
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -291,7 +418,7 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 close_fail:
 	fclose(f);
 fail_tmp:
-	unlink(tmp);
+	safe_unlink(tmp);
 fail:
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -372,7 +499,7 @@ static int update_file_reaction(const char *path, const char *id, const char *em
 		return failed ? -1 : (unchanged ? 1 : 0);
 	}
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp) ||
-	    !(f = fopen(tmp, "w")))
+	    !(f = safe_fopen(tmp, "w")))
 		goto fail;
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
@@ -382,7 +509,7 @@ static int update_file_reaction(const char *path, const char *id, const char *em
 	}
 	if (fclose(f) != 0)
 		goto fail_tmp;
-	if (rename(tmp, path) != 0)
+	if (safe_rename(tmp, path) != 0)
 		goto fail;
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -391,7 +518,7 @@ static int update_file_reaction(const char *path, const char *id, const char *em
 close_fail:
 	fclose(f);
 fail_tmp:
-	unlink(tmp);
+	safe_unlink(tmp);
 fail:
 	for (i = 0; i < n; i++)
 		free(lines[i]);
@@ -650,7 +777,7 @@ int omaq_store_unread_save(const omaq_unread_state *state, const char *state_dir
 			return -1;
 		}
 	}
-	f = fopen(tmp, "w");
+	f = safe_fopen(tmp, "w");
 	if (!f) {
 		omaq_unread_destroy(&validated);
 		return -1;
@@ -668,12 +795,12 @@ int omaq_store_unread_save(const omaq_unread_state *state, const char *state_dir
 		bytes += (size_t)line_size;
 	}
 	if (fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
-		unlink(tmp);
+		safe_unlink(tmp);
 		omaq_unread_destroy(&validated);
 		return -1;
 	}
-	if (rename(tmp, path) != 0) {
-		unlink(tmp);
+	if (safe_rename(tmp, path) != 0) {
+		safe_unlink(tmp);
 		omaq_unread_destroy(&validated);
 		return -1;
 	}
@@ -685,7 +812,7 @@ int omaq_store_unread_save(const omaq_unread_state *state, const char *state_dir
 	return 0;
 fail:
 	fclose(f);
-	unlink(tmp);
+	safe_unlink(tmp);
 	omaq_unread_destroy(&validated);
 	return -1;
 }
@@ -699,9 +826,9 @@ int omaq_store_clear(const char *home, const char *conv_id)
 	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
 	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 		return -1;
-	if (unlink(path) != 0 && errno != ENOENT)
+	if (safe_unlink(path) != 0 && errno != ENOENT)
 		rc = -1;
-	if (unlink(rot) != 0 && errno != ENOENT)
+	if (safe_unlink(rot) != 0 && errno != ENOENT)
 		rc = -1;
 	if (rmdir(dir) != 0 && errno != ENOENT && errno != ENOTEMPTY)
 		rc = -1;
@@ -727,13 +854,13 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 		return -1;
 	if (hist_file(home, conv_id, path, sizeof(path)) != 0)
 		return -1;
-	if (stat(path, &st) == 0 && st.st_size >= ROTATE_BYTES) {
+	if (safe_stat(path, &st) == 0 && st.st_size >= ROTATE_BYTES) {
 		if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 			return -1;
-		if (rename(path, rot) != 0)
+		if (safe_rename(path, rot) != 0)
 			return -1;
 	}
-	f = fopen(path, "a");
+	f = safe_fopen(path, "a");
 	if (!f)
 		return -1;
 	if (fchmod(fileno(f), 0600) != 0) {
@@ -764,7 +891,7 @@ static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 	FILE *f;
 	char buf[STORE_LINE_MAX + 2];
 
-	f = fopen(path, "r");
+	f = safe_fopen(path, "r");
 	if (!f)
 		return errno == ENOENT ? 0 : -1;
 	while (fgets(buf, sizeof(buf), f)) {

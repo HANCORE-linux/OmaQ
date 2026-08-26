@@ -156,7 +156,8 @@ static int receipt_conversation_ok(const char *conversation)
 
 	if (!conversation || !(n = strlen(conversation)) || n >= 80)
 		return 0;
-	if (n == 66 && conversation[0] == 'g' && conversation[1] == ':') {
+	if (n == 66 && (conversation[0] == 'g' || conversation[0] == 'd') &&
+	    conversation[1] == ':') {
 		for (size_t i = 2; i < n; i++)
 			if (!((conversation[i] >= '0' && conversation[i] <= '9') ||
 			      (conversation[i] >= 'a' && conversation[i] <= 'f')))

@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "../helper/conversation.h"
+#include "../helper/direct_state.h"
 #include "../helper/avatar.h"
 #include "../helper/file.h"
 #include "../helper/group.h"
@@ -499,6 +500,35 @@ static void test_store(void)
 		omaq_receipt_outbox_destroy(&outbox);
 		omaq_receipt_outbox_destroy(&loaded);
 	}
+	{
+		char message_id[64], sentinel[700], temporary[700], sentinel_body[64];
+		FILE *sentinel_file;
+		if (omaq_message_append_with_id(dir, "c2", "me", "hardlink test", "out",
+						message_id, sizeof(message_id)) != 0 ||
+		    snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir) >=
+			(int)sizeof(sentinel) || !(sentinel_file = fopen(sentinel, "w")) ||
+		    fputs("do not truncate\n", sentinel_file) < 0 || fclose(sentinel_file) != 0 ||
+		    snprintf(temporary, sizeof(temporary),
+			     "%s/history/c2/messages.jsonl.tmp.%ld", dir, (long)getpid()) >=
+			(int)sizeof(temporary) || link(sentinel, temporary) != 0 ||
+		    omaq_message_edit(dir, "c2", message_id, "must fail") == 0 ||
+		    read_file(sentinel, sentinel_body, sizeof(sentinel_body)) != 0 ||
+		    strcmp(sentinel_body, "do not truncate") != 0)
+			fail("history temp hardlink rejection");
+		unlink(temporary);
+	}
+	{
+		char history_dir[640], link_path[700];
+		if (snprintf(history_dir, sizeof(history_dir), "%s/history/c-symlink", dir) >=
+		    (int)sizeof(history_dir) || mkdir(history_dir, 0700) != 0 ||
+		    snprintf(link_path, sizeof(link_path), "%s/messages.jsonl", history_dir) >=
+		    (int)sizeof(link_path) || symlink("/tmp/omaq-history-target", link_path) != 0 ||
+		    omaq_store_append(dir, "c-symlink", "{\"unsafe\":true}") == 0 ||
+		    omaq_store_tail(dir, "c-symlink", 10, &out, &n) == 0)
+			fail("history symlink rejection");
+		free(out);
+		out = NULL;
+	}
 	if (omaq_store_clear(dir, "c1") != 0)
 		fail("store clear return");
 	else {
@@ -563,18 +593,22 @@ static void test_conv(void)
 	    omaq_unread_increment(&unread, "0") != 0 ||
 	    omaq_unread_increment(&unread,
 		"g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+	    omaq_unread_increment(&unread,
+		"d:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 0 ||
 	    omaq_unread_increment(&unread, "../bad") == 0 ||
 	    omaq_unread_increment(&unread, "01") == 0 ||
 	    omaq_unread_increment(&unread, "g01") == 0 ||
 	    omaq_unread_increment(&unread,
 		"g:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") == 0 ||
+	    omaq_unread_increment(&unread,
+		"d:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB") == 0 ||
 	    omaq_unread_increment(&unread, "4294967296") == 0 ||
 	    omaq_unread_increment(&unread, "g4294967296") == 0 ||
-	    omaq_unread_total(&unread) != 3 || omaq_unread_count(&unread, "0") != 2 ||
+	    omaq_unread_total(&unread) != 4 || omaq_unread_count(&unread, "0") != 2 ||
 	    omaq_store_unread_save(&unread, dir) != 0 ||
 	    omaq_store_unread_load(&loaded, dir) != 0 ||
-	    loaded.length != 2 || omaq_unread_total(&loaded) != 3 ||
-	    omaq_unread_clear(&loaded, "0") != 0 || omaq_unread_total(&loaded) != 1)
+	    loaded.length != 3 || omaq_unread_total(&loaded) != 4 ||
+	    omaq_unread_clear(&loaded, "0") != 0 || omaq_unread_total(&loaded) != 2)
 		fail("unread state");
 	{
 		omaq_unread_state pruned;
@@ -1054,35 +1088,368 @@ static void test_group_invite(void)
 		fail("group invite without redemption");
 }
 
+static int write_test_file(const char *path, const char *value)
+{
+	FILE *file = fopen(path, "w");
+	int rc;
+
+	if (!file)
+		return -1;
+	rc = fputs(value, file) < 0 ? -1 : 0;
+	if (fclose(file) != 0)
+		rc = -1;
+	return rc;
+}
+
+static int write_private_test_file(const char *path, const char *value)
+{
+	return write_test_file(path, value) != 0 || chmod(path, 0600) != 0 ? -1 : 0;
+}
+
+static int make_direct_state_dirs(const char *home)
+{
+	char path[768];
+	const char *paths[] = { "history", "avatars", "ratchet", "ratchet/rk",
+		"ratchet/ident", "ratchet/sess" };
+
+	for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+		if (snprintf(path, sizeof(path), "%s/%s", home, paths[i]) >=
+		    (int)sizeof(path) || mkdir(path, 0700) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+static int create_legacy_direct_fixture(const char *home, const char *number,
+					const char *history_text)
+{
+	char path[768];
+
+	if (snprintf(path, sizeof(path), "%s/history/%s", home, number) >=
+	    (int)sizeof(path) || mkdir(path, 0700) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl", home, number) >=
+	    (int)sizeof(path) || write_private_test_file(path, history_text) != 0 ||
+	    snprintf(path, sizeof(path), "%s/avatars/%s.png", home, number) >=
+	    (int)sizeof(path) || write_private_test_file(path, "avatar\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/%s", home, number) >=
+	    (int)sizeof(path) || write_private_test_file(path, "pin\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/ident/%s", home, number) >=
+	    (int)sizeof(path) || write_private_test_file(path, "identity\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/sess/%s-1", home, number) >=
+	    (int)sizeof(path) || write_private_test_file(path, "session\n") != 0)
+		return -1;
+	return 0;
+}
+
+static void test_direct_state(void)
+{
+	char dir[] = "/tmp/omaq-direct-state-XXXXXX";
+	char unbound[] = "/tmp/omaq-direct-unbound-XXXXXX";
+	char linked[] = "/tmp/omaq-direct-linked-XXXXXX";
+	char removal[] = "/tmp/omaq-direct-removal-XXXXXX";
+	char path[768], stable[OMAQ_DIRECT_STATE_ID_MAX], body[64];
+	omaq_direct_state_friend current[1];
+	const char *key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const char *other = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	int reinvite = 0;
+
+	if (!mkdtemp(dir) || make_direct_state_dirs(dir) != 0) {
+		fail("direct state fixture dirs");
+		return;
+	}
+	current[0].number = 0;
+	memcpy(current[0].key, key, 65);
+	if (omaq_direct_state_reconcile(dir, current, 1, &reinvite) != 0 || reinvite ||
+	    snprintf(path, sizeof(path), "%s/direct-friends.tsv", dir) >=
+	    (int)sizeof(path) || access(path, R_OK) != 0)
+		fail("direct state binding bootstrap");
+	if (omaq_direct_state_reconcile(dir, current, 0, &reinvite) == 0)
+		fail("direct state truncation rejection");
+	if (snprintf(path, sizeof(path), "%s/direct-friends.tsv", dir) >=
+	    (int)sizeof(path)) {
+		fail("direct state map path");
+	} else {
+		char linked_map[800];
+		FILE *map;
+		if (chmod(path, 0644) != 0 ||
+		    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0 ||
+		    chmod(path, 0600) != 0)
+			fail("direct state map permissions");
+		if (snprintf(linked_map, sizeof(linked_map), "%s.link", path) >=
+		    (int)sizeof(linked_map) || link(path, linked_map) != 0 ||
+		    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+			fail("direct state map hardlink");
+		unlink(linked_map);
+		map = fopen(path, "wb");
+		if (!map || fprintf(map, "OMAQDF1\n0\t%s\n\n", key) < 0 || fclose(map) != 0 ||
+		    chmod(path, 0600) != 0 ||
+		    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+			fail("direct state map blank record");
+		if (write_private_test_file(path,
+			"OMAQDF1\n0\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n") != 0)
+			fail("direct state map restore");
+		map = fopen(path, "wb");
+		if (!map || fwrite("OMAQDF1\n0\t", 1, 10, map) != 10 || fputc('\0', map) == EOF ||
+		    fprintf(map, "%s\n", key) < 0 || fclose(map) != 0 || chmod(path, 0600) != 0 ||
+		    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+			fail("direct state map nul rejection");
+		if (write_private_test_file(path,
+			"OMAQDF1\n0\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n") != 0)
+			fail("direct state map final restore");
+	}
+	{
+		const char *prefixes[] = { ".direct-friends.tsv.tmp.",
+			".direct-add.pending.tmp.", ".direct-remove.pending.tmp." };
+		for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+			if (snprintf(path, sizeof(path), "%s/%s%ld", dir, prefixes[i],
+				     (long)getpid()) >= (int)sizeof(path) ||
+			    write_private_test_file(path, "temporary\n") != 0)
+				fail("direct state home temp fixture");
+		}
+		if (omaq_direct_state_reconcile(dir, current, 1, &reinvite) != 0)
+			fail("direct state home temp cleanup");
+		for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+			if (snprintf(path, sizeof(path), "%s/%s%ld", dir, prefixes[i],
+				     (long)getpid()) >= (int)sizeof(path) || access(path, F_OK) == 0)
+				fail("direct state home temp residue");
+		}
+	}
+
+	/* A durable old binding, not the current numeric handle, owns legacy state. */
+	if (create_legacy_direct_fixture(dir, "0", "history A\n") != 0)
+		fail("direct state legacy fixture");
+	memcpy(current[0].key, other, 65);
+	if (omaq_direct_state_reconcile_removed(dir, current, 1, key, &reinvite) != 0 ||
+	    reinvite ||
+	    omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl", dir, stable) >=
+	    (int)sizeof(path) || read_file(path, body, sizeof(body)) != 0 ||
+	    strcmp(body, "history A") != 0)
+		fail("direct state reused handle binding");
+	if (omaq_direct_state_id(other, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl", dir, stable) >=
+	    (int)sizeof(path) || access(path, F_OK) == 0)
+		fail("direct state reused handle isolation");
+	if (snprintf(path, sizeof(path), "%s/ratchet/sess/%s-1", dir, stable) >=
+	    (int)sizeof(path)) {
+		fail("direct state oversized path");
+	} else {
+		FILE *oversized = fopen(path, "wb");
+		if (!oversized || ftruncate(fileno(oversized), OMAQ_RATCHET_RECORD_MAX + 1) != 0 ||
+		    fclose(oversized) != 0 || chmod(path, 0600) != 0 ||
+		    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+			fail("direct state oversized record rejection");
+		unlink(path);
+	}
+
+	/* A collision is archived outside the legacy prefix and remains convergent. */
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/0", dir) >= (int)sizeof(path) ||
+	    write_private_test_file(path, "stale pin\n") != 0 ||
+	    omaq_direct_state_migrate(dir, "0", key) != 0 ||
+	    omaq_direct_state_migrate(dir, "0", key) != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/.legacy-direct.0.0", dir) >=
+	    (int)sizeof(path) || access(path, R_OK) != 0)
+		fail("direct state collision convergence");
+	if (omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl.tmp.123", dir,
+		     stable) >= (int)sizeof(path) ||
+	    write_private_test_file(path, "temporary history\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/sess/%s-1.tmp", dir, stable) >=
+		(int)sizeof(path) || write_private_test_file(path, "temporary session\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/sess/%s-2.tmp", dir, stable) >=
+		(int)sizeof(path) || write_private_test_file(path, "") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/%s.tmp", dir, stable) >=
+		(int)sizeof(path) || write_private_test_file(path, "temporary pin\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/ident/%s.tmp", dir, stable) >=
+		(int)sizeof(path) || write_private_test_file(path, "temporary identity\n") != 0 ||
+	    omaq_direct_state_migrate(dir, "9", key) != 0)
+		fail("direct state temporary cleanup");
+	if (snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl.tmp.123", dir,
+		     stable) >= (int)sizeof(path) || access(path, F_OK) == 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/sess/%s-1.tmp", dir, stable) >=
+		(int)sizeof(path) || access(path, F_OK) == 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/sess/%s-2.tmp", dir, stable) >=
+		(int)sizeof(path) || access(path, F_OK) == 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/%s.tmp", dir, stable) >=
+		(int)sizeof(path) || access(path, F_OK) == 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/ident/%s.tmp", dir, stable) >=
+		(int)sizeof(path) || access(path, F_OK) == 0)
+		fail("direct state temporary residue");
+
+	/* No pre-existing binding means numeric state is archived, never assigned. */
+	if (!mkdtemp(unbound) || make_direct_state_dirs(unbound) != 0 ||
+	    create_legacy_direct_fixture(unbound, "0", "ambiguous\n") != 0) {
+		fail("direct state unbound fixture");
+		return;
+	}
+	memcpy(current[0].key, key, 65);
+	if (snprintf(path, sizeof(path), "%s/ratchet/sess/0-2.tmp", unbound) >=
+	    (int)sizeof(path) || write_private_test_file(path, "") != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/0/messages.jsonl.tmp.123", unbound) >=
+	    (int)sizeof(path) || write_private_test_file(path, "") != 0)
+		fail("direct state legacy temp fixture");
+	reinvite = 0;
+	if (omaq_direct_state_reconcile(unbound, current, 1, &reinvite) != 0 || !reinvite ||
+	    snprintf(path, sizeof(path), "%s/history/.legacy-direct.0.0/messages.jsonl",
+		     unbound) >= (int)sizeof(path) || access(path, R_OK) != 0 ||
+	    omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/%s", unbound, stable) >=
+	    (int)sizeof(path) || access(path, F_OK) == 0)
+		fail("direct state ambiguous archive");
+	if (snprintf(path, sizeof(path), "%s/ratchet/sess/0-2.tmp", unbound) >=
+	    (int)sizeof(path) || access(path, F_OK) == 0 ||
+	    snprintf(path, sizeof(path),
+		     "%s/history/.legacy-direct.0.0/messages.jsonl.tmp.123", unbound) >=
+	    (int)sizeof(path) || access(path, F_OK) == 0)
+		fail("direct state legacy temp residue");
+
+	/* Stable destinations, path components, and session suffixes fail closed. */
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/1", dir) >= (int)sizeof(path) ||
+	    symlink("/tmp", path) != 0 || omaq_direct_state_migrate(dir, "1", other) == 0)
+		fail("direct state symlink rejection");
+	unlink(path);
+	memcpy(current[0].key, other, 65);
+	if (omaq_direct_state_id(other, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/%s", dir, stable) >=
+	    (int)sizeof(path) || symlink("/tmp", path) != 0 ||
+	    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+		fail("direct state stable symlink rejection");
+	unlink(path);
+	if (snprintf(path, sizeof(path), "%s/ratchet/ident/%s.tmp", dir, stable) >=
+	    (int)sizeof(path) || symlink("/tmp", path) != 0 ||
+	    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+		fail("direct state temp symlink rejection");
+	unlink(path);
+	memcpy(current[0].key, key, 65);
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/.no-legacy", dir) >=
+	    (int)sizeof(path) || write_private_test_file(path, "reserved\n") != 0 ||
+	    omaq_direct_state_reconcile(dir, current, 1, &reinvite) == 0)
+		fail("direct state reserved source rejection");
+	unlink(path);
+	if (snprintf(path, sizeof(path), "%s/ratchet/sess/2-01", dir) >=
+	    (int)sizeof(path) || write_private_test_file(path, "bad session\n") != 0 ||
+	    omaq_direct_state_migrate(dir, "2", key) == 0)
+		fail("direct state session suffix rejection");
+	unlink(path);
+	if (snprintf(path, sizeof(path), "%s/history/3", dir) >= (int)sizeof(path) ||
+	    mkdir(path, 0700) != 0 ||
+	    snprintf(path, sizeof(path), "%s/history/3/messages.jsonl", dir) >=
+	    (int)sizeof(path) || symlink("/tmp/not-history", path) != 0 ||
+	    omaq_direct_state_migrate(dir, "3", key) == 0)
+		fail("direct state history symlink rejection");
+	if (omaq_direct_state_id("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+				 stable, sizeof(stable)) == 0 ||
+	    omaq_direct_state_migrate(dir, "01", key) == 0)
+		fail("direct state canonical validation");
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/4", dir) >= (int)sizeof(path) ||
+	    write_private_test_file(path, "unsafe pin\n") != 0 || chmod(path, 0666) != 0 ||
+	    omaq_direct_state_migrate(dir, "4", key) == 0)
+		fail("direct state legacy pin mode rejection");
+	unlink(path);
+	{
+		char sentinel[768];
+		if (snprintf(sentinel, sizeof(sentinel), "%s/legacy-pin-sentinel", dir) >=
+		    (int)sizeof(sentinel) || write_private_test_file(sentinel, "hardlink pin\n") != 0 ||
+		    snprintf(path, sizeof(path), "%s/ratchet/rk/5", dir) >= (int)sizeof(path) ||
+		    link(sentinel, path) != 0 || omaq_direct_state_migrate(dir, "5", key) == 0)
+			fail("direct state legacy pin hardlink rejection");
+		unlink(path);
+		unlink(sentinel);
+	}
+	if (!mkdtemp(linked) ||
+	    snprintf(path, sizeof(path), "%s/history", linked) >= (int)sizeof(path) ||
+	    mkdir(path, 0700) != 0 ||
+	    snprintf(path, sizeof(path), "%s/avatars", linked) >= (int)sizeof(path) ||
+	    mkdir(path, 0700) != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet", linked) >= (int)sizeof(path) ||
+	    symlink("/tmp", path) != 0 ||
+	    omaq_direct_state_reconcile(linked, current, 1, &reinvite) == 0)
+		fail("direct state intermediate symlink rejection");
+	{
+		char pending_key[65];
+		if (!mkdtemp(removal) || make_direct_state_dirs(removal) != 0) {
+			fail("direct state removal fixture");
+		} else {
+			char pending_pin[65];
+			current[0].number = 0;
+			memcpy(current[0].key, key, 65);
+			if (omaq_direct_state_reconcile(removal, current, 1, &reinvite) != 0 ||
+			    omaq_direct_state_add_begin(removal, key, other) != 0 ||
+			    omaq_direct_state_add_pending(removal, pending_key, pending_pin) != 1 ||
+			    strcmp(pending_key, key) != 0 || strcmp(pending_pin, other) != 0 ||
+			    omaq_direct_state_add_finish(removal) != 0 ||
+			    omaq_direct_state_add_pending(removal, pending_key, pending_pin) != 0 ||
+			    omaq_direct_state_remove_begin(removal, key) != 0 ||
+			    omaq_direct_state_remove_pending(removal, pending_key) != 1 ||
+			    strcmp(pending_key, key) != 0 ||
+			    omaq_direct_state_reconcile_removed(removal, current, 0, key,
+							&reinvite) != 0 ||
+			    omaq_direct_state_remove_finish(removal) != 0 ||
+			    omaq_direct_state_remove_pending(removal, pending_key) != 0 ||
+			    omaq_direct_state_reconcile(removal, current, 0, &reinvite) != 0)
+				fail("direct state removal journal");
+		}
+	}
+	{
+		omaq_direct_state_friend over[OMAQ_DIRECT_STATE_FRIEND_MAX + 1] = { 0 };
+		if (omaq_direct_state_reconcile(dir, over,
+			OMAQ_DIRECT_STATE_FRIEND_MAX + 1, &reinvite) == 0)
+			fail("direct state friend bound");
+	}
+}
+
 static void test_ratchet_pins(void)
 {
 	char dir[] = "/tmp/omaq-rk-XXXXXX";
-	char got[OMAQ_RK_HEX + 1], conv[16], path[512];
+	char got[OMAQ_RK_HEX + 1], path[512];
+	const char *stable = "d:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 	struct stat st;
-	int i;
 
 	if (!mkdtemp(dir)) {
 		fail("rk mkdtemp");
 		return;
 	}
-	if (omaq_ratchet_pin_get(dir, "0", got, sizeof(got)) != 0)
-		fail("rk missing");
-	for (i = 0; i < 12; i++) {
-		snprintf(conv, sizeof(conv), "%d", i);
-		if (omaq_ratchet_pin_set(dir, conv,
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0)
-			fail("rk set");
-	}
-	if (omaq_ratchet_pin_get(dir, "11", got, sizeof(got)) != 1 ||
-	    strcmp(got, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0)
-		fail("rk get persisted");
-	if (snprintf(path, sizeof(path), "%s/ratchet/rk/11", dir) >= (int)sizeof(path))
+	if (omaq_ratchet_pin_get(dir, "0", got, sizeof(got)) != -1 ||
+	    omaq_ratchet_pin_set(dir, "0",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0)
+		fail("numeric ratchet peer rejected");
+	if (!omaq_ratchet_peer_ok(stable) || omaq_ratchet_peer_ok("d:AAAA") ||
+	    omaq_ratchet_pin_set(dir, stable,
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 0 ||
+	    omaq_ratchet_pin_get(dir, stable, got, sizeof(got)) != 1)
+		fail("stable ratchet peer");
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/%s", dir, stable) >=
+	    (int)sizeof(path))
 		fail("rk path test");
 	else if (stat(path, &st) != 0 || (st.st_mode & 0777) != 0600)
 		fail("rk permissions");
+	else {
+		FILE *extra = fopen(path, "a");
+		if (!extra || fputc('x', extra) == EOF || fclose(extra) != 0 ||
+		    omaq_ratchet_pin_get(dir, stable, got, sizeof(got)) != -1 ||
+		    truncate(path, OMAQ_RK_HEX + 1) != 0)
+			fail("rk trailing data rejection");
+	}
 	if (omaq_ratchet_pin_set(dir, "../x",
 			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0)
 		fail("rk path escape");
+	{
+		const char *stable_b =
+			"d:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+		char sentinel[512], temporary[700], body[64];
+		FILE *file;
+		if (snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir) >=
+		    (int)sizeof(sentinel) || !(file = fopen(sentinel, "w")) ||
+		    fputs("pin sentinel\n", file) < 0 || fclose(file) != 0 ||
+		    snprintf(temporary, sizeof(temporary), "%s/ratchet/rk/%s.tmp", dir,
+			     stable_b) >= (int)sizeof(temporary) || symlink(sentinel, temporary) != 0 ||
+		    omaq_ratchet_pin_set(dir, stable_b,
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0 ||
+		    read_file(sentinel, body, sizeof(body)) != 0 ||
+		    strcmp(body, "pin sentinel") != 0)
+			fail("rk temp symlink rejection");
+		unlink(temporary);
+	}
 }
 
 static void test_group_id(void)
@@ -1465,6 +1832,18 @@ static void test_receipts(void)
 			fail("receipt outbox max boundary");
 		omaq_receipt_outbox_destroy(&boundary);
 	}
+	{
+		omaq_receipt_outbox stable;
+		omaq_receipt_outbox_init(&stable);
+		if (omaq_receipt_outbox_add(&stable,
+			"d:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"stable-receipt") != 1 ||
+		    omaq_receipt_outbox_add(&stable,
+			"d:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			"bad-stable-receipt") >= 0)
+			fail("stable receipt conversation validation");
+		omaq_receipt_outbox_destroy(&stable);
+	}
 	if (omaq_receipt_wire_pack(wire, sizeof(wire), "msg|1", "read") == 0 ||
 	    omaq_message_delete_wire_pack(wire, sizeof(wire), "msg|1") == 0 ||
 	    omaq_receipt_wire_pack(wire, sizeof(wire), "msg-1", "bad") == 0 ||
@@ -1516,9 +1895,12 @@ static void test_presence(void)
 
 static void test_avatar(void)
 {
-	if (!omaq_avatar_id_ok("self") || !omaq_avatar_id_ok("0") || !omaq_avatar_id_ok("12"))
+	if (!omaq_avatar_id_ok("self") || !omaq_avatar_id_ok("0") || !omaq_avatar_id_ok("12") ||
+	    !omaq_avatar_id_ok("d:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
 		fail("avatar id ok");
-	if (omaq_avatar_id_ok("") || omaq_avatar_id_ok("../x") || omaq_avatar_id_ok("a/b") ||
+	if (omaq_avatar_id_ok("") || omaq_avatar_id_ok("01") ||
+	    omaq_avatar_id_ok("d:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") ||
+	    omaq_avatar_id_ok("../x") || omaq_avatar_id_ok("a/b") ||
 	    omaq_avatar_id_ok("self/../x"))
 		fail("avatar id bad");
 	if (!omaq_avatar_src_ok("/tmp/face.png") || !omaq_avatar_src_ok("/tmp/face.JPG"))
@@ -1589,6 +1971,7 @@ int main(void)
 	test_control_rate();
 	test_safety();
 	test_group_invite();
+	test_direct_state();
 	test_ratchet_pins();
 	test_group_id();
 	test_group_plan();

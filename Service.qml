@@ -14,6 +14,7 @@ Item {
   property var unreadClearRetryAfter: ({})
   property string statusText: "OmaQ"
   property string lastError: ""
+  property string persistentWarning: ""
   property string lastErrorConv: ""
   property string lastErrorRequest: ""
   property int lastErrorTick: 0
@@ -168,6 +169,8 @@ Item {
   property bool pendingFile: false
   property var fileOffers: ({})
   property var outgoingFiles: ({})
+  property var fileNotices: ({})
+  property int fileNoticeTick: 0
   property int fileRequestSequence: 0
   property bool incomingCall: false
   property string lastCallState: ""
@@ -286,10 +289,16 @@ Item {
         String(code || "")) >= 0
   }
 
+  function persistentError(code) {
+    return ["identity_rollback_failed", "identity_backup_cleanup_failed",
+      "direct_state_migration_failed", "direct_state_reinvite_required"].indexOf(
+        String(code || "")) >= 0
+  }
+
   function clearRequestError(request) {
     var requestId = String(request || "")
     if (requestId !== "" && root.lastErrorRequest === requestId) {
-      root.lastError = ""
+      root.lastError = root.persistentWarning
       root.lastErrorRequest = ""
       root.lastErrorTick = root.lastErrorTick + 1
     }
@@ -299,7 +308,7 @@ Item {
     var requestId = String(request || "")
     if (requestId !== "" && root.lastErrorRequest === requestId &&
         root.identityErrorCode(root.lastError)) {
-      root.lastError = ""
+      root.lastError = root.persistentWarning
       root.lastErrorRequest = ""
       root.lastErrorTick = root.lastErrorTick + 1
     }
@@ -356,6 +365,10 @@ Item {
         var identityChanged = root.identityFingerprint !== "" && nextIdentity !== "" &&
           root.identityFingerprint !== nextIdentity
         if (processChanged) {
+          if (root.lastError === root.persistentWarning)
+            root.lastError = ""
+          root.persistentWarning = ""
+          root.failActiveIncomingFiles()
           root.failActiveOutgoingFiles("helper_restarted")
           root.failQueuedGroupInvites("helper_restarted")
           root.helperInstanceGeneration = root.helperInstanceGeneration + 1
@@ -377,7 +390,7 @@ Item {
         if (root.lastError === "helper_down" || root.lastError === "helper_incompatible" ||
             root.lastError === "helper_handshake_pending" ||
             root.lastError === "identity_backup_cleanup_failed")
-          root.lastError = ""
+          root.lastError = root.persistentWarning
         root.awaitingHelperInstance = false
         root.helperStatusNonce = ""
         helperStatusTimer.stop()
@@ -416,9 +429,8 @@ Item {
       if (ev.locked === true)
         root.lastError = "locked"
       else if (root.lastError !== "helper_down" && root.lastError !== "helper_incompatible" &&
-               root.lastError !== "identity_rollback_failed" &&
-               root.lastError !== "identity_backup_cleanup_failed")
-        root.lastError = ""
+               !root.persistentError(root.lastError))
+        root.lastError = root.persistentWarning
       if (ev.online !== undefined)
         root.selfOnline = !!ev.online
       if (ev.nickname !== undefined)
@@ -449,9 +461,8 @@ Item {
       root.lastNicknameRequest = String(ev.request || "")
       root.selfNickname = String(ev.value || "")
       if (root.lastError !== "helper_down" && root.lastError !== "helper_incompatible" &&
-          root.lastError !== "identity_rollback_failed" &&
-          root.lastError !== "identity_backup_cleanup_failed")
-        root.lastError = ""
+          !root.persistentError(root.lastError))
+        root.lastError = root.persistentWarning
       root.nicknameTick = root.nicknameTick + 1
     }
     if (ev.event === "error") {
@@ -459,6 +470,9 @@ Item {
       root.lastErrorConv = ev.conversation || ""
       root.lastErrorRequest = String(ev.request || "")
       root.lastErrorTick = root.lastErrorTick + 1
+      if (ev.code === "direct_state_migration_failed" ||
+          ev.code === "direct_state_reinvite_required")
+        root.persistentWarning = String(ev.code)
       if (ev.code === "identity_rollback_failed")
         root.failQueuedGroupInvites("identity_rollback_failed")
       if (ev.code === "locked") {
@@ -487,9 +501,8 @@ Item {
         String(ev.generation || "") === root.pendingFriendGeneration) {
       if (!root.locked && root.lastError !== "helper_down" &&
           root.lastError !== "helper_incompatible" &&
-          root.lastError !== "identity_rollback_failed" &&
-          root.lastError !== "identity_backup_cleanup_failed")
-        root.lastError = ""
+          !root.persistentError(root.lastError))
+        root.lastError = root.persistentWarning
       root.applyFriendSnapshot(root.pendingFriendBuild)
       root.pendingFriendGeneration = ""
       root.pendingFriendBuild = []
@@ -497,9 +510,8 @@ Item {
     if (ev.event === "friends") {
       if (!root.locked && root.lastError !== "helper_down" &&
           root.lastError !== "helper_incompatible" &&
-          root.lastError !== "identity_rollback_failed" &&
-          root.lastError !== "identity_backup_cleanup_failed")
-        root.lastError = ""
+          !root.persistentError(root.lastError))
+        root.lastError = root.persistentWarning
       root.applyFriendSnapshot(ev.items || [])
     }
     if (ev.event === "avatar") {
@@ -532,11 +544,11 @@ Item {
       root.lastIdentityProtected = ev.protected === true
       root.identityActionTick = root.identityActionTick + 1
       if (root.lastErrorRequest !== "" && root.identityErrorCode(root.lastError)) {
-        root.lastError = ""
+        root.lastError = root.persistentWarning
         root.lastErrorRequest = ""
       }
       if (ev.op === "recovered" && root.lastError === "identity_rollback_failed")
-        root.lastError = ""
+        root.lastError = root.persistentWarning
       if (ev.op === "unlock")
         root.locked = false
       if (ev.op === "import") {
@@ -898,7 +910,14 @@ Item {
       root.lastFileDir = "in"
       root.lastFileError = ""
       var offerConv = String(ev.conversation || root.lastConversation)
-      root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "", pending: true })
+      var existingOffer = root.fileOffer(offerConv)
+      if (existingOffer.active && existingOffer.id && ev.id &&
+          String(existingOffer.id) !== String(ev.id)) {
+        root.sendOp({ op: "file.cancel", id: String(ev.id) })
+        return
+      }
+      root.dismissFileNotice(offerConv)
+      root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "", pending: true, active: true })
       root.lastFileId = ev.id || ""
       root.lastFileName = ev.name || ""
       root.pendingFile = true
@@ -913,6 +932,7 @@ Item {
       var sendingOld = root.outgoingFile(sendingConv)
       if (!root.outgoingEventMatches(ev, sendingConv))
         return
+      root.dismissFileNotice(sendingConv)
       root.setOutgoingFile(sendingConv, {
         id: String(ev.id || sendingOld.id || ""),
         path: String(sendingOld.path || ""),
@@ -932,10 +952,12 @@ Item {
     if (ev.event === "file.done") {
       var doneConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var doneDir = root.fileEventDirection(ev, doneConv)
-      if (doneDir === "out" && !root.outgoingEventMatches(ev, doneConv))
+      if ((doneDir === "out" && !root.outgoingEventMatches(ev, doneConv)) ||
+          (doneDir === "in" && !root.incomingEventMatches(ev, doneConv)))
         return
       root.lastFileState = "done"
       root.lastFileError = ""
+      root.dismissFileNotice(doneConv)
       root.lastFileDir = doneDir
       if (doneDir === "out") {
         var doneOutgoing = root.outgoingFile(doneConv)
@@ -944,7 +966,7 @@ Item {
         root.lastFilePath = ""
       } else {
         var doneOld = root.fileOffer(doneConv)
-        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", pending: false })
+        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", pending: false, active: false })
         root.pendingFile = false
         root.lastFilePath = ev.path || ""
       }
@@ -955,7 +977,8 @@ Item {
     if (ev.event === "file.canceled") {
       var canceledConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var canceledDir = root.fileEventDirection(ev, canceledConv)
-      if (canceledDir === "out" && !root.outgoingEventMatches(ev, canceledConv))
+      if ((canceledDir === "out" && !root.outgoingEventMatches(ev, canceledConv)) ||
+          (canceledDir === "in" && !root.incomingEventMatches(ev, canceledConv)))
         return
       root.lastFileState = "canceled"
       root.lastFileError = ""
@@ -966,20 +989,23 @@ Item {
           root.setOutgoingFile(canceledConv, { id: canceledOutgoing.id || ev.id || "", path: canceledOutgoing.path || "", request: canceledOutgoing.request || "", pending: false, cancelRequested: false })
       } else {
         var canceledOffer = root.fileOffer(canceledConv)
-        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "", name: canceledOffer.name || "", path: "", pending: false })
+        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "", name: canceledOffer.name || "", path: "", pending: false, active: false })
         root.pendingFile = false
       }
       root.lastFilePath = ""
       root.lastFileConv = canceledConv
+      root.setFileNotice(canceledConv, { state: "canceled", dir: canceledDir })
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.failed") {
       var failedConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var failedDir = root.fileEventDirection(ev, failedConv)
-      if (failedDir === "out" && !root.outgoingEventMatches(ev, failedConv))
+      if ((failedDir === "out" && !root.outgoingEventMatches(ev, failedConv)) ||
+          (failedDir === "in" && !root.incomingEventMatches(ev, failedConv)))
         return
       root.lastFileState = "failed"
       root.lastFileError = ev.code || "file_failed"
+      root.dismissFileNotice(failedConv)
       root.lastFileDir = failedDir
       if (failedDir === "out") {
         var failedOutgoing = root.outgoingFile(failedConv)
@@ -987,7 +1013,7 @@ Item {
           root.setOutgoingFile(failedConv, { id: failedOutgoing.id || ev.id || "", path: failedOutgoing.path || "", request: failedOutgoing.request || "", pending: false, cancelRequested: false })
       } else {
         var failedOld = root.fileOffer(failedConv)
-        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", pending: false })
+        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", pending: false, active: false })
         root.pendingFile = false
       }
       root.lastError = "file_failed"
@@ -1058,6 +1084,25 @@ Item {
     next[String(conv)] = transfer
     root.outgoingFiles = next
   }
+  function fileNotice(conv) {
+    var c = String(conv || "")
+    return c && root.fileNotices[c] ? root.fileNotices[c] : ({})
+  }
+  function setFileNotice(conv, notice) {
+    var c = String(conv || "")
+    var next = {}
+    var key
+    if (!c)
+      return
+    for (key in root.fileNotices)
+      if (key !== c)
+        next[key] = root.fileNotices[key]
+    if (notice && notice.state)
+      next[c] = notice
+    root.fileNotices = next
+    root.fileNoticeTick = root.fileNoticeTick + 1
+  }
+  function dismissFileNotice(conv) { root.setFileNotice(conv, null) }
   function fileSendingFor(conv) {
     var transfer = root.outgoingFile(conv)
     return !!transfer.pending && !transfer.cancelRequested
@@ -1072,6 +1117,12 @@ Item {
       return "out"
     return "in"
   }
+  function incomingEventMatches(ev, conv) {
+    var offer = root.fileOffer(conv)
+    if (!offer.id || !ev || !ev.id)
+      return true
+    return String(offer.id) === String(ev.id)
+  }
   function outgoingEventMatches(ev, conv) {
     var transfer = root.outgoingFile(conv)
     if (!transfer.pending || !ev)
@@ -1085,6 +1136,32 @@ Item {
     if (ev.id)
       return String(transfer.id) === String(ev.id)
     return request !== "" && eventRequest !== "" && request === eventRequest
+  }
+
+  function failActiveIncomingFiles() {
+    var transferIds = {}
+    var key
+    for (key in root.fileOffers) {
+      var offer = root.fileOffers[key]
+      if (offer && offer.id)
+        transferIds[String(offer.id)] = true
+    }
+    var keptOps = []
+    for (var opIndex = 0; opIndex < root.pendingOps.length; opIndex++) {
+      var keep = true
+      try {
+        var queued = JSON.parse(root.pendingOps[opIndex])
+        if ((queued.op === "file.accept" || queued.op === "file.cancel") &&
+            transferIds[String(queued.id || "")])
+          keep = false
+      } catch (e) {
+      }
+      if (keep)
+        keptOps.push(root.pendingOps[opIndex])
+    }
+    root.pendingOps = keptOps
+    root.fileOffers = ({})
+    root.pendingFile = false
   }
 
   function reconcileOutgoingFiles() {
@@ -1753,6 +1830,7 @@ Item {
     root.fileRequestSequence = root.fileRequestSequence + 1
     var requestId = Date.now().toString(36) + "-" + root.fileRequestSequence.toString(36) +
       "-" + Math.floor(Math.random() * 0x100000000).toString(36)
+    root.dismissFileNotice(c)
     root.lastFileConv = c
     root.lastFileState = "sending"
     root.lastFileDir = "out"
@@ -1790,7 +1868,7 @@ Item {
     if (!offer.id)
       return
     sendOp({ op: "file.accept", id: offer.id })
-    setFileOffer(c, { id: offer.id, name: offer.name || "", path: offer.path || "", pending: false })
+    setFileOffer(c, { id: offer.id, name: offer.name || "", path: offer.path || "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
   }
@@ -1800,7 +1878,7 @@ Item {
     if (!offer.id)
       return
     sendOp({ op: "file.cancel", id: offer.id })
-    setFileOffer(c, { id: offer.id, name: offer.name || "", path: "", pending: false })
+    setFileOffer(c, { id: offer.id, name: offer.name || "", path: "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
   }
@@ -1863,6 +1941,8 @@ Item {
     root.handshakeEventOverflow = false
     root.fileOffers = ({})
     root.outgoingFiles = ({})
+    root.fileNotices = ({})
+    root.fileNoticeTick = root.fileNoticeTick + 1
     root.pendingFile = false
     root.pendingHistoryUnread = ({})
     root.historyRetryTickByConversation = ({})
@@ -1963,6 +2043,7 @@ Item {
     root.pendingFriendBuild = []
     root.surfaces = []
     root.surfacesTick = root.surfacesTick + 1
+    root.persistentWarning = ""
     root.lastError = expectedImport ? "" : "identity_changed"
     root.lastErrorRequest = ""
     root.lastErrorConv = ""
@@ -2016,6 +2097,7 @@ Item {
 
   function scheduleRestart() {
     helperStatusTimer.stop()
+    root.failActiveIncomingFiles()
     root.failInFlightMessages("delivery_unknown")
     root.failQueuedGroupInvites("helper_restarted")
     root.reconnectGeneration = root.reconnectGeneration + 1

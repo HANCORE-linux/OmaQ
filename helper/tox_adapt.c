@@ -884,6 +884,14 @@ int omaq_tox_friend_delete(struct omaq_tox *t, uint32_t friend_number)
 	return 0;
 }
 
+int omaq_tox_friend_count(struct omaq_tox *t, size_t *count)
+{
+	if (!t || !t->tox || !count)
+		return -1;
+	*count = tox_self_get_friend_list_size(t->tox);
+	return 0;
+}
+
 int omaq_tox_friend_list(struct omaq_tox *t, uint32_t *out, size_t max)
 {
 	size_t n;
@@ -996,16 +1004,16 @@ int omaq_tox_friend_add(struct omaq_tox *t, const char *addr_hex, const char *ms
 	if (!t || !addr_hex || !msg)
 		return -1;
 	if (strlen(addr_hex) != TOX_ADDRESS_SIZE * 2)
-		return -1;
+		return OMAQ_TOX_ADD_REJECTED;
 	if (hex_in(addr_hex, addr, TOX_ADDRESS_SIZE) != 0)
-		return -1;
+		return OMAQ_TOX_ADD_REJECTED;
 	fn = tox_friend_add(t->tox, addr, (const uint8_t *)msg, strlen(msg), &err);
 	if (err != TOX_ERR_FRIEND_ADD_OK)
-		return -1;
+		return OMAQ_TOX_ADD_REJECTED;
 	if (omaq_tox_save(t) < 0) {
 		Tox_Err_Friend_Delete delete_err = TOX_ERR_FRIEND_DELETE_OK;
 		(void)tox_friend_delete(t->tox, fn, &delete_err);
-		return -1;
+		return OMAQ_TOX_ADD_STATE_FAILED;
 	}
 	if (fn_out)
 		*fn_out = fn;
@@ -1020,11 +1028,11 @@ int omaq_tox_friend_accept(struct omaq_tox *t, const uint8_t *pk32)
 	{
 		uint32_t friend_number = tox_friend_add_norequest(t->tox, pk32, &err);
 		if (err != TOX_ERR_FRIEND_ADD_OK)
-			return -1;
+			return OMAQ_TOX_ADD_REJECTED;
 		if (omaq_tox_save(t) < 0) {
 			Tox_Err_Friend_Delete delete_err = TOX_ERR_FRIEND_DELETE_OK;
 			(void)tox_friend_delete(t->tox, friend_number, &delete_err);
-			return -1;
+			return OMAQ_TOX_ADD_STATE_FAILED;
 		}
 	}
 	return 0;

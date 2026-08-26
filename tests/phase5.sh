@@ -424,16 +424,21 @@ if grep -a '"event":"group.info"' "$out" | grep -a -q '"group":"'"$exported_gid"
 fi
 
 # Search fixture on disk (no need for a live message).
-python3 - "$ha" <<'PY'
+search_gid="g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+python3 - "$ha" "$search_gid" <<'PY'
 import os, sys
-home = sys.argv[1]
-d = os.path.join(home, "history", "c1")
-os.makedirs(d, 0o700)
+home, conversation = sys.argv[1:]
+history = os.path.join(home, "history")
+os.makedirs(history, 0o700, exist_ok=True)
+os.chmod(history, 0o700)
+d = os.path.join(history, conversation)
+os.makedirs(d, 0o700, exist_ok=True)
+os.chmod(d, 0o700)
 p = os.path.join(d, "messages.jsonl")
 open(p, "w").write('{"text":"needle-unique-xyz"}\n{"text":"other"}\n')
 os.chmod(p, 0o600)
 PY
-echo '{"op":"search","conversation":"c1","text":"needle-unique","id":"phase5-search"}' >&3
+printf '{"op":"search","conversation":"%s","text":"needle-unique","id":"phase5-search"}\n' "$search_gid" >&3
 i=0
 ok=0
 while [ "$i" -lt 40 ]; do

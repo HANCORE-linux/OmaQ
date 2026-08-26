@@ -59,7 +59,7 @@ Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallb
 2. Click **Choose**, or enter an **Absolute file path**.
 3. Click **Send file**. Collapse the section with its arrow or use **Cancel** to stop an active outgoing transfer.
 4. A completed transfer keeps its success message and local file path visible until dismissed or replaced by the next file action.
-5. The recipient chooses **Accept** or **Decline**.
+5. The recipient chooses **Accept** or **Decline**. Canceling or declining a normal file leaves a **File transfer canceled** status with a close action in both chats until each user dismisses it.
 6. Accepted files are stored in `~/Downloads/omaq/` by default.
 7. Received audio files provide an in-chat Play/Pause control. Image and video previews are not shown inside the chat.
 
@@ -95,7 +95,7 @@ Groups are private and limited to 10 members.
 
 1. Open **Advanced** → **Groups**.
 2. Enter a name in the full-width field and choose **Create** below it.
-3. Select a named group, choose a contact, then use **Invite Contact**. You can also use the **Add member** icon directly in the group-chat header, where contacts already present in the group are excluded. Internal identifiers such as `g0` are not shown as group names.
+3. Select a named group, choose a contact, then use **Invite Contact**. You can also use the **Add member** icon directly in the group-chat header, where contacts already present in the group are excluded. The UI first shows that the invitation is sending, then keeps **Invitation sent · waiting for acceptance** visible after the helper confirms delivery. Internal identifiers such as `g0` are not shown as group names.
 4. Use **Open** to enter the selected group chat, or use the confirmed **Leave** action for that named group.
 5. The member strip in a group chat shows every cached member's name, role, and online/offline status at the normal composer text size.
 6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation. A removed member may receive and accept a later fresh invite.
@@ -119,3 +119,11 @@ Your OmaQ identity is local. The private identity is not stored on a central cha
 The identity file is stored locally at `~/.local/share/omaq/tox.save`. Export creates a versioned bundle containing that saved identity and its private group mappings. Finish any active group invitation or member-binding confirmation before exporting; OmaQ reports `busy` rather than creating an incomplete bundle. The passphrase encrypts the Tox identity data; filesystem permissions protect the bundle and group metadata. It does not encrypt chat history.
 
 Never send the identity bundle through a public channel. Transfer it securely and delete extra copies. Tox does not restore a missing private-group membership from a Chat ID; OmaQ reports and removes such orphaned mappings instead of fabricating a public join, so another member may need to invite the imported identity again. Do not copy private ratchet state or chat history unless you deliberately want to move that local data as well.
+
+Direct-chat storage is bound to each contact's stable Tox public key rather than its temporary numeric friend number. If an older numeric state has no durable binding proof, OmaQ archives it instead of assigning it to the contact currently holding that number. The panel then asks you to reinvite affected contacts for fresh Signal sessions. The warning marker remains at `~/.local/share/omaq/direct-state-reinvite.required` until you have reviewed the archived `legacy-direct` data and explicitly remove the marker.
+
+## 9. Uninstall and retained data
+
+Run `~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh` to unload and remove the plugin while printing the data locations that remain. Omarchy deletes a Git-managed plugin folder, including local modifications inside it, while a plain plugin folder is moved to the exact hidden backup path printed by the wrapper. Uninstalling does not delete `~/.local/share/omaq/`, `~/.local/state/omaq/`, `~/Downloads/omaq/`, optional `~/.local/state/omaq-deploy-backups/`, or the dependency packages `toxcore`, `libsignal-protocol-c`, `libpulse`, `ttf-material-symbols-variable`, and `qrencode`; the optional verification tool `zbar` also remains when installed for testing.
+
+Retaining these locations protects your identity, Ratchet state, groups, history, preferences, receipts, and downloaded files if you reinstall. The wrapper prints independent manual commands for inspecting and permanently deleting each retained data directory and any exact plugin-backup path later. It also shows how to inspect dependency packages and remove them only when no other application needs them. Deleting `~/.local/share/omaq/` permanently destroys the local identity and chat data; deleting `~/Downloads/omaq/` removes received files. Each deletion is irreversible, so remove only data you no longer need.

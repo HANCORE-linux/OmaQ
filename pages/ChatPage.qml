@@ -1506,6 +1506,8 @@ FocusScope {
       return
     }
     root.showFile = true
+    if (root.service)
+      root.service.dismissFileNotice(root.conversation)
     if (!root.restoreOutgoingFileStatus()) {
       root.fileStatus = ""
       root.fileStatusPath = ""
@@ -1601,6 +1603,23 @@ FocusScope {
     root.closeFileChooser()
     root.fileStatus = "Sending…"
     root.fileStatusPath = path
+  }
+
+  function restoreFileNotice() {
+    if (root.demo || !root.service)
+      return false
+    var notice = root.service.fileNotice(root.conversation)
+    if (notice && notice.state === "canceled") {
+      fileStatusTimer.stop()
+      root.fileStatus = "File transfer canceled"
+      root.fileStatusPath = ""
+      return true
+    }
+    if (root.fileStatus === "File transfer canceled") {
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+    }
+    return false
   }
 
   function restoreOutgoingFileStatus() {
@@ -1917,7 +1936,7 @@ FocusScope {
           String(root.service.lastGroupInviteSentFriend || "") !== root.groupInviteFriendId ||
           String(root.service.lastGroupInviteSentRequest || "") !== root.groupInviteRequest)
         return
-      root.groupInviteFeedback = "Group invite sent"
+      root.groupInviteFeedback = "Invitation sent · waiting for acceptance"
     }
     function onGroupInviteFailedTickChanged() {
       if (root.groupInviteFeedback !== "Sending group invite…" || !root.service ||
@@ -1929,6 +1948,9 @@ FocusScope {
         ? "Recipient is handling another group invite"
         : (root.service.lastGroupInviteFailedCode === "already_member"
           ? "Contact is already a group member" : "Group invite failed")
+    }
+    function onFileNoticeTickChanged() {
+      root.restoreFileNotice()
     }
     function onLastErrorTickChanged() {
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
@@ -1955,8 +1977,13 @@ FocusScope {
         root.fileStatus = "Sending…"
         var sendingTransfer = root.service.outgoingFile(root.conversation)
         root.fileStatusPath = String(sendingTransfer.path || root.service.lastFilePath || "")
-      } else if (root.service.lastFileState === "canceling" || root.service.lastFileState === "canceled") {
+      } else if (root.service.lastFileState === "canceling") {
         root.closeFileChooser()
+      } else if (root.service.lastFileState === "canceled") {
+        root.closeFileChooser()
+        root.fileStatus = "File transfer canceled"
+        root.fileStatusPath = ""
+        fileStatusTimer.stop()
       } else if (root.service.lastFileState === "done") {
         var completedTransfer = root.service.outgoingFile(root.conversation)
         var completedPath = root.service.lastFileDir === "out"
@@ -1999,7 +2026,8 @@ FocusScope {
     root.readRetryBlocked = false
     root.readRetryAttempts = 0
     readRetry.interval = 2500
-    root.restoreOutgoingFileStatus()
+    if (!root.restoreFileNotice())
+      root.restoreOutgoingFileStatus()
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
       root.service.requestHistory(root.conversation)
@@ -2023,6 +2051,7 @@ FocusScope {
   Component.onCompleted: {
     root.groupMembersOpen = root.groupConversation
     root.closeGroupInvite()
+    root.restoreFileNotice()
     if (root.demo)
       root.resetDemo()
   }
@@ -3399,12 +3428,15 @@ FocusScope {
         }
 
         FormatBtn {
+          id: dismissFileStatusButton
           visible: (!root.service || !root.service.fileSendingFor(root.conversation)) &&
             root.reactionStatus === "" && root.fileStatus !== ""
           materialIcon: "close"
           helpText: "Dismiss file status"
           onClicked: {
             fileStatusTimer.stop()
+            if (root.service)
+              root.service.dismissFileNotice(root.conversation)
             root.fileStatus = ""
             root.fileStatusPath = ""
           }

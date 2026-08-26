@@ -17,6 +17,7 @@ typedef enum {
 typedef enum {
 	OMAQ_FILE_EVENT_NONE = 0,
 	OMAQ_FILE_EVENT_FAILED,
+	OMAQ_FILE_EVENT_CANCELED,
 	OMAQ_FILE_EVENT_DONE,
 	OMAQ_FILE_EVENT_AVATAR
 } omaq_file_event;
@@ -49,7 +50,8 @@ int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, size_t len);
 int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 		       const uint8_t *data, size_t len, char *done_path, size_t n);
-void omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum);
+int omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum);
+void omaq_file_drop(uint32_t friend, uint32_t fnum);
 int omaq_file_busy(void);
 void omaq_file_reset(void);
 #endif

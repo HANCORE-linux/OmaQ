@@ -12,6 +12,7 @@
 struct omaq_tox { int unused; };
 
 static int fails;
+static int fail_file_control;
 
 static void fail(const char *message)
 {
@@ -61,7 +62,7 @@ int omaq_tox_file_control(struct omaq_tox *t, uint32_t friend, uint32_t fnum, in
 	(void)friend;
 	(void)fnum;
 	(void)control;
-	return 0;
+	return fail_file_control ? -1 : 0;
 }
 
 int main(void)
@@ -112,7 +113,10 @@ int main(void)
 		if (omaq_file_event_for(omaq_file_is_avatar(7, 10), OMAQ_FILE_OUTCOME_ERROR) !=
 		    OMAQ_FILE_EVENT_FAILED)
 			fail("normal transfer error must report file.failed");
-		omaq_file_cancel(NULL, 7, 10);
+		if (omaq_file_event_for(omaq_file_is_avatar(7, 10), OMAQ_FILE_OUTCOME_CANCEL) !=
+		    OMAQ_FILE_EVENT_CANCELED)
+			fail("normal transfer cancel must report file.canceled");
+		omaq_file_drop(7, 10);
 		if (omaq_file_can_cancel(7, 10))
 			fail("normal cancel cleanup");
 	}
@@ -127,7 +131,7 @@ int main(void)
 		    !omaq_file_is_avatar(8, 11) ||
 		    omaq_file_event_for(1, OMAQ_FILE_OUTCOME_ERROR) != OMAQ_FILE_EVENT_NONE)
 			fail("avatar error suppresses file.failed");
-		omaq_file_cancel(NULL, 8, 11);
+		omaq_file_drop(8, 11);
 	}
 	if (snprintf(dest, sizeof(dest), "%s/avatars/9.png", home) >= (int)sizeof(dest) ||
 	    omaq_file_recv_begin(home, "9", 9, 12, "avatar.png", sizeof(data),
@@ -137,9 +141,25 @@ int main(void)
 		if (!omaq_file_is_avatar(9, 12) ||
 		    omaq_file_event_for(1, OMAQ_FILE_OUTCOME_CANCEL) != OMAQ_FILE_EVENT_NONE)
 			fail("avatar cancel suppresses file.failed");
-		omaq_file_cancel(NULL, 9, 12);
+		omaq_file_drop(9, 12);
 		if (omaq_file_is_avatar(9, 12))
 			fail("avatar cancel cleanup");
+	}
+
+	/* A failed transport cancellation remains retryable and is never reported committed. */
+	if (snprintf(dest, sizeof(dest), "%s/cancel-retry.bin", home) >= (int)sizeof(dest) ||
+	    omaq_file_recv_begin(home, "40", 40, 40, "retry.bin", sizeof(data),
+				 dest, got, sizeof(got), 0) != 0)
+		fail("cancel retry receive begin");
+	else {
+		fail_file_control = 1;
+		if (omaq_file_cancel((struct omaq_tox *)1, 40, 40) == 0 ||
+		    !omaq_file_can_cancel(40, 40))
+			fail("failed cancel was committed");
+		fail_file_control = 0;
+		if (omaq_file_cancel((struct omaq_tox *)1, 40, 40) != 0 ||
+		    omaq_file_can_cancel(40, 40))
+			fail("cancel retry did not commit");
 	}
 
 	/* Identity reset removes partial incoming files and all in-memory slots. */
@@ -179,7 +199,7 @@ int main(void)
 					 NULL, got, sizeof(got), 0) != 0 || strcmp(got, expected) != 0) {
 				fail("download collision keeps extension");
 			} else {
-				omaq_file_cancel(NULL, 30, 30);
+				omaq_file_drop(30, 30);
 			}
 			unlink(existing);
 			unlink(expected);
@@ -206,7 +226,7 @@ int main(void)
 			    !omaq_file_is_sending(21, outgoing_fnum)) {
 				fail("outgoing transfer cancellation setup");
 			} else {
-				omaq_file_cancel(NULL, 21, outgoing_fnum);
+				omaq_file_drop(21, outgoing_fnum);
 				if (omaq_file_can_cancel(21, outgoing_fnum))
 					fail("outgoing transfer cancel cleanup");
 			}

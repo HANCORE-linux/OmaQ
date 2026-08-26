@@ -115,8 +115,11 @@ omaq_file_event omaq_file_event_for(int avatar, omaq_file_outcome outcome)
 	if (avatar)
 		return outcome == OMAQ_FILE_OUTCOME_DONE ? OMAQ_FILE_EVENT_AVATAR :
 			OMAQ_FILE_EVENT_NONE;
-	return outcome == OMAQ_FILE_OUTCOME_DONE ? OMAQ_FILE_EVENT_DONE :
-		OMAQ_FILE_EVENT_FAILED;
+	if (outcome == OMAQ_FILE_OUTCOME_DONE)
+		return OMAQ_FILE_EVENT_DONE;
+	if (outcome == OMAQ_FILE_OUTCOME_CANCEL)
+		return OMAQ_FILE_EVENT_CANCELED;
+	return OMAQ_FILE_EVENT_FAILED;
 }
 
 int omaq_file_path_ok(const char *path)
@@ -591,17 +594,24 @@ int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 	return 0;
 }
 
-void omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum)
+void omaq_file_drop(uint32_t friend, uint32_t fnum)
 {
 	int i = xf_find(friend, fnum, 0);
 
-	(void)omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL);
 	if (i >= 0) {
 		if (!xf[i].sending && xf[i].path[0])
 			unlink(xf[i].path);
 		xf_drop(i);
 	}
 	omaq_file_offer_drop(friend, fnum);
+}
+
+int omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum)
+{
+	if (omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL) != 0)
+		return -1;
+	omaq_file_drop(friend, fnum);
+	return 0;
 }
 
 #endif /* HAVE_TOX */

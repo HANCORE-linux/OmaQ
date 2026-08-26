@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,13 +24,13 @@
 #include <signal/session_cipher.h>
 #include <signal/signal_protocol.h>
 
-#define SLOTS 16
+#define SLOTS 64
 #define PREKEYS 8
 #define SESS_INITIAL 16
 
 struct rec {
 	int used;
-	char name[32];
+	char name[OMAQ_RATCHET_PEER_MAX];
 	uint32_t id;
 	signal_buffer *buf;
 };
@@ -48,7 +49,7 @@ struct omaq_ratchet {
 	struct rec pre[PREKEYS];
 	struct rec spk[4];
 	struct rec ident[SLOTS];
-	char bootstrap_peer[32];
+	char bootstrap_peer[OMAQ_RATCHET_PEER_MAX];
 	uint8_t bootstrap_key[33];
 	size_t bootstrap_len;
 };
@@ -63,14 +64,8 @@ static struct rec *sess_find(struct omaq_ratchet *r, const char *name,
 static int session_path(struct omaq_ratchet *r, const char *name, uint32_t id,
 				char *path, size_t path_size)
 {
-	size_t i;
-
-	if (!r || !name || !name[0] || strlen(name) >= 32 || !path)
+	if (!r || !omaq_ratchet_peer_ok(name) || !path)
 		return -1;
-	for (i = 0; name[i]; i++) {
-		if (!isdigit((unsigned char)name[i]))
-			return -1;
-	}
 	if (snprintf(path, path_size, "%s/ratchet/sess/%s-%u", r->home, name, id) >=
 	    (int)path_size)
 		return -1;
@@ -345,7 +340,7 @@ static int sess_load(signal_buffer **record, signal_buffer **user_record,
 		     const signal_protocol_address *address, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[OMAQ_RATCHET_PEER_MAX];
 	struct rec *s;
 	(void)user_record;
 	if (address->name_len >= sizeof(name))
@@ -365,7 +360,7 @@ static int sess_sub(signal_int_list **sessions, const char *name, size_t name_le
 {
 	struct omaq_ratchet *r = ud;
 	signal_int_list *list = signal_int_list_alloc();
-	char peer[32];
+	char peer[OMAQ_RATCHET_PEER_MAX];
 	int i;
 
 	if (!list)
@@ -388,7 +383,7 @@ static int sess_store(const signal_protocol_address *address, uint8_t *record, s
 		      uint8_t *user_record, size_t user_len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32], path[640];
+	char name[OMAQ_RATCHET_PEER_MAX], path[640];
 	struct rec *s;
 	(void)user_record;
 	(void)user_len;
@@ -409,7 +404,7 @@ static int sess_store(const signal_protocol_address *address, uint8_t *record, s
 static int sess_has(const signal_protocol_address *address, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[OMAQ_RATCHET_PEER_MAX];
 	if (address->name_len >= sizeof(name))
 		return 0;
 	memcpy(name, address->name, address->name_len);
@@ -422,7 +417,7 @@ static int sess_has(const signal_protocol_address *address, void *ud)
 static int sess_del(const signal_protocol_address *address, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32], path[640];
+	char name[OMAQ_RATCHET_PEER_MAX], path[640];
 	struct rec *s;
 	if (address->name_len >= sizeof(name))
 		return 0;
@@ -444,7 +439,8 @@ static int sess_del(const signal_protocol_address *address, void *ud)
 static int sess_del_all(const char *name, size_t name_len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char peer[32], dir[576], prefix[40];
+	char peer[OMAQ_RATCHET_PEER_MAX], dir[576];
+	char prefix[OMAQ_RATCHET_PEER_MAX + 12];
 	DIR *d;
 	struct dirent *ent;
 	int i;
@@ -580,14 +576,8 @@ static void spk_destroy(void *ud)
 static int identity_path(struct omaq_ratchet *r, const char *name,
 				char *path, size_t path_size)
 {
-	size_t i;
-
-	if (!r || !name || !name[0] || strlen(name) >= 32 || !path)
+	if (!r || !omaq_ratchet_peer_ok(name) || !path)
 		return -1;
-	for (i = 0; name[i]; i++) {
-		if (!isdigit((unsigned char)name[i]))
-			return -1;
-	}
 	if (snprintf(path, path_size, "%s/ratchet/ident/%s", r->home, name) >=
 	    (int)path_size)
 		return -1;
@@ -638,7 +628,7 @@ static int id_reg(void *ud, uint32_t *reg)
 static int id_save(const signal_protocol_address *address, uint8_t *key, size_t len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32], dir[576], path[640];
+	char name[OMAQ_RATCHET_PEER_MAX], dir[576], path[640];
 	struct rec *s;
 
 	if (!address || address->name_len >= sizeof(name) || !key || len == 0 ||
@@ -663,7 +653,7 @@ static int id_save(const signal_protocol_address *address, uint8_t *key, size_t 
 static int id_trust(const signal_protocol_address *address, uint8_t *key, size_t len, void *ud)
 {
 	struct omaq_ratchet *r = ud;
-	char name[32];
+	char name[OMAQ_RATCHET_PEER_MAX];
 	struct rec *s;
 	if (address->name_len >= sizeof(name))
 		return 0;
@@ -774,16 +764,44 @@ static int setup_keys(struct omaq_ratchet *r)
 	return 0;
 }
 
+static int fsync_parent(const char *path)
+{
+	char parent[640], *slash;
+	int fd, rc;
+
+	if (!path || strlen(path) >= sizeof(parent))
+		return -1;
+	memcpy(parent, path, strlen(path) + 1);
+	slash = strrchr(parent, '/');
+	if (!slash || slash == parent)
+		return -1;
+	*slash = '\0';
+	fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
+		return -1;
+	rc = fsync(fd);
+	close(fd);
+	return rc;
+}
+
 static int write_blob(const char *path, const uint8_t *p, size_t n)
 {
 	char tmp[580];
 	FILE *f;
+	int fd;
 
-	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+	if (!p || n == 0 || n > OMAQ_RATCHET_RECORD_MAX ||
+	    snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		return -1;
-	f = fopen(tmp, "wb");
-	if (!f)
+	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
 		return -1;
+	f = fdopen(fd, "wb");
+	if (!f) {
+		close(fd);
+		unlink(tmp);
+		return -1;
+	}
 	if (fwrite(p, 1, n, f) != n || fflush(f) != 0 || fsync(fileno(f)) != 0) {
 		fclose(f);
 		unlink(tmp);
@@ -802,7 +820,7 @@ static int write_blob(const char *path, const uint8_t *p, size_t n)
 		unlink(tmp);
 		return -1;
 	}
-	return 0;
+	return fsync_parent(path);
 }
 
 static int read_blob(const char *path, uint8_t **out, size_t *n)
@@ -812,10 +830,19 @@ static int read_blob(const char *path, uint8_t **out, size_t *n)
 	uint8_t *buf;
 	size_t got;
 
-	f = fopen(path, "rb");
-	if (!f)
-		return -1;
-	if (fstat(fileno(f), &st) != 0 || st.st_size <= 0) {
+	{
+		int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+		if (fd < 0)
+			return -1;
+		f = fdopen(fd, "rb");
+		if (!f) {
+			close(fd);
+			return -1;
+		}
+	}
+	if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) ||
+	    st.st_uid != geteuid() || st.st_nlink != 1 || st.st_size <= 0 ||
+	    st.st_size > OMAQ_RATCHET_RECORD_MAX) {
 		fclose(f);
 		return -1;
 	}
@@ -961,6 +988,110 @@ static int load_keys(struct omaq_ratchet *r)
 	return 0;
 }
 
+static int ratchet_key_state(const char *home)
+{
+	static const char *required[] = { "identity", "reg", "spk" };
+	char directory_path[576];
+	struct stat st;
+	DIR *directory;
+	int directory_fd, present = 0, entries = 0;
+
+	if (!home || snprintf(directory_path, sizeof(directory_path), "%s/ratchet", home) >=
+		(int)sizeof(directory_path))
+		return -1;
+	directory_fd = open(directory_path,
+			    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	if (directory_fd < 0)
+		return errno == ENOENT ? 0 : -1;
+	for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+		if (fstatat(directory_fd, required[i], &st, AT_SYMLINK_NOFOLLOW) == 0) {
+			if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+			    (st.st_mode & 0077) != 0 || st.st_size <= 0 ||
+			    st.st_size > OMAQ_RATCHET_RECORD_MAX) {
+				close(directory_fd);
+				return -1;
+			}
+			present++;
+		} else if (errno != ENOENT) {
+			close(directory_fd);
+			return -1;
+		}
+	}
+	directory = fdopendir(dup(directory_fd));
+	if (!directory) {
+		close(directory_fd);
+		return -1;
+	}
+	errno = 0;
+	for (;;) {
+		struct dirent *entry = readdir(directory);
+		int known = 0, removed = 0;
+		if (!entry)
+			break;
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+			entries++;
+			continue;
+		}
+		for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+			char temporary[32];
+			if (strcmp(entry->d_name, required[i]) == 0) {
+				known = 1;
+				break;
+			}
+			if (snprintf(temporary, sizeof(temporary), "%s.tmp", required[i]) >=
+			    (int)sizeof(temporary)) {
+				closedir(directory);
+				close(directory_fd);
+				return -1;
+			}
+			if (strcmp(entry->d_name, temporary) == 0) {
+				if (fstatat(directory_fd, entry->d_name, &st,
+					    AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode) ||
+				    st.st_uid != geteuid() || st.st_nlink != 1 ||
+				    (st.st_mode & 0077) != 0 || st.st_size < 0 ||
+				    st.st_size > OMAQ_RATCHET_RECORD_MAX ||
+				    unlinkat(directory_fd, entry->d_name, 0) != 0) {
+					closedir(directory);
+					close(directory_fd);
+					return -1;
+				}
+				known = 1;
+				removed = 1;
+				break;
+			}
+		}
+		if (removed)
+			continue;
+		if (!known && (strcmp(entry->d_name, "sess") == 0 ||
+			       strcmp(entry->d_name, "rk") == 0 ||
+			       strcmp(entry->d_name, "ident") == 0)) {
+			if (fstatat(directory_fd, entry->d_name, &st,
+				    AT_SYMLINK_NOFOLLOW) != 0 || !S_ISDIR(st.st_mode)) {
+				closedir(directory);
+				close(directory_fd);
+				return -1;
+			}
+			known = 1;
+		}
+		if (!known) {
+			closedir(directory);
+			close(directory_fd);
+			return -1;
+		}
+		entries++;
+	}
+	if (errno != 0 || fsync(directory_fd) != 0) {
+		closedir(directory);
+		close(directory_fd);
+		return -1;
+	}
+	closedir(directory);
+	close(directory_fd);
+	if (present == 3)
+		return 1;
+	return present == 0 && entries == 2 ? 0 : -1;
+}
+
 struct omaq_ratchet *omaq_ratchet_open(const char *home)
 {
 	struct omaq_ratchet *r;
@@ -1047,8 +1178,11 @@ struct omaq_ratchet *omaq_ratchet_open(const char *home)
 		omaq_ratchet_close(r);
 		return NULL;
 	}
-	if (load_keys(r) != 0) {
-		if (setup_keys(r) != 0 || save_keys(r) != 0) {
+	{
+		int key_state = ratchet_key_state(home);
+		if (key_state < 0 ||
+		    (key_state == 1 && load_keys(r) != 0) ||
+		    (key_state == 0 && (setup_keys(r) != 0 || save_keys(r) != 0))) {
 			omaq_ratchet_close(r);
 			return NULL;
 		}
@@ -1290,6 +1424,28 @@ int omaq_ratchet_has_session(struct omaq_ratchet *r, const char *peer)
 		return 0;
 	addr_of(&addr, peer);
 	return signal_protocol_session_contains_session(r->store, &addr) == 1;
+}
+
+void omaq_ratchet_release_peer_cache(struct omaq_ratchet *r, const char *peer)
+{
+	if (!r || !omaq_ratchet_peer_ok(peer))
+		return;
+	for (size_t i = 0; i < r->sess_n; i++)
+		if (r->sess[i].used && strcmp(r->sess[i].name, peer) == 0) {
+			if (r->sess[i].buf)
+				signal_buffer_free(r->sess[i].buf);
+			memset(&r->sess[i], 0, sizeof(r->sess[i]));
+		}
+	for (int i = 0; i < SLOTS; i++)
+		if (r->ident[i].used && strcmp(r->ident[i].name, peer) == 0) {
+			if (r->ident[i].buf)
+				signal_buffer_free(r->ident[i].buf);
+			memset(&r->ident[i], 0, sizeof(r->ident[i]));
+		}
+	if (strcmp(r->bootstrap_peer, peer) == 0) {
+		r->bootstrap_peer[0] = '\0';
+		r->bootstrap_len = 0;
+	}
 }
 
 int omaq_ratchet_encrypt(struct omaq_ratchet *r, const char *peer,

@@ -5,6 +5,7 @@
 
 #define OMAQ_CONV_ID_MAX 80
 #define OMAQ_LAST_MAX 160
+#define OMAQ_UNREAD_COUNT_MAX 999999u
 
 typedef enum { CONV_DIRECT = 0, CONV_GROUP = 1 } omaq_conv_kind;
 
