@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -456,12 +457,47 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 	return 0;
 }
 
+static FILE *open_receive_exclusive(const char *path)
+{
+	FILE *file;
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+
+	if (fd < 0)
+		return NULL;
+	file = fdopen(fd, "wb");
+	if (!file) {
+		close(fd);
+		unlink(path);
+	}
+	return file;
+}
+
+static FILE *open_receive_override(const char *path)
+{
+	struct stat st;
+	FILE *file;
+	int fd;
+
+	fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || fchmod(fd, 0600) != 0 || ftruncate(fd, 0) != 0) {
+		close(fd);
+		return NULL;
+	}
+	file = fdopen(fd, "wb");
+	if (!file)
+		close(fd);
+	return file;
+}
+
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
 			 const char *dest_override, char *dest, size_t destn,
 			 int avatar)
 {
-	char dir[512], safe[OMAQ_FILE_NAME_MAX + 1];
+	char dir[512], safe[OMAQ_FILE_NAME_MAX + 1], target[512];
 	int i;
 	FILE *fp = NULL;
 
@@ -484,7 +520,17 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			return -1;
 	}
 	if (dest_override && dest_override[0]) {
-		fp = fopen(dest, "wb");
+		if (avatar) {
+			uint32_t nonce;
+			if (getrandom(&nonce, sizeof(nonce), 0) != (ssize_t)sizeof(nonce) ||
+			    snprintf(target, sizeof(target), "%s.incoming.%u.%u.%08x", dest,
+				     friend, fnum, nonce) >= (int)sizeof(target) ||
+			    snprintf(dest, destn, "%s", target) >= (int)destn)
+				return -1;
+			fp = open_receive_exclusive(target);
+		} else {
+			fp = open_receive_override(dest);
+		}
 		if (!fp)
 			return -1;
 	}

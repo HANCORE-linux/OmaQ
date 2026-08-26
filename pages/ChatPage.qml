@@ -208,22 +208,28 @@ FocusScope {
 
   component OmaqTooltip: Controls.ToolTip {
     id: omaqTooltip
-    delay: 450
+    delay: 400
     timeout: 2500
-    padding: Style.space(5)
+    padding: 0
+    readonly property var tokenBorderSpec: Border.localOrSurfaceSpec(
+      "tooltip", "border", Color.tooltip.border, Color.tooltip.border,
+      Math.max(1, Style.normalBorderWidth))
 
-    background: Rectangle {
-      radius: Style.cornerRadius
-      color: Qt.darker(root.bg, 1.08)
-      border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.24)
-      border.width: 1
+    background: BorderSurface {
+      color: Color.tooltip.background
+      borderSpec: omaqTooltip.tokenBorderSpec
+      radius: 0
     }
 
     contentItem: Text {
       text: omaqTooltip.text
-      color: root.fg
+      color: Color.tooltip.text
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
+      leftPadding: Border.left(omaqTooltip.tokenBorderSpec) + Style.spacing.controlPaddingX
+      rightPadding: Border.right(omaqTooltip.tokenBorderSpec) + Style.spacing.controlPaddingX
+      topPadding: Border.top(omaqTooltip.tokenBorderSpec) + Style.spacing.controlPaddingY
+      bottomPadding: Border.bottom(omaqTooltip.tokenBorderSpec) + Style.spacing.controlPaddingY
       renderType: Text.QtRendering
     }
   }
@@ -232,7 +238,7 @@ FocusScope {
     id: chatButton
     property string helpText: ""
     property bool suppressHelp: false
-    tooltipText: ""
+    tooltipText: suppressHelp ? "" : helpText
     Accessible.role: Accessible.Button
     Accessible.name: chatButton.helpText !== "" ? chatButton.helpText : chatButton.text
     Accessible.onPressAction: chatButton.clicked()
@@ -247,11 +253,11 @@ FocusScope {
     focusable: true
 
     OmaqTooltip {
-      visible: !chatButton.suppressHelp && chatButton.helpText !== "" &&
-        (chatButton.hot || (chatButton.activeFocus &&
-          (chatButton.activeFocusReason === Qt.TabFocusReason ||
-           chatButton.activeFocusReason === Qt.BacktabFocusReason)))
-      text: chatButton.helpText
+      visible: chatButton.tooltipText !== "" && !chatButton.hot &&
+        chatButton.activeFocus &&
+        (chatButton.activeFocusReason === Qt.TabFocusReason ||
+         chatButton.activeFocusReason === Qt.BacktabFocusReason)
+      text: chatButton.tooltipText
     }
   }
 
@@ -265,15 +271,14 @@ FocusScope {
     topPadding: Style.space(4)
     bottomPadding: Style.space(4)
 
-    background: Rectangle {
+    background: BorderSurface {
       radius: Style.cornerRadius
       color: contextItem.highlighted
-        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+        ? Style.hoverFillFor(root.fg, root.accent)
         : "transparent"
-      border.color: contextItem.highlighted
-        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45)
-        : "transparent"
-      border.width: contextItem.highlighted ? 1 : 0
+      borderSpec: contextItem.highlighted
+        ? Border.controlSpec("hover-cursor", root.fg, root.accent)
+        : Border.none()
     }
 
     contentItem: RowLayout {
@@ -365,7 +370,10 @@ FocusScope {
     TapHandler { onTapped: reactionAction.clicked() }
 
     OmaqTooltip {
-      visible: reactionHover.hovered && reactionAction.tooltipText !== ""
+      visible: reactionAction.tooltipText !== "" &&
+        (reactionHover.hovered || (reactionAction.activeFocus &&
+          (reactionAction.activeFocusReason === Qt.TabFocusReason ||
+           reactionAction.activeFocusReason === Qt.BacktabFocusReason)))
       text: reactionAction.tooltipText
     }
   }

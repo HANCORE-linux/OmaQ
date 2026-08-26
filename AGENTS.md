@@ -57,7 +57,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Opening a rail menu keeps the fixed header, support frame, and right icon rail at their original positions. Every rail selection, confirmation, and submenu remains inside the thin lower-left frame. The panel extends only enough to show the active menu without scrolling when it fits on screen; only the lower-left content may scroll when the available screen height is insufficient.
 - A friend with unread messages has a `color03` underline beneath the displayed name. Hovering or keyboard-focusing a friend name also uses `color03`. Do not show a numeric or pill-shaped unread badge beside a friend name.
 - Newly submitted self nicknames contain 1–18 valid Unicode characters. Remote legacy names may be longer, but every panel name remains single-line and right-elided inside its column. Nickname submissions are immediate-only and request-correlated so delayed results cannot complete a newer edit.
-- Identity actions use one aligned two-column grid for Protect/Remove lock, Export, Import, and Replace. Import validates a selected bundle without replacing the active identity; Replace remains separately confirmed.
+- Identity actions use one aligned two-column grid for Protect/Remove lock, Export, Validate bundle, and Import identity. Validate bundle checks a selected bundle without changing the active identity; Import identity remains separately confirmed.
 - Group-name and Search inputs use the same full lower-left-frame width and standard text-field height as the Identity bundle-path input; their actions sit below them. Every notification-sound option uses the same width and height with enough horizontal room for its complete label.
 - The chat settings section places one short identity-verification explanation directly below **Show safety code**.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.
@@ -105,7 +105,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 ## Networking and security
 
 - Direct messages stay Signal-Ratchet encrypted and fail closed when no session exists. Never send or accept plaintext as a fallback.
-- Tox carries transport; local discovery, UDP, and hole punching may be enabled, with relays as fallback. An `online` state does not guarantee a direct LAN path; do not claim LAN latency is solved without measuring both directions.
+- Tox carries transport in TCP-relay privacy mode. UDP, local discovery, and hole punching stay disabled so contacts do not receive each other's IP addresses. An `online` state does not guarantee a direct LAN path; do not claim LAN latency is solved without measuring both directions.
 - Keep helper protocol and domain validation in C. Validate canonical decimal friend IDs and bounded conversation IDs before conversion.
 - Incoming files are paused until acceptance and default to `~/Downloads/omaq/`; explicit destination overrides remain supported. Never use `$OMAQ_HOME` as the user-facing default download directory. A normal transfer cancellation emits `file.canceled` to both peers, and each chat keeps a dismissible cancellation status visible rather than silently clearing it or reporting a generic failure.
 - Local history clear must remove only the requested conversation and its rotated history; never clear all conversations.

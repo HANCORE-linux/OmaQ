@@ -88,12 +88,13 @@ fi
 cat <<'EOF'
 
 Dependency packages are retained because other applications may use them:
-  toxcore  libsignal-protocol-c  libpulse  ttf-material-symbols-variable  qrencode
+  toxcore  libsignal-protocol-c  libpulse  libpng  libjpeg-turbo  libwebp
+  ttf-material-symbols-variable  qrencode
 The optional verification tool zbar may also remain when it was installed for testing.
 Inspect ownership and dependencies first:
-  pacman -Qi toxcore libsignal-protocol-c libpulse ttf-material-symbols-variable qrencode zbar
+  pacman -Qi toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode zbar
 Only after confirming that no other application needs them, they can be removed with:
-  omarchy pkg drop toxcore libsignal-protocol-c libpulse ttf-material-symbols-variable qrencode zbar
+  omarchy pkg drop toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode zbar
 EOF
 
 if (( remove_status != 0 )); then

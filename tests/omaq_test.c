@@ -29,6 +29,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef HAVE_AVATAR_DECODERS
+#include <jpeglib.h>
+#include <png.h>
+#include <webp/encode.h>
+#endif
+
 static int fails;
 
 static void fail(const char *msg)
@@ -1243,13 +1249,19 @@ static void test_direct_state(void)
 	}
 
 	/* A collision is archived outside the legacy prefix and remains convergent. */
-	if (snprintf(path, sizeof(path), "%s/ratchet/rk/0", dir) >= (int)sizeof(path) ||
-	    write_private_test_file(path, "stale pin\n") != 0 ||
-	    omaq_direct_state_migrate(dir, "0", key) != 0 ||
-	    omaq_direct_state_migrate(dir, "0", key) != 0 ||
-	    snprintf(path, sizeof(path), "%s/ratchet/rk/.legacy-direct.0.0", dir) >=
-	    (int)sizeof(path) || access(path, R_OK) != 0)
+	if (omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/%s", dir, stable) >=
+	    (int)sizeof(path) || write_private_test_file(path, "current pin\n") != 0 ||
+	    snprintf(path, sizeof(path), "%s/ratchet/rk/0", dir) >= (int)sizeof(path) ||
+	    write_private_test_file(path, "stale pin\n") != 0)
+		fail("direct state collision fixture");
+	if (omaq_direct_state_migrate(dir, "0", key) != 0)
+		fail("direct state collision first migration");
+	if (omaq_direct_state_migrate(dir, "0", key) != 0)
 		fail("direct state collision convergence");
+	if (snprintf(path, sizeof(path), "%s/ratchet/rk/.legacy-direct.0.0", dir) >=
+	    (int)sizeof(path) || access(path, R_OK) != 0)
+		fail("direct state collision archive");
 	if (omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
 	    snprintf(path, sizeof(path), "%s/history/%s/messages.jsonl.tmp.123", dir,
 		     stable) >= (int)sizeof(path) ||
@@ -1370,10 +1382,41 @@ static void test_direct_state(void)
 		if (!mkdtemp(removal) || make_direct_state_dirs(removal) != 0) {
 			fail("direct state removal fixture");
 		} else {
-			char pending_pin[65];
+			char pending_pin[65], removal_stable[OMAQ_DIRECT_STATE_ID_MAX];
+			char extra_dir[768];
+			char rk_path[768], ident_path[768], session_path[768];
+			char prekey_path[768], boot_path[768], reply_path[768], history_path[768];
 			current[0].number = 0;
 			memcpy(current[0].key, key, 65);
-			if (omaq_direct_state_reconcile(removal, current, 1, &reinvite) != 0 ||
+			if (snprintf(extra_dir, sizeof(extra_dir), "%s/ratchet/pre", removal) >=
+				    (int)sizeof(extra_dir) || mkdir(extra_dir, 0700) != 0 ||
+			    snprintf(extra_dir, sizeof(extra_dir), "%s/ratchet/boot", removal) >=
+				    (int)sizeof(extra_dir) || mkdir(extra_dir, 0700) != 0 ||
+			    snprintf(extra_dir, sizeof(extra_dir), "%s/ratchet/reply", removal) >=
+				    (int)sizeof(extra_dir) || mkdir(extra_dir, 0700) != 0 ||
+			    omaq_direct_state_id(key, removal_stable, sizeof(removal_stable)) != 0 ||
+			    snprintf(rk_path, sizeof(rk_path), "%s/ratchet/rk/%s", removal,
+				     removal_stable) >= (int)sizeof(rk_path) ||
+			    snprintf(ident_path, sizeof(ident_path), "%s/ratchet/ident/%s", removal,
+				     removal_stable) >= (int)sizeof(ident_path) ||
+			    snprintf(session_path, sizeof(session_path), "%s/ratchet/sess/%s-1", removal,
+				     removal_stable) >= (int)sizeof(session_path) ||
+			    snprintf(prekey_path, sizeof(prekey_path), "%s/ratchet/pre/%s-42", removal,
+				     removal_stable) >= (int)sizeof(prekey_path) ||
+			    snprintf(boot_path, sizeof(boot_path), "%s/ratchet/boot/%s", removal,
+				     removal_stable) >= (int)sizeof(boot_path) ||
+			    snprintf(reply_path, sizeof(reply_path), "%s/ratchet/reply/%s", removal,
+				     removal_stable) >= (int)sizeof(reply_path) ||
+			    snprintf(history_path, sizeof(history_path), "%s/history/%s", removal,
+				     removal_stable) >= (int)sizeof(history_path) ||
+			    mkdir(history_path, 0700) != 0 ||
+			    write_private_test_file(rk_path, "pin\n") != 0 ||
+			    write_private_test_file(ident_path, "identity\n") != 0 ||
+			    write_private_test_file(session_path, "session\n") != 0 ||
+			    write_private_test_file(prekey_path, "prekey\n") != 0 ||
+			    write_private_test_file(boot_path, "boot\n") != 0 ||
+			    write_private_test_file(reply_path, "reply\n") != 0 ||
+			    omaq_direct_state_reconcile(removal, current, 1, &reinvite) != 0 ||
 			    omaq_direct_state_add_begin(removal, key, other) != 0 ||
 			    omaq_direct_state_add_pending(removal, pending_key, pending_pin) != 1 ||
 			    strcmp(pending_key, key) != 0 || strcmp(pending_pin, other) != 0 ||
@@ -1386,7 +1429,11 @@ static void test_direct_state(void)
 							&reinvite) != 0 ||
 			    omaq_direct_state_remove_finish(removal) != 0 ||
 			    omaq_direct_state_remove_pending(removal, pending_key) != 0 ||
-			    omaq_direct_state_reconcile(removal, current, 0, &reinvite) != 0)
+			    omaq_direct_state_reconcile(removal, current, 0, &reinvite) != 0 ||
+			    access(rk_path, F_OK) == 0 || access(ident_path, F_OK) == 0 ||
+			    access(session_path, F_OK) == 0 || access(prekey_path, F_OK) == 0 ||
+			    access(boot_path, F_OK) == 0 || access(reply_path, F_OK) == 0 ||
+			    access(history_path, F_OK) != 0)
 				fail("direct state removal journal");
 		}
 	}
@@ -1701,6 +1748,22 @@ static void test_surface(void)
 		fail("surface list cap");
 	if (omaq_surface_set(dir, &(omaq_surface){ .conversation = "a/../b" }) == 0)
 		fail("surface path escape");
+	{
+		char temporary[256], sentinel[256], content[32];
+		if (snprintf(temporary, sizeof(temporary), "%s/surfaces.jsonl.tmp", dir) >=
+			    (int)sizeof(temporary) ||
+		    write_private_test_file(temporary, "stale\n") != 0 ||
+		    omaq_surface_set(dir, &s) != 0 || access(temporary, F_OK) == 0 ||
+		    snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir) >=
+			    (int)sizeof(sentinel) ||
+		    write_private_test_file(sentinel, "unchanged\n") != 0 ||
+		    symlink(sentinel, temporary) != 0 || omaq_surface_set(dir, &s) == 0 ||
+		    read_file(sentinel, content, sizeof(content)) != 0 ||
+		    strcmp(content, "unchanged") != 0)
+			fail("surface temporary symlink rejection");
+		unlink(temporary);
+		unlink(sentinel);
+	}
 }
 
 static void test_qr_path(void)
@@ -1893,6 +1956,78 @@ static void test_presence(void)
 		fail("typing event conversation validation");
 }
 
+#ifdef HAVE_AVATAR_DECODERS
+static unsigned char *avatar_noise_pixels(uint32_t width, uint32_t height)
+{
+	unsigned char *pixels = malloc((size_t)width * height * 3u);
+	uint32_t state = 0x9e3779b9u;
+
+	if (!pixels)
+		return NULL;
+	for (size_t i = 0; i < (size_t)width * height * 3u; i++) {
+		state = state * 1664525u + 1013904223u;
+		pixels[i] = (unsigned char)(state >> 24);
+	}
+	return pixels;
+}
+
+static int write_avatar_jpeg(const char *path, const unsigned char *pixels,
+			     uint32_t width, uint32_t height)
+{
+	struct jpeg_compress_struct compressor;
+	struct jpeg_error_mgr error;
+	FILE *file = fopen(path, "wb");
+
+	if (!file)
+		return -1;
+	compressor.err = jpeg_std_error(&error);
+	jpeg_create_compress(&compressor);
+	jpeg_stdio_dest(&compressor, file);
+	compressor.image_width = width;
+	compressor.image_height = height;
+	compressor.input_components = 3;
+	compressor.in_color_space = JCS_RGB;
+	jpeg_set_defaults(&compressor);
+	jpeg_set_quality(&compressor, 45, TRUE);
+	jpeg_start_compress(&compressor, TRUE);
+	while (compressor.next_scanline < compressor.image_height) {
+		JSAMPROW row = (JSAMPROW)(pixels +
+			(size_t)compressor.next_scanline * width * 3u);
+		if (jpeg_write_scanlines(&compressor, &row, 1) != 1) {
+			jpeg_destroy_compress(&compressor);
+			fclose(file);
+			return -1;
+		}
+	}
+	jpeg_finish_compress(&compressor);
+	jpeg_destroy_compress(&compressor);
+	return fclose(file) == 0 && chmod(path, 0600) == 0 ? 0 : -1;
+}
+
+static int write_avatar_webp(const char *path, const unsigned char *pixels,
+			     uint32_t width, uint32_t height)
+{
+	uint8_t *encoded = NULL;
+	size_t size = WebPEncodeRGB(pixels, (int)width, (int)height,
+				    (int)(width * 3u), 45.0f, &encoded);
+	FILE *file;
+	int rc = -1;
+
+	if (size == 0 || size > OMAQ_AVATAR_MAX || !(file = fopen(path, "wb"))) {
+		WebPFree(encoded);
+		return -1;
+	}
+	{
+		int write_ok = fwrite(encoded, 1, size, file) == size && fflush(file) == 0;
+		int close_ok = fclose(file) == 0;
+		if (write_ok && close_ok && chmod(path, 0600) == 0)
+			rc = 0;
+	}
+	WebPFree(encoded);
+	return rc;
+}
+#endif
+
 static void test_avatar(void)
 {
 	if (!omaq_avatar_id_ok("self") || !omaq_avatar_id_ok("0") || !omaq_avatar_id_ok("12") ||
@@ -1911,28 +2046,137 @@ static void test_avatar(void)
 	{
 		char d[256];
 		char src[] = "/tmp/omaq-avatar-large.png";
-		unsigned char block[4096] = { 0 };
+		static const unsigned char image[] = {
+			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+			0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+			0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41,
+			0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
+			0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+			0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+			0xae, 0x42, 0x60, 0x82
+		};
 		FILE *f;
 		struct stat st;
-		int i;
 
-		block[0] = 0x89;
-		block[1] = 'P';
-		block[2] = 'N';
-		block[3] = 'G';
 		(void)mkdir("/tmp/omaq-av", 0700);
 		f = fopen(src, "wb");
 		if (!f)
 			fail("avatar fixture open");
 		else {
-			for (i = 0; i < 25; i++)
-				if (fwrite(block, 1, sizeof(block), f) != sizeof(block))
-					fail("avatar fixture write");
+			if (fwrite(image, 1, sizeof(image), f) != sizeof(image) ||
+			    fwrite("TRAILING-PAYLOAD", 1, 16, f) != 16)
+				fail("avatar fixture write");
 			fclose(f);
 		}
 		if (omaq_avatar_install("/tmp/omaq-av", "self", src, d, sizeof(d)) != 0 ||
-		    stat("/tmp/omaq-av/avatars/self.png", &st) != 0 || st.st_size != 25 * (off_t)sizeof(block))
+		    stat("/tmp/omaq-av/avatars/self.png", &st) != 0 || st.st_size <= 0 ||
+		    omaq_avatar_validate_file("/tmp/omaq-av/avatars/self.png") != 0)
 			fail("avatar install large");
+		write_private_test_file("/tmp/omaq-av/avatars/self.png.incoming.1.2.deadbeef",
+					"partial");
+		write_private_test_file("/tmp/omaq-av/avatars/self.png.tmp.123.deadbeef",
+					"partial");
+		write_private_test_file("/tmp/omaq-av/avatars/self.png.incoming.01.2.deadbeef",
+					"keep");
+		write_private_test_file("/tmp/omaq-av/avatars/self.png.tmp.0.deadbeef", "keep");
+		if (omaq_avatar_cleanup_temps("/tmp/omaq-av") != 0 ||
+		    access("/tmp/omaq-av/avatars/self.png.incoming.1.2.deadbeef", F_OK) == 0 ||
+		    access("/tmp/omaq-av/avatars/self.png.tmp.123.deadbeef", F_OK) == 0 ||
+		    access("/tmp/omaq-av/avatars/self.png.incoming.01.2.deadbeef", F_OK) != 0 ||
+		    access("/tmp/omaq-av/avatars/self.png.tmp.0.deadbeef", F_OK) != 0)
+			fail("avatar crash temp cleanup");
+		unlink("/tmp/omaq-av/avatars/self.png.incoming.01.2.deadbeef");
+		unlink("/tmp/omaq-av/avatars/self.png.tmp.0.deadbeef");
+		f = fopen("/tmp/omaq-av/avatars/self.png", "rb");
+		if (!f) {
+			fail("avatar canonical open");
+		} else {
+			unsigned char canonical[1024];
+			size_t canonical_size = fread(canonical, 1, sizeof(canonical), f);
+			fclose(f);
+			if (memmem(canonical, canonical_size, "TRAILING-PAYLOAD", 16) != NULL)
+				fail("avatar canonical trailing payload");
+		}
+		f = fopen("/tmp/omaq-av/avatars/self.png", "wb");
+		if (!f || fwrite("not-an-image", 1, 12, f) != 12 || fclose(f) != 0 ||
+		    omaq_avatar_validate_file("/tmp/omaq-av/avatars/self.png") == 0 ||
+		    omaq_avatar_reconcile("/tmp/omaq-av", "self") != -1 ||
+		    access("/tmp/omaq-av/avatars/self.png", F_OK) == 0)
+			fail("avatar received decode validation");
+#ifdef HAVE_AVATAR_DECODERS
+		{
+			char wide[] = "/tmp/omaq-avatar-wide.png";
+			png_image image_info;
+			unsigned char *pixels = calloc(4097u, 4u);
+			memset(&image_info, 0, sizeof(image_info));
+			image_info.version = PNG_IMAGE_VERSION;
+			image_info.width = 4097;
+			image_info.height = 1;
+			image_info.format = PNG_FORMAT_RGBA;
+			if (!pixels || !png_image_write_to_file(&image_info, wide, 0, pixels, 0, NULL) ||
+			    chmod(wide, 0600) != 0 || omaq_avatar_validate_file(wide) == 0 ||
+			    rename(wide, "/tmp/omaq-av/avatars/self.png") != 0 ||
+			    omaq_avatar_reconcile("/tmp/omaq-av", "self") != -1 ||
+			    access("/tmp/omaq-av/avatars/self.png", F_OK) == 0)
+				fail("avatar dimension bound");
+			free(pixels);
+			unlink(wide);
+		}
+		{
+			const uint32_t noisy_width = 768, noisy_height = 768;
+			unsigned char *pixels = avatar_noise_pixels(noisy_width, noisy_height);
+			const char *sources[2] = {
+				"/tmp/omaq-avatar-noise.jpg", "/tmp/omaq-avatar-noise.webp"
+			};
+			const char *ids[2] = { "60", "61" };
+			if (!pixels || write_avatar_jpeg(sources[0], pixels, noisy_width,
+						      noisy_height) != 0 ||
+			    write_avatar_webp(sources[1], pixels, noisy_width, noisy_height) != 0)
+				fail("compressed avatar fixtures");
+			for (int format = 0; format < 2; format++) {
+				char output[256];
+				struct stat output_status;
+				png_image output_image;
+				memset(&output_image, 0, sizeof(output_image));
+				output_image.version = PNG_IMAGE_VERSION;
+				if (omaq_avatar_install("/tmp/omaq-av", ids[format], sources[format],
+							output, sizeof(output)) != 0 ||
+				    stat(output, &output_status) != 0 ||
+				    output_status.st_size > OMAQ_AVATAR_MAX ||
+				    !png_image_begin_read_from_file(&output_image, output) ||
+				    (output_image.width >= noisy_width &&
+				     output_image.height >= noisy_height))
+					fail("compressed avatar canonical downscale");
+				png_image_free(&output_image);
+				unlink(output);
+				unlink(sources[format]);
+			}
+			free(pixels);
+		}
+#endif
+		for (int avatar_index = 0; avatar_index < 70; avatar_index++) {
+			char avatar_id[16], avatar_path[256];
+			if (snprintf(avatar_id, sizeof(avatar_id), "%d", avatar_index) >=
+				    (int)sizeof(avatar_id) ||
+			    snprintf(avatar_path, sizeof(avatar_path),
+				     "/tmp/omaq-av/avatars/%s.png", avatar_id) >=
+				    (int)sizeof(avatar_path) ||
+			    !(f = fopen(avatar_path, "wb")) ||
+			    fwrite(image, 1, sizeof(image), f) != sizeof(image) || fclose(f) != 0 ||
+			    chmod(avatar_path, 0600) != 0 ||
+			    omaq_avatar_reconcile("/tmp/omaq-av", avatar_id) != 1 ||
+			    access(avatar_path, R_OK) != 0)
+				fail("avatar cache churn");
+		}
+		for (int avatar_index = 0; avatar_index < 70; avatar_index++) {
+			char avatar_path[256];
+			if (snprintf(avatar_path, sizeof(avatar_path),
+				     "/tmp/omaq-av/avatars/%d.png", avatar_index) <
+				    (int)sizeof(avatar_path))
+				unlink(avatar_path);
+		}
 		unlink(src);
 		unlink("/tmp/omaq-av/avatars/self.png");
 		rmdir("/tmp/omaq-av/avatars");

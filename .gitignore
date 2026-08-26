@@ -2,6 +2,7 @@ tests/omaq_test
 tests/stdout_spool_test
 tests/file_transfer_test
 tests/av_state_test
+tests/ratchet_prekey_test
 tests/omaq_ipc_test_helper
 helper/omaq
 *.o

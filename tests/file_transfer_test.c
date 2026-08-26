@@ -98,6 +98,25 @@ int main(void)
 	    omaq_file_name_bytes_ok((const uint8_t *)"\363\240\200\201", 4))
 		fail("file name UTF-8 validation");
 
+	/* An explicit destination never follows a pre-planted symlink. */
+	{
+		char sentinel[512], linkpath[512], content[16] = { 0 };
+		FILE *fixture;
+		if (snprintf(sentinel, sizeof(sentinel), "%s/sentinel", home) >=
+			    (int)sizeof(sentinel) ||
+		    snprintf(linkpath, sizeof(linkpath), "%s/override.bin", home) >=
+			    (int)sizeof(linkpath) || !(fixture = fopen(sentinel, "wb")) ||
+		    fwrite("safe", 1, 4, fixture) != 4 || fclose(fixture) != 0 ||
+		    symlink(sentinel, linkpath) != 0 ||
+		    omaq_file_recv_begin(home, "6", 6, 9, "override.bin", sizeof(data),
+				 linkpath, got, sizeof(got), 0) == 0 ||
+		    !(fixture = fopen(sentinel, "rb")) || fread(content, 1, 4, fixture) != 4 ||
+		    fclose(fixture) != 0 || memcmp(content, "safe", 4) != 0)
+			fail("receive override symlink rejection");
+		unlink(linkpath);
+		unlink(sentinel);
+	}
+
 	/* A normal file keeps normal failure semantics even at an avatar-looking path. */
 	if (snprintf(dest, sizeof(dest), "%s/avatars/7.png", home) >= (int)sizeof(dest) ||
 	    omaq_file_recv_begin(home, "7", 7, 10, "photo.png", sizeof(data),
@@ -127,7 +146,8 @@ int main(void)
 				 dest, got, sizeof(got), 1) != 0)
 		fail("avatar error receive begin");
 	else {
-		if (omaq_file_chunk_in(8, 11, sizeof(data), data, 1, NULL, 0) == 0 ||
+		if (strcmp(dest, got) == 0 || strstr(got, ".incoming.") == NULL ||
+		    omaq_file_chunk_in(8, 11, sizeof(data), data, 1, NULL, 0) == 0 ||
 		    !omaq_file_is_avatar(8, 11) ||
 		    omaq_file_event_for(1, OMAQ_FILE_OUTCOME_ERROR) != OMAQ_FILE_EVENT_NONE)
 			fail("avatar error suppresses file.failed");
@@ -138,7 +158,8 @@ int main(void)
 				 dest, got, sizeof(got), 1) != 0)
 		fail("avatar cancel receive begin");
 	else {
-		if (!omaq_file_is_avatar(9, 12) ||
+		if (strcmp(dest, got) == 0 || strstr(got, ".incoming.") == NULL ||
+		    !omaq_file_is_avatar(9, 12) ||
 		    omaq_file_event_for(1, OMAQ_FILE_OUTCOME_CANCEL) != OMAQ_FILE_EVENT_NONE)
 			fail("avatar cancel suppresses file.failed");
 		omaq_file_drop(9, 12);
@@ -241,13 +262,16 @@ int main(void)
 		fail("avatar success receive begin");
 	else {
 		int avatar = omaq_file_is_avatar(13, 13);
-		if (!avatar ||
+		char staging[512];
+		snprintf(staging, sizeof(staging), "%s", got);
+		if (!avatar || strcmp(dest, staging) == 0 ||
+		    strstr(staging, ".incoming.") == NULL ||
 		    omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE) != OMAQ_FILE_EVENT_AVATAR ||
 		    omaq_file_chunk_in(13, 13, 0, data, sizeof(data), NULL, 0) != 0 ||
 		    omaq_file_chunk_in(13, 13, sizeof(data), NULL, 0, got, sizeof(got)) != 1 ||
-		    strcmp(got, dest) != 0)
+		    strcmp(got, staging) != 0)
 			fail("avatar success uses stored status");
-		unlink(dest);
+		unlink(staging);
 	}
 
 out:

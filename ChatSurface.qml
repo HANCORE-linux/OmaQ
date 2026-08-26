@@ -15,6 +15,7 @@ Item {
   required property var service
   property var bar: null
   property var settings: ({})
+  property string instanceName: "default"
 
   readonly property bool notifyRight: setting("notifyRightPanel", false)
   readonly property bool notifyDesk: setting("notifyDesktop", false)
@@ -37,6 +38,9 @@ Item {
   property string lastNotifiedMessageId: ""
   property string focusConversation: ""
   property int focusRequestTick: 0
+  property var pendingFocusWindow: null
+  property var queuedFocusWindow: null
+  property string queuedFocusTitle: ""
   readonly property bool muted: service ? service.muted : false
   readonly property bool callToneNeeded: service && !service.callToneSuppressed &&
     (service.lastCallState === "incoming" || service.lastCallState === "ringing")
@@ -59,6 +63,8 @@ Item {
     : ""
   readonly property string legacyAutoOpenPath: service
     ? service.stateDir + "/auto-open.json" : ""
+  readonly property string floatScriptPath:
+    String(Qt.resolvedUrl("scripts/float-omaq.sh")).replace(/^file:\/\//, "")
   readonly property var autoOpenFile: autoOpenLoader.item
   readonly property var visualTokens: root.bar && "visualTokens" in root.bar
     ? root.bar.visualTokens : null
@@ -110,6 +116,33 @@ Item {
 
   function floatOmaQWindows() {
     floatOmaQTimer.restart()
+  }
+
+  function chatWindowTitle(conversation) {
+    var key = String(conversation || "")
+    var label = String(root.friendLabel(key) || "Chat")
+      .replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
+    if (label.length > 48)
+      label = label.slice(0, 48)
+    var suffix = key.charAt(0) === "g" ? key.slice(0, 10) : key
+    var instance = String(root.instanceName || "default")
+      .replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
+    return "OmaQ chat — " + label + (suffix ? " · " + suffix : "") +
+      " @ " + (instance || "default")
+  }
+
+  function focusOmaQWindow(windowObject, title) {
+    var target = String(title || "")
+    if (!windowObject || !target)
+      return
+    if (focusOmaQProc.running) {
+      root.queuedFocusWindow = windowObject
+      root.queuedFocusTitle = target
+      return
+    }
+    root.pendingFocusWindow = windowObject
+    focusOmaQProc.command = [root.floatScriptPath, "focus-title", target]
+    focusOmaQProc.running = true
   }
 
   function paletteColor(id, fallback) {
@@ -397,7 +430,7 @@ Item {
   component SurfaceBtn: Button {
     id: surfaceButton
     property string helpText: ""
-    tooltipText: ""
+    tooltipText: helpText
     Accessible.name: helpText !== "" ? helpText : text
     foreground: root.theme().fg || Color.foreground
     accent: root.theme().accent || Color.accent
@@ -410,26 +443,31 @@ Item {
     focusable: true
 
     Controls.ToolTip {
-      id: surfaceTooltip
-      visible: (surfaceButton.hot || surfaceButton.activeFocus) &&
-        surfaceButton.helpText !== ""
-      text: surfaceButton.helpText
-      delay: 450
-      timeout: 2600
-      padding: Style.space(5)
-      background: Rectangle {
-        radius: Style.cornerRadius
-        color: Qt.darker(root.theme().bg || Color.background, 1.08)
-        border.color: Qt.rgba(surfaceButton.foreground.r,
-                              surfaceButton.foreground.g,
-                              surfaceButton.foreground.b, 0.24)
-        border.width: 1
+      id: surfaceFocusTooltip
+      visible: surfaceButton.tooltipText !== "" && !surfaceButton.hot &&
+        surfaceButton.activeFocus &&
+        (surfaceButton.activeFocusReason === Qt.TabFocusReason ||
+         surfaceButton.activeFocusReason === Qt.BacktabFocusReason)
+      text: surfaceButton.tooltipText
+      delay: 400
+      padding: 0
+      readonly property var tokenBorderSpec: Border.localOrSurfaceSpec(
+        "tooltip", "border", Color.tooltip.border, Color.tooltip.border,
+        Math.max(1, Style.normalBorderWidth))
+      background: BorderSurface {
+        color: Color.tooltip.background
+        borderSpec: surfaceFocusTooltip.tokenBorderSpec
+        radius: 0
       }
       contentItem: Text {
-        text: surfaceTooltip.text
-        color: surfaceButton.foreground
+        text: surfaceFocusTooltip.text
+        color: Color.tooltip.text
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
+        leftPadding: Border.left(surfaceFocusTooltip.tokenBorderSpec) + Style.spacing.controlPaddingX
+        rightPadding: Border.right(surfaceFocusTooltip.tokenBorderSpec) + Style.spacing.controlPaddingX
+        topPadding: Border.top(surfaceFocusTooltip.tokenBorderSpec) + Style.spacing.controlPaddingY
+        bottomPadding: Border.bottom(surfaceFocusTooltip.tokenBorderSpec) + Style.spacing.controlPaddingY
         renderType: Text.QtRendering
       }
     }
@@ -712,8 +750,39 @@ Item {
   Process { id: noteProc }
   Process {
     id: floatOmaQProc
-    command: [String(Qt.resolvedUrl("scripts/float-omaq.sh")).replace(/^file:\/\//, "")]
+    command: [root.floatScriptPath]
     running: true
+  }
+  Process {
+    id: floatRuleWatcher
+    command: [root.floatScriptPath, "watch-rules"]
+    running: true
+    onExited: function(code) {
+      if (code !== 2)
+        floatRuleWatcherRestart.restart()
+    }
+  }
+  Timer {
+    id: floatRuleWatcherRestart
+    interval: 2000
+    repeat: false
+    onTriggered: floatRuleWatcher.running = true
+  }
+  Process {
+    id: focusOmaQProc
+    onExited: function(code) {
+      var target = root.pendingFocusWindow
+      root.pendingFocusWindow = null
+      if (target && typeof target.completeRequestedFocus === "function")
+        target.completeRequestedFocus(code === 0)
+      if (root.queuedFocusWindow && root.queuedFocusTitle !== "") {
+        var queuedWindow = root.queuedFocusWindow
+        var queuedTitle = root.queuedFocusTitle
+        root.queuedFocusWindow = null
+        root.queuedFocusTitle = ""
+        Qt.callLater(function() { root.focusOmaQWindow(queuedWindow, queuedTitle) })
+      }
+    }
   }
   Timer {
     id: floatOmaQTimer
@@ -873,8 +942,10 @@ Item {
     delegate: FloatingWindow {
       id: pinWin
       required property var modelData
-      // Keep the map-time title stable so Hyprland can apply the floating rule before map.
-      title: "OmaQ chat"
+      // Keep the first map title stable for the floating rule, then expose a
+      // per-conversation title so an existing chat can be moved precisely.
+      title: pinWin.everShown && pinWin.modelData
+        ? root.chatWindowTitle(pinWin.modelData.conversation) : "OmaQ chat"
       implicitWidth: 420
       implicitHeight: 420
       minimumSize: Qt.size(360, 420)
@@ -885,18 +956,34 @@ Item {
       function applyRequestedFocus() {
         if (!pinWin.modelData || String(pinWin.modelData.conversation) !== root.focusConversation)
           return
-        var requestedConversation = root.focusConversation
         Qt.callLater(function() {
-          var win = pinPage.QsWindow.window
-          if (win && typeof win.requestActivate === "function")
-            win.requestActivate()
-          pinPage.focusComposer()
-          if (root.focusConversation === requestedConversation)
-            root.focusConversation = ""
+          if (pinWin.visible)
+            root.focusOmaQWindow(pinWin, pinWin.title)
         })
       }
 
-      Component.onCompleted: pinWin.applyRequestedFocus()
+      function completeRequestedFocus(moved) {
+        var requestedConversation = pinWin.modelData
+          ? String(pinWin.modelData.conversation) : ""
+        if (!moved)
+          console.warn("OmaQ: could not move chat to the current workspace")
+        var win = pinPage.QsWindow.window
+        if (win && typeof win.requestActivate === "function")
+          win.requestActivate()
+        pinPage.focusComposer()
+        if (root.focusConversation === requestedConversation)
+          root.focusConversation = ""
+      }
+
+      Component.onCompleted: {
+        if (pinWin.backingWindowVisible)
+          pinWin.everShown = true
+        pinWin.applyRequestedFocus()
+      }
+      onBackingWindowVisibleChanged: {
+        if (pinWin.backingWindowVisible)
+          pinWin.everShown = true
+      }
 
       onVisibleChanged: {
         if (visible) {

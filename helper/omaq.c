@@ -78,8 +78,14 @@ static uint64_t g_identity_backup_sequence;
 static uint64_t g_friend_generation;
 static int g_direct_state_migration_failed;
 static int g_direct_state_reinvite_required;
+static int g_avatar_temps_cleaned;
 #ifdef HAVE_SIGNAL
 static struct omaq_ratchet *g_ratchet;
+static struct {
+	int used;
+	char peer[OMAQ_RATCHET_PEER_MAX];
+	int64_t retry_after;
+} g_ratchet_recovery[OMAQ_DIRECT_STATE_FRIEND_MAX];
 #endif
 static uint8_t g_pending_pk[32];
 static int g_have_pending;
@@ -545,6 +551,23 @@ static int persist_reinvite_marker(void)
 	return rc;
 }
 
+static int remove_reinvite_marker(void)
+{
+	int dir_fd = open(home_dir(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+	int rc;
+
+	if (dir_fd < 0)
+		return -1;
+	rc = unlinkat(dir_fd, "direct-state-reinvite.required", 0);
+	if (rc != 0 && errno != ENOENT) {
+		close(dir_fd);
+		return -1;
+	}
+	rc = fsync(dir_fd);
+	close(dir_fd);
+	return rc;
+}
+
 static int reinvite_marker_present(void)
 {
 	struct stat st;
@@ -778,6 +801,11 @@ static int migrate_direct_state_with_removal(const char *removed_key)
 	int add_state, auxiliary_reinvite, marker_state, pending_state, state_reinvite = 0;
 
 	g_direct_state_reinvite_required = 0;
+	if (!g_avatar_temps_cleaned) {
+		if (omaq_avatar_cleanup_temps(home_dir()) != 0)
+			return -1;
+		g_avatar_temps_cleaned = 1;
+	}
 	add_state = omaq_direct_state_add_pending(home_dir(), pending_added_key,
 						 pending_added_pin);
 	if (add_state < 0)
@@ -1004,19 +1032,35 @@ static int bind_sock(void)
 static int write_pid(void)
 {
 	char path[512];
+	struct stat st;
 	FILE *f;
+	int fd;
 
 	if (snprintf(path, sizeof(path), "%s/omaq.pid", state_dir()) >= (int)sizeof(path))
 		return -1;
-	f = fopen(path, "w");
-	if (!f)
+	fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
 		return -1;
-	if (fprintf(f, "%ld\n", (long)getpid()) < 0) {
-		fclose(f);
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || fchmod(fd, 0600) != 0 || ftruncate(fd, 0) != 0) {
+		close(fd);
 		return -1;
 	}
-	fclose(f);
-	return 0;
+	f = fdopen(fd, "w");
+	if (!f) {
+		close(fd);
+		return -1;
+	}
+	{
+		int failed = fprintf(f, "%ld\n", (long)getpid()) < 0;
+		if (!failed && fflush(f) != 0)
+			failed = 1;
+		if (!failed && fsync(fileno(f)) != 0)
+			failed = 1;
+		if (fclose(f) != 0)
+			failed = 1;
+		return failed ? -1 : 0;
+	}
 }
 
 static int write_protocol_marker(void)
@@ -1036,17 +1080,36 @@ static int write_protocol_marker(void)
 			return -1;
 	}
 	if (snprintf(path, sizeof(path), "%s/omaq.protocol", state_dir()) >= (int)sizeof(path) ||
-	    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp))
+	    snprintf(tmp, sizeof(tmp), "%s.tmp.%ld.%s", path, (long)getpid(),
+		     g_instance_id) >= (int)sizeof(tmp))
 		return -1;
-	f = fopen(tmp, "w");
-	if (!f)
-		return -1;
-	if (fchmod(fileno(f), 0600) != 0 ||
-	    fprintf(f, "{\"pid\":%ld,\"version\":%d,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
-		    (long)getpid(), OMAQ_PROTOCOL_VERSION, g_instance_id, nonce) < 0 ||
-	    fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
-		unlink(tmp);
-		return -1;
+	{
+		int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+		if (fd < 0)
+			return -1;
+		f = fdopen(fd, "w");
+		if (!f) {
+			close(fd);
+			unlink(tmp);
+			return -1;
+		}
+	}
+	{
+		int failed = fchmod(fileno(f), 0600) != 0;
+		if (!failed && fprintf(f,
+		    "{\"pid\":%ld,\"version\":%d,\"instance\":\"%s\",\"nonce\":\"%s\"}\n",
+		    (long)getpid(), OMAQ_PROTOCOL_VERSION, g_instance_id, nonce) < 0)
+			failed = 1;
+		if (!failed && fflush(f) != 0)
+			failed = 1;
+		if (!failed && fsync(fileno(f)) != 0)
+			failed = 1;
+		if (fclose(f) != 0)
+			failed = 1;
+		if (failed) {
+			unlink(tmp);
+			return -1;
+		}
 	}
 	if (rename(tmp, path) != 0) {
 		unlink(tmp);
@@ -1948,20 +2011,89 @@ static int send_group_invite_wire(uint32_t friend, const char *url)
 	return omaq_tox_send(g_tox, friend, wire);
 }
 
+static int send_ratchet_bundle_frame(uint32_t friend, const char *peer,
+				     const char *kind, int legacy)
+{
+	char bundle[900], message[940];
+
+	if (!g_tox || !g_ratchet || !peer)
+		return -1;
+	if (kind && strcmp(kind, "q") == 0) {
+		if (omaq_ratchet_request_bundle(g_ratchet, peer, bundle,
+						 sizeof(bundle)) != 0)
+			return -1;
+	} else if (omaq_ratchet_bundle(g_ratchet, peer, bundle, sizeof(bundle)) != 0) {
+		return -1;
+	}
+	if (legacy) {
+		if (snprintf(message, sizeof(message), "OQB1%s", bundle) >=
+		    (int)sizeof(message))
+			return -1;
+	} else if (!kind || (strcmp(kind, "q") != 0 && strcmp(kind, "r") != 0) ||
+		   snprintf(message, sizeof(message), "OQB2|%s|%s", kind, bundle) >=
+		   (int)sizeof(message)) {
+		return -1;
+	}
+	return omaq_tox_send(g_tox, friend, message);
+}
+
+static int send_ratchet_response_frame(uint32_t friend, const char *peer,
+				       const char *request_bundle)
+{
+	char bundle[900], message[940];
+
+	if (!g_tox || !g_ratchet ||
+	    omaq_ratchet_response_bundle(g_ratchet, peer, request_bundle, bundle,
+					 sizeof(bundle)) < 0 ||
+	    snprintf(message, sizeof(message), "OQB2|r|%s", bundle) >=
+		    (int)sizeof(message))
+		return -1;
+	return omaq_tox_send(g_tox, friend, message);
+}
+
+static int ratchet_recovery_allowed(const char *peer)
+{
+	int free_index = -1;
+	int64_t now = (int64_t)time(NULL);
+
+	if (!omaq_ratchet_peer_ok(peer))
+		return 0;
+	for (int i = 0; i < OMAQ_DIRECT_STATE_FRIEND_MAX; i++) {
+		if (!g_ratchet_recovery[i].used) {
+			if (free_index < 0)
+				free_index = i;
+			continue;
+		}
+		if (strcmp(g_ratchet_recovery[i].peer, peer) != 0)
+			continue;
+		if (now < g_ratchet_recovery[i].retry_after)
+			return 0;
+		g_ratchet_recovery[i].retry_after = now + 10;
+		return 1;
+	}
+	if (free_index < 0)
+		return 0;
+	g_ratchet_recovery[free_index].used = 1;
+	g_ratchet_recovery[free_index].retry_after = now + 10;
+	snprintf(g_ratchet_recovery[free_index].peer,
+		 sizeof(g_ratchet_recovery[free_index].peer), "%s", peer);
+	return 1;
+}
+
 static int request_ratchet_session(uint32_t friend)
 {
-	char bundle[900], message[920];
+	char peer[OMAQ_DIRECT_STATE_ID_MAX];
+	int modern, legacy;
 
 	if (!g_tox || !g_ratchet)
 		return -1;
 	if (ratchet_has_session_friend(friend))
 		return 1;
-	if (omaq_ratchet_bundle(g_ratchet, bundle, sizeof(bundle)) != 0 ||
-	    snprintf(message, sizeof(message), "OQB1%s", bundle) >=
-		    (int)sizeof(message) ||
-	    omaq_tox_send(g_tox, friend, message) != 0)
+	if (direct_state_for_friend(friend, peer, sizeof(peer)) != 0)
 		return -1;
-	return 0;
+	modern = send_ratchet_bundle_frame(friend, peer, "q", 0);
+	legacy = send_ratchet_bundle_frame(friend, peer, NULL, 1);
+	return modern == 0 || legacy == 0 ? 0 : -1;
 }
 
 static void emit_group_invite_result(uint32_t friend, const char *group,
@@ -2711,6 +2843,10 @@ static void reset_identity_runtime_state(void)
 	memset(g_pending_pk, 0, sizeof(g_pending_pk));
 	memset(g_file_requests, 0, sizeof(g_file_requests));
 	g_file_request_sequence = 0;
+	g_avatar_temps_cleaned = 0;
+#ifdef HAVE_SIGNAL
+	memset(g_ratchet_recovery, 0, sizeof(g_ratchet_recovery));
+#endif
 	omaq_control_rate_init(&g_group_control_rate);
 	g_av_reset_requested = 0;
 	g_av_reset_next = 0;
@@ -2993,7 +3129,7 @@ static int write_identity_marker(const char *token, const char *fingerprint)
 	if (!f)
 		return -1;
 	if (fchmod(fileno(f), 0600) != 0 ||
-	    fprintf(f, "%s\n%s\n", token, fingerprint) <= 0 ||
+	    fprintf(f, "%s\n%s\nprepared\n", token, fingerprint) <= 0 ||
 	    fflush(f) != 0 || fsync(fileno(f)) != 0)
 		goto marker_done;
 	if (fclose(f) != 0) {
@@ -3014,6 +3150,56 @@ marker_done:
 		return -2;
 	}
 	return errno == ENOENT ? -1 : -2;
+}
+
+static int update_identity_marker_phase(const char *token, const char *fingerprint,
+					const char *phase)
+{
+	char path[640], temporary[700];
+	FILE *file = NULL;
+	uint32_t nonce;
+	int fd = -1, rc = -1;
+
+	if (!identity_token_ok(token) || !fingerprint || strlen(fingerprint) != 64 ||
+	    !phase || (strcmp(phase, "prepared") != 0 && strcmp(phase, "replacement") != 0) ||
+	    identity_marker_path(path, sizeof(path)) != 0 ||
+	    getrandom(&nonce, sizeof(nonce), 0) != (ssize_t)sizeof(nonce) ||
+	    snprintf(temporary, sizeof(temporary), "%s.tmp.%08x", path, nonce) >=
+		(int)sizeof(temporary))
+		return -1;
+	fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return -1;
+	file = fdopen(fd, "w");
+	if (!file) {
+		close(fd);
+		unlink(temporary);
+		return -1;
+	}
+	fd = -1;
+	{
+		int failed = fprintf(file, "%s\n%s\n%s\n", token, fingerprint, phase) <= 0;
+		if (!failed && fflush(file) != 0)
+			failed = 1;
+		if (!failed && fsync(fileno(file)) != 0)
+			failed = 1;
+		if (fclose(file) != 0)
+			failed = 1;
+		file = NULL;
+		if (failed)
+			goto done;
+	}
+	if (rename(temporary, path) != 0 || fsync_directory(state_dir()) != 0)
+		goto done;
+	rc = 0;
+done:
+	if (file)
+		fclose(file);
+	if (fd >= 0)
+		close(fd);
+	if (rc != 0)
+		unlink(temporary);
+	return rc;
 }
 
 static int remove_identity_marker(void)
@@ -3100,21 +3286,43 @@ static int cleanup_orphan_identity_backups(void)
 
 static int recover_identity_replacement(void)
 {
-	char marker[640], token[96], fingerprint[80], backup[700];
+	char marker[640], token[96], fingerprint[80], phase[32], backup[700];
 	identity_state_archive archive;
 	struct stat st;
 	FILE *f;
-	int i;
+	int fd, i;
 
 	if (identity_marker_path(marker, sizeof(marker)) != 0)
 		return -1;
-	f = fopen(marker, "r");
-	if (!f)
+	fd = open(marker, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
 		return errno == ENOENT ? 0 : -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || (st.st_mode & 0077) != 0 || st.st_size <= 0 ||
+	    st.st_size > 192) {
+		close(fd);
+		return -1;
+	}
+	f = fdopen(fd, "r");
+	if (!f) {
+		close(fd);
+		return -1;
+	}
 	if (!fgets(token, sizeof(token), f) || !strchr(token, '\n') ||
 	    strchr(token, '\n')[1] != '\0' ||
 	    !fgets(fingerprint, sizeof(fingerprint), f) || !strchr(fingerprint, '\n') ||
-	    strchr(fingerprint, '\n')[1] != '\0' || fgetc(f) != EOF) {
+	    strchr(fingerprint, '\n')[1] != '\0') {
+		fclose(f);
+		return -1;
+	}
+	if (!fgets(phase, sizeof(phase), f)) {
+		if (!feof(f)) {
+			fclose(f);
+			return -1;
+		}
+		snprintf(phase, sizeof(phase), "prepared");
+	} else if (!strchr(phase, '\n') || strchr(phase, '\n')[1] != '\0' ||
+		   fgetc(f) != EOF) {
 		fclose(f);
 		return -1;
 	}
@@ -3122,7 +3330,9 @@ static int recover_identity_replacement(void)
 		return -1;
 	token[strcspn(token, "\n")] = '\0';
 	fingerprint[strcspn(fingerprint, "\n")] = '\0';
+	phase[strcspn(phase, "\n")] = '\0';
 	if (!identity_token_ok(token) ||
+	    (strcmp(phase, "prepared") != 0 && strcmp(phase, "replacement") != 0) ||
 	    snprintf(backup, sizeof(backup), "%s/tox.save.replace-backup.%s",
 		     home_dir(), token) >= (int)sizeof(backup) ||
 	    prepare_identity_archive(&archive, token, fingerprint) != 0)
@@ -3133,7 +3343,8 @@ static int recover_identity_replacement(void)
 		else if (errno != ENOENT)
 			return -1;
 	}
-	if (omaq_identity_import(home_dir(), backup, 1) != 0 ||
+	if ((strcmp(phase, "replacement") == 0 && remove_reinvite_marker() != 0) ||
+	    omaq_identity_import(home_dir(), backup, 1) != 0 ||
 	    restore_identity_state(&archive) != 0 || fsync_directory(home_dir()) != 0 ||
 	    remove_identity_marker() != 0)
 		return -1;
@@ -3939,6 +4150,7 @@ static void emit_friends(void)
 		status = friend_status == 2 ? "afk" :
 			(friend_status == 1 ? "online" : "offline");
 		if (omaq_direct_state_id(friend_key, avatar_id, sizeof(avatar_id)) == 0 &&
+		    omaq_avatar_reconcile(home_dir(), avatar_id) == 1 &&
 		    omaq_avatar_dest(home_dir(), avatar_id, avatar, sizeof(avatar)) == 0 &&
 		    access(avatar, R_OK) == 0 &&
 		    omaq_json_escape(avatar, escaped_avatar, sizeof(escaped_avatar)) == 0)
@@ -3979,7 +4191,8 @@ static void emit_self_avatar(void)
 {
 	char dest[512];
 
-	if (omaq_avatar_dest(home_dir(), "self", dest, sizeof(dest)) == 0 &&
+	if (omaq_avatar_reconcile(home_dir(), "self") == 1 &&
+	    omaq_avatar_dest(home_dir(), "self", dest, sizeof(dest)) == 0 &&
 	    access(dest, R_OK) == 0)
 		emit_avatar("self", dest);
 	else
@@ -4592,30 +4805,46 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	if (direct_state_for_friend(friend, state_conv, sizeof(state_conv)) != 0)
 		return;
 #ifdef HAVE_SIGNAL
-	if (text && strncmp(text, "OQB1", 4) == 0) {
+	if (text && (strncmp(text, "OQB1", 4) == 0 ||
+		     strncmp(text, "OQB2|q|", 7) == 0 ||
+		     strncmp(text, "OQB2|r|", 7) == 0)) {
 		char expected[OMAQ_RK_HEX + 1];
-		if (!g_ratchet)
+		const char *bundle = text + (text[3] == '2' ? 7 : 4);
+		int modern_request = strncmp(text, "OQB2|q|", 7) == 0;
+		int modern_response = strncmp(text, "OQB2|r|", 7) == 0;
+		int accepted;
+		if (!g_ratchet || omaq_ratchet_pin_get(home_dir(), state_conv, expected,
+						 sizeof(expected)) != 1)
 			return;
-		int had = omaq_ratchet_has_session(g_ratchet, state_conv);
-		int pin = omaq_ratchet_pin_get(home_dir(), state_conv, expected, sizeof(expected));
-		if (pin != 1)
+		accepted = omaq_ratchet_accept_bundle(g_ratchet, state_conv, bundle, expected);
+		if (accepted < 0)
 			return;
-		if (!had && omaq_ratchet_accept_bundle(g_ratchet, state_conv, text + 4, expected) != 0)
-			return;
-		if (!had && g_tox) {
-			char bun[900], bmsg[920];
-			if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) == 0) {
-				snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
-				(void)omaq_tox_send(g_tox, friend, bmsg);
-			}
+		if (modern_request) {
+			/* Requests are idempotent: replay the exact durable response even
+			 * after its private one-time prekey has been consumed. */
+			(void)send_ratchet_response_frame(friend, state_conv, bundle);
+			finish_pending_group_invite(friend);
+		} else if (!modern_response && accepted == 0) {
+			(void)send_ratchet_bundle_frame(friend, state_conv, NULL, 1);
+			finish_pending_group_invite(friend);
+		} else if (modern_response) {
 			finish_pending_group_invite(friend);
 		}
 		return;
 	}
-	if (!text || strncmp(text, "OQR1", 4) != 0 ||
-	    !g_ratchet || omaq_ratchet_decrypt(g_ratchet, state_conv, text, plain,
-					      sizeof(plain)) != 0)
+	if (!text || strncmp(text, "OQR1", 4) != 0 || !g_ratchet)
 		return;
+	{
+		int decrypt_result = omaq_ratchet_decrypt(g_ratchet, state_conv, text,
+						   plain, sizeof(plain));
+		if (decrypt_result != 0) {
+			if (decrypt_result == OMAQ_RATCHET_DECRYPT_RECOVER &&
+			    ratchet_recovery_allowed(state_conv) &&
+			    omaq_ratchet_reset_session(g_ratchet, state_conv) == 0)
+				(void)request_ratchet_session(friend);
+			return;
+		}
+	}
 	text = plain;
 #endif
 	if (text && strncmp(text, "OQX1|gmbd|", 10) == 0) {
@@ -5025,7 +5254,15 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
 		snprintf(conv, sizeof(conv), "%u", friend);
 		if (event == OMAQ_FILE_EVENT_AVATAR) {
-			emit_avatar(conv, dest);
+			char avatar_id[OMAQ_DIRECT_STATE_ID_MAX], installed[512];
+			if (direct_state_for_friend(friend, avatar_id, sizeof(avatar_id)) != 0 ||
+			    omaq_avatar_commit_received(home_dir(), avatar_id, dest, installed,
+						       sizeof(installed)) != 0) {
+				unlink(dest);
+				emit_avatar(conv, "");
+				return;
+			}
+			emit_avatar(conv, installed);
 			emit_friends();
 			return;
 		}
@@ -7902,21 +8139,14 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					return 0;
 				}
 				{
-					char bun[900], packed[3200], wire[3600], mid[64];
+					char packed[3200], wire[3600], mid[64];
 					if (!ratchet_has_session_friend(fn)) {
-						char bmsg[920];
-						if (omaq_ratchet_bundle(g_ratchet, bun, sizeof(bun)) != 0) {
-							emit_message_failed(cid, op->id, "no_ratchet", 0);
+						int request_rc = request_ratchet_session(fn);
+						if (request_rc < 0) {
+							emit_message_failed(cid, op->id,
+								!omaq_tox_friend_online(g_tox, fn)
+									? "offline" : "no_ratchet", 0);
 							return 0;
-						}
-						snprintf(bmsg, sizeof(bmsg), "OQB1%s", bun);
-						{
-							int send_rc = omaq_tox_send(g_tox, fn, bmsg);
-							if (send_rc != 0) {
-								emit_message_failed(cid, op->id,
-									send_rc == -2 ? "offline" : "forbidden", 0);
-								return 0;
-							}
 						}
 						emit_message_failed(cid, op->id, "ratchet_pending", 0);
 						return 0;
@@ -8413,7 +8643,9 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			const char *failure_code = "identity_import_failed";
 			int candidate_error = 0, swapped = 0, archived = 0, marker = 0;
 			int unread_reset = 0, stage_created = 0;
+			int replacement_reinvite_marker_created = 0;
 			int archive_rc, marker_rc, rollback_load = 0, rollback_ok = 1;
+			size_t replacement_friend_count = 0;
 
 			stage[0] = '\0';
 			stage_save[0] = '\0';
@@ -8530,6 +8762,14 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				goto identity_import_rollback;
 			}
 #endif
+			if (omaq_tox_friend_count(g_tox, &replacement_friend_count) != 0 ||
+			    update_identity_marker_phase(token, old_fingerprint, "replacement") != 0 ||
+			    (replacement_friend_count > 0 && persist_reinvite_marker() != 0)) {
+				failure_code = "identity_state_archive_failed";
+				goto identity_import_rollback;
+			}
+			replacement_reinvite_marker_created = replacement_friend_count > 0;
+			g_direct_state_reinvite_required = replacement_friend_count > 0;
 			omaq_unread_destroy(&g_unread);
 			omaq_unread_init(&g_unread);
 			unread_reset = 1;
@@ -8570,6 +8810,9 @@ identity_import_rollback:
 			}
 			if (swapped && omaq_identity_import(home_dir(), backup, 1) != 0)
 				rollback_ok = 0;
+			if (replacement_reinvite_marker_created && remove_reinvite_marker() != 0)
+				rollback_ok = 0;
+			replacement_reinvite_marker_created = 0;
 			if (archived && restore_identity_state(&identity_archive) != 0)
 				rollback_ok = 0;
 			if (unread_reset) {

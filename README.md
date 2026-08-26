@@ -10,7 +10,7 @@ No signup and no email: the identity is created on this machine. No phone number
 
 ## Security
 
-Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. OmaQ keeps Tox in TCP-relay privacy mode with direct UDP discovery and hole punching disabled, so contacts do not receive each other's IP addresses. You can lock the identity file with a passphrase and revoke or rotate an invite if a link leaks.
+Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. OmaQ keeps Tox in TCP-relay privacy mode with direct UDP discovery and hole punching disabled, so contacts do not receive each other's IP addresses. You can lock `tox.save` with a passphrase and revoke or rotate an invite if a link leaks. That passphrase does not encrypt local Ratchet state, avatars, receipts, or chat history; those remain protected by private filesystem permissions.
 
 ## How OmaQ works
 
@@ -30,7 +30,7 @@ the generated `helper/omaq` binary; it is built locally so direct messages can
 require the Signal Double Ratchet:
 
 ```bash
-omarchy pkg add toxcore libsignal-protocol-c libpulse ttf-material-symbols-variable qrencode && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
+omarchy pkg add toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode && omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --enable && make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
 The one-line command installs OmaQ's required packages, adds and enables the
@@ -76,11 +76,12 @@ rm -rf -- "$HOME/.local/state/omaq-deploy-backups"  # deployment backups
 ```
 
 Each deletion is irreversible. Run only the individual commands for data you
-really intend to erase. For a plain plugin folder, the wrapper also prints
+intend to erase. For a plain plugin folder, the wrapper also prints
 safely quoted inspection and deletion commands for its exact backup path.
 
 The dependency packages `toxcore`, `libsignal-protocol-c`, `libpulse`,
-`ttf-material-symbols-variable`, and `qrencode` remain installed because other
+`libpng`, `libjpeg-turbo`, `libwebp`, `ttf-material-symbols-variable`, and
+`qrencode` remain installed because other
 applications may use them. The optional verification tool `zbar` also remains
 when installed for testing. Inspect packages with `pacman -Qi` first. Only when
 no other application needs them, remove them manually with `omarchy pkg drop`

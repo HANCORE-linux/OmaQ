@@ -148,6 +148,7 @@ int omaq_tox_save(struct omaq_tox *t)
 	char path[576], tmp[580];
 	FILE *f = NULL;
 	size_t n, wr, outn;
+	int tmp_fd = -1;
 	uint8_t *plain, *out;
 	Tox_Err_Encryption eerr = TOX_ERR_ENCRYPTION_OK;
 	int dir_fd = -1, rc = -1;
@@ -175,9 +176,29 @@ int omaq_tox_save(struct omaq_tox *t)
 	save_path(t->home, path, sizeof(path));
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		goto done;
-	f = fopen(tmp, "wb");
-	if (!f)
+	{
+		struct stat temporary_stat;
+		if (lstat(tmp, &temporary_stat) == 0) {
+			if (!S_ISREG(temporary_stat.st_mode) ||
+			    temporary_stat.st_uid != geteuid() || temporary_stat.st_nlink != 1 ||
+			    (temporary_stat.st_mode & 0077) != 0 || temporary_stat.st_size < 0 ||
+			    (uint64_t)temporary_stat.st_size > OMAQ_TOX_SAVE_MAX || unlink(tmp) != 0)
+				goto done;
+		} else if (errno != ENOENT) {
+			goto done;
+		}
+	}
+	tmp_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (tmp_fd < 0)
 		goto done;
+	f = fdopen(tmp_fd, "wb");
+	if (!f) {
+		close(tmp_fd);
+		tmp_fd = -1;
+		unlink(tmp);
+		goto done;
+	}
+	tmp_fd = -1;
 	wr = fwrite(out, 1, outn, f);
 	{
 		int write_failed = wr != outn;

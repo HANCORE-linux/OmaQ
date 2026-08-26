@@ -844,6 +844,98 @@ static int validate_stable_sessions(const char *home, const char *stable_id)
 	return 0;
 }
 
+static int peer_record_suffix_ok(const char *suffix, int prekey)
+{
+	const char *end = suffix;
+
+	if (!suffix || !suffix[0] || (suffix[0] == '0' && suffix[1]))
+		return 0;
+	while (*end >= '0' && *end <= '9')
+		end++;
+	if (end == suffix)
+		return 0;
+	if (!*end)
+		return 1;
+	if (strcmp(end, ".tmp") == 0)
+		return 1;
+	return prekey && strcmp(end, ".used") == 0;
+}
+
+static int remove_peer_records(const char *home, const char *relative,
+			       const char *stable, int prefixed, int prekey)
+{
+	int fd = open_relative_dir(home, relative);
+	DIR *directory;
+	struct dirent *entry;
+	size_t stable_length = strlen(stable);
+
+	if (fd == -2)
+		return 0;
+	if (fd < 0)
+		return -1;
+	if (!prefixed) {
+		struct stat st;
+		if (fstatat(fd, stable, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+			int missing = errno == ENOENT;
+			close(fd);
+			return missing ? 0 : -1;
+		}
+		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+		    (st.st_mode & 0077) != 0 || st.st_size <= 0 ||
+		    st.st_size > OMAQ_RATCHET_RECORD_MAX || unlinkat(fd, stable, 0) != 0 ||
+		    fsync(fd) != 0) {
+			close(fd);
+			return -1;
+		}
+		close(fd);
+		return 0;
+	}
+	directory = fdopendir(fd);
+	if (!directory) {
+		close(fd);
+		return -1;
+	}
+	errno = 0;
+	while ((entry = readdir(directory)) != NULL) {
+		struct stat st;
+		const char *suffix;
+		if (strncmp(entry->d_name, stable, stable_length) != 0 ||
+		    entry->d_name[stable_length] != '-')
+			continue;
+		suffix = entry->d_name + stable_length + 1;
+		if (!peer_record_suffix_ok(suffix, prekey) ||
+		    fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+		    !S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+		    (st.st_mode & 0077) != 0 || st.st_size < 0 ||
+		    st.st_size > OMAQ_RATCHET_RECORD_MAX ||
+		    unlinkat(fd, entry->d_name, 0) != 0) {
+			closedir(directory);
+			return -1;
+		}
+	}
+	if (errno != 0 || fsync(fd) != 0) {
+		closedir(directory);
+		return -1;
+	}
+	closedir(directory);
+	return 0;
+}
+
+static int forget_removed_ratchet(const char *home, const char *key)
+{
+	char stable[OMAQ_DIRECT_STATE_ID_MAX];
+
+	if (omaq_direct_state_id(key, stable, sizeof(stable)) != 0 ||
+	    remove_peer_records(home, "ratchet/rk", stable, 0, 0) != 0 ||
+	    remove_peer_records(home, "ratchet/ident", stable, 0, 0) != 0 ||
+	    remove_peer_records(home, "ratchet/boot", stable, 0, 0) != 0 ||
+	    remove_peer_records(home, "ratchet/reply", stable, 0, 0) != 0 ||
+	    remove_peer_records(home, "ratchet/sess", stable, 1, 0) != 0 ||
+	    remove_peer_records(home, "ratchet/pre", stable, 1, 1) != 0)
+		return -1;
+	return 0;
+}
+
 static int validate_stable_state(const char *home, const char *key)
 {
 	char stable[OMAQ_DIRECT_STATE_ID_MAX], avatar[96];
@@ -1232,6 +1324,8 @@ static int reconcile_friend_state(const char *home,
 			}
 		}
 	}
+	if (removed_key && forget_removed_ratchet(home, removed_key) != 0)
+		return -1;
 	return save_friend_map(home, current, current_count);
 }
 

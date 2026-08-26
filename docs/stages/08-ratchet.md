@@ -7,7 +7,7 @@
 
 - Arch extra `libsignal-protocol-c` 2.3.3-2 (owner: `omarchy pkg add libsignal-protocol-c`)
 - `ratchet_adapt.c` is the only file that includes Signal headers; OpenSSL 3 `libcrypto` is the crypto provider (HMAC/AES already on the box)
-- Direct `msg.send` is Double Ratchet over Tox. Wire prefix `OQB1` (bundle) / `OQR1` (ciphertext). Chat events are decrypted plaintext; successful sends emit a confirmed outgoing `message` event.
+- Direct `msg.send` is Double Ratchet over Tox. `OQB2|q|` / `OQB2|r|` distinguish exact, request-correlated, durably replayable bundle requests and responses, legacy `OQB1` remains the compatibility path, and `OQR1` carries ciphertext. Per-peer one-time prekeys are random, persisted before publication, peer-bound on consumption, recoverable after an interrupted consume, and durable across restart. Lost and half-open sessions rotate stale bootstrap material and request a fresh peer-bound prekey without plaintext fallback. Chat events are decrypted plaintext; successful sends emit a confirmed outgoing `message` event.
 - Direct invite `rk=` (64 hex identity) and the token-authenticated peer pin are persisted; bundles without the expected pin are rejected. Groups unchanged (no `rk`).
 - Ratchet identity, expected pins and session records persist below `$OMAQ_HOME/ratchet/` with `0600` files.
 - One helper, one Tox identity. No Tor process.

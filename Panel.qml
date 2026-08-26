@@ -73,6 +73,10 @@ BarWidget {
   property string identityFeedback: ""
   property string identityFeedbackRequest: ""
   property bool identityFeedbackError: false
+  property string settingsPersistenceWarning: ""
+  property var settingsPersistenceExpected: ({})
+  property bool settingsPersistencePending: false
+  property int settingsPersistenceAttempts: 0
   property bool identityActionPending: false
   property string identityPickerMode: ""
   property int identityPickerExitCode: -1
@@ -776,7 +780,7 @@ BarWidget {
     if (code === "direct_state_migration_failed")
       return "Legacy direct-chat state could not be migrated safely."
     if (code === "direct_state_reinvite_required")
-      return "Legacy direct-chat state was archived safely. Reinvite contacts, review the archive, then clear its marker."
+      return "Direct-chat encryption state was reset or archived. Remove affected contacts on both sides, exchange a fresh invite, then clear the marker."
     return code
   }
 
@@ -1170,7 +1174,7 @@ BarWidget {
     if (code === "locked")
       return "The identity passphrase is incorrect."
     if (code === "identity_exists")
-      return "An identity already exists. Use Replace to continue."
+      return "An identity already exists. Use Import identity to continue."
     if (code === "identity_passphrase_required")
       return "Enter the imported identity's passphrase first."
     if (code === "identity_import_failed")
@@ -1249,7 +1253,7 @@ BarWidget {
     root.identityFeedbackError = false
     root.identityFeedback = key === "export" ? "Exporting identity…"
       : key === "import" ? "Checking identity bundle…"
-      : key === "replace" ? "Replacing identity…"
+      : key === "replace" ? "Importing identity…"
       : key === "unprotect" ? "Removing identity protection…"
       : key === "unlock" ? "Unlocking identity…"
       : "Protecting identity…"
@@ -1326,7 +1330,7 @@ BarWidget {
       root.replaceIdentityPath = path
       root.replaceIdentityConfirm = true
       root.identityFeedbackError = false
-      root.identityFeedback = "Review the selected identity before replacing the current one."
+      root.identityFeedback = "Review the selected bundle before importing this identity."
       return
     }
     root.runIdentityAction("import", path)
@@ -1392,18 +1396,96 @@ BarWidget {
     return v ? String(v) : "system"
   }
 
+  function verifyPersistedSettings(raw) {
+    if (!root.settingsPersistencePending)
+      return
+    var config
+    try { config = JSON.parse(String(raw || "")) } catch (error) {
+      root.settingsPersistenceWarning = "This setting is active for this session but could not be saved."
+      return
+    }
+    var candidates = []
+    var layout = config && config.bar && config.bar.layout
+    var sections = ["left", "center", "right"]
+    var section
+    if (layout) {
+      for (section = 0; section < sections.length; section++) {
+        var entries = layout[sections[section]] || []
+        for (var entryIndex = 0; entryIndex < entries.length; entryIndex++)
+          candidates.push(entries[entryIndex])
+      }
+    }
+    var plugins = config && Array.isArray(config.plugins) ? config.plugins : []
+    for (var pluginIndex = 0; pluginIndex < plugins.length; pluginIndex++)
+      candidates.push(plugins[pluginIndex])
+    var expected = root.settingsPersistenceExpected || {}
+    var matched = false
+    for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      var candidate = candidates[candidateIndex]
+      if (!candidate || String(candidate.id || "") !== root.moduleName)
+        continue
+      matched = true
+      for (var key in expected)
+        if (key !== "id" && candidate[key] !== expected[key]) {
+          matched = false
+          break
+        }
+      if (matched)
+        break
+    }
+    if (!matched && root.settingsPersistenceAttempts < 4) {
+      root.settingsPersistenceAttempts = root.settingsPersistenceAttempts + 1
+      settingsVerifyTimer.restart()
+      return
+    }
+    root.settingsPersistencePending = false
+    root.settingsPersistenceWarning = matched ? "" :
+      "This setting is active for this session but could not be saved."
+  }
+
   function persistSettings(values) {
     var entry = { id: root.moduleName }
+    var changed = false
     var existing
     for (existing in root.settings)
       if (existing !== "id")
         entry[existing] = root.settings[existing]
     var key
-    for (key in values)
+    for (key in values) {
+      if (entry[key] !== values[key])
+        changed = true
       entry[key] = values[key]
+    }
     root.settings = entry
-    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
-      root.bar.shell.updateEntryInline(root.moduleName, entry)
+    if (!root.bar || !root.bar.shell ||
+        typeof root.bar.shell.updateEntryInline !== "function") {
+      root.settingsPersistencePending = false
+      root.settingsPersistenceWarning = "This setting is active for this session but could not be saved."
+      return false
+    }
+    try {
+      var result = root.bar.shell.updateEntryInline(root.moduleName, entry)
+      if (changed && result === false) {
+        // False also means the host already has this exact entry; verify the
+        // durable file before deciding whether persistence failed.
+        root.settingsPersistenceExpected = entry
+        root.settingsPersistenceAttempts = 0
+        root.settingsPersistencePending = true
+        settingsVerifyTimer.restart()
+        return true
+      }
+      if (changed) {
+        root.settingsPersistenceExpected = entry
+        root.settingsPersistenceAttempts = 0
+        root.settingsPersistencePending = true
+        settingsVerifyTimer.restart()
+      }
+      return true
+    } catch (error) {
+      root.settingsPersistencePending = false
+      root.settingsPersistenceWarning = "This setting is active for this session but could not be saved."
+      return false
+    }
   }
 
   function setTheme(name) {
@@ -1531,6 +1613,36 @@ BarWidget {
     y = Math.max(margin, Math.min(y, sh - card.height - margin))
     card.x = Math.round(x)
     card.y = Math.round(y)
+  }
+
+  FileView {
+    id: settingsVerifyFile
+    path: root.bar && root.bar.shell && root.bar.shell.userConfigPath
+      ? String(root.bar.shell.userConfigPath) : ""
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.verifyPersistedSettings(text())
+    onLoadFailed: {
+      if (root.settingsPersistencePending && root.settingsPersistenceAttempts < 4) {
+        root.settingsPersistenceAttempts = root.settingsPersistenceAttempts + 1
+        settingsVerifyTimer.restart()
+      } else if (root.settingsPersistencePending) {
+        root.settingsPersistencePending = false
+        root.settingsPersistenceWarning =
+          "This setting is active for this session but could not be saved."
+      }
+    }
+    onFileChanged: reload()
+  }
+
+  Timer {
+    id: settingsVerifyTimer
+    interval: 500
+    repeat: false
+    onTriggered: {
+      if (root.settingsPersistencePending && settingsVerifyFile.path !== "")
+        settingsVerifyFile.reload()
+    }
   }
 
   Service {
@@ -1667,6 +1779,8 @@ BarWidget {
     service: omaq
     bar: root.bar
     settings: root.settings
+    instanceName: button.QsWindow && button.QsWindow.window &&
+      button.QsWindow.window.screen ? String(button.QsWindow.window.screen.name || "default") : "default"
     onFormatToolbarToggled: function(enabled) {
       root.persistSettings({ formatToolbar: enabled })
     }
@@ -1792,9 +1906,10 @@ BarWidget {
           String(omaq.lastIdentityPath || "the selected file") + ".")
       else if (root.identityAction === "import" && op === "inspect")
         root.finishIdentityAction(true,
-          "Identity bundle validated. Use Replace to activate it.")
+          "Identity bundle validated. Use Import identity to activate it.")
       else if (root.identityAction === "replace" && op === "import")
-        root.finishIdentityAction(true, "Identity replaced.")
+        root.finishIdentityAction(true,
+          "Identity imported. Existing direct contacts must be removed on both sides and re-invited before messaging.")
     }
     function onLastErrorTickChanged() {
       if (root.inviteActionPending && root.inviteActionRequest !== "" &&
@@ -3151,6 +3266,15 @@ BarWidget {
             width: parent.width
             spacing: Style.space(8)
 
+            Text {
+              width: parent.width
+              text: "Applies to chat and Demo windows; the panel follows the Omarchy palette."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
             Repeater {
               model: Model.CHAT_THEME_IDS
               delegate: Item {
@@ -3244,17 +3368,20 @@ BarWidget {
           }
 
           Text {
-            visible: omaq.unreadWarning !== "" ||
+            visible: root.settingsPersistenceWarning !== "" ||
+              omaq.unreadWarning !== "" ||
               (chatSurface && chatSurface.autoOpenWarning !== "") ||
               (omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked") &&
                !root.contextualErrorHandled)
             width: parent.width
-            text: omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked") &&
-              !root.contextualErrorHandled
-              ? root.errorText(omaq.lastError)
-              : (omaq.unreadWarning !== "" ? omaq.unreadWarning
-                : (chatSurface && chatSurface.autoOpenWarning !== ""
-                  ? chatSurface.autoOpenWarning : ""))
+            text: root.settingsPersistenceWarning !== ""
+              ? root.settingsPersistenceWarning
+              : (omaq.lastError !== "" && !(omaq.locked && omaq.lastError === "locked") &&
+                 !root.contextualErrorHandled
+                ? root.errorText(omaq.lastError)
+                : (omaq.unreadWarning !== "" ? omaq.unreadWarning
+                  : (chatSurface && chatSurface.autoOpenWarning !== ""
+                    ? chatSurface.autoOpenWarning : "")))
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -4007,6 +4134,16 @@ BarWidget {
                 wrapMode: Text.WordWrap
               }
 
+              Text {
+                visible: root.moreSection === "identity"
+                width: parent.width
+                text: "Validate bundle checks a bundle without changing this identity. Import identity activates it after confirmation."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
               TokenTextField {
                 id: importPath
                 visible: root.moreSection === "identity"
@@ -4069,7 +4206,7 @@ BarWidget {
                   Layout.preferredHeight: root.actionButtonHeight
                   iconText: "file_open"
                   iconFontFamily: "Material Symbols Rounded"
-                  text: "Import"
+                  text: "Validate bundle"
                   focusable: true
                   enabled: !root.identityActionPending
                   onClicked: {
@@ -4089,7 +4226,7 @@ BarWidget {
                   Layout.preferredHeight: root.actionButtonHeight
                   iconText: "published_with_changes"
                   iconFontFamily: "Material Symbols Rounded"
-                  text: "Replace"
+                  text: "Import identity"
                   focusable: true
                   accent: root.urgent
                   enabled: !root.identityActionPending
@@ -4100,7 +4237,7 @@ BarWidget {
                     } else {
                       root.replaceIdentityPath = path
                       root.replaceIdentityConfirm = true
-                      root.identityFeedback = "Review the selected identity before replacing the current one."
+                      root.identityFeedback = "Review the selected bundle before importing this identity."
                       root.identityFeedbackError = false
                     }
                   }
@@ -4121,7 +4258,7 @@ BarWidget {
               Text {
                 visible: root.moreSection === "identity" && root.replaceIdentityConfirm
                 width: parent.width
-                text: "Replace the current identity with " + root.replaceIdentityPath + "?"
+                text: "Import " + root.replaceIdentityPath + " as the active identity? Existing direct contacts will require a fresh invite."
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -4161,7 +4298,7 @@ BarWidget {
                   Layout.preferredHeight: root.actionButtonHeight
                   iconText: "published_with_changes"
                   iconFontFamily: "Material Symbols Rounded"
-                  text: "Replace now"
+                  text: "Import identity now"
                   focusable: true
                   accent: root.urgent
                   enabled: !root.identityActionPending && root.replaceIdentityPath !== ""

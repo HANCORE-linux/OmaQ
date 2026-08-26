@@ -3,6 +3,7 @@
 #include "json_io.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,13 +107,31 @@ static int write_all(const char *path, const omaq_surface *arr, int n)
 {
 	char tmp[580];
 	FILE *f;
-	int i;
+	int fd, i;
 
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		return -1;
-	f = fopen(tmp, "w");
-	if (!f)
+	{
+		struct stat temporary_stat;
+		if (lstat(tmp, &temporary_stat) == 0) {
+			if (!S_ISREG(temporary_stat.st_mode) ||
+			    temporary_stat.st_uid != geteuid() || temporary_stat.st_nlink != 1 ||
+			    (temporary_stat.st_mode & 0077) != 0 || temporary_stat.st_size < 0 ||
+			    temporary_stat.st_size > 65536 || unlink(tmp) != 0)
+				return -1;
+		} else if (errno != ENOENT) {
+			return -1;
+		}
+	}
+	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
 		return -1;
+	f = fdopen(fd, "w");
+	if (!f) {
+		close(fd);
+		unlink(tmp);
+		return -1;
+	}
 	if (fchmod(fileno(f), 0600) != 0) {
 		fclose(f);
 		unlink(tmp);
