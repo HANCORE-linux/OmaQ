@@ -1082,14 +1082,8 @@ BarWidget {
   }
 
   function groupInviteCandidateMatches(groupId, id, expectedKey) {
-    var friendId = String(id || "")
-    var key = String(expectedKey || "")
-    var candidates = omaq.groupInviteCandidates(String(groupId || ""))
-    for (var i = 0; i < candidates.length; i++)
-      if (String(candidates[i].id || "") === friendId &&
-          String(candidates[i].key || "") === key)
-        return true
-    return false
+    return omaq.groupInviteCandidateMatches(String(groupId || ""),
+      String(id || ""), String(expectedKey || ""))
   }
 
   function clearStaleGroupInviteSelection() {

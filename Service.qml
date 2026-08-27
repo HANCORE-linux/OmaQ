@@ -55,6 +55,7 @@ Item {
   readonly property bool supportsDirectRecovery: root.activeHelperProtocol >= 10
   readonly property bool supportsRedeemResults: root.activeHelperProtocol >= 10
   readonly property bool supportsStableDirectState: root.activeHelperProtocol >= 11
+  readonly property bool supportsGroupAttachments: root.activeHelperProtocol >= 12
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -1296,7 +1297,8 @@ Item {
       }
       root.dismissFileNotice(offerConv)
       root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "",
-        key: offerKey, pending: true, active: true })
+        key: offerKey, kind: String(ev.kind || "file"),
+        sender: String(ev.sender || ""), pending: true, active: true })
       root.lastFileId = ev.id || ""
       root.lastFileName = ev.name || ""
       root.pendingFile = true
@@ -1343,7 +1345,7 @@ Item {
           (doneDir === "in" && !root.incomingEventMatches(ev, doneConv)))
         return
       root.lastFileState = "done"
-      root.lastFileError = ""
+      root.lastFileError = String(ev.code || "")
       root.dismissFileNotice(doneConv)
       root.lastFileDir = doneDir
       if (doneDir === "out") {
@@ -1353,7 +1355,12 @@ Item {
         root.lastFilePath = ""
       } else {
         var doneOld = root.fileOffer(doneConv)
-        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", key: doneOld.key || root.friendKeyForConversation(doneConv), pending: false, active: false })
+        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "",
+          name: doneOld.name || root.lastFileName, path: ev.path || "",
+          key: doneOld.key || root.friendKeyForConversation(doneConv),
+          kind: String(ev.kind || doneOld.kind || "file"),
+          sender: String(ev.sender || doneOld.sender || ""),
+          pending: false, active: false })
         root.pendingFile = false
         root.lastFilePath = ev.path || ""
       }
@@ -1378,7 +1385,10 @@ Item {
           root.setOutgoingFile(canceledConv, { id: canceledOutgoing.id || ev.id || "", path: canceledOutgoing.path || "", request: canceledOutgoing.request || "", key: canceledOutgoing.key || "", pending: false, cancelRequested: false })
       } else {
         var canceledOffer = root.fileOffer(canceledConv)
-        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "", name: canceledOffer.name || "", path: "", key: canceledOffer.key || "", pending: false, active: false })
+        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "",
+          name: canceledOffer.name || "", path: "", key: canceledOffer.key || "",
+          kind: canceledOffer.kind || "file", sender: canceledOffer.sender || "",
+          pending: false, active: false })
         root.pendingFile = false
       }
       root.lastFilePath = ""
@@ -1405,7 +1415,10 @@ Item {
           root.setOutgoingFile(failedConv, { id: failedOutgoing.id || ev.id || "", path: failedOutgoing.path || "", request: failedOutgoing.request || "", key: failedOutgoing.key || "", pending: false, cancelRequested: false })
       } else {
         var failedOld = root.fileOffer(failedConv)
-        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", key: failedOld.key || "", pending: false, active: false })
+        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "",
+          name: failedOld.name || "", path: "", key: failedOld.key || "",
+          kind: failedOld.kind || "file", sender: failedOld.sender || "",
+          pending: false, active: false })
         root.pendingFile = false
       }
       root.lastError = "file_failed"
@@ -1631,7 +1644,8 @@ Item {
   function groupConversationOperation(name) {
     return ["msg.send", "history", "search", "history.clear", "message.edit",
       "message.delete", "message.react", "conversation.read", "unread.clear",
-      "receipt.send", "surface.set", "surface.get"].indexOf(String(name || "")) >= 0
+      "receipt.send", "surface.set", "surface.get", "file.send", "file.status",
+      "file.accept", "file.cancel"].indexOf(String(name || "")) >= 0
   }
 
   function operationBindingValid(operation) {
@@ -2197,6 +2211,16 @@ Item {
     }
     return candidates
   }
+  function groupInviteCandidateMatches(groupId, friendId, expectedKey) {
+    var id = String(friendId || "")
+    var key = String(expectedKey || "")
+    var candidates = root.groupInviteCandidates(groupId)
+    for (var i = 0; i < candidates.length; i++)
+      if (String(candidates[i].id || "") === id &&
+          String(candidates[i].key || "") === key)
+        return true
+    return false
+  }
   function groupSelfRole(groupId) {
     var members = root.groupMembers(groupId)
     for (var i = 0; i < members.length; i++)
@@ -2289,7 +2313,9 @@ Item {
         matches = true
         break
       }
-    if (!selected || !matches || !/^[0-9a-f]{64}$/.test(friendKey) ||
+    if (!selected || !matches ||
+        !root.groupInviteCandidateMatches(group, friend, friendKey) ||
+        !/^[0-9a-f]{64}$/.test(friendKey) ||
         !/^gi-[a-z0-9-]{8,70}$/.test(request) ||
         Number(selected.memberCount || 0) >= Number(selected.limit || 10))
       return false
@@ -2462,12 +2488,16 @@ Item {
     var filePath = String(path || "")
     var kind = String(attachmentKind || "file")
     var bindingKey = String(expectedKey || "")
-    if (!c || c.charAt(0) === "g" || !filePath ||
-        !root.directBindingMatches(c, bindingKey) ||
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    if (!c || !filePath ||
+        (!group && !root.directBindingMatches(c, bindingKey)) ||
+        (group && (!root.supportsGroupAttachments || !root.groupById(c))) ||
         (kind !== "file" && kind !== "image") ||
         (kind === "image" && !root.supportsAttachments) ||
         root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
       return false
+    if (group)
+      bindingKey = ""
     root.fileRequestSequence = root.fileRequestSequence + 1
     var requestId = Date.now().toString(36) + "-" + root.fileRequestSequence.toString(36) +
       "-" + Math.floor(Math.random() * 0x100000000).toString(36)
@@ -2495,8 +2525,11 @@ Item {
   function cancelOutgoingFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var transfer = root.outgoingFile(c)
-    if (!root.directBindingMatches(c, expectedKey) ||
-        String(transfer.key || "") !== String(expectedKey || "") ||
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    if ((!group && (!root.directBindingMatches(c, expectedKey) ||
+                    String(transfer.key || "") !== String(expectedKey || ""))) ||
+        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+                   String(transfer.key || "") !== "")) ||
         !transfer.pending || transfer.cancelRequested)
       return false
     root.setOutgoingFile(c, {
@@ -2514,20 +2547,24 @@ Item {
     root.lastFileTick = root.lastFileTick + 1
     if (transfer.id)
       root.sendConversationOp({ op: "file.cancel", conversation: c,
-        id: transfer.id }, expectedKey, false)
+        id: transfer.id }, group ? "" : expectedKey, false)
     return true
   }
   function acceptFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var offer = fileOffer(c)
-    if (!root.directBindingMatches(c, expectedKey) ||
-        String(offer.key || "") !== String(expectedKey || "") || !offer.id)
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    if ((!group && (!root.directBindingMatches(c, expectedKey) ||
+                    String(offer.key || "") !== String(expectedKey || ""))) ||
+        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+                   String(offer.key || "") !== "")) || !offer.id)
       return false
     if (!root.sendConversationOp({ op: "file.accept", conversation: c,
-          id: offer.id }, expectedKey, false))
+          id: offer.id }, group ? "" : expectedKey, false))
       return false
     setFileOffer(c, { id: offer.id, name: offer.name || "", path: offer.path || "",
-      key: offer.key || "", pending: false, active: true })
+      key: offer.key || "", kind: offer.kind || "file",
+      sender: offer.sender || "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
     return true
@@ -2535,14 +2572,18 @@ Item {
   function cancelFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var offer = fileOffer(c)
-    if (!root.directBindingMatches(c, expectedKey) ||
-        String(offer.key || "") !== String(expectedKey || "") || !offer.id)
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    if ((!group && (!root.directBindingMatches(c, expectedKey) ||
+                    String(offer.key || "") !== String(expectedKey || ""))) ||
+        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+                   String(offer.key || "") !== "")) || !offer.id)
       return false
     if (!root.sendConversationOp({ op: "file.cancel", conversation: c,
-          id: offer.id }, expectedKey, false))
+          id: offer.id }, group ? "" : expectedKey, false))
       return false
     setFileOffer(c, { id: offer.id, name: offer.name || "", path: "",
-      key: offer.key || "", pending: false, active: true })
+      key: offer.key || "", kind: offer.kind || "file",
+      sender: offer.sender || "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
     return true

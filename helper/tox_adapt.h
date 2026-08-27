@@ -60,6 +60,9 @@ typedef void (*omaq_on_group_message)(void *ud, uint32_t gnum, uint32_t peer,
 				      const uint8_t *message, size_t length);
 typedef void (*omaq_on_group_peer)(void *ud, uint32_t gnum, uint32_t peer,
 				   int joined, int removed);
+typedef void (*omaq_on_group_packet)(void *ud, uint32_t gnum, uint32_t peer,
+				     const uint8_t *data, size_t length,
+				     int private_packet);
 void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message msg, void *ud);
 void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *ud);
 void omaq_tox_set_friend_status_hook(struct omaq_tox *t, omaq_on_presence cb,
@@ -68,6 +71,8 @@ void omaq_tox_set_typing_hook(struct omaq_tox *t, omaq_on_typing cb, void *ud);
 int omaq_tox_set_typing(struct omaq_tox *t, uint32_t friend_number, int typing);
 void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
 			      omaq_on_group_message msg, omaq_on_group_peer peer, void *ud);
+void omaq_tox_set_group_packet_hook(struct omaq_tox *t,
+				    omaq_on_group_packet packet, void *ud);
 
 int omaq_tox_group_new(struct omaq_tox *t, const char *title, uint32_t *gnum);
 /* Returns 0 on success, 1 for a transient send failure, and -1 permanently. */
@@ -78,6 +83,11 @@ int omaq_tox_group_set_role(struct omaq_tox *t, uint32_t gnum, uint32_t peer, in
 int omaq_tox_group_kick(struct omaq_tox *t, uint32_t gnum, uint32_t peer);
 int omaq_tox_group_leave(struct omaq_tox *t, uint32_t gnum);
 int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text);
+int omaq_tox_group_custom_send(struct omaq_tox *t, uint32_t gnum,
+			       const uint8_t *data, size_t length);
+int omaq_tox_group_custom_private_send(struct omaq_tox *t, uint32_t gnum,
+				       uint32_t peer, const uint8_t *data,
+				       size_t length);
 int omaq_tox_group_self_role(struct omaq_tox *t, uint32_t gnum, int *omaq_role);
 int omaq_tox_group_peer_role(struct omaq_tox *t, uint32_t gnum, uint32_t peer, int *omaq_role);
 int omaq_tox_group_self_peer(struct omaq_tox *t, uint32_t gnum, uint32_t *peer);

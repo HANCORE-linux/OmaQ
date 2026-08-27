@@ -5,6 +5,7 @@
 #include "../helper/avatar.h"
 #include "../helper/file.h"
 #include "../helper/group.h"
+#include "../helper/group_file.h"
 #include "../helper/group_invite.h"
 #include "../helper/identity.h"
 #include "../helper/invite.h"
@@ -1086,6 +1087,125 @@ static void test_safety(void)
 		fail("safety order");
 	if (omaq_safety_code("nope", b, got, sizeof(got)) == 0)
 		fail("safety short");
+}
+
+static void test_group_file_wire(void)
+{
+	omaq_group_file_offer offer, decoded;
+	uint8_t packet[OMAQ_GROUP_FILE_PACKET_MAX + 1];
+	uint8_t payload[OMAQ_GROUP_FILE_DATA_MAX];
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES], parsed[OMAQ_GROUP_FILE_ID_BYTES];
+	uint8_t type;
+	const uint8_t *data = NULL;
+	uint64_t offset = 0;
+	size_t data_length = 0;
+	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
+	int length;
+
+	memset(&offer, 0, sizeof(offer));
+	for (size_t i = 0; i < sizeof(offer.id); i++)
+		offer.id[i] = (uint8_t)i;
+	for (size_t i = 0; i < sizeof(offer.hash); i++)
+		offer.hash[i] = (uint8_t)(255u - i);
+	offer.size = OMAQ_FILE_MAX;
+	snprintf(offer.kind, sizeof(offer.kind), "image");
+	snprintf(offer.name, sizeof(offer.name), "safe image.png");
+	length = omaq_group_file_offer_pack(packet, sizeof(packet), &offer);
+	if (length <= 0 ||
+	    omaq_group_file_offer_unpack(packet, (size_t)length, &decoded) != 0 ||
+	    decoded.size != offer.size || strcmp(decoded.kind, "image") != 0 ||
+	    strcmp(decoded.name, offer.name) != 0 ||
+	    memcmp(decoded.id, offer.id, sizeof(offer.id)) != 0 ||
+	    memcmp(decoded.hash, offer.hash, sizeof(offer.hash)) != 0)
+		fail("group file offer roundtrip");
+	if (omaq_group_file_offer_unpack(packet, (size_t)length - 1, &decoded) == 0 ||
+	    omaq_group_file_offer_unpack(packet, (size_t)length + 1, &decoded) == 0)
+		fail("group file offer exact framing");
+	packet[0] ^= 1;
+	if (omaq_group_file_offer_unpack(packet, (size_t)length, &decoded) == 0)
+		fail("group file offer magic");
+	packet[0] ^= 1;
+	packet[30] = 2;
+	if (omaq_group_file_offer_unpack(packet, (size_t)length, &decoded) == 0)
+		fail("group file offer kind");
+	packet[30] = 1;
+	packet[64] = '/';
+	if (omaq_group_file_offer_unpack(packet, (size_t)length, &decoded) == 0)
+		fail("group file offer unsafe name");
+	snprintf(offer.name, sizeof(offer.name), "safe.png");
+	offer.size = OMAQ_FILE_MAX + 1u;
+	if (omaq_group_file_offer_pack(packet, sizeof(packet), &offer) >= 0)
+		fail("group file offer oversized");
+
+	memcpy(id, offer.id, sizeof(id));
+	if (omaq_group_file_id_hex(id, event_id + 3) != 0) {
+		fail("group file id hex");
+	} else {
+		memcpy(event_id, "gf:", 3);
+		if (omaq_group_file_id_parse(event_id, parsed) != 0 ||
+		    memcmp(id, parsed, sizeof(id)) != 0)
+			fail("group file id parse");
+		event_id[3] = 'A';
+		if (omaq_group_file_id_parse(event_id, parsed) == 0)
+			fail("group file id uppercase");
+	}
+	for (type = OMAQ_GROUP_FILE_ACCEPT; type <= OMAQ_GROUP_FILE_FAIL; type++) {
+		if (type == OMAQ_GROUP_FILE_DATA || type == OMAQ_GROUP_FILE_OFFER)
+			continue;
+		length = omaq_group_file_control_pack(packet, sizeof(packet), type, id);
+		if (length <= 0 ||
+		    omaq_group_file_control_unpack(packet, (size_t)length, &type, parsed) != 0 ||
+		    memcmp(id, parsed, sizeof(id)) != 0 ||
+		    omaq_group_file_control_unpack(packet, (size_t)length + 1,
+						 &type, parsed) == 0)
+			fail("group file control framing");
+	}
+	memset(payload, 0x5a, sizeof(payload));
+	length = omaq_group_file_data_pack(packet, sizeof(packet), id, 17,
+				      payload, sizeof(payload));
+	if (length != OMAQ_GROUP_FILE_PACKET_MAX ||
+	    omaq_group_file_data_unpack(packet, (size_t)length, parsed, &offset,
+					&data, &data_length) != 0 || offset != 17 ||
+	    data_length != OMAQ_GROUP_FILE_DATA_MAX ||
+	    memcmp(data, payload, data_length) != 0)
+		fail("group file data roundtrip");
+	if (!omaq_message_id_reserved("gf:001122") ||
+	    omaq_message_id_reserved("GF:001122") || omaq_message_id_reserved("001122"))
+		fail("group file reserved message namespace");
+	if (omaq_group_file_data_pack(packet, sizeof(packet), id, 0, payload, 0) >= 0 ||
+	    omaq_group_file_data_pack(packet, sizeof(packet), id, 0, payload,
+				      OMAQ_GROUP_FILE_DATA_MAX + 1u) >= 0 ||
+	    omaq_group_file_data_unpack(packet, 30, parsed, &offset, &data,
+					&data_length) == 0)
+		fail("group file data bounds");
+	{
+		char state[] = "/tmp/omaq-group-file-ids-XXXXXX";
+		char store[512];
+		FILE *file;
+		uint8_t second[OMAQ_GROUP_FILE_ID_BYTES];
+		memset(second, 0xa5, sizeof(second));
+		if (!mkdtemp(state) ||
+		    snprintf(store, sizeof(store), "%s/group-file-ids.bin", state) >=
+			(int)sizeof(store) ||
+		    omaq_group_file_id_reserve(state, id) != 0 ||
+		    omaq_group_file_id_reserve(state, id) != 1 ||
+		    omaq_group_file_id_reserve(state, second) != 0)
+			fail("group file durable id reservation");
+		if (chmod(store, 0644) != 0 ||
+		    omaq_group_file_id_reserve(state, offer.id) != -1 ||
+		    chmod(store, 0600) != 0)
+			fail("group file id store permissions");
+		file = fopen(store, "ab");
+		if (!file || fputc(0, file) == EOF || fclose(file) != 0 ||
+		    omaq_group_file_id_reserve(state, offer.id) != -1)
+			fail("group file malformed id store");
+		unlink(store);
+		if (symlink("/dev/null", store) != 0 ||
+		    omaq_group_file_id_reserve(state, offer.id) != -1)
+			fail("group file id store symlink");
+		unlink(store);
+		rmdir(state);
+	}
 }
 
 static void test_group_invite(void)
@@ -2474,6 +2594,7 @@ int main(void)
 	test_rate_key_only();
 	test_control_rate();
 	test_safety();
+	test_group_file_wire();
 	test_group_invite();
 	test_direct_state();
 	test_ratchet_pins();

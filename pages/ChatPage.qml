@@ -96,6 +96,8 @@ FocusScope {
   }
   readonly property bool mediaPathInHistory: root.hasFileMessage(root.mediaPath)
   readonly property bool groupConversation: String(root.conversation || "").charAt(0) === "g"
+  readonly property bool attachmentsAvailable: !root.groupConversation ||
+    !!(root.service && root.service.supportsGroupAttachments)
   readonly property var groupMembers: {
     if (!root.groupConversation || !root.service ||
         typeof root.service.groupMembers !== "function")
@@ -282,6 +284,10 @@ FocusScope {
   component ContextMenuItem: Controls.MenuItem {
     id: contextItem
     property string materialIcon: ""
+    property bool informational: false
+    property color informationalIconColor: root.fg
+    property real informationalIconFill: 0
+    opacity: informational ? 1.0 : (enabled ? 1.0 : 0.62)
     implicitWidth: Style.space(220)
     implicitHeight: visible ? Style.space(32) : 0
     leftPadding: Style.space(8)
@@ -291,10 +297,10 @@ FocusScope {
 
     background: BorderSurface {
       radius: Style.cornerRadius
-      color: contextItem.highlighted
+      color: contextItem.highlighted && !contextItem.informational
         ? Style.hoverFillFor(root.fg, root.accent)
         : "transparent"
-      borderSpec: contextItem.highlighted
+      borderSpec: contextItem.highlighted && !contextItem.informational
         ? Border.controlSpec("hover-cursor", root.fg, root.accent)
         : Border.none()
     }
@@ -307,19 +313,22 @@ FocusScope {
         horizontalAlignment: Text.AlignHCenter
         text: contextItem.materialIcon
         visible: contextItem.materialIcon !== ""
-        color: !contextItem.enabled ? Qt.darker(root.fg, 1.6) :
-          (contextItem.highlighted ? root.accent : root.fg)
+        color: contextItem.informational ? contextItem.informationalIconColor :
+          (!contextItem.enabled ? Qt.darker(root.fg, 1.6) :
+           (contextItem.highlighted ? root.accent : root.fg))
         font.family: "Material Symbols Rounded"
         font.pixelSize: Style.font.icon
-        font.variableAxes: ({ "FILL": 0, "wght": 500 })
+        font.variableAxes: ({ "FILL": contextItem.informational
+          ? contextItem.informationalIconFill : 0, "wght": 500 })
         renderType: Text.QtRendering
       }
 
       Text {
         Layout.fillWidth: true
         text: contextItem.text
-        color: !contextItem.enabled ? Qt.darker(root.fg, 1.6) :
-          (contextItem.highlighted ? root.accent : root.fg)
+        color: contextItem.informational ? root.fg :
+          (!contextItem.enabled ? Qt.darker(root.fg, 1.6) :
+           (contextItem.highlighted ? root.accent : root.fg))
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         elide: Text.ElideRight
@@ -1027,21 +1036,44 @@ FocusScope {
       (selfRole === "admin" && targetRole === "member")
   }
 
-  function inviteGroupFriend(friend) {
+  function selectGroupInviteFriend(friend) {
     if (!root.groupConversation || !root.service || !friend)
       return
-    root.groupLeaveConfirm = false
     var friendId = String(friend.id || "")
-    if (!friendId)
-      return
     var friendKey = String(friend.key || "")
+    if (!root.service.groupInviteCandidateMatches(root.conversation,
+          friendId, friendKey)) {
+      root.closeGroupInvite()
+      return
+    }
+    root.groupLeaveConfirm = false
     root.groupInviteFriendId = friendId
     root.groupInviteFriendKey = friendKey
+    root.groupInviteRequest = ""
+    root.groupInviteGeneration = -1
+    root.groupInviteFeedback = ""
+  }
+
+  function selectedGroupInviteName() {
+    for (var i = 0; i < root.groupInviteCandidates.length; i++)
+      if (String(root.groupInviteCandidates[i].id || "") === root.groupInviteFriendId &&
+          String(root.groupInviteCandidates[i].key || "") === root.groupInviteFriendKey)
+        return String(root.groupInviteCandidates[i].name || "contact")
+    return "contact"
+  }
+
+  function sendGroupInvite() {
+    if (!root.groupConversation || !root.service ||
+        !root.service.groupInviteCandidateMatches(root.conversation,
+          root.groupInviteFriendId, root.groupInviteFriendKey)) {
+      root.groupInviteFeedback = "Group invite failed"
+      return
+    }
     root.groupInviteRequest = root.service.nextGroupInviteRequest()
     root.groupInviteGeneration = Number(root.service.helperInstanceGeneration || 0)
     root.groupInviteFeedback = "Sending group invite…"
-    if (!root.service.inviteToGroup(friendId, friendKey, root.conversation,
-          root.groupInviteRequest))
+    if (!root.service.inviteToGroup(root.groupInviteFriendId,
+          root.groupInviteFriendKey, root.conversation, root.groupInviteRequest))
       root.groupInviteFeedback = "Group invite failed"
   }
 
@@ -1529,7 +1561,7 @@ FocusScope {
 
   function sendPendingImage() {
     var path = String(root.pendingImagePath || "")
-    if (!path || root.demo || root.groupConversation || !root.service ||
+    if (!path || root.demo || !root.attachmentsAvailable || !root.service ||
         !root.directBindingValid)
       return false
     if (!root.service.sendFile(path, root.conversation, "image", root.peerKey)) {
@@ -1643,8 +1675,12 @@ FocusScope {
   }
 
   function attachFile() {
-    if (root.groupConversation)
+    if (root.groupConversation && !root.attachmentsAvailable) {
+      root.fileStatus = "Restart the OmaQ helper before sending group files"
+      fileStatusTimer.interval = 5000
+      fileStatusTimer.restart()
       return
+    }
     if (root.demo) {
       root.demoIncomingFile = true
       root.appendLine({ dir: "sys", text: "File offer: notes.png (demo)", ack: -1 })
@@ -1847,7 +1883,7 @@ FocusScope {
   }
 
   function pasteComposer() {
-    if (root.demo || root.groupConversation || !root.service) {
+    if (root.demo || !root.service || !root.attachmentsAvailable) {
       input.paste()
       return
     }
@@ -1885,8 +1921,8 @@ FocusScope {
       root.fileStatus = "No conversation selected"
       return
     }
-    if (String(root.conversation).charAt(0) === "g") {
-      root.fileStatus = "Files are available in direct chats only"
+    if (root.groupConversation && !root.attachmentsAvailable) {
+      root.fileStatus = "Restart the OmaQ helper before sending group files"
       return
     }
     if (path.charAt(0) !== "/" || path.length >= 512 || path.indexOf("..") !== -1) {
@@ -2350,14 +2386,14 @@ FocusScope {
     function onFriendsChanged() {
       if (!root.service || root.groupInviteFriendId === "")
         return
-      var matches = false
-      for (var i = 0; i < root.service.friends.length; i++)
-        if (String(root.service.friends[i].id || "") === root.groupInviteFriendId &&
-            String(root.service.friends[i].key || "") === root.groupInviteFriendKey) {
-          matches = true
-          break
-        }
-      if (!matches)
+      if (!root.service.groupInviteCandidateMatches(root.conversation,
+            root.groupInviteFriendId, root.groupInviteFriendKey))
+        root.closeGroupInvite()
+    }
+    function onGroupsTickChanged() {
+      if (root.service && root.groupInviteFriendId !== "" &&
+          !root.service.groupInviteCandidateMatches(root.conversation,
+            root.groupInviteFriendId, root.groupInviteFriendKey))
         root.closeGroupInvite()
     }
     function onGroupInviteSentTickChanged() {
@@ -2432,16 +2468,30 @@ FocusScope {
         var completedTransfer = root.service.outgoingFile(root.conversation)
         var completedPath = root.service.lastFileDir === "out"
           ? String(completedTransfer.path || "") : String(root.service.lastFilePath || "")
+        var completionCode = String(root.service.lastFileError || "")
         root.closeFileChooser()
-        root.fileStatus = "File transfer successful"
-        root.fileStatusPath = completedPath
+        if (completionCode === "partial_delivery_unknown")
+          root.fileStatus = "File received by some members; another delivery is unknown"
+        else if (completionCode === "partial_failed")
+          root.fileStatus = "File received by some members; another transfer failed"
+        else if (completionCode === "local_source_changed")
+          root.fileStatus = "File delivered, but the local source changed"
+        else if (completionCode === "local_history_failed")
+          root.fileStatus = "File delivered, but local history could not be saved"
+        else
+          root.fileStatus = "File transfer successful"
+        root.fileStatusPath = completionCode === "local_source_changed" ||
+          completionCode === "local_history_failed" ? "" : completedPath
         fileStatusTimer.stop()
       } else if (root.service.lastFileState === "failed") {
         var failedFile = root.service.outgoingFile(root.conversation)
         var failedPath = root.service.lastFileDir === "out"
           ? String(failedFile.path || "") : ""
+        var failureCode = String(root.service.lastFileError || "file_failed")
         root.closeFileChooser()
-        root.fileStatus = "File transfer failed: " + (root.service.lastFileError || "file_failed")
+        root.fileStatus = failureCode === "local_history_failed"
+          ? "File could not be retained because local history could not be saved"
+          : "File transfer failed: " + failureCode
         root.fileStatusPath = failedPath
         fileStatusTimer.interval = 6000
         fileStatusTimer.restart()
@@ -2507,7 +2557,7 @@ FocusScope {
     id: imageDropArea
     anchors.fill: parent
     z: 1000
-    enabled: !root.demo && !root.groupConversation
+    enabled: !root.demo && root.attachmentsAvailable
     onEntered: function(drag) {
       drag.accepted = drag.hasUrls && drag.urls.length === 1 &&
         root.localPathFromUrl(drag.urls[0]) !== ""
@@ -2767,11 +2817,11 @@ FocusScope {
                     inviteFriendsFlick.contentX = Math.max(0, x + width - inviteFriendsFlick.width)
                 }
                 Accessible.role: Accessible.Button
-                Accessible.name: "Invite " + inviteFriendName.text
-                Accessible.onPressAction: root.inviteGroupFriend(inviteFriend.modelData)
-                Keys.onReturnPressed: root.inviteGroupFriend(inviteFriend.modelData)
-                Keys.onEnterPressed: root.inviteGroupFriend(inviteFriend.modelData)
-                Keys.onSpacePressed: root.inviteGroupFriend(inviteFriend.modelData)
+                Accessible.name: "Select " + inviteFriendName.text + " for invitation"
+                Accessible.onPressAction: root.selectGroupInviteFriend(inviteFriend.modelData)
+                Keys.onReturnPressed: root.selectGroupInviteFriend(inviteFriend.modelData)
+                Keys.onEnterPressed: root.selectGroupInviteFriend(inviteFriend.modelData)
+                Keys.onSpacePressed: root.selectGroupInviteFriend(inviteFriend.modelData)
 
                 HoverHandler { id: inviteFriendHover }
 
@@ -2803,11 +2853,23 @@ FocusScope {
 
                 TapHandler {
                   enabled: inviteFriend.enabled
-                  onTapped: root.inviteGroupFriend(inviteFriend.modelData)
+                  onTapped: root.selectGroupInviteFriend(inviteFriend.modelData)
                 }
               }
             }
           }
+        }
+
+        ChatBtn {
+          visible: root.groupInviteFriendId !== ""
+          width: parent.width
+          text: root.groupInviteFriendId !== ""
+            ? "Invite " + root.selectedGroupInviteName()
+            : "Select a contact"
+          enabled: root.groupInviteFeedback !== "Sending group invite…" &&
+            root.service && root.service.groupInviteCandidateMatches(
+              root.conversation, root.groupInviteFriendId, root.groupInviteFriendKey)
+          onClicked: root.sendGroupInvite()
         }
       }
 
@@ -2933,6 +2995,10 @@ FocusScope {
 
                   ContextMenuItem {
                     enabled: false
+                    informational: true
+                    informationalIconColor: memberButton.modelData.online ? "#7dce6a"
+                      : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.48)
+                    informationalIconFill: memberButton.modelData.online ? 1 : 0
                     text: String(memberButton.modelData.name || "Member") + " · " +
                       (memberButton.modelData.online ? "online" : "offline")
                     materialIcon: memberButton.modelData.online ? "circle" : "circle_outline"
@@ -4337,7 +4403,7 @@ FocusScope {
           spacing: Style.space(4)
 
             FormatBtn {
-              visible: !root.groupConversation
+              visible: root.attachmentsAvailable
               materialIcon: "attach_file"
               helpText: "File (Ctrl+O)"
               selected: root.showFile

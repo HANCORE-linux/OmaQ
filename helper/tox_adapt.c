@@ -37,6 +37,7 @@ struct omaq_tox {
 	omaq_on_group_invite on_ginv;
 	omaq_on_group_message on_gmsg;
 	omaq_on_group_peer on_gpeer;
+	omaq_on_group_packet on_gpacket;
 	omaq_on_file_recv on_frecv;
 	omaq_on_file_chunk_req on_fcreq;
 	omaq_on_file_chunk on_fchunk;
@@ -538,6 +539,24 @@ static void on_gmsg(Tox *tox, uint32_t gnum, uint32_t peer, Tox_Message_Type typ
 		t->on_gmsg(t->ud, gnum, peer, message, length);
 }
 
+static void on_gpacket(Tox *tox, uint32_t gnum, uint32_t peer,
+		       const uint8_t *data, size_t length, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	if (t->on_gpacket)
+		t->on_gpacket(t->ud, gnum, peer, data, length, 0);
+}
+
+static void on_gprivate_packet(Tox *tox, uint32_t gnum, uint32_t peer,
+			       const uint8_t *data, size_t length, void *ud)
+{
+	struct omaq_tox *t = ud;
+	(void)tox;
+	if (t->on_gpacket)
+		t->on_gpacket(t->ud, gnum, peer, data, length, 1);
+}
+
 static void on_gjoin(Tox *tox, uint32_t gnum, uint32_t peer, void *ud)
 {
 	struct omaq_tox *t = ud;
@@ -823,6 +842,8 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	tox_callback_friend_message(t->tox, on_msg);
 	tox_callback_group_invite(t->tox, on_ginv);
 	tox_callback_group_message(t->tox, on_gmsg);
+	tox_callback_group_custom_packet(t->tox, on_gpacket);
+	tox_callback_group_custom_private_packet(t->tox, on_gprivate_packet);
 	tox_callback_group_peer_join(t->tox, on_gjoin);
 	tox_callback_group_peer_name(t->tox, on_gpeer_name);
 	tox_callback_group_moderation(t->tox, on_gmoderation);
@@ -1260,6 +1281,16 @@ void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,
 		t->ud = ud;
 }
 
+void omaq_tox_set_group_packet_hook(struct omaq_tox *t,
+				    omaq_on_group_packet packet, void *ud)
+{
+	if (!t)
+		return;
+	t->on_gpacket = packet;
+	if (ud)
+		t->ud = ud;
+}
+
 static size_t group_nickname(struct omaq_tox *t, uint8_t *out, size_t n)
 {
 	size_t len;
@@ -1368,6 +1399,39 @@ int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text)
 		return 0;
 	if (err == TOX_ERR_GROUP_SEND_MESSAGE_DISCONNECTED)
 		return -2;
+	return -1;
+}
+
+int omaq_tox_group_custom_send(struct omaq_tox *t, uint32_t gnum,
+			       const uint8_t *data, size_t length)
+{
+	Tox_Err_Group_Send_Custom_Packet err = TOX_ERR_GROUP_SEND_CUSTOM_PACKET_OK;
+
+	if (!t || !t->tox || !data || length == 0)
+		return -1;
+	if (tox_group_send_custom_packet(t->tox, gnum, true, data, length, &err))
+		return 0;
+	if (err == TOX_ERR_GROUP_SEND_CUSTOM_PACKET_DISCONNECTED ||
+	    err == TOX_ERR_GROUP_SEND_CUSTOM_PACKET_FAIL_SEND)
+		return 1;
+	return -1;
+}
+
+int omaq_tox_group_custom_private_send(struct omaq_tox *t, uint32_t gnum,
+				       uint32_t peer, const uint8_t *data,
+				       size_t length)
+{
+	Tox_Err_Group_Send_Custom_Private_Packet err =
+		TOX_ERR_GROUP_SEND_CUSTOM_PRIVATE_PACKET_OK;
+
+	if (!t || !t->tox || !data || length == 0)
+		return -1;
+	if (tox_group_send_custom_private_packet(t->tox, gnum, peer, true,
+						 data, length, &err))
+		return 0;
+	if (err == TOX_ERR_GROUP_SEND_CUSTOM_PRIVATE_PACKET_DISCONNECTED ||
+	    err == TOX_ERR_GROUP_SEND_CUSTOM_PRIVATE_PACKET_FAIL_SEND)
+		return 1;
 	return -1;
 }
 

@@ -5,6 +5,7 @@
 #include "avatar.h"
 #include "file.h"
 #include "group.h"
+#include "group_file.h"
 #include "group_invite.h"
 #include "conversation.h"
 #include "direct_state.h"
@@ -29,6 +30,7 @@
 #include "identity_guard.h"
 #ifdef HAVE_TOX
 #include "tox_adapt.h"
+#include <openssl/evp.h>
 #endif
 
 #include <dirent.h>
@@ -52,7 +54,7 @@
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 #ifndef OMAQ_PROTOCOL_VERSION
-#define OMAQ_PROTOCOL_VERSION 11
+#define OMAQ_PROTOCOL_VERSION 12
 #endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
@@ -61,6 +63,14 @@
 static void emit(const char *value);
 static void emit_error(const char *code);
 static void emit_identity_primary_state(const char *request);
+#ifdef HAVE_TOX
+static void group_file_reset(void);
+static void group_file_pump(void);
+static void group_file_peer_removed(uint32_t group_number, uint32_t peer, int self);
+static void hook_group_file_packet(void *ud, uint32_t group_number,
+				   uint32_t peer, const uint8_t *data,
+				   size_t length, int private_packet);
+#endif
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
@@ -87,6 +97,67 @@ static struct {
 	char path[512];
 } g_file_requests[FILE_REQUEST_CACHE];
 static uint64_t g_file_request_sequence;
+#define GROUP_FILE_OUT_MAX 2
+#define GROUP_FILE_IN_MAX 8
+#define GROUP_FILE_RECIPIENT_MAX (OMAQ_GROUP_PEERS - 1)
+typedef struct {
+	int used;
+	int accepted;
+	int done;
+	int done_sent;
+	int canceled;
+	int failed;
+	int delivery_unknown;
+	uint32_t peer;
+	uint64_t offset;
+	int64_t last_progress;
+	char key[65];
+} group_file_recipient;
+typedef struct {
+	int used;
+	int fd;
+	uint32_t group_number;
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES];
+	uint8_t hash[32];
+	uint64_t size;
+	int64_t accept_until;
+	int64_t idle_deadline;
+	int started;
+	int stored;
+	unsigned int recipient_cursor;
+	int pending_attachment;
+	int managed_attachment;
+	char group[OMAQ_GROUP_ID_MAX];
+	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
+	char request[80];
+	char path[512];
+	char name[OMAQ_FILE_NAME_MAX + 1];
+	char kind[6];
+	group_file_recipient recipients[GROUP_FILE_RECIPIENT_MAX];
+} group_file_outgoing;
+typedef struct {
+	int used;
+	int accepted;
+	int completed;
+	int fd;
+	uint32_t group_number;
+	uint32_t sender_peer;
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES];
+	uint8_t hash[32];
+	uint64_t size;
+	uint64_t got;
+	int64_t idle_deadline;
+	int64_t ack_after;
+	char group[OMAQ_GROUP_ID_MAX];
+	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
+	char sender_key[65];
+	char sender_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
+	char name[OMAQ_FILE_NAME_MAX + 1];
+	char kind[6];
+	char path[512];
+} group_file_incoming;
+static group_file_outgoing g_group_file_out[GROUP_FILE_OUT_MAX];
+static group_file_incoming g_group_file_in[GROUP_FILE_IN_MAX];
 static uint64_t g_identity_backup_sequence;
 static uint64_t g_friend_generation;
 static int g_identity_guard_state = OMAQ_IDENTITY_GUARD_FRESH;
@@ -998,6 +1069,7 @@ static void fail_direct_state_backend(void)
 	}
 #endif
 	if (g_tox) {
+		group_file_reset();
 		omaq_tox_discard(g_tox);
 		g_tox = NULL;
 	}
@@ -3242,6 +3314,7 @@ static void reset_identity_runtime_state(void)
 	g_av_reset_requested = 0;
 	g_av_reset_next = 0;
 	g_av_reset_reported = 0;
+	group_file_reset();
 	omaq_group_reset();
 	omaq_file_reset();
 	omaq_receipt_outbox_destroy(&g_receipt_outbox);
@@ -5151,6 +5224,8 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 	}
 	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
 				     wire_text, sizeof(wire_text)) == 0) {
+		if (omaq_message_id_reserved(wire_id))
+			return;
 		display = wire_text;
 		has_wire_id = 1;
 		if (omaq_store_message_id_used(home_dir(), gid, wire_id) != 0 ||
@@ -5210,6 +5285,7 @@ static void hook_gpeer(void *ud, uint32_t gnum, uint32_t peer, int joined, int r
 					self = 1;
 				break;
 			}
+		group_file_peer_removed(gnum, peer, self);
 		group_binding_drop(gid, self ? NULL : removed_key);
 		if (!self && group_binding_forget_member(gid, removed_key) != 0) {
 			(void)schedule_group_binding_retirement(gid, removed_key);
@@ -6019,6 +6095,1164 @@ static void emit_attachment_inspection(const char *request, const char *path,
 }
 
 #ifdef HAVE_TOX
+static int group_file_event_id(const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES],
+			       char *out, size_t outn)
+{
+	char hex[OMAQ_GROUP_FILE_ID_HEX + 1];
+
+	if (!out || outn < 3 + sizeof(hex) || omaq_group_file_id_hex(id, hex) != 0)
+		return -1;
+	return snprintf(out, outn, "gf:%s", hex) < (int)outn ? 0 : -1;
+}
+
+static int group_file_hash_fd(int fd, uint64_t size, uint8_t hash[32])
+{
+	EVP_MD_CTX *context = NULL;
+	struct stat before, after;
+	uint8_t buffer[65536];
+	uint64_t offset = 0;
+	unsigned int hash_length = 0;
+	int result = -1;
+
+	if (fd < 0 || !hash || size == 0 || size > OMAQ_FILE_MAX ||
+	    fstat(fd, &before) != 0 || !S_ISREG(before.st_mode) ||
+	    before.st_size < 0 || (uint64_t)before.st_size != size)
+		return -1;
+	context = EVP_MD_CTX_new();
+	if (!context || EVP_DigestInit_ex(context, EVP_sha256(), NULL) != 1)
+		goto done;
+	while (offset < size) {
+		size_t wanted = (size_t)(size - offset);
+		ssize_t got;
+		if (wanted > sizeof(buffer))
+			wanted = sizeof(buffer);
+		got = pread(fd, buffer, wanted, (off_t)offset);
+		if (got != (ssize_t)wanted ||
+		    EVP_DigestUpdate(context, buffer, wanted) != 1)
+			goto done;
+		offset += wanted;
+	}
+	if (EVP_DigestFinal_ex(context, hash, &hash_length) != 1 || hash_length != 32 ||
+	    fstat(fd, &after) != 0 || before.st_dev != after.st_dev ||
+	    before.st_ino != after.st_ino || before.st_size != after.st_size ||
+	    before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+	    before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+	    before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+	    before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
+		goto done;
+	result = 0;
+done:
+	explicit_bzero(buffer, sizeof(buffer));
+	EVP_MD_CTX_free(context);
+	return result;
+}
+
+static int group_file_group_binding_ok(uint32_t group_number, const char *group)
+{
+	char current[OMAQ_GROUP_ID_MAX];
+	return group && omaq_group_id_format(group_number, current, sizeof(current)) == 0 &&
+		strcmp(current, group) == 0;
+}
+
+static int group_file_peer_identity(uint32_t group_number, uint32_t peer,
+				    char key[65], char *name, size_t namen,
+				    int *self)
+{
+	char local_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
+	size_t name_length = 0;
+	int role = 0, online = 0, local_self = 0;
+
+	if (!g_tox || !key || omaq_tox_group_peer_info(g_tox, group_number, peer,
+			key, 65, local_name, sizeof(local_name), &name_length,
+			&role, &online, &local_self) != 0 || !online ||
+	    strlen(key) != 64 ||
+	    !omaq_group_member_name_bytes_ok(local_name, name_length))
+		return -1;
+	if (name && namen && snprintf(name, namen, "%s", local_name) >= (int)namen)
+		return -1;
+	if (self)
+		*self = local_self;
+	return 0;
+}
+
+static void emit_group_file(const char *state, const char *group,
+			    const char *id, const char *name, uint64_t size,
+			    const char *path, const char *dir, const char *request,
+			    const char *kind, const char *sender, const char *code)
+{
+	char event[OMAQ_JSON_STR_MAX * 6 + 2200];
+	char escaped_group[128], escaped_id[256], escaped_name[OMAQ_FILE_NAME_MAX * 6 + 1];
+	char escaped_path[OMAQ_JSON_STR_MAX * 6 + 1], escaped_request[80 * 6 + 1];
+	char escaped_sender[512], escaped_code[128];
+	const char *safe_kind = kind && strcmp(kind, "image") == 0 ? "image" : "file";
+	int written;
+
+	if (!state || !group || !id || !dir ||
+	    (strcmp(dir, "in") != 0 && strcmp(dir, "out") != 0) ||
+	    omaq_json_escape(group, escaped_group, sizeof(escaped_group)) != 0 ||
+	    omaq_json_escape(id, escaped_id, sizeof(escaped_id)) != 0)
+		return;
+	escaped_name[0] = escaped_path[0] = escaped_request[0] = '\0';
+	escaped_sender[0] = escaped_code[0] = '\0';
+	if ((name && omaq_json_escape(name, escaped_name, sizeof(escaped_name)) != 0) ||
+	    (path && omaq_json_escape(path, escaped_path, sizeof(escaped_path)) != 0) ||
+	    (request && omaq_json_escape(request, escaped_request,
+					sizeof(escaped_request)) != 0) ||
+	    (sender && omaq_json_escape(sender, escaped_sender,
+				       sizeof(escaped_sender)) != 0) ||
+	    (code && omaq_json_escape(code, escaped_code, sizeof(escaped_code)) != 0))
+		return;
+	if (strcmp(state, "offer") == 0)
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"file.offer\",\"id\":\"%s\",\"conversation\":\"%s\",\"name\":\"%s\",\"size\":%llu,\"kind\":\"%s\",\"sender\":\"%s\",\"dir\":\"in\"}",
+			escaped_id, escaped_group, escaped_name,
+			(unsigned long long)size, safe_kind, escaped_sender);
+	else if (strcmp(state, "sending") == 0)
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"file.sending\",\"id\":\"%s\",\"conversation\":\"%s\",\"kind\":\"%s\",\"dir\":\"out\",\"request\":\"%s\"}",
+			escaped_id, escaped_group, safe_kind, escaped_request);
+	else if (strcmp(state, "done") == 0) {
+		if (escaped_code[0])
+			written = snprintf(event, sizeof(event),
+				"{\"event\":\"file.done\",\"id\":\"%s\",\"conversation\":\"%s\",\"path\":\"%s\",\"kind\":\"%s\",\"sender\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+				escaped_id, escaped_group, escaped_path, safe_kind,
+				escaped_sender, dir, escaped_request, escaped_code);
+		else
+			written = snprintf(event, sizeof(event),
+				"{\"event\":\"file.done\",\"id\":\"%s\",\"conversation\":\"%s\",\"path\":\"%s\",\"kind\":\"%s\",\"sender\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+				escaped_id, escaped_group, escaped_path, safe_kind,
+				escaped_sender, dir, escaped_request);
+	}
+	else if (strcmp(state, "canceled") == 0)
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"file.canceled\",\"id\":\"%s\",\"conversation\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+			escaped_id, escaped_group, dir, escaped_request);
+	else if (strcmp(state, "failed") == 0)
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"file.failed\",\"id\":\"%s\",\"conversation\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			escaped_id, escaped_group, dir, escaped_request,
+			escaped_code[0] ? escaped_code : "group_file_failed");
+	else
+		return;
+	if (written >= 0 && (size_t)written < sizeof(event))
+		emit(event);
+}
+
+static void emit_group_attachment_message(const char *group, const char *id,
+					  const char *path, const char *dir,
+					  const char *kind, const char *sender)
+{
+	char event[OMAQ_JSON_STR_MAX * 6 + 1500];
+	char escaped_group[128], escaped_id[256], escaped_path[OMAQ_JSON_STR_MAX * 6 + 1];
+	char escaped_sender[512];
+	const char *safe_kind = kind && strcmp(kind, "image") == 0 ? "image" : "file";
+	int written;
+
+	if (!group || !id || !path || !dir ||
+	    omaq_json_escape(group, escaped_group, sizeof(escaped_group)) != 0 ||
+	    omaq_json_escape(id, escaped_id, sizeof(escaped_id)) != 0 ||
+	    omaq_json_escape(path, escaped_path, sizeof(escaped_path)) != 0)
+		return;
+	if (strcmp(dir, "in") == 0) {
+		if (!sender || omaq_json_escape(sender, escaped_sender,
+					      sizeof(escaped_sender)) != 0)
+			return;
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\",\"kind\":\"%s\"}",
+			escaped_group, escaped_id, escaped_sender, escaped_path, safe_kind);
+	} else {
+		written = snprintf(event, sizeof(event),
+			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"out\",\"kind\":\"%s\"}",
+			escaped_group, escaped_id, escaped_path, safe_kind);
+	}
+	if (written >= 0 && (size_t)written < sizeof(event))
+		emit(event);
+}
+
+static int group_file_send_control(uint32_t group_number, uint32_t peer,
+				   uint8_t type,
+				   const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	uint8_t packet[64];
+	int length = omaq_group_file_control_pack(packet, sizeof(packet), type, id);
+
+	if (length < 0)
+		return -1;
+	return omaq_tox_group_custom_private_send(g_tox, group_number, peer,
+						  packet, (size_t)length);
+}
+
+static void group_file_in_drop(int index, int remove_path)
+{
+	if (index < 0 || index >= GROUP_FILE_IN_MAX || !g_group_file_in[index].used)
+		return;
+	if (g_group_file_in[index].fd >= 0)
+		close(g_group_file_in[index].fd);
+	if (remove_path && g_group_file_in[index].path[0])
+		unlink(g_group_file_in[index].path);
+	memset(&g_group_file_in[index], 0, sizeof(g_group_file_in[index]));
+	g_group_file_in[index].fd = -1;
+}
+
+static void group_file_out_drop(int index)
+{
+	if (index < 0 || index >= GROUP_FILE_OUT_MAX || !g_group_file_out[index].used)
+		return;
+	if (g_group_file_out[index].fd >= 0)
+		close(g_group_file_out[index].fd);
+	memset(&g_group_file_out[index], 0, sizeof(g_group_file_out[index]));
+	g_group_file_out[index].fd = -1;
+}
+
+static int group_file_in_find(uint32_t group_number,
+			      const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used &&
+		    g_group_file_in[i].group_number == group_number &&
+		    memcmp(g_group_file_in[i].id, id, OMAQ_GROUP_FILE_ID_BYTES) == 0)
+			return i;
+	return -1;
+}
+
+static int group_file_out_find(uint32_t group_number,
+			       const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	for (int i = 0; i < GROUP_FILE_OUT_MAX; i++)
+		if (g_group_file_out[i].used &&
+		    g_group_file_out[i].group_number == group_number &&
+		    memcmp(g_group_file_out[i].id, id, OMAQ_GROUP_FILE_ID_BYTES) == 0)
+			return i;
+	return -1;
+}
+
+static void group_file_in_fail(int index, const char *state, const char *code,
+			       int notify_sender)
+{
+	group_file_incoming *incoming;
+	char current_key[65];
+
+	if (index < 0 || index >= GROUP_FILE_IN_MAX || !g_group_file_in[index].used)
+		return;
+	incoming = &g_group_file_in[index];
+	if (notify_sender &&
+	    group_file_group_binding_ok(incoming->group_number, incoming->group) &&
+	    group_file_peer_identity(incoming->group_number, incoming->sender_peer,
+				     current_key, NULL, 0, NULL) == 0 &&
+	    strcmp(current_key, incoming->sender_key) == 0)
+		(void)group_file_send_control(incoming->group_number, incoming->sender_peer,
+					      strcmp(state, "canceled") == 0
+					      ? OMAQ_GROUP_FILE_CANCEL : OMAQ_GROUP_FILE_FAIL,
+					      incoming->id);
+	emit_group_file(state, incoming->group, incoming->event_id, NULL, 0, NULL,
+			"in", NULL, incoming->kind, incoming->sender_key, code);
+	group_file_in_drop(index, 1);
+}
+
+static int group_file_source_current(const group_file_outgoing *outgoing)
+{
+	struct stat descriptor_status, path_status;
+	uint8_t hash[32];
+
+	if (!outgoing || outgoing->fd < 0 ||
+	    fstat(outgoing->fd, &descriptor_status) != 0 ||
+	    lstat(outgoing->path, &path_status) != 0 ||
+	    !S_ISREG(path_status.st_mode) ||
+	    descriptor_status.st_dev != path_status.st_dev ||
+	    descriptor_status.st_ino != path_status.st_ino ||
+	    descriptor_status.st_size < 0 ||
+	    (uint64_t)descriptor_status.st_size != outgoing->size ||
+	    group_file_hash_fd(outgoing->fd, outgoing->size, hash) != 0 ||
+	    memcmp(hash, outgoing->hash, sizeof(hash)) != 0)
+		return 0;
+	return 1;
+}
+
+static void group_file_out_finish(int index, const char *state, const char *code)
+{
+	group_file_outgoing *outgoing;
+	int stored = 0, source_current = 0;
+	const char *terminal_code = code;
+
+	if (index < 0 || index >= GROUP_FILE_OUT_MAX || !g_group_file_out[index].used)
+		return;
+	outgoing = &g_group_file_out[index];
+	if (strcmp(state, "done") == 0) {
+		source_current = group_file_source_current(outgoing);
+		if (!source_current)
+			terminal_code = "local_source_changed";
+	}
+	if (outgoing->fd >= 0) {
+		close(outgoing->fd);
+		outgoing->fd = -1;
+	}
+	if (strcmp(state, "done") == 0) {
+		int attachment_ready = !outgoing->pending_attachment;
+		if (outgoing->pending_attachment &&
+		    attachment_pending_update(outgoing->path, 1) == 1) {
+			outgoing->pending_attachment = 0;
+			outgoing->managed_attachment = 1;
+			attachment_ready = 1;
+		}
+		if (source_current && attachment_ready &&
+		    omaq_message_append_attachment_id(home_dir(), outgoing->group, "me",
+			outgoing->path, "out", outgoing->kind,
+			outgoing->event_id) == 0) {
+			stored = 1;
+			outgoing->managed_attachment = 0;
+			emit_group_attachment_message(outgoing->group, outgoing->event_id,
+				outgoing->path, "out", outgoing->kind, NULL);
+		}
+		if (!stored && source_current)
+			terminal_code = "local_history_failed";
+		emit_group_file("done", outgoing->group, outgoing->event_id, NULL, 0,
+			source_current ? outgoing->path : "", "out", outgoing->request,
+			outgoing->kind, NULL, terminal_code);
+		if (!stored) {
+			if (outgoing->pending_attachment)
+				(void)attachment_pending_update(outgoing->path, 2);
+			else if (outgoing->managed_attachment)
+				(void)attachment_managed_remove(outgoing->path);
+			if (source_current)
+				emit_error_conv("history_failed", outgoing->group);
+		}
+	} else {
+		if (outgoing->pending_attachment)
+			(void)attachment_pending_update(outgoing->path, 2);
+		emit_group_file(state, outgoing->group, outgoing->event_id, NULL, 0,
+			NULL, "out", outgoing->request, outgoing->kind, NULL, code);
+	}
+	group_file_out_drop(index);
+}
+
+static int group_file_recipient_count(const group_file_outgoing *outgoing)
+{
+	int count = 0;
+	for (int i = 0; outgoing && i < GROUP_FILE_RECIPIENT_MAX; i++)
+		if (outgoing->recipients[i].used && outgoing->recipients[i].accepted)
+			count++;
+	return count;
+}
+
+static int group_file_all_responded(const group_file_outgoing *outgoing)
+{
+	int expected = 0;
+	for (int i = 0; outgoing && i < GROUP_FILE_RECIPIENT_MAX; i++) {
+		const group_file_recipient *recipient = &outgoing->recipients[i];
+		if (!recipient->used)
+			continue;
+		expected++;
+		if (!recipient->accepted && !recipient->canceled && !recipient->failed)
+			return 0;
+	}
+	return expected > 0;
+}
+
+static void group_file_accept_packet(int index, uint32_t peer)
+{
+	group_file_outgoing *outgoing;
+	char key[65];
+	int self = 0, slot = -1;
+	int64_t now = monotonic_millis();
+
+	if (index < 0 || index >= GROUP_FILE_OUT_MAX || !g_group_file_out[index].used)
+		return;
+	outgoing = &g_group_file_out[index];
+	if (monotonic_millis() >= outgoing->accept_until ||
+	    group_file_peer_identity(outgoing->group_number, peer, key, NULL, 0,
+				     &self) != 0 || self)
+		return;
+	for (int i = 0; i < GROUP_FILE_RECIPIENT_MAX; i++)
+		if (outgoing->recipients[i].used &&
+		    strcmp(outgoing->recipients[i].key, key) == 0) {
+			if (outgoing->recipients[i].accepted ||
+			    outgoing->recipients[i].canceled ||
+			    outgoing->recipients[i].failed)
+				return;
+			slot = i;
+			break;
+		}
+	if (slot < 0) {
+		(void)group_file_send_control(outgoing->group_number, peer,
+					      OMAQ_GROUP_FILE_CANCEL, outgoing->id);
+		return;
+	}
+	outgoing->recipients[slot].used = 1;
+	outgoing->recipients[slot].accepted = 1;
+	outgoing->recipients[slot].peer = peer;
+	outgoing->recipients[slot].last_progress = now;
+	snprintf(outgoing->recipients[slot].key,
+		 sizeof(outgoing->recipients[slot].key), "%s", key);
+	outgoing->idle_deadline = now + 30000;
+}
+
+static void group_file_ack_packet(int index, uint32_t peer)
+{
+	group_file_outgoing *outgoing;
+	char key[65];
+
+	if (index < 0 || index >= GROUP_FILE_OUT_MAX || !g_group_file_out[index].used)
+		return;
+	outgoing = &g_group_file_out[index];
+	if (!group_file_group_binding_ok(outgoing->group_number, outgoing->group) ||
+	    group_file_peer_identity(outgoing->group_number, peer, key, NULL, 0,
+				     NULL) != 0)
+		return;
+	for (int i = 0; i < GROUP_FILE_RECIPIENT_MAX; i++)
+		if (outgoing->recipients[i].used &&
+		    outgoing->recipients[i].done_sent &&
+		    strcmp(outgoing->recipients[i].key, key) == 0) {
+			outgoing->recipients[i].done = 1;
+			outgoing->recipients[i].last_progress = monotonic_millis();
+			return;
+		}
+}
+
+static void group_file_receive_offer(uint32_t group_number, uint32_t peer,
+				     const uint8_t *data, size_t length)
+{
+	omaq_group_file_offer offer;
+	group_file_incoming *incoming;
+	char group[OMAQ_GROUP_ID_MAX], key[65], name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
+	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
+	int self = 0, slot = -1;
+
+	if (omaq_group_file_offer_unpack(data, length, &offer) != 0 ||
+	    omaq_group_id_format(group_number, group, sizeof(group)) != 0 ||
+	    group_file_peer_identity(group_number, peer, key, name, sizeof(name),
+				     &self) != 0 || self ||
+	    group_file_event_id(offer.id, event_id, sizeof(event_id)) != 0 ||
+	    omaq_store_message_id_used(home_dir(), group, event_id) != 0)
+		return;
+	if (group_file_in_find(group_number, offer.id) >= 0)
+		return;
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++) {
+		if (g_group_file_in[i].used &&
+		    strcmp(g_group_file_in[i].group, group) == 0) {
+			(void)group_file_send_control(group_number, peer,
+					      OMAQ_GROUP_FILE_CANCEL, offer.id);
+			return;
+		}
+		if (!g_group_file_in[i].used && slot < 0)
+			slot = i;
+	}
+	if (slot < 0 ||
+	    omaq_group_file_id_reserve(state_dir(), offer.id) != 0) {
+		(void)group_file_send_control(group_number, peer, OMAQ_GROUP_FILE_CANCEL,
+					      offer.id);
+		return;
+	}
+	incoming = &g_group_file_in[slot];
+	memset(incoming, 0, sizeof(*incoming));
+	incoming->used = 1;
+	incoming->fd = -1;
+	incoming->group_number = group_number;
+	incoming->sender_peer = peer;
+	incoming->size = offer.size;
+	incoming->idle_deadline = monotonic_millis() + 120000;
+	memcpy(incoming->id, offer.id, sizeof(incoming->id));
+	memcpy(incoming->hash, offer.hash, sizeof(incoming->hash));
+	snprintf(incoming->group, sizeof(incoming->group), "%s", group);
+	snprintf(incoming->event_id, sizeof(incoming->event_id), "%s", event_id);
+	snprintf(incoming->sender_key, sizeof(incoming->sender_key), "%s", key);
+	snprintf(incoming->sender_name, sizeof(incoming->sender_name), "%s", name);
+	snprintf(incoming->name, sizeof(incoming->name), "%s", offer.name);
+	snprintf(incoming->kind, sizeof(incoming->kind), "%s", offer.kind);
+	emit_group_file("offer", group, event_id, offer.name, offer.size, NULL, "in",
+			NULL, offer.kind, key, NULL);
+}
+
+static int group_file_accept(const char *group, const char *event_id,
+			     const char *destination)
+{
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES];
+	uint32_t group_number;
+	int index, fd;
+	char key[65];
+
+	if (!group || !event_id || omaq_group_id_parse(group, &group_number) != 0 ||
+	    omaq_group_file_id_parse(event_id, id) != 0 ||
+	    (index = group_file_in_find(group_number, id)) < 0 ||
+	    strcmp(g_group_file_in[index].group, group) != 0 ||
+	    g_group_file_in[index].accepted ||
+	    group_file_peer_identity(group_number, g_group_file_in[index].sender_peer,
+				     key, NULL, 0, NULL) != 0 ||
+	    strcmp(key, g_group_file_in[index].sender_key) != 0)
+		return -1;
+	fd = omaq_file_download_create(g_group_file_in[index].name, destination,
+				       g_group_file_in[index].path,
+				       sizeof(g_group_file_in[index].path));
+	if (fd < 0) {
+		group_file_in_drop(index, 0);
+		return -1;
+	}
+	g_group_file_in[index].fd = fd;
+	if (group_file_send_control(group_number, g_group_file_in[index].sender_peer,
+				    OMAQ_GROUP_FILE_ACCEPT, id) != 0) {
+		group_file_in_drop(index, 1);
+		return -1;
+	}
+	g_group_file_in[index].accepted = 1;
+	g_group_file_in[index].idle_deadline = monotonic_millis() + 30000;
+	return 0;
+}
+
+static int group_file_cancel(const char *group, const char *event_id)
+{
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES];
+	uint32_t group_number;
+	int index;
+
+	if (!group || !event_id || omaq_group_id_parse(group, &group_number) != 0 ||
+	    omaq_group_file_id_parse(event_id, id) != 0)
+		return -1;
+	index = group_file_in_find(group_number, id);
+	if (index >= 0 && strcmp(g_group_file_in[index].group, group) == 0) {
+		if (g_group_file_in[index].completed) {
+			(void)group_file_send_control(group_number,
+						      g_group_file_in[index].sender_peer,
+						      OMAQ_GROUP_FILE_ACK, id);
+			group_file_in_drop(index, 0);
+			return 0;
+		}
+		(void)group_file_send_control(group_number,
+					      g_group_file_in[index].sender_peer,
+					      OMAQ_GROUP_FILE_CANCEL, id);
+		emit_group_file("canceled", group, event_id, NULL, 0, NULL, "in",
+				NULL, g_group_file_in[index].kind,
+				g_group_file_in[index].sender_key, NULL);
+		group_file_in_drop(index, 1);
+		return 0;
+	}
+	index = group_file_out_find(group_number, id);
+	if (index >= 0 && strcmp(g_group_file_out[index].group, group) == 0) {
+		uint8_t packet[64];
+		int packet_length = omaq_group_file_control_pack(packet, sizeof(packet),
+							 OMAQ_GROUP_FILE_CANCEL, id);
+		if (packet_length >= 0)
+			(void)omaq_tox_group_custom_send(g_tox, group_number, packet,
+							(size_t)packet_length);
+		group_file_out_finish(index, "canceled", NULL);
+		return 0;
+	}
+	return -1;
+}
+
+static int group_file_send_begin(const char *group, const char *path,
+				 const char *kind, const char *request)
+{
+	omaq_group_file_offer offer;
+	group_file_outgoing prepared;
+	struct stat status;
+	uint8_t packet[OMAQ_GROUP_FILE_PACKET_MAX];
+	uint32_t group_number;
+	int slot = -1, packet_length, unique_id = 0, expected_peers = 0;
+
+	memset(&prepared, 0, sizeof(prepared));
+	prepared.fd = -1;
+	if (!group || !path || !omaq_file_path_ok(path) || !request ||
+	    !omaq_message_id_ok(request) ||
+	    (strcmp(kind, "file") != 0 && strcmp(kind, "image") != 0) ||
+	    omaq_group_id_parse(group, &group_number) != 0 ||
+	    omaq_file_basename(path, prepared.name, sizeof(prepared.name)) != 0 ||
+	    (strcmp(kind, "image") == 0 &&
+	     omaq_inline_image_validate_file(path) != 0))
+		return -1;
+	for (int i = 0; i < GROUP_FILE_OUT_MAX; i++) {
+		if (g_group_file_out[i].used &&
+		    strcmp(g_group_file_out[i].group, group) == 0)
+			return -2;
+		if (!g_group_file_out[i].used && slot < 0)
+			slot = i;
+	}
+	if (slot < 0)
+		return -2;
+	prepared.fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (prepared.fd < 0 || fstat(prepared.fd, &status) != 0 ||
+	    !S_ISREG(status.st_mode) || status.st_size <= 0 ||
+	    (uint64_t)status.st_size > OMAQ_FILE_MAX) {
+		if (prepared.fd >= 0)
+			close(prepared.fd);
+		return -1;
+	}
+	prepared.size = (uint64_t)status.st_size;
+	if (group_file_hash_fd(prepared.fd, prepared.size, prepared.hash) != 0) {
+		close(prepared.fd);
+		return -1;
+	}
+	for (int attempt = 0; attempt < 8 && !unique_id; attempt++) {
+		size_t random_offset = 0;
+		int used;
+		while (random_offset < sizeof(prepared.id)) {
+			ssize_t got = getrandom(prepared.id + random_offset,
+						sizeof(prepared.id) - random_offset, 0);
+			if (got < 0 && errno == EINTR)
+				continue;
+			if (got <= 0) {
+				close(prepared.fd);
+				return -1;
+			}
+			random_offset += (size_t)got;
+		}
+		if (group_file_event_id(prepared.id, prepared.event_id,
+					sizeof(prepared.event_id)) != 0) {
+			close(prepared.fd);
+			return -1;
+		}
+		used = omaq_store_message_id_used(home_dir(), group, prepared.event_id);
+		if (used < 0) {
+			close(prepared.fd);
+			return -1;
+		}
+		if (used == 0) {
+			int reserved = omaq_group_file_id_reserve(state_dir(), prepared.id);
+			if (reserved < 0) {
+				close(prepared.fd);
+				return -1;
+			}
+			unique_id = reserved == 0;
+		}
+	}
+	if (!unique_id ||
+	    snprintf(prepared.group, sizeof(prepared.group), "%s", group) >=
+		(int)sizeof(prepared.group) ||
+	    snprintf(prepared.request, sizeof(prepared.request), "%s", request) >=
+		(int)sizeof(prepared.request) ||
+	    snprintf(prepared.path, sizeof(prepared.path), "%s", path) >=
+		(int)sizeof(prepared.path) ||
+	    snprintf(prepared.kind, sizeof(prepared.kind), "%s", kind) >=
+		(int)sizeof(prepared.kind)) {
+		close(prepared.fd);
+		return -1;
+	}
+	prepared.used = 1;
+	prepared.group_number = group_number;
+	prepared.accept_until = monotonic_millis() + 30000;
+	prepared.idle_deadline = prepared.accept_until;
+	for (int member = 0; member < omaq_group_peer_count(group_number) &&
+	     expected_peers < GROUP_FILE_RECIPIENT_MAX; member++) {
+		uint32_t peer = omaq_group_peer_at(group_number, member);
+		char peer_key[65];
+		int self = 0;
+		if (group_file_peer_identity(group_number, peer, peer_key, NULL, 0,
+					     &self) != 0 || self)
+			continue;
+		prepared.recipients[expected_peers].used = 1;
+		prepared.recipients[expected_peers].peer = peer;
+		prepared.recipients[expected_peers].last_progress = monotonic_millis();
+		snprintf(prepared.recipients[expected_peers].key,
+			 sizeof(prepared.recipients[expected_peers].key), "%s", peer_key);
+		expected_peers++;
+	}
+	if (expected_peers == 0) {
+		close(prepared.fd);
+		return -1;
+	}
+	memset(&offer, 0, sizeof(offer));
+	memcpy(offer.id, prepared.id, sizeof(offer.id));
+	memcpy(offer.hash, prepared.hash, sizeof(offer.hash));
+	offer.size = prepared.size;
+	snprintf(offer.name, sizeof(offer.name), "%s", prepared.name);
+	snprintf(offer.kind, sizeof(offer.kind), "%s", prepared.kind);
+	packet_length = omaq_group_file_offer_pack(packet, sizeof(packet), &offer);
+	if (packet_length < 0 ||
+	    omaq_tox_group_custom_send(g_tox, group_number, packet,
+					(size_t)packet_length) != 0) {
+		close(prepared.fd);
+		return -1;
+	}
+	{
+		int pending = attachment_pending_update(path, 0);
+		if (pending < 0) {
+			uint8_t cancel[64];
+			int cancel_length = omaq_group_file_control_pack(cancel, sizeof(cancel),
+								 OMAQ_GROUP_FILE_CANCEL,
+								 prepared.id);
+			if (cancel_length >= 0)
+				(void)omaq_tox_group_custom_send(g_tox, group_number, cancel,
+								(size_t)cancel_length);
+			close(prepared.fd);
+			return -1;
+		}
+		prepared.pending_attachment = pending == 1;
+		prepared.managed_attachment = 0;
+	}
+	g_group_file_out[slot] = prepared;
+	emit_group_file("sending", group, prepared.event_id, NULL, 0, NULL, "out",
+			request, kind, NULL, NULL);
+	return 0;
+}
+
+static void group_file_receive_data(uint32_t group_number, uint32_t peer,
+				    const uint8_t *packet, size_t length)
+{
+	uint8_t id[OMAQ_GROUP_FILE_ID_BYTES];
+	uint64_t offset;
+	const uint8_t *data;
+	size_t data_length;
+	char key[65];
+	int index;
+
+	if (omaq_group_file_data_unpack(packet, length, id, &offset, &data,
+					&data_length) != 0 ||
+	    (index = group_file_in_find(group_number, id)) < 0)
+		return;
+	if (peer != g_group_file_in[index].sender_peer ||
+	    group_file_peer_identity(group_number, peer, key, NULL, 0, NULL) != 0 ||
+	    strcmp(key, g_group_file_in[index].sender_key) != 0)
+		return;
+	if (g_group_file_in[index].completed)
+		return;
+	if (!g_group_file_in[index].accepted || g_group_file_in[index].fd < 0 ||
+	    !group_file_group_binding_ok(group_number, g_group_file_in[index].group) ||
+	    offset != g_group_file_in[index].got ||
+	    data_length > g_group_file_in[index].size - g_group_file_in[index].got) {
+		group_file_in_fail(index, "failed", "invalid_transfer", 1);
+		return;
+	}
+	for (size_t written = 0; written < data_length;) {
+		ssize_t count = write(g_group_file_in[index].fd, data + written,
+				      data_length - written);
+		if (count < 0 && errno == EINTR)
+			continue;
+		if (count <= 0) {
+			group_file_in_fail(index, "failed", "write_failed", 1);
+			return;
+		}
+		written += (size_t)count;
+	}
+	g_group_file_in[index].got += data_length;
+	g_group_file_in[index].idle_deadline = monotonic_millis() + 30000;
+}
+
+static void group_file_receive_done(uint32_t group_number, uint32_t peer,
+				    const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	group_file_incoming *incoming;
+	uint8_t hash[32];
+	char key[65];
+	int index, stored;
+
+	index = group_file_in_find(group_number, id);
+	if (index < 0)
+		return;
+	incoming = &g_group_file_in[index];
+	if (peer != incoming->sender_peer ||
+	    group_file_peer_identity(group_number, peer, key, NULL, 0, NULL) != 0 ||
+	    strcmp(key, incoming->sender_key) != 0)
+		return;
+	if (incoming->completed) {
+		int ack = group_file_send_control(group_number, peer, OMAQ_GROUP_FILE_ACK,
+					  incoming->id);
+		if (ack == 0)
+			group_file_in_drop(index, 0);
+		else
+			incoming->ack_after = monotonic_millis() + 250;
+		return;
+	}
+	if (!incoming->accepted || incoming->fd < 0 ||
+	    !group_file_group_binding_ok(group_number, incoming->group) ||
+	    incoming->got != incoming->size ||
+	    fsync(incoming->fd) != 0 ||
+	    group_file_hash_fd(incoming->fd, incoming->size, hash) != 0 ||
+	    memcmp(hash, incoming->hash, sizeof(hash)) != 0) {
+		group_file_in_fail(index, "failed", "integrity_failed", 1);
+		return;
+	}
+	close(incoming->fd);
+	incoming->fd = -1;
+	if (strcmp(incoming->kind, "image") == 0 &&
+	    omaq_inline_image_canonicalize_file(incoming->path) != 0) {
+		group_file_in_fail(index, "failed", "invalid_image", 1);
+		return;
+	}
+	stored = omaq_message_append_attachment_id(home_dir(), incoming->group,
+			incoming->sender_key, incoming->path, "in", incoming->kind,
+			incoming->event_id) == 0;
+	if (!stored) {
+		group_file_in_fail(index, "failed", "local_history_failed", 1);
+		return;
+	}
+	(void)note_unread(incoming->group);
+	emit_group_attachment_message(incoming->group, incoming->event_id,
+		incoming->path, "in", incoming->kind, incoming->sender_key);
+	emit_group_file("done", incoming->group, incoming->event_id, NULL, 0,
+			incoming->path, "in", NULL, incoming->kind,
+			incoming->sender_key, NULL);
+	incoming->completed = 1;
+	incoming->idle_deadline = monotonic_millis() + 30000;
+	incoming->ack_after = 0;
+	if (group_file_send_control(group_number, peer, OMAQ_GROUP_FILE_ACK,
+				    incoming->id) == 0)
+		group_file_in_drop(index, 0);
+	else
+		incoming->ack_after = monotonic_millis() + 250;
+}
+
+static void group_file_receive_cancel(uint32_t group_number, uint32_t peer,
+				      const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	char key[65];
+	int incoming_index = group_file_in_find(group_number, id);
+	int outgoing_index = group_file_out_find(group_number, id);
+
+	if (group_file_peer_identity(group_number, peer, key, NULL, 0, NULL) != 0)
+		return;
+	if (incoming_index >= 0 &&
+	    group_file_group_binding_ok(group_number, g_group_file_in[incoming_index].group) &&
+	    peer == g_group_file_in[incoming_index].sender_peer &&
+	    strcmp(key, g_group_file_in[incoming_index].sender_key) == 0) {
+		if (g_group_file_in[incoming_index].completed) {
+			(void)group_file_send_control(group_number, peer, OMAQ_GROUP_FILE_ACK, id);
+			group_file_in_drop(incoming_index, 0);
+		} else {
+			group_file_in_fail(incoming_index, "canceled", NULL, 0);
+		}
+		return;
+	}
+	if (outgoing_index >= 0) {
+		group_file_outgoing *outgoing = &g_group_file_out[outgoing_index];
+		if (!group_file_group_binding_ok(group_number, outgoing->group))
+			return;
+		for (int i = 0; i < GROUP_FILE_RECIPIENT_MAX; i++)
+			if (outgoing->recipients[i].used &&
+			    strcmp(outgoing->recipients[i].key, key) == 0) {
+				outgoing->recipients[i].canceled = 1;
+				return;
+			}
+		/* A decline from a peer that never accepted is local to that peer. */
+	}
+}
+
+static void group_file_receive_fail(uint32_t group_number, uint32_t peer,
+				    const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES])
+{
+	char key[65];
+	int index = group_file_out_find(group_number, id);
+
+	if (index < 0 ||
+	    !group_file_group_binding_ok(group_number, g_group_file_out[index].group) ||
+	    group_file_peer_identity(group_number, peer, key, NULL, 0, NULL) != 0)
+		return;
+	for (int i = 0; i < GROUP_FILE_RECIPIENT_MAX; i++)
+		if (g_group_file_out[index].recipients[i].used &&
+		    strcmp(g_group_file_out[index].recipients[i].key, key) == 0) {
+			g_group_file_out[index].recipients[i].failed = 1;
+			return;
+		}
+}
+
+static void hook_group_file_packet(void *ud, uint32_t group_number,
+				   uint32_t peer, const uint8_t *data,
+				   size_t length, int private_packet)
+{
+	uint8_t type, id[OMAQ_GROUP_FILE_ID_BYTES];
+	(void)ud;
+
+	if (!data || length < 6 || length > OMAQ_GROUP_FILE_PACKET_MAX)
+		return;
+	if (!private_packet) {
+		if (data[5] == OMAQ_GROUP_FILE_OFFER)
+			group_file_receive_offer(group_number, peer, data, length);
+		else if (omaq_group_file_control_unpack(data, length, &type, id) == 0 &&
+			 type == OMAQ_GROUP_FILE_CANCEL)
+			group_file_receive_cancel(group_number, peer, id);
+		return;
+	}
+	if (data[5] == OMAQ_GROUP_FILE_DATA) {
+		group_file_receive_data(group_number, peer, data, length);
+		return;
+	}
+	if (omaq_group_file_control_unpack(data, length, &type, id) != 0)
+		return;
+	if (type == OMAQ_GROUP_FILE_ACCEPT) {
+		int index = group_file_out_find(group_number, id);
+		if (index >= 0)
+			group_file_accept_packet(index, peer);
+	} else if (type == OMAQ_GROUP_FILE_CANCEL) {
+		group_file_receive_cancel(group_number, peer, id);
+	} else if (type == OMAQ_GROUP_FILE_DONE) {
+		group_file_receive_done(group_number, peer, id);
+	} else if (type == OMAQ_GROUP_FILE_ACK) {
+		int index = group_file_out_find(group_number, id);
+		if (index >= 0)
+			group_file_ack_packet(index, peer);
+	} else if (type == OMAQ_GROUP_FILE_FAIL) {
+		group_file_receive_fail(group_number, peer, id);
+	}
+}
+
+static int group_file_recipient_identity_ok(group_file_outgoing *outgoing,
+					    group_file_recipient *recipient)
+{
+	char key[65];
+	return outgoing && recipient && recipient->used &&
+		group_file_group_binding_ok(outgoing->group_number, outgoing->group) &&
+		group_file_peer_identity(outgoing->group_number, recipient->peer,
+					 key, NULL, 0, NULL) == 0 &&
+		strcmp(key, recipient->key) == 0;
+}
+
+static void group_file_pump(void)
+{
+	uint8_t packet[OMAQ_GROUP_FILE_PACKET_MAX], data[OMAQ_GROUP_FILE_DATA_MAX];
+	int64_t now = monotonic_millis();
+
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++) {
+		group_file_incoming *incoming = &g_group_file_in[i];
+		if (!incoming->used)
+			continue;
+		if (incoming->completed) {
+			if (now >= incoming->idle_deadline) {
+				group_file_in_drop(i, 0);
+				continue;
+			}
+			if (now >= incoming->ack_after) {
+				char key[65];
+				if (!group_file_group_binding_ok(incoming->group_number,
+							 incoming->group) ||
+				    group_file_peer_identity(incoming->group_number,
+					incoming->sender_peer, key, NULL, 0, NULL) != 0 ||
+				    strcmp(key, incoming->sender_key) != 0) {
+					group_file_in_drop(i, 0);
+					continue;
+				}
+				int ack = group_file_send_control(incoming->group_number,
+					incoming->sender_peer, OMAQ_GROUP_FILE_ACK, incoming->id);
+				if (ack <= 0) {
+					group_file_in_drop(i, 0);
+					continue;
+				}
+				incoming->ack_after = now + 250;
+			}
+			continue;
+		}
+		if (now >= incoming->idle_deadline)
+			group_file_in_fail(i, "failed", "timeout", incoming->accepted);
+	}
+	for (int i = 0; i < GROUP_FILE_OUT_MAX; i++) {
+		group_file_outgoing *outgoing = &g_group_file_out[i];
+		int active = 0, done = 0, canceled = 0, failed = 0, unknown = 0;
+		int pending_response = 0;
+		if (!outgoing->used)
+			continue;
+		if (!outgoing->started) {
+			int recipients = group_file_recipient_count(outgoing);
+			if (recipients == 0 && !group_file_all_responded(outgoing)) {
+				if (now >= outgoing->accept_until)
+					group_file_out_finish(i, "failed", "no_recipient");
+				continue;
+			}
+			outgoing->started = 1;
+		}
+		for (int budget = 0; budget < 32; budget++) {
+			group_file_recipient *recipient = NULL;
+			for (int searched = 0; searched < GROUP_FILE_RECIPIENT_MAX; searched++) {
+				unsigned int candidate = outgoing->recipient_cursor++ %
+					GROUP_FILE_RECIPIENT_MAX;
+				if (outgoing->recipients[candidate].used &&
+				    outgoing->recipients[candidate].accepted &&
+				    !outgoing->recipients[candidate].done &&
+				    !outgoing->recipients[candidate].done_sent &&
+				    !outgoing->recipients[candidate].canceled &&
+				    !outgoing->recipients[candidate].failed &&
+				    !outgoing->recipients[candidate].delivery_unknown) {
+					recipient = &outgoing->recipients[candidate];
+					break;
+				}
+			}
+			if (!recipient)
+				break;
+			if (!group_file_recipient_identity_ok(outgoing, recipient) ||
+			    now - recipient->last_progress > 30000) {
+				recipient->failed = 1;
+				continue;
+			}
+			if (recipient->offset < outgoing->size) {
+				size_t wanted = (size_t)(outgoing->size - recipient->offset);
+				ssize_t got;
+				int packet_length, sent;
+				if (wanted > sizeof(data))
+					wanted = sizeof(data);
+				got = pread(outgoing->fd, data, wanted, (off_t)recipient->offset);
+				packet_length = got == (ssize_t)wanted
+					? omaq_group_file_data_pack(packet, sizeof(packet), outgoing->id,
+								  recipient->offset, data, wanted)
+					: -1;
+				if (packet_length < 0) {
+					recipient->failed = 1;
+					continue;
+				}
+				sent = omaq_tox_group_custom_private_send(g_tox,
+					outgoing->group_number, recipient->peer, packet,
+					(size_t)packet_length);
+				if (sent == 0) {
+					recipient->offset += wanted;
+					recipient->last_progress = now;
+				} else if (sent < 0) {
+					recipient->failed = 1;
+				} else {
+					break;
+				}
+			} else {
+				int sent = group_file_send_control(outgoing->group_number,
+					recipient->peer, OMAQ_GROUP_FILE_DONE, outgoing->id);
+				if (sent == 0) {
+					recipient->done_sent = 1;
+					recipient->last_progress = now;
+				} else if (sent < 0) {
+					recipient->failed = 1;
+				} else {
+					break;
+				}
+			}
+		}
+		for (int r = 0; r < GROUP_FILE_RECIPIENT_MAX; r++) {
+			if (!outgoing->recipients[r].used)
+				continue;
+			if (!outgoing->recipients[r].accepted) {
+				if (outgoing->recipients[r].failed)
+					failed++;
+				else if (outgoing->recipients[r].canceled)
+					canceled++;
+				else
+					pending_response++;
+				continue;
+			}
+			if (outgoing->recipients[r].done_sent &&
+			    now - outgoing->recipients[r].last_progress > 30000)
+				outgoing->recipients[r].delivery_unknown = 1;
+			if (outgoing->recipients[r].done)
+				done++;
+			else if (outgoing->recipients[r].delivery_unknown)
+				unknown++;
+			else if (outgoing->recipients[r].failed)
+				failed++;
+			else if (outgoing->recipients[r].canceled)
+				canceled++;
+			else
+				active++;
+		}
+		if (outgoing->used && active == 0 &&
+		    (pending_response == 0 || now >= outgoing->accept_until) &&
+		    done + canceled + failed + unknown > 0) {
+			if (done > 0)
+				group_file_out_finish(i, "done",
+					unknown > 0 ? "partial_delivery_unknown" :
+					(failed > 0 ? "partial_failed" : NULL));
+			else if (unknown > 0)
+				group_file_out_finish(i, "failed", "delivery_unknown");
+			else if (failed > 0)
+				group_file_out_finish(i, "failed", "group_file_failed");
+			else
+				group_file_out_finish(i, "canceled", NULL);
+		}
+	}
+}
+
+static void group_file_self_exit(int index)
+{
+	group_file_outgoing *outgoing;
+	int done = 0, uncertain = 0, incomplete = 0;
+
+	if (index < 0 || index >= GROUP_FILE_OUT_MAX || !g_group_file_out[index].used)
+		return;
+	outgoing = &g_group_file_out[index];
+	for (int i = 0; i < GROUP_FILE_RECIPIENT_MAX; i++) {
+		group_file_recipient *recipient = &outgoing->recipients[i];
+		if (!recipient->used)
+			continue;
+		if (recipient->done)
+			done++;
+		else if (recipient->done_sent)
+			uncertain++;
+		else if (recipient->accepted && !recipient->canceled)
+			incomplete++;
+	}
+	if (done > 0)
+		group_file_out_finish(index, "done",
+			uncertain > 0 ? "partial_delivery_unknown" :
+			(incomplete > 0 ? "partial_failed" : NULL));
+	else if (uncertain > 0)
+		group_file_out_finish(index, "failed", "delivery_unknown");
+	else
+		group_file_out_finish(index, "failed", "peer_left");
+}
+
+static void group_file_peer_removed(uint32_t group_number, uint32_t peer, int self)
+{
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used &&
+		    g_group_file_in[i].group_number == group_number &&
+		    (self || g_group_file_in[i].sender_peer == peer)) {
+			if (g_group_file_in[i].completed)
+				group_file_in_drop(i, 0);
+			else
+				group_file_in_fail(i, "failed", "peer_left", 0);
+		}
+	for (int i = 0; i < GROUP_FILE_OUT_MAX; i++) {
+		if (!g_group_file_out[i].used ||
+		    g_group_file_out[i].group_number != group_number)
+			continue;
+		if (self) {
+			group_file_self_exit(i);
+			continue;
+		}
+		for (int r = 0; r < GROUP_FILE_RECIPIENT_MAX; r++)
+			if (g_group_file_out[i].recipients[r].used &&
+			    g_group_file_out[i].recipients[r].peer == peer) {
+				if (g_group_file_out[i].recipients[r].done_sent &&
+				    !g_group_file_out[i].recipients[r].done)
+					g_group_file_out[i].recipients[r].delivery_unknown = 1;
+				else
+					g_group_file_out[i].recipients[r].failed = 1;
+			}
+	}
+}
+
+static int group_file_group_active(const char *group)
+{
+	for (int i = 0; group && i < GROUP_FILE_OUT_MAX; i++)
+		if (g_group_file_out[i].used && strcmp(g_group_file_out[i].group, group) == 0)
+			return 1;
+	for (int i = 0; group && i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used && strcmp(g_group_file_in[i].group, group) == 0)
+			return 1;
+	return 0;
+}
+
+static int group_file_member_active(const char *group, const char *member_key)
+{
+	for (int i = 0; group && member_key && i < GROUP_FILE_OUT_MAX; i++) {
+		if (!g_group_file_out[i].used || strcmp(g_group_file_out[i].group, group) != 0)
+			continue;
+		for (int r = 0; r < GROUP_FILE_RECIPIENT_MAX; r++)
+			if (g_group_file_out[i].recipients[r].used &&
+			    !g_group_file_out[i].recipients[r].done &&
+			    !g_group_file_out[i].recipients[r].canceled &&
+			    strcmp(g_group_file_out[i].recipients[r].key, member_key) == 0)
+				return 1;
+	}
+	for (int i = 0; group && member_key && i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used && strcmp(g_group_file_in[i].group, group) == 0 &&
+		    strcmp(g_group_file_in[i].sender_key, member_key) == 0)
+			return 1;
+	return 0;
+}
+
+static void group_file_reset(void)
+{
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used)
+			group_file_in_drop(i, !g_group_file_in[i].completed);
+	for (int i = 0; i < GROUP_FILE_OUT_MAX; i++)
+		if (g_group_file_out[i].used) {
+			if (g_group_file_out[i].pending_attachment)
+				(void)attachment_pending_update(g_group_file_out[i].path, 2);
+			group_file_out_drop(i);
+		}
+}
+
 static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
 		      const char *name, uint64_t size, const char *path, const char *dir,
 		      const char *request)
@@ -6560,6 +7794,7 @@ static void attach_hooks(void)
 	omaq_tox_set_friend_status_hook(g_tox, hook_friend_status, NULL);
 	omaq_tox_set_typing_hook(g_tox, hook_typing, NULL);
 	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
+	omaq_tox_set_group_packet_hook(g_tox, hook_group_file_packet, NULL);
 	omaq_tox_set_file_hooks(g_tox, hook_file_recv, hook_file_creq, hook_file_chunk,
 				hook_file_ctrl, NULL);
 	omaq_tox_set_avatar_hook(g_tox, hook_avatar, NULL);
@@ -7812,7 +9047,8 @@ static int operation_allows_group_conversation(const char *name)
 	static const char *operations[] = {
 		"msg.send", "history", "search", "history.clear", "message.edit",
 		"message.delete", "message.react", "conversation.read", "unread.clear",
-		"receipt.send", "surface.set", "surface.get"
+		"receipt.send", "surface.set", "surface.get", "file.send", "file.status",
+		"file.accept", "file.cancel"
 	};
 
 	if (!name)
@@ -9050,6 +10286,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (g_tox) {
 			omaq_role self = ROLE_MEMBER;
 			const char *gid = op->group[0] ? op->group : op->conversation;
+			if (group_file_group_active(gid)) {
+				emit_error_conv("busy", gid);
+				return 0;
+			}
 			if (omaq_group_self_role(g_tox, gid, &self) != 0) {
 				emit_error("forbidden");
 				return 0;
@@ -9119,6 +10359,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			char member_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1] = "";
 			uint32_t peer, group_number;
 			int notice_slot = -1;
+			if (group_file_member_active(gid, member_key)) {
+				emit_error_conv("busy", gid);
+				return 0;
+			}
 			if (strlen(gid) >= sizeof(g_group_leave_notice_suppress[0].group) ||
 			    omaq_group_self_role(g_tox, gid, &self) != 0 ||
 			    omaq_group_resolve_member(g_tox, gid, member_key, &peer,
@@ -9188,6 +10432,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 #ifdef HAVE_TOX
 		if (g_tox) {
 			const char *gid = op->group[0] ? op->group : op->conversation;
+			if (group_file_group_active(gid)) {
+				emit_error_conv("busy", gid);
+				return 0;
+			}
 			if (recover_receipt_transaction() != 0) {
 				emit_error_conv("receipt_state_failed", gid);
 				return 0;
@@ -10032,6 +11280,14 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			uint32_t fn, fnum;
 			char name[OMAQ_FILE_NAME_MAX + 1];
 
+			if (cid[0] == 'g') {
+				int group_rc = group_file_send_begin(cid, op->path,
+					op->kind[0] ? op->kind : "file", op->id);
+				if (group_rc != 0)
+					emit_file_rejected(cid, op->id,
+						group_rc == -2 ? "busy" : "forbidden");
+				return 0;
+			}
 			if (!direct_id_ok(cid)) {
 				emit_file_rejected(cid, op->id, "forbidden");
 				return 0;
@@ -10085,6 +11341,25 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			int request_index;
 			uint32_t fn;
 
+			if (cid[0] == 'g') {
+				int group_index = -1;
+				for (int i = 0; i < GROUP_FILE_OUT_MAX; i++)
+					if (g_group_file_out[i].used &&
+					    strcmp(g_group_file_out[i].group, cid) == 0 &&
+					    strcmp(g_group_file_out[i].request, op->id) == 0) {
+						group_index = i;
+						break;
+					}
+				if (!op->id[0] || group_index < 0) {
+					emit_file_rejected(cid, op->id, "transfer_unknown");
+					return 0;
+				}
+				emit_group_file("sending", cid,
+					g_group_file_out[group_index].event_id, NULL, 0, NULL,
+					"out", g_group_file_out[group_index].request,
+					g_group_file_out[group_index].kind, NULL, NULL);
+				return 0;
+			}
 			if (!direct_id_ok(cid) || !op->id[0]) {
 				emit_file_rejected(cid, op->id, "forbidden");
 				return 0;
@@ -10117,6 +11392,13 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			uint64_t size = 0;
 			const char *over = op->path[0] ? op->path : NULL;
 
+			if (op->conversation[0] == 'g') {
+				if (group_file_accept(op->conversation, op->id, over) != 0)
+					emit_group_file("failed", op->conversation, op->id, NULL, 0,
+						NULL, "in", NULL, "file", NULL,
+						"accept_failed");
+				return 0;
+			}
 			if (omaq_file_id_parse(op->id, &fn, &fnum) != 0) {
 				emit_error("unsupported");
 				return 0;
@@ -10149,6 +11431,11 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (g_tox) {
 			uint32_t fn, fnum;
 
+			if (op->conversation[0] == 'g') {
+				if (group_file_cancel(op->conversation, op->id) != 0)
+					emit_error_conv("forbidden", op->conversation);
+				return 0;
+			}
 			if (omaq_file_id_parse(op->id, &fn, &fnum) != 0) {
 				emit_error("unsupported");
 				return 0;
@@ -10908,6 +12195,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 			if (g_tox && !g_identity_primary_uncertain) {
 				omaq_tox_iterate(g_tox);
+				group_file_pump();
 				flush_receipt_acknowledgements();
 				expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
@@ -10987,6 +12275,7 @@ int main(int argc, char **argv)
 		if (g_tox && !g_identity_recovery_required &&
 		    !g_identity_primary_uncertain) {
 			omaq_tox_iterate(g_tox);
+			group_file_pump();
 			flush_receipt_acknowledgements();
 			expire_group_auth_reservation();
 #ifdef HAVE_SIGNAL
@@ -11057,6 +12346,7 @@ int main(int argc, char **argv)
 		}
 	}
 #ifdef HAVE_TOX
+	group_file_reset();
 	omaq_av_reset();
 	if (g_tox) {
 		if (g_identity_recovery_required)

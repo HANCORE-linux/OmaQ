@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 3: 1:1 then private group invite, one text, dissolve. One helper.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "phase3: no helper" >&2; exit 1; }
 test -f "$root/docs/stages/03-toxcore.md" || { echo "phase3: missing 03-toxcore.md" >&2; exit 1; }
@@ -23,6 +23,7 @@ he=$(mktemp -d /tmp/omaq-p3e-XXXXXX)
 se=$(mktemp -d /tmp/omaq-p3es-XXXXXX)
 fe=$(mktemp /tmp/omaq-p3oe-XXXXXX)
 busy_export=$(mktemp -u /tmp/omaq-p3-busy-export-XXXXXX.save)
+pre_group_save=$(mktemp /tmp/omaq-p3-before-group-XXXXXX.save)
 holda=$(mktemp -u /tmp/omaq-p3fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p3fb-XXXXXX)
 holdc=$(mktemp -u /tmp/omaq-p3fc-XXXXXX)
@@ -33,6 +34,7 @@ pb=""
 pc=""
 pd=""
 pe=""
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 5>&- 6>&- 7>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -41,7 +43,7 @@ cleanup() {
 	[ -n "${pd:-}" ] && kill "$pd" 2>/dev/null || true
 	[ -n "${pe:-}" ] && kill "$pe" 2>/dev/null || true
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$hd" "$sd" "$he" "$se" \
-		"$fa" "$fb" "$fc" "$fd" "$fe" "$busy_export" \
+		"$fa" "$fb" "$fc" "$fd" "$fe" "$busy_export" "$pre_group_save" \
 		"$holda" "$holdb" "$holdc" "$holdd" "$holde" \
 		"$fa.err" "$fb.err" "$fc.err" "$fd.err" "$fe.err"
 }
@@ -51,10 +53,15 @@ case "$ha" in
 "$real_home"|"$real_home"/*) echo "phase3: refused real home" >&2; exit 1 ;;
 esac
 
+download_a="$ha/downloads"
+download_b="$hb/downloads"
+mkdir -m 700 "$download_a" "$download_b"
 mkfifo "$holda" "$holdb"
-OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
+OMAQ_HOME="$ha" OMAQ_STATE="$sa" OMAQ_DOWNLOAD_DIR="$download_a" \
+	"$bin" >"$fa" 2>"$fa.err" <"$holda" &
 pa=$!
-OMAQ_HOME="$hb" OMAQ_STATE="$sb" "$bin" >"$fb" 2>"$fb.err" <"$holdb" &
+OMAQ_HOME="$hb" OMAQ_STATE="$sb" OMAQ_DOWNLOAD_DIR="$download_b" \
+	"$bin" >"$fb" 2>"$fb.err" <"$holdb" &
 pb=$!
 exec 3>"$holda"
 exec 4>"$holdb"
@@ -100,6 +107,8 @@ done
 friend_key=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | tail -1 |
 	sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
 [ "${#friend_key}" -eq 64 ] || { echo "phase3: stable friend key missing" >&2; exit 1; }
+cp "$ha/tox.save" "$pre_group_save"
+chmod 600 "$pre_group_save"
 
 # Group numbers are process-local. Give B a pre-existing g0 so A's room must
 # still authorize correctly when B allocates a different local number.
@@ -384,11 +393,173 @@ if [ "$i" -ge 50 ]; then
 	exit 1
 fi
 
+# Protocol 12 sends bounded group attachments through lossless private NGC
+# packets after each recipient explicitly accepts the helper-authored offer.
+group_file_source="$ha/group-file.bin"
+dd if=/dev/zero of="$group_file_source" bs=1024 count=32 status=none
+printf '{"op":"file.send","conversation":"%s","path":"%s","kind":"file","id":"phase3-group-file-send"}\n' \
+	"$gid" "$group_file_source" >&3
+i=0
+while [ "$i" -lt 100 ]; do
+	group_file_id=$(grep -a '"event":"file.offer"' "$fb" |
+		grep -a '"conversation":"'"$gid"'"' | tail -1 |
+		sed -n 's/.*"id":"\(gf:[0-9a-f]*\)".*/\1/p')
+	[ -n "$group_file_id" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 100 ] || { echo "phase3: group file offer missing" >&2; exit 1; }
+# The fixed offer window must not be shortened to a sub-second race.
+sleep 3
+! grep -a '"event":"file.failed"' "$fa" | grep -a -q '"request":"phase3-group-file-send"' || {
+	echo "phase3: group file offer expired before a delayed acceptance" >&2
+	exit 1
+}
+printf '{"op":"file.accept","conversation":"%s","id":"%s"}\n' \
+	"$gid" "$group_file_id" >&4
+i=0
+while [ "$i" -lt 150 ]; do
+	if grep -a '"event":"file.done"' "$fa" | grep -a '"dir":"out"' |
+	   grep -a -q '"id":"'"$group_file_id"'"' &&
+	   grep -a '"event":"file.done"' "$fb" | grep -a '"dir":"in"' |
+	   grep -a -q '"id":"'"$group_file_id"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 150 ] || {
+	echo "phase3: group file transfer did not complete" >&2
+	tail -40 "$fa" >&2
+	tail -40 "$fb" >&2
+	exit 1
+}
+group_file_dest=$(grep -a '"event":"file.done"' "$fb" | grep -a '"dir":"in"' |
+	grep -a '"id":"'"$group_file_id"'"' | tail -1 |
+	sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+[ -f "$group_file_dest" ] || { echo "phase3: group file destination missing" >&2; exit 1; }
+cmp -s "$group_file_source" "$group_file_dest" || {
+	echo "phase3: group file payload mismatch" >&2
+	exit 1
+}
+grep -a '"event":"message"' "$fb" | grep -a '"id":"'"$group_file_id"'"' |
+	grep -a -q '"kind":"file"' || {
+	echo "phase3: group file history projection missing" >&2
+	exit 1
+}
+
+group_image_source="$root/assets/mark.png"
+printf '{"op":"file.send","conversation":"%s","path":"%s","kind":"image","id":"phase3-group-image-send"}\n' \
+	"$gid" "$group_image_source" >&3
+i=0
+while [ "$i" -lt 100 ]; do
+	group_image_id=$(grep -a '"event":"file.offer"' "$fb" |
+		grep -a '"conversation":"'"$gid"'"' | grep -a '"kind":"image"' |
+		tail -1 | sed -n 's/.*"id":"\(gf:[0-9a-f]*\)".*/\1/p')
+	[ -n "$group_image_id" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 100 ] || { echo "phase3: group image offer missing" >&2; exit 1; }
+printf '{"op":"file.accept","conversation":"%s","id":"%s"}\n' \
+	"$gid" "$group_image_id" >&4
+i=0
+while [ "$i" -lt 150 ]; do
+	if grep -a '"event":"file.done"' "$fa" | grep -a '"dir":"out"' |
+	   grep -a -q '"id":"'"$group_image_id"'"' &&
+	   grep -a '"event":"file.done"' "$fb" | grep -a '"dir":"in"' |
+	   grep -a -q '"id":"'"$group_image_id"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 150 ] || { echo "phase3: group image transfer did not complete" >&2; exit 1; }
+group_image_dest=$(grep -a '"event":"file.done"' "$fb" | grep -a '"dir":"in"' |
+	grep -a '"id":"'"$group_image_id"'"' | tail -1 |
+	sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+[ -f "$group_image_dest" ] || { echo "phase3: group image destination missing" >&2; exit 1; }
+[ "$(od -An -tx1 -N8 "$group_image_dest" | tr -d ' \n')" = "89504e470d0a1a0a" ] || {
+	echo "phase3: received group image is not canonical PNG" >&2
+	exit 1
+}
+grep -a '"event":"message"' "$fb" | grep -a '"id":"'"$group_image_id"'"' |
+	grep -a -q '"kind":"image"' || {
+	echo "phase3: group image history projection missing" >&2
+	exit 1
+}
+
+printf '{"op":"file.send","conversation":"%s","path":"%s","kind":"file","id":"phase3-group-file-cancel"}\n' \
+	"$gid" "$group_file_source" >&3
+i=0
+while [ "$i" -lt 100 ]; do
+	group_cancel_id=$(grep -a '"event":"file.offer"' "$fb" |
+		grep -a '"conversation":"'"$gid"'"' | tail -1 |
+		sed -n 's/.*"id":"\(gf:[0-9a-f]*\)".*/\1/p')
+	if [ -n "$group_cancel_id" ] && [ "$group_cancel_id" != "$group_file_id" ] &&
+	   [ "$group_cancel_id" != "$group_image_id" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 100 ] || { echo "phase3: cancelable group file offer missing" >&2; exit 1; }
+printf '{"op":"file.cancel","conversation":"%s","id":"%s"}\n' \
+	"$gid" "$group_cancel_id" >&4
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"file.canceled"' "$fa" | grep -a '"dir":"out"' |
+	   grep -a -q '"id":"'"$group_cancel_id"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 50 ] || { echo "phase3: group file cancellation missing" >&2; exit 1; }
+
+printf '{"op":"file.send","conversation":"%s","path":"%s","kind":"file","id":"phase3-group-file-mutate"}\n' \
+	"$gid" "$group_file_source" >&3
+i=0
+while [ "$i" -lt 100 ]; do
+	group_mutate_id=$(grep -a '"event":"file.offer"' "$fb" |
+		grep -a '"conversation":"'"$gid"'"' | tail -1 |
+		sed -n 's/.*"id":"\(gf:[0-9a-f]*\)".*/\1/p')
+	if [ -n "$group_mutate_id" ] && [ "$group_mutate_id" != "$group_file_id" ] &&
+	   [ "$group_mutate_id" != "$group_image_id" ] &&
+	   [ "$group_mutate_id" != "$group_cancel_id" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 100 ] || { echo "phase3: mutable group file offer missing" >&2; exit 1; }
+printf x | dd of="$group_file_source" bs=1 seek=0 conv=notrunc status=none
+printf '{"op":"file.accept","conversation":"%s","id":"%s"}\n' \
+	"$gid" "$group_mutate_id" >&4
+i=0
+while [ "$i" -lt 100 ]; do
+	if grep -a '"event":"file.failed"' "$fb" | grep -a '"dir":"in"' |
+	   grep -a -q '"id":"'"$group_mutate_id"'"' &&
+	   grep -a '"event":"file.failed"' "$fa" | grep -a '"dir":"out"' |
+	   grep -a -q '"id":"'"$group_mutate_id"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 100 ] || { echo "phase3: mutated group file did not fail closed" >&2; exit 1; }
+! grep -a '"event":"file.canceled"' "$fa" | grep -a -q '"id":"'"$group_mutate_id"'"' || {
+	echo "phase3: mutated group file was misreported as user cancellation" >&2
+	exit 1
+}
+
 # Tox NGC private groups cannot be restored from a chat ID alone. A cold
 # helper must visibly prune a registry entry missing from Tox saved state,
 # never fabricate a disconnected phantom group.
 cp -a "$ha/." "$hc/"
-rm -f "$hc/tox.save"
+install -m 600 "$pre_group_save" "$hc/tox.save"
+install -m 600 "$sa/identity-presence" "$sc/identity-presence"
+install -m 600 "$sa/identity-recovery.save" "$sc/identity-recovery.save"
 printf '%s\t1\n' "$gid" >"$sc/unread.tsv"
 mkdir -p "$hc/history/g7"
 printf '%s\n' '{"id":"legacy","text":"archived"}' >"$hc/history/g7/messages.jsonl"

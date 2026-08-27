@@ -37,7 +37,7 @@ ShellRoot {
             key: directKey }) &&
           !service.operationBindingValid({ op: "msg.send", conversation: "0" }) &&
           !service.operationBindingValid({ op: "msg.send", key: directKey }) &&
-          !service.operationBindingValid({ op: "file.accept", conversation:
+          service.operationBindingValid({ op: "file.accept", conversation:
             "g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }) &&
           !service.operationBindingValid({ op: "msg.send", conversation: "0",
             key: replacementKey })
@@ -47,7 +47,10 @@ ShellRoot {
         var reusePurged = service.pendingOps.length === 0 &&
           service.lastMessageFailedRequest === "stale-queued-message" &&
           service.lastMessageFailedCode === "identity_changed"
+        service.activeHelperProtocol = 12
+        var groupAttachmentGate = service.supportsGroupAttachments
         service.activeHelperProtocol = 11
+        groupAttachmentGate = groupAttachmentGate && !service.supportsGroupAttachments
         service.friends = []
         service.friendsReady = false
         service.pendingCallSnapshot = { conversation: "0", key: directKey,
@@ -79,6 +82,21 @@ ShellRoot {
         service.handleLine(JSON.stringify({ event: "search", conversation: "0",
           key: directKey, request: "delayed-search", items: [{ text: "stale" }] }))
         var delayedSearchRejected = service.searchTick === searchTickBefore
+        var groupId = "g:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        service.groups = [{ id: groupId, memberCount: 1, limit: 10, members: [] }]
+        service.friends = [{ id: "0", key: directKey, name: "Invitee" }]
+        service.pendingOps = []
+        service.awaitingHelperInstance = true
+        var inviteRequest = service.nextGroupInviteRequest()
+        var groupInviteAccepted = service.inviteToGroup("0", directKey,
+          groupId, inviteRequest)
+        var queuedInvite = service.pendingOps.length === 1
+          ? JSON.parse(service.pendingOps[0]) : ({})
+        var groupInviteWired = groupInviteAccepted && queuedInvite.op === "invite.create" &&
+          queuedInvite.kind === "group" && queuedInvite.group === groupId &&
+          queuedInvite.id === "0" && queuedInvite.key === directKey &&
+          queuedInvite.request === inviteRequest
+        service.pendingOps = []
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -87,14 +105,16 @@ ShellRoot {
             !service.supportsDirectRecovery &&
             !service.supportsRedeemResults &&
             !service.supportsStableDirectState &&
+            !service.supportsGroupAttachments &&
             !service.exportIdentity("/tmp/blocked", "blocked-export") &&
             !service.inspectIdentity("/tmp/blocked", "", "blocked-inspect") &&
             !service.importIdentity("/tmp/blocked", true, "", "blocked-import") &&
             !service.protectIdentity("blocked-pass", "blocked-protect") &&
             !service.unprotectIdentity("blocked-pass", "blocked-unprotect") &&
             !service.setNickname("blocked", "blocked-nickname") &&
-            bindingChecks && reusePurged && bufferedUntilFriends &&
-            replayedAfterFriends && reboundContentPurged && delayedSearchRejected &&
+            bindingChecks && groupAttachmentGate && groupInviteWired && reusePurged &&
+            bufferedUntilFriends && replayedAfterFriends && reboundContentPurged &&
+            delayedSearchRejected &&
             service.redeem("legacy-invite") === "legacy") {
           console.log("OMAQ_PROTOCOL_COMPAT_OK")
         } else {

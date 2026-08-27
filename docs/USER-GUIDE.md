@@ -64,8 +64,8 @@ Direct messages use the Signal Double Ratchet. OmaQ does not use plaintext fallb
 5. The recipient chooses **Accept** or **Decline**. Canceling or declining a normal file leaves a **File transfer canceled** status with a close action in both chats until each user dismisses it.
 6. Accepted files are stored in `~/Downloads/omaq/` by default.
 7. Received audio files provide an in-chat Play/Pause control.
-8. PNG, JPEG, and WebP files selected, dropped, or pasted into a direct chat appear as a 56×56 preview in the composer and message history. Click the preview to open the complete local image. OmaQ transfers the attachment through the normal encrypted direct-file path; the receiver validates and canonically rewrites it before QML displays it. Clipboard staging remains private and is discarded if it is canceled or abandoned before sending.
-9. Video previews are not shown. Images, videos, and other files remain unavailable in group chats.
+8. PNG, JPEG, and WebP files selected, dropped, or pasted into a direct or group chat appear as a 56×56 preview in the composer and message history. Click the preview to open the complete local image. Direct attachments use the encrypted Tox friend-file path. Group attachments announce only bounded metadata to the group and send bytes through lossless private NGC packets to each online member who explicitly accepts. The receiver verifies the exact group sender, transfer ID, size, and SHA-256 digest, then canonically rewrites an image before QML displays it. Clipboard staging remains private and is discarded if it is canceled or abandoned before sending.
+9. Video previews are not shown; videos remain ordinary downloadable files.
 
 The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_DIR`.
 
@@ -106,7 +106,9 @@ Groups are private and limited to 10 members.
 5. The member strip in a group chat shows every cached member's name, role, and online/offline status at the normal composer text size.
 6. Click or right-click a member for role-aware **Make admin**, **Make member**, and **Remove member** actions. Each moderation change requires confirmation. A removed member may receive and accept a later fresh invite.
 
-Group chats support message formatting, replies, editing, deletion, reactions, unread state, and read receipts. Incoming bubbles widen as needed to show the complete cached sender name, and persisted system rows name members who join or leave. The member strip uses plain, middle-dot-separated status entries: your entry is `You` with a full-size role icon, while other members show a green or gray presence dot, role icon, and name. Every role can leave from the `logout` action in the group-chat header after confirmation. Calls are intentionally unavailable. Tox NGC does not provide a group file-transfer primitive, so files remain direct-chat only.
+Group chats support message formatting, emoji insertion, replies, editing, deletion, reactions, unread state, read receipts, files, and 56×56 image previews from selection, paste, or drag-and-drop. Incoming bubbles widen as needed to show the complete cached sender name, and persisted system rows name members who join or leave. The member strip uses plain, middle-dot-separated status entries: your entry is `You` with a full-size role icon, while other members show a green or gray presence dot, role icon, and name. The member menu repeats that presence with a filled green online dot. Owners and admins select an absent contact and confirm **Invite** through the same helper-authoritative path used by the panel. Every role can leave from the `logout` action in the group-chat header after confirmation. Calls are intentionally unavailable.
+
+Tox NGC has no native group file primitive. OmaQ therefore offers a file to the group through a versioned helper envelope and transfers its bytes privately only to currently online members who accept. Offline members and older helpers do not receive that attachment retroactively; send it again after they update or reconnect.
 
 ## 8. Protect and move your identity
 

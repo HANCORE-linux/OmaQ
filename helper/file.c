@@ -501,6 +501,58 @@ static FILE *open_receive_override(const char *path)
 	return file;
 }
 
+int omaq_file_download_create(const char *name, const char *dest_override,
+			      char *dest, size_t destn)
+{
+	char dir[512], safe[OMAQ_FILE_NAME_MAX + 1];
+	struct stat status;
+	const char *extension;
+	unsigned int suffix;
+	int fd = -1;
+
+	if (!name || !dest || destn == 0 ||
+	    omaq_file_basename(name, safe, sizeof(safe)) != 0)
+		return -1;
+	if (dest_override && dest_override[0]) {
+		if (!omaq_file_path_ok(dest_override) ||
+		    snprintf(dest, destn, "%s", dest_override) >= (int)destn)
+			return -1;
+		fd = open(dest, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+		if (fd < 0 || fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+		    status.st_uid != geteuid() || status.st_nlink != 1 ||
+		    fchmod(fd, 0600) != 0 || ftruncate(fd, 0) != 0) {
+			if (fd >= 0)
+				close(fd);
+			return -1;
+		}
+		return fd;
+	}
+	if (download_dir(NULL, dir, sizeof(dir)) != 0 || mkdir_p(dir) != 0)
+		return -1;
+	extension = strrchr(safe, '.');
+	if (extension == safe)
+		extension = NULL;
+	for (suffix = 0; suffix < 10000; suffix++) {
+		int written;
+		if (suffix == 0)
+			written = snprintf(dest, destn, "%s/%s", dir, safe);
+		else if (extension)
+			written = snprintf(dest, destn, "%s/%.*s.%u%s", dir,
+					   (int)(extension - safe), safe, suffix, extension);
+		else
+			written = snprintf(dest, destn, "%s/%s.%u", dir, safe, suffix);
+		if (written < 0 || (size_t)written >= destn)
+			return -1;
+		fd = open(dest, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+			  0600);
+		if (fd >= 0)
+			return fd;
+		if (errno != EEXIST)
+			return -1;
+	}
+	return -1;
+}
+
 int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 			 uint32_t fnum, const char *name, uint64_t size,
 			 const char *dest_override, char *dest, size_t destn,

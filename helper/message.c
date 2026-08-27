@@ -30,6 +30,11 @@ int omaq_message_id_ok(const char *id)
 	return 1;
 }
 
+int omaq_message_id_reserved(const char *id)
+{
+	return id && strncmp(id, "gf:", 3) == 0;
+}
+
 int omaq_message_id_new(char *out, size_t outn)
 {
 	unsigned char random_id[16];
@@ -123,6 +128,21 @@ int omaq_message_append_with_id(const char *home, const char *conv_id, const cha
 	return 0;
 }
 
+int omaq_message_append_attachment_id(const char *home, const char *conv_id,
+				      const char *from, const char *path,
+				      const char *dir, const char *kind,
+				      const char *message_id)
+{
+	if (!path || path[0] != '/' || strchr(path, '\n') || !dir ||
+	    (strcmp(dir, "in") != 0 && strcmp(dir, "out") != 0) || !kind ||
+	    (strcmp(kind, "file") != 0 && strcmp(kind, "image") != 0) ||
+	    !omaq_message_id_ok(message_id) ||
+	    omaq_store_message_id_used(home, conv_id, message_id) != 0)
+		return -1;
+	return message_append_id_reply_kind(home, conv_id, from, path, dir,
+					    message_id, "", kind);
+}
+
 int omaq_message_append_attachment_with_id(const char *home, const char *conv_id,
 					   const char *from, const char *path,
 					   const char *dir, const char *kind,
@@ -130,12 +150,9 @@ int omaq_message_append_attachment_with_id(const char *home, const char *conv_id
 {
 	char id[64];
 
-	if (!path || path[0] != '/' || strchr(path, '\n') || !dir ||
-	    (strcmp(dir, "in") != 0 && strcmp(dir, "out") != 0) || !kind ||
-	    (strcmp(kind, "file") != 0 && strcmp(kind, "image") != 0) ||
-	    omaq_message_id_new(id, sizeof(id)) != 0 ||
-	    omaq_store_message_id_used(home, conv_id, id) != 0 ||
-	    message_append_id_reply_kind(home, conv_id, from, path, dir, id, "", kind) != 0)
+	if (omaq_message_id_new(id, sizeof(id)) != 0 ||
+	    omaq_message_append_attachment_id(home, conv_id, from, path, dir,
+					      kind, id) != 0)
 		return -1;
 	if (id_out && id_outn && snprintf(id_out, id_outn, "%s", id) >= (int)id_outn)
 		return -1;
