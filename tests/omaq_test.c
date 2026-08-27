@@ -1320,6 +1320,14 @@ static void test_direct_state(void)
 		     "%s/history/.legacy-direct.0.0/messages.jsonl.tmp.123", unbound) >=
 	    (int)sizeof(path) || access(path, F_OK) == 0)
 		fail("direct state legacy temp residue");
+	{
+		char retained[OMAQ_DIRECT_STATE_ID_MAX];
+		if (omaq_direct_state_bound_id(unbound, "0", retained, sizeof(retained)) != 1 ||
+		    strcmp(retained, stable) != 0 ||
+		    snprintf(path, sizeof(path), "%s/direct-state-reinvite.required", unbound) >=
+			(int)sizeof(path) || access(path, R_OK) != 0)
+			fail("direct state migration did not retain the current contact binding");
+	}
 
 	/* Stable destinations, path components, and session suffixes fail closed. */
 	if (snprintf(path, sizeof(path), "%s/ratchet/rk/1", dir) >= (int)sizeof(path) ||

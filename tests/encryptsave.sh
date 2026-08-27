@@ -1,7 +1,7 @@
 #!/bin/sh
 # toxencryptsave: protect tox.save, restart locked, unlock, wrong pass fails.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "encryptsave: no helper" >&2; exit 1; }
 
@@ -99,8 +99,9 @@ grep -a '"event":"invite"' "$out2" | tail -1 |
 before=$(wc -l <"$out2")
 printf '%s\n' '{"op":"invite.create","kind":"direct","request":"invite-locked-create"}' >&3
 printf '%s\n' '{"op":"invite.revoke","request":"invite-locked-revoke"}' >&3
+printf '%s\n' '{"op":"invite.redeem","payload":"locked-gate","id":"invite-locked-redeem"}' >&3
 sleep 0.2
-for request in invite-locked-create invite-locked-revoke; do
+for request in invite-locked-create invite-locked-revoke invite-locked-redeem; do
 	tail -n +"$((before + 1))" "$out2" | grep -a '"code":"locked"' |
 		grep -a -q '"request":"'"$request"'"' || {
 		echo "encryptsave: locked direct invite correlation missing for $request" >&2

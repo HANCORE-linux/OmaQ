@@ -42,7 +42,7 @@ endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/line_reader.c helper/stdout_spool.c helper/store.c helper/message.c \
-	helper/identity.c helper/tox_adapt.c helper/rate.c \
+	helper/identity.c helper/identity_guard.c helper/tox_adapt.c helper/rate.c \
 	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/file.c helper/avatar.c helper/av.c \
 	helper/presence.c helper/receipt.c helper/message_action.c helper/direct_state.c \
@@ -50,6 +50,7 @@ LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c \
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c \
 	helper/json_io.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
+	helper/identity_guard.c \
 	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c \
 	helper/direct_state.c helper/ratchet.c helper/ratchet_pin.c
@@ -59,12 +60,22 @@ BIN_SPOOL_TEST := tests/stdout_spool_test
 BIN_FILE_TRANSFER_TEST := tests/file_transfer_test
 BIN_AV_STATE_TEST := tests/av_state_test
 BIN_RATCHET_PREKEY_TEST := tests/ratchet_prekey_test
+BIN_IDENTITY_GUARD_TEST := tests/identity_guard_test
 BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
 
 ifeq ($(SIG_OK),yes)
   SIGNAL_TEST_TARGET := $(BIN_RATCHET_PREKEY_TEST)
 endif
+ifeq ($(TOX_OK),yes)
+  IDENTITY_GUARD_TEST_TARGET := $(BIN_IDENTITY_GUARD_TEST)
+endif
 BIN_HELP := helper/omaq
+ifeq ($(TOX_OK)$(SIG_OK)$(PULSE_OK)$(IMAGE_OK),yesyesyesyes)
+  REINVITE_TEST_TARGET := $(BIN_HELP)
+  REINVITE_TEST_COMMAND := sh tests/reinvite-recovery.sh
+else
+  REINVITE_TEST_COMMAND := @echo "reinvite-recovery: skipped (full helper dependencies unavailable)"
+endif
 
 .PHONY: all test helper check-signal check-audio check-images arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
@@ -91,6 +102,13 @@ $(BIN_RATCHET_PREKEY_TEST): tests/ratchet_prekey_test.c helper/ratchet.c helper/
 		$(shell $(PKG_CONFIG) --cflags libsignal-protocol-c) -o $@ \
 		tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c \
 		$(shell $(PKG_CONFIG) --libs libsignal-protocol-c libcrypto)
+
+$(BIN_IDENTITY_GUARD_TEST): tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX -DOMAQ_TOX_TEST \
+		-DOMAQ_IDENTITY_GUARD_TEST \
+		$(shell $(PKG_CONFIG) --cflags $(TOX_PC)) -o $@ \
+		tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c \
+		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
 
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
@@ -120,17 +138,20 @@ check-images:
 $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
-test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(BIN_IPC_TEST_HELPER)
+test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
+	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_IDENTITY_GUARD_TEST); fi
 	@if [ "$(SIG_OK)" = "yes" ]; then ./$(BIN_RATCHET_PREKEY_TEST); fi
 	sh tests/float-script.sh
 	sh tests/nonblocking-invite.sh
 	sh tests/input-mask.sh
 	sh tests/surface-owner.sh
 	sh tests/paste-image.sh
+	sh tests/protocol-compat.sh
+	$(REINVITE_TEST_COMMAND)
 	sh tests/uninstall.sh
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 
@@ -284,4 +305,5 @@ verify-8: test arch helper
 
 clean:
 	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
-		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IDENTITY_GUARD_TEST) \
+		$(BIN_IPC_TEST_HELPER) $(BIN_HELP)

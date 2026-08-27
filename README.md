@@ -45,6 +45,8 @@ Update the plugin, rebuild its local helper, and reload the plugin so the newly 
 omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper && omarchy-shell shell rescanPlugins
 ```
 
+The UI remains compatible with Protocol-7 and newer helpers while this source-update command rebuilds the local binary. Features introduced by newer protocols stay disabled until the matching helper is ready; existing contacts are not projected as an empty replacement identity. OmaQ keeps identity and contact data outside the plugin directory. A private identity-presence record and an encrypted-or-plain recovery copy matching committed `tox.save` state are maintained under `~/.local/state/omaq/`. If the secondary copy cannot be updated, OmaQ keeps the committed primary identity active, marks the older recovery copy as stale, and shows a degraded-recovery warning. A stale copy is never restored. If an established primary identity unexpectedly disappears, the helper restores only its current valid recovery copy or stops visibly without creating a new identity. A confirmed Import can repair that stopped state only when the bundle has the exact protected public fingerprint.
+
 ## Uninstall
 
 Use OmaQ's wrapper so the terminal also lists every user-data location that is
@@ -60,7 +62,7 @@ plain plugin folder is moved to the exact hidden backup path printed by the
 wrapper. Data outside the plugin folder remains in these locations:
 
 - `~/.local/share/omaq/` — identity, contacts, groups, avatars, history, and Ratchet state
-- `~/.local/state/omaq/` — preferences, unread state, receipts, surfaces, and recovery state
+- `~/.local/state/omaq/` — identity guard/recovery copy, preferences, unread state, receipts, surfaces, and recovery state
 - `~/Downloads/omaq/` — received files
 - `~/.local/state/omaq-deploy-backups/` — deployment backups, when present
 

@@ -17,11 +17,20 @@ BarWidget {
 
   property bool opened: false
   property string redeemDraft: ""
+  property string redeemRequest: ""
+  property string redeemFeedback: ""
+  property string redeemFeedbackRequest: ""
   property bool nospamConfirm: false
   property bool removeContactConfirm: false
   property bool removeContactPickerOpen: false
   property string removeContactId: ""
   property string removeContactKey: ""
+  property bool identityPrimaryConfirm: false
+  property int identityPrimaryRequestSequence: 0
+  property string identityPrimaryRequest: ""
+  property bool directReinviteClearConfirm: false
+  property int directReinviteRequestSequence: 0
+  property string directReinviteRequest: ""
   property bool replaceIdentityConfirm: false
   property string replaceIdentityPath: ""
   property bool showJoin: false
@@ -171,7 +180,13 @@ BarWidget {
     (root.nicknameFeedbackRequest !== "" &&
      String(omaq.lastErrorRequest || "") === root.nicknameFeedbackRequest) ||
     (root.inviteFeedbackRequest !== "" &&
-     String(omaq.lastErrorRequest || "") === root.inviteFeedbackRequest)
+     String(omaq.lastErrorRequest || "") === root.inviteFeedbackRequest) ||
+    (root.redeemFeedbackRequest !== "" &&
+     String(omaq.lastErrorRequest || "") === root.redeemFeedbackRequest) ||
+    (omaq.directReinviteRequired &&
+     String(omaq.lastError || "") === "direct_state_reinvite_required") ||
+    (omaq.identityPrimaryUncertain &&
+     String(omaq.lastError || "") === "identity_primary_uncertain")
   readonly property string barPos: bar && bar.position ? String(bar.position) : "top"
   readonly property int inviteRemainingSeconds: Math.max(0,
     Math.floor(Number(omaq.inviteExpiresAt || 0) - root.inviteNow))
@@ -611,6 +626,9 @@ BarWidget {
     if (!root.opened)
       return
     root.showJoin = false
+    root.redeemRequest = ""
+    root.redeemFeedback = ""
+    root.redeemFeedbackRequest = ""
     root.chatPickerOpen = false
     root.inviteOpen = false
     root.inviteConfirmMode = ""
@@ -634,6 +652,10 @@ BarWidget {
     root.removeContactConfirm = false
     root.removeContactId = ""
     root.removeContactKey = ""
+    root.identityPrimaryConfirm = false
+    root.identityPrimaryRequest = ""
+    root.directReinviteClearConfirm = false
+    root.directReinviteRequest = ""
     root.resetIdentityControls()
     root.nicknameEditOpen = false
     root.nicknameSubmitPending = false
@@ -678,6 +700,9 @@ BarWidget {
       root.inviteFeedbackError = false
     }
     root.showJoin = false
+    root.redeemRequest = ""
+    root.redeemFeedback = ""
+    root.redeemFeedbackRequest = ""
     root.chatPickerOpen = false
     root.settingsOpen = false
     root.themeOpen = false
@@ -701,6 +726,10 @@ BarWidget {
     root.removeContactConfirm = false
     root.removeContactId = ""
     root.removeContactKey = ""
+    root.identityPrimaryConfirm = false
+    root.identityPrimaryRequest = ""
+    root.directReinviteClearConfirm = false
+    root.directReinviteRequest = ""
     root.resetIdentityControls()
     root.groupInviteGroupId = ""
     root.groupInviteFriendId = ""
@@ -737,6 +766,10 @@ BarWidget {
       root.removeContactConfirm = false
       root.removeContactId = ""
       root.removeContactKey = ""
+      root.identityPrimaryConfirm = false
+      root.identityPrimaryRequest = ""
+      root.directReinviteClearConfirm = false
+      root.directReinviteRequest = ""
     }
     if (root.moreSection !== "identity")
       root.resetIdentityControls()
@@ -775,12 +808,32 @@ BarWidget {
       return "Could not archive the previous identity's local data."
     if (code === "identity_rollback_failed")
       return "Identity restore failed. The backup was kept in the OmaQ data folder."
+    if (code === "identity_missing")
+      return "Your existing OmaQ identity is unavailable. No replacement identity was created. Restore or import the original identity."
+    if (code === "identity_mismatch")
+      return "The active identity does not match OmaQ's protected identity record. No contact state was changed."
+    if (code === "identity_guard_invalid")
+      return "OmaQ could not verify the protected identity state and stopped before creating a replacement."
+    if (code === "identity_recovery_degraded")
+      return "Your active identity is saved, but its additional recovery copy could not be updated. Export an identity bundle before relying on automatic recovery."
+    if (code === "identity_primary_uncertain")
+      return "OmaQ could not confirm that the latest identity/contact change reached disk. The helper stopped using that identity; restart OmaQ and verify the result before retrying."
+    if (code === "invite_self")
+      return "This invite belongs to your own identity."
+    if (code === "contact_exists")
+      return "This person is already in your contacts. Remove the old contact on both devices before using a fresh invite."
+    if (code === "contact_limit")
+      return "The direct-contact limit has been reached."
+    if (code === "invite_rejected")
+      return "The invite could not be added. Create a fresh invite and try it once on the other device."
+    if (code === "safety_key_changed")
+      return "This contact's encryption identity changed. Remove the old contact state on both devices before exchanging a fresh invite."
     if (code === "group_registry_failed")
       return "Could not safely save private group state."
     if (code === "direct_state_migration_failed")
       return "Legacy direct-chat state could not be migrated safely."
     if (code === "direct_state_reinvite_required")
-      return "Direct-chat encryption state was reset or archived. Remove affected contacts on both sides, exchange a fresh invite, then clear the marker."
+      return "Your OmaQ identity and contacts are intact. Some older direct-chat encryption state was safely archived and requires fresh invites."
     return code
   }
 
@@ -1217,6 +1270,11 @@ BarWidget {
     if (root.identityActionPending)
       return false
     var key = String(action || "")
+    if (key !== "unlock" && !omaq.supportsIdentityActions) {
+      root.identityFeedbackError = true
+      root.identityFeedback = "Update the local OmaQ helper before changing identity settings."
+      return false
+    }
     var selectedPath = String(path || "").trim()
     var passphrase = secret === undefined ? passField.text : String(secret || "")
     var sent = false
@@ -1280,7 +1338,7 @@ BarWidget {
   }
 
   function startIdentityPicker(mode) {
-    if (root.identityActionPending || identityPick.running)
+    if (!omaq.supportsIdentityActions || root.identityActionPending || identityPick.running)
       return
     root.identityPickerMode = String(mode || "import")
     root.identityPickerExitCode = -1
@@ -1851,6 +1909,31 @@ BarWidget {
         root.inviteFeedbackError = false
       }
     }
+    function onIdentityPrimaryTickChanged() {
+      if (root.identityPrimaryRequest !== "" &&
+          String(omaq.lastIdentityPrimaryRequest || "") === root.identityPrimaryRequest) {
+        root.identityPrimaryRequest = ""
+        root.identityPrimaryConfirm = false
+      }
+    }
+    function onRedeemTickChanged() {
+      if (root.redeemRequest !== "" &&
+          String(omaq.lastRedeemRequest || "") === root.redeemRequest) {
+        root.redeemRequest = ""
+        root.redeemFeedbackRequest = ""
+        root.redeemFeedback = omaq.lastRedeemKind === "group"
+          ? "Group invite checked. Waiting for the incoming group request."
+          : "Invite checked. Waiting for the other person to accept."
+        root.redeemDraft = ""
+      }
+    }
+    function onDirectReinviteTickChanged() {
+      if (root.directReinviteRequest !== "" &&
+          String(omaq.lastDirectReinviteRequest || "") === root.directReinviteRequest) {
+        root.directReinviteRequest = ""
+        root.directReinviteClearConfirm = false
+      }
+    }
     function onGroupInviteSentTickChanged() {
       if (root.groupInviteFeedback === "Sending group invite…" &&
           String(omaq.lastGroupInviteSentGroup || "") === root.groupInviteGroupId &&
@@ -1871,8 +1954,34 @@ BarWidget {
       if (root.inviteActionPending && root.inviteActionGeneration >= 0 &&
           root.inviteActionGeneration !== Number(omaq.reconnectGeneration || 0))
         root.failInviteAction("OmaQ restarted before the invite action completed.")
+      if (root.identityPrimaryRequest !== "") {
+        root.identityPrimaryRequest = ""
+        root.identityPrimaryConfirm = false
+      }
+      if (root.directReinviteRequest !== "") {
+        root.directReinviteRequest = ""
+        root.directReinviteClearConfirm = false
+      }
+      if (root.redeemRequest !== "") {
+        root.redeemFeedback = "Connection changed before the invite result was confirmed. Check your contacts before trying again."
+        root.redeemFeedbackRequest = root.redeemRequest
+        root.redeemRequest = ""
+      }
     }
     function onHelperInstanceGenerationChanged() {
+      if (root.identityPrimaryRequest !== "") {
+        root.identityPrimaryRequest = ""
+        root.identityPrimaryConfirm = false
+      }
+      if (root.directReinviteRequest !== "") {
+        root.directReinviteRequest = ""
+        root.directReinviteClearConfirm = false
+      }
+      if (root.redeemRequest !== "") {
+        root.redeemFeedback = "OmaQ restarted before the invite result was confirmed. Check your contacts before trying again."
+        root.redeemFeedbackRequest = root.redeemRequest
+        root.redeemRequest = ""
+      }
       if (root.groupInviteFeedback === "Sending group invite…" &&
           root.groupInviteGeneration >= 0 &&
           root.groupInviteGeneration !== Number(omaq.helperInstanceGeneration || 0)) {
@@ -1892,10 +2001,14 @@ BarWidget {
       }
     }
     function onIdentityActionTickChanged() {
-      if (!root.identityActionPending || root.identityRequest === "" ||
-          String(omaq.lastIdentityRequest || "") !== root.identityRequest)
+      if (!root.identityActionPending || root.identityRequest === "")
         return
       var op = String(omaq.lastIdentityOp || "")
+      var legacyUnlock = root.identityAction === "unlock" &&
+        !omaq.supportsIdentityActions && op === "unlock"
+      if (!legacyUnlock &&
+          String(omaq.lastIdentityRequest || "") !== root.identityRequest)
+        return
       if (root.identityAction === "unlock" && op === "unlock")
         root.finishIdentityAction(true, "Identity unlocked.")
       else if (root.identityAction === "protect" && op === "protect")
@@ -1928,9 +2041,30 @@ BarWidget {
                 ? "This invite action is not supported by the running helper."
                 : "Invite action failed. Try again.")
       }
+      if (root.redeemRequest !== "" &&
+          String(omaq.lastErrorRequest || "") === root.redeemRequest) {
+        root.redeemFeedbackRequest = root.redeemRequest
+        root.redeemFeedback = root.errorText(omaq.lastError)
+        root.redeemRequest = ""
+      }
+      if (root.identityPrimaryRequest !== "" &&
+          String(omaq.lastErrorRequest || "") === root.identityPrimaryRequest) {
+        root.identityPrimaryRequest = ""
+        root.identityPrimaryConfirm = false
+      }
+      if (root.directReinviteRequest !== "" &&
+          String(omaq.lastErrorRequest || "") === root.directReinviteRequest) {
+        root.directReinviteRequest = ""
+        root.directReinviteClearConfirm = false
+      }
       if (root.identityActionPending && root.identityAction !== "" &&
           root.identityRequest !== "" &&
           String(omaq.lastErrorRequest || "") === root.identityRequest)
+        root.finishIdentityAction(false, root.identityFailureText(omaq.lastError))
+      else if (root.identityActionPending && root.identityAction === "unlock" &&
+               !omaq.supportsIdentityActions &&
+               String(omaq.lastErrorRequest || "") === "" &&
+               ["locked", "forbidden"].indexOf(String(omaq.lastError || "")) >= 0)
         root.finishIdentityAction(false, root.identityFailureText(omaq.lastError))
     }
   }
@@ -2401,7 +2535,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                   tooltipText: "Save nickname"
                   accessibleName: "Save nickname"
-                  enabled: !root.nicknameSubmitPending &&
+                  enabled: omaq.supportsIdentityActions && !root.nicknameSubmitPending &&
                     omaq.nicknameValid(nicknameField.text)
                   onClicked: {
                     if (root.nicknameSubmitPending || !nicknameButton.enabled)
@@ -3402,6 +3536,196 @@ BarWidget {
             }
           }
 
+          Column {
+            visible: omaq.identityPrimaryUncertain
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "VERIFY IDENTITY STATE"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: "OmaQ could not confirm whether the latest identity, contact, or group change reached disk before restarting. Messaging and mutations are paused. Review your nickname and contacts first; group recovery stays paused and is reconciled only after confirmation."
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            GridLayout {
+              visible: !root.identityPrimaryConfirm
+              width: parent.width
+              columns: 2
+              columnSpacing: root.btnGap
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Show contacts"
+                iconText: "manage_accounts"
+                iconFontFamily: "Material Symbols Rounded"
+                onClicked: root.dismissTransientSections()
+              }
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Mark verified"
+                iconText: "verified"
+                iconFontFamily: "Material Symbols Rounded"
+                enabled: root.identityPrimaryRequest === ""
+                onClicked: root.identityPrimaryConfirm = true
+              }
+            }
+
+            Text {
+              visible: root.identityPrimaryConfirm
+              width: parent.width
+              text: "Clear this warning? Confirm only after checking whether the intended identity and contact change is present."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            GridLayout {
+              visible: root.identityPrimaryConfirm
+              width: parent.width
+              columns: 2
+              columnSpacing: root.btnGap
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Cancel"
+                enabled: root.identityPrimaryRequest === ""
+                onClicked: root.identityPrimaryConfirm = false
+              }
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Clear warning"
+                iconText: "verified"
+                iconFontFamily: "Material Symbols Rounded"
+                accent: root.urgent
+                enabled: root.identityPrimaryRequest === ""
+                onClicked: {
+                  root.identityPrimaryRequestSequence++
+                  var request = Date.now().toString(36) + "-primary-" +
+                    root.identityPrimaryRequestSequence.toString(36) + "-" +
+                    Math.floor(Math.random() * 0x100000000).toString(36)
+                  if (omaq.acknowledgeIdentityPrimary(request))
+                    root.identityPrimaryRequest = request
+                  else
+                    omaq.lastError = "helper_incompatible"
+                }
+              }
+            }
+          }
+
+          Column {
+            visible: omaq.directReinviteRequired
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSectionHeader {
+              text: "DIRECT CHAT RECOVERY"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: "Your OmaQ identity and contact list are intact. Older direct-chat encryption state could not be safely assigned to current contacts and was archived. Remove affected contacts on both devices, exchange one fresh invite, and verify that the new chat works."
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: !omaq.supportsDirectRecovery
+              width: parent.width
+              text: "Update the local OmaQ helper before marking recovery complete. Existing contacts remain available."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            GridLayout {
+              visible: !root.directReinviteClearConfirm
+              width: parent.width
+              columns: 2
+              columnSpacing: root.btnGap
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Review contacts"
+                iconText: "manage_accounts"
+                iconFontFamily: "Material Symbols Rounded"
+                onClicked: {
+                  root.dismissTransientSections()
+                  root.moreOpen = true
+                  root.moreSection = "danger"
+                }
+              }
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Mark complete"
+                iconText: "task_alt"
+                iconFontFamily: "Material Symbols Rounded"
+                enabled: omaq.supportsDirectRecovery && root.directReinviteRequest === ""
+                onClicked: root.directReinviteClearConfirm = true
+              }
+            }
+
+            Text {
+              visible: root.directReinviteClearConfirm
+              width: parent.width
+              text: "Clear this recovery warning? Continue only after affected contacts were removed on both devices, re-invited, and the new direct chat was verified."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            GridLayout {
+              visible: root.directReinviteClearConfirm
+              width: parent.width
+              columns: 2
+              columnSpacing: root.btnGap
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Cancel"
+                enabled: root.directReinviteRequest === ""
+                onClicked: root.directReinviteClearConfirm = false
+              }
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Clear warning"
+                iconText: "task_alt"
+                iconFontFamily: "Material Symbols Rounded"
+                accent: root.urgent
+                enabled: root.directReinviteRequest === ""
+                onClicked: {
+                  root.directReinviteRequestSequence++
+                  var request = Date.now().toString(36) + "-reinvite-" +
+                    root.directReinviteRequestSequence.toString(36) + "-" +
+                    Math.floor(Math.random() * 0x100000000).toString(36)
+                  if (omaq.clearDirectReinvite(request))
+                    root.directReinviteRequest = request
+                  else
+                    omaq.lastError = "helper_incompatible"
+                }
+              }
+            }
+          }
+
           Text {
             visible: root.settingsPersistenceWarning !== "" ||
               omaq.unreadWarning !== "" ||
@@ -3677,8 +4001,15 @@ BarWidget {
                 foreground: root.controlForeground
                 placeholderText: "Paste omaq:// invite"
                 text: root.redeemDraft
-                onTextChanged: root.redeemDraft = text
-                onAccepted: joinBtn.clicked()
+                enabled: root.redeemRequest === ""
+                onTextChanged: {
+                  root.redeemDraft = text
+                  if (root.redeemRequest === "") {
+                    root.redeemFeedback = ""
+                    root.redeemFeedbackRequest = ""
+                  }
+                }
+                onAccepted: if (joinBtn.enabled) joinBtn.clicked()
               }
 
               TokenButton {
@@ -3689,12 +4020,36 @@ BarWidget {
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
+                enabled: root.redeemRequest === ""
                 onClicked: {
-                  if (Model.parseInvite(root.redeemDraft))
-                    omaq.redeem(root.redeemDraft)
-                  else
-                    omaq.lastError = "unsupported"
+                  if (Model.parseInvite(root.redeemDraft)) {
+                    var request = omaq.redeem(root.redeemDraft)
+                    if (request === "legacy") {
+                      root.redeemFeedbackRequest = ""
+                      root.redeemFeedback = "Invite submitted to the older helper. Check your contacts before trying it again."
+                    } else if (request !== "") {
+                      root.redeemRequest = request
+                      root.redeemFeedbackRequest = request
+                      root.redeemFeedback = "Checking invite…"
+                    } else {
+                      root.redeemFeedback = "OmaQ is not ready to check this invite."
+                    }
+                  } else {
+                    root.redeemFeedback = root.errorText("unsupported")
+                  }
                 }
+              }
+
+              Text {
+                visible: root.redeemFeedback !== ""
+                width: parent.width
+                text: root.redeemFeedback
+                color: root.redeemFeedback === "Checking invite…"
+                  ? root.dim : (root.redeemFeedback.indexOf("Waiting") >= 0
+                    ? (root.systemColors[3] || root.onlineStatusColor) : root.urgent)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
               }
             }
 
@@ -4144,6 +4499,16 @@ BarWidget {
                 font.bold: true
               }
 
+              Text {
+                visible: root.moreSection === "identity" && !omaq.supportsIdentityActions
+                width: parent.width
+                text: "Update the local OmaQ helper before changing identity settings. Existing identity and contacts remain available."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
               TokenTextField {
                 id: passField
                 visible: root.moreSection === "identity"
@@ -4154,7 +4519,7 @@ BarWidget {
                 placeholderText: omaq.saveProtected
                   ? "Current or imported identity passphrase"
                   : "New or imported identity passphrase"
-                enabled: !root.identityActionPending
+                enabled: omaq.supportsIdentityActions && !root.identityActionPending
                 onTextEdited: if (!root.identityActionPending)
                   root.clearIdentityFeedback()
               }
@@ -4186,7 +4551,7 @@ BarWidget {
                 foreground: root.controlForeground
                 maximumLength: 511
                 placeholderText: "Selected identity bundle"
-                enabled: !root.identityActionPending
+                enabled: omaq.supportsIdentityActions && !root.identityActionPending
                 onTextEdited: if (!root.identityActionPending)
                   root.clearIdentityFeedback()
                 onTextChanged: {
@@ -4215,7 +4580,7 @@ BarWidget {
                   iconFontFamily: "Material Symbols Rounded"
                   text: omaq.saveProtected ? "Remove lock" : "Protect"
                   focusable: true
-                  enabled: !root.identityActionPending &&
+                  enabled: omaq.supportsIdentityActions && !root.identityActionPending &&
                     (omaq.saveProtected
                       ? root.identityExistingPassphraseValid(passField.text)
                       : root.identityNewPassphraseValid(passField.text))
@@ -4231,7 +4596,7 @@ BarWidget {
                   iconFontFamily: "Material Symbols Rounded"
                   text: "Export"
                   focusable: true
-                  enabled: !root.identityActionPending
+                  enabled: omaq.supportsIdentityActions && !root.identityActionPending
                   onClicked: root.startIdentityPicker("export")
                 }
 
@@ -4243,7 +4608,7 @@ BarWidget {
                   iconFontFamily: "Material Symbols Rounded"
                   text: "Validate bundle"
                   focusable: true
-                  enabled: !root.identityActionPending
+                  enabled: omaq.supportsIdentityActions && !root.identityActionPending
                   onClicked: {
                     root.replaceIdentityConfirm = false
                     root.replaceIdentityPath = ""
@@ -4264,7 +4629,7 @@ BarWidget {
                   text: "Import identity"
                   focusable: true
                   accent: root.urgent
-                  enabled: !root.identityActionPending
+                  enabled: omaq.supportsIdentityActions && !root.identityActionPending
                   onClicked: {
                     var path = importPath.text.trim()
                     if (path === "") {
@@ -4336,7 +4701,8 @@ BarWidget {
                   text: "Import identity now"
                   focusable: true
                   accent: root.urgent
-                  enabled: !root.identityActionPending && root.replaceIdentityPath !== ""
+                  enabled: omaq.supportsIdentityActions && !root.identityActionPending &&
+                    root.replaceIdentityPath !== ""
                   onClicked: {
                     var path = root.replaceIdentityPath
                     root.replaceIdentityConfirm = false

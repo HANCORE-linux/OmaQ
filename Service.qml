@@ -37,17 +37,33 @@ Item {
   readonly property int handshakeEventByteLimit: 4 * 1024 * 1024
   property int helperProtocolPid: 0
   property int helperProtocolVersion: 0
+  property int activeHelperProtocol: 0
   property string helperProtocolInstance: ""
   readonly property string helperLaunchNonce: Date.now().toString(36) + "-" +
     Math.floor(Math.random() * 0x100000000).toString(36)
   property string helperProtocolNonce: ""
-  readonly property int requiredHelperProtocol: 9
+  readonly property int requiredHelperProtocol: 7
+  readonly property bool supportsIdentityActions: root.activeHelperProtocol >= 8
+  readonly property bool supportsAttachments: root.activeHelperProtocol >= 9
+  readonly property bool supportsDirectRecovery: root.activeHelperProtocol >= 10
+  readonly property bool supportsRedeemResults: root.activeHelperProtocol >= 10
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
     root.helperProtocolNonce === root.helperLaunchNonce &&
     /^[0-9a-f]{32}$/.test(root.helperProtocolInstance)
   property string identityFingerprint: ""
+  property bool directReinviteRequired: false
+  property bool identityRecoveryDegraded: false
+  property bool identityPrimaryUncertain: false
+  property string lastIdentityPrimaryRequest: ""
+  property int identityPrimaryTick: 0
+  property string lastDirectReinviteRequest: ""
+  property int directReinviteTick: 0
+  property int redeemRequestSequence: 0
+  property string lastRedeemRequest: ""
+  property string lastRedeemKind: ""
+  property int redeemTick: 0
   property string inviteUrl: ""
   property double inviteExpiresAt: 0
   property string lastInviteAction: ""
@@ -293,12 +309,17 @@ Item {
       "identity_passphrase_required", "identity_import_failed", "busy",
       "forbidden", "identity_backup_failed", "identity_state_archive_failed",
       "identity_rollback_failed", "identity_backup_cleanup_failed",
-      "group_registry_failed", "unsupported"].indexOf(
+      "identity_missing", "identity_mismatch", "identity_guard_invalid",
+      "identity_recovery_degraded", "identity_primary_uncertain", "invite_self",
+      "contact_exists", "contact_limit", "invite_rejected",
+      "safety_key_changed", "group_registry_failed", "unsupported"].indexOf(
         String(code || "")) >= 0
   }
 
   function persistentError(code) {
     return ["identity_rollback_failed", "identity_backup_cleanup_failed",
+      "identity_missing", "identity_mismatch", "identity_guard_invalid",
+      "identity_recovery_degraded", "identity_primary_uncertain",
       "direct_state_migration_failed", "direct_state_reinvite_required"].indexOf(
         String(code || "")) >= 0
   }
@@ -384,6 +405,7 @@ Item {
         if (identityChanged)
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
+        root.activeHelperProtocol = snapshotProtocol
         if (nextIdentity !== "")
           root.identityFingerprint = nextIdentity
         root.helperCompatibility = "compatible"
@@ -466,6 +488,55 @@ Item {
       }
       root.selfOnline = root.connectionState === "online"
     }
+    if (ev.event === "identity.primary") {
+      root.identityPrimaryUncertain = !!ev.uncertain
+      root.lastIdentityPrimaryRequest = String(ev.request || "")
+      if (root.identityPrimaryUncertain) {
+        root.persistentWarning = "identity_primary_uncertain"
+        root.lastError = root.persistentWarning
+      } else if (root.persistentWarning === "identity_primary_uncertain") {
+        root.persistentWarning = root.identityRecoveryDegraded
+          ? "identity_recovery_degraded"
+          : (root.directReinviteRequired ? "direct_state_reinvite_required" : "")
+        if (root.lastError === "identity_primary_uncertain")
+          root.lastError = root.persistentWarning
+      }
+      root.identityPrimaryTick = root.identityPrimaryTick + 1
+    }
+    if (ev.event === "identity.recovery") {
+      root.identityRecoveryDegraded = !!ev.degraded
+      if (root.identityRecoveryDegraded) {
+        if (!root.identityPrimaryUncertain)
+          root.persistentWarning = "identity_recovery_degraded"
+        root.lastError = root.persistentWarning
+      } else if (root.persistentWarning === "identity_recovery_degraded") {
+        root.persistentWarning = root.directReinviteRequired
+          ? "direct_state_reinvite_required" : ""
+        if (root.lastError === "identity_recovery_degraded")
+          root.lastError = root.persistentWarning
+      }
+    }
+    if (ev.event === "invite.redeemed") {
+      root.lastRedeemRequest = String(ev.request || "")
+      root.lastRedeemKind = String(ev.kind || "")
+      root.redeemTick = root.redeemTick + 1
+    }
+    if (ev.event === "direct.reinvite") {
+      root.directReinviteRequired = !!ev.required
+      root.lastDirectReinviteRequest = String(ev.request || "")
+      if (root.directReinviteRequired) {
+        if (!root.identityRecoveryDegraded && !root.identityPrimaryUncertain)
+          root.persistentWarning = "direct_state_reinvite_required"
+        if (root.lastError === "" ||
+            root.lastError === "direct_state_reinvite_required")
+          root.lastError = root.persistentWarning
+      } else if (root.persistentWarning === "direct_state_reinvite_required") {
+        root.persistentWarning = ""
+        if (root.lastError === "direct_state_reinvite_required")
+          root.lastError = ""
+      }
+      root.directReinviteTick = root.directReinviteTick + 1
+    }
     if (ev.event === "nickname") {
       root.lastNicknameRequest = String(ev.request || "")
       root.selfNickname = String(ev.value || "")
@@ -480,8 +551,15 @@ Item {
       root.lastErrorRequest = String(ev.request || "")
       root.lastErrorTick = root.lastErrorTick + 1
       if (ev.code === "direct_state_migration_failed" ||
-          ev.code === "direct_state_reinvite_required")
+          (ev.code === "direct_state_reinvite_required" &&
+           !root.identityRecoveryDegraded) ||
+          ev.code === "identity_missing" || ev.code === "identity_mismatch" ||
+          ev.code === "identity_guard_invalid" ||
+          ev.code === "identity_recovery_degraded" ||
+          ev.code === "identity_primary_uncertain")
         root.persistentWarning = String(ev.code)
+      if (ev.code === "direct_state_reinvite_required")
+        root.directReinviteRequired = true
       if (ev.code === "identity_rollback_failed")
         root.failQueuedGroupInvites("identity_rollback_failed")
       if (ev.code === "locked") {
@@ -1317,6 +1395,7 @@ Item {
     root.pendingHandshakeBytes = 0
     root.handshakeEventOverflow = false
     root.helperCompatibility = "incompatible"
+    root.activeHelperProtocol = 0
     root.connectionState = "reconnecting"
     root.selfOnline = false
     root.lastError = "helper_incompatible"
@@ -1431,7 +1510,7 @@ Item {
   function setNickname(value, request) {
     var nickname = String(value || "").trim()
     var requestId = String(request || "")
-    if (!root.nicknameValid(nickname) || requestId === "")
+    if (!root.supportsIdentityActions || !root.nicknameValid(nickname) || requestId === "")
       return false
     return sendImmediateOp({ op: "nickname.set", nickname: nickname, id: requestId })
   }
@@ -1594,7 +1673,27 @@ Item {
       return
     sendOp({ op: "invite.qr", payload: u, path: root.defaultQrPath })
   }
-  function redeem(url) { sendOp({ op: "invite.redeem", payload: url }) }
+  function redeem(url) {
+    root.redeemRequestSequence = root.redeemRequestSequence + 1
+    var requestId = Date.now().toString(36) + "-redeem-" +
+      root.redeemRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    if (!sendOp({ op: "invite.redeem", payload: String(url || ""), id: requestId }))
+      return ""
+    return root.supportsRedeemResults ? requestId : "legacy"
+  }
+  function acknowledgeIdentityPrimary(request) {
+    var requestId = String(request || "")
+    if (!requestId || !root.supportsDirectRecovery)
+      return false
+    return sendImmediateOp({ op: "identity.primary.acknowledge", id: requestId })
+  }
+  function clearDirectReinvite(request) {
+    var requestId = String(request || "")
+    if (!requestId || !root.supportsDirectRecovery)
+      return false
+    return sendImmediateOp({ op: "direct.reinvite.clear", id: requestId })
+  }
   function decide(ok) {
     sendOp({ op: "contact.decide", id: "x", accept: !!ok })
     root.pending = false
@@ -1808,18 +1907,24 @@ Item {
     sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
   }
   function exportIdentity(path, request) {
+    if (!root.supportsIdentityActions)
+      return false
     var o = { op: "identity.export", id: String(request || "") }
     if (path)
       o.path = String(path)
     return sendImmediateOp(o)
   }
   function inspectIdentity(path, passphrase, request) {
+    if (!root.supportsIdentityActions)
+      return false
     var o = { op: "identity.inspect", path: path, id: String(request || "") }
     if (passphrase)
       o.passphrase = String(passphrase)
     return sendImmediateOp(o)
   }
   function importIdentity(path, replace, passphrase, request) {
+    if (!root.supportsIdentityActions)
+      return false
     var o = { op: "identity.import", path: path, id: String(request || "") }
     if (replace)
       o.replace = true
@@ -1845,23 +1950,29 @@ Item {
       id: String(request || "") })
   }
   function protectIdentity(pass, request) {
+    if (!root.supportsIdentityActions)
+      return false
     return sendImmediateOp({ op: "identity.protect", passphrase: pass,
       id: String(request || "") })
   }
   function unprotectIdentity(pass, request) {
+    if (!root.supportsIdentityActions)
+      return false
     return sendImmediateOp({ op: "identity.unprotect", passphrase: pass,
       id: String(request || "") })
   }
   function createAttachmentStage(request) {
     var requestId = String(request || "")
-    if (!requestId || root.helperCompatibility === "incompatible")
+    if (!requestId || !root.supportsAttachments ||
+        root.helperCompatibility === "incompatible")
       return false
     return sendImmediateOp({ op: "attachment.stage.create", id: requestId })
   }
   function commitAttachmentStage(path, request) {
     var filePath = String(path || "")
     var requestId = String(request || "")
-    if (!filePath || !requestId || root.helperCompatibility === "incompatible")
+    if (!filePath || !requestId || !root.supportsAttachments ||
+        root.helperCompatibility === "incompatible")
       return false
     return sendImmediateOp({ op: "attachment.stage.commit", path: filePath,
       id: requestId })
@@ -1887,7 +1998,7 @@ Item {
     root.attachmentCleanupDebts = next
   }
   function retryAttachmentCleanupDebts() {
-    if (root.attachmentCleanupDebts.length === 0 ||
+    if (root.attachmentCleanupDebts.length === 0 || !root.supportsAttachments ||
         root.helperCompatibility !== "compatible" || root.awaitingHelperInstance)
       return
     for (var i = 0; i < root.attachmentCleanupDebts.length; i++) {
@@ -1902,7 +2013,7 @@ Item {
     if (!requestId)
       return false
     root.rememberAttachmentCleanup(filePath, requestId)
-    if (root.helperCompatibility === "incompatible")
+    if (!root.supportsAttachments || root.helperCompatibility === "incompatible")
       return false
     return sendImmediateOp({ op: "attachment.stage.discard", path: filePath,
       id: requestId })
@@ -1910,7 +2021,8 @@ Item {
   function inspectAttachment(path, request) {
     var filePath = String(path || "")
     var requestId = String(request || "")
-    if (!filePath || !requestId || root.helperCompatibility === "incompatible")
+    if (!filePath || !requestId || !root.supportsAttachments ||
+        root.helperCompatibility === "incompatible")
       return false
     return sendImmediateOp({ op: "attachment.inspect", path: filePath,
       id: requestId })
@@ -1921,6 +2033,7 @@ Item {
     var kind = String(attachmentKind || "file")
     if (!c || c.charAt(0) === "g" || !filePath ||
         (kind !== "file" && kind !== "image") ||
+        (kind === "image" && !root.supportsAttachments) ||
         root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
       return false
     root.fileRequestSequence = root.fileRequestSequence + 1
@@ -2139,6 +2252,11 @@ Item {
     root.qrPath = ""
     root.safetyCode = ""
     root.safetyConv = ""
+    root.directReinviteRequired = false
+    root.identityRecoveryDegraded = false
+    root.identityPrimaryUncertain = false
+    root.lastIdentityPrimaryRequest = ""
+    root.lastDirectReinviteRequest = ""
     root.incomingCall = false
     root.everOnline = false
     root.recoveringHelper = false

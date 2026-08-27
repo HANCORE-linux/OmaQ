@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 2: expire, revoke, nospam voids invites, safety match, QR PNG.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "phase2: no helper" >&2; exit 1; }
 
@@ -124,7 +124,7 @@ if [ -z "$url" ]; then
 fi
 req_before=$(grep -a -c '"request"' "$fa" 2>/dev/null || true)
 req_before=${req_before:-0}
-printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
+printf '{"op":"invite.redeem","payload":"%s","id":"redeem-phase2-first"}\n' "$url" >&4
 ok=0
 i=0
 while [ "$i" -lt 90 ]; do
@@ -141,6 +141,11 @@ if [ "$ok" -ne 1 ]; then
 	echo "phase2: no friend request" >&2
 	exit 1
 fi
+grep -a '"event":"invite.redeemed"' "$fb" |
+	grep -a '"kind":"direct"' | grep -a -q '"request":"redeem-phase2-first"' || {
+	echo "phase2: successful invite redemption was not correlated" >&2
+	exit 1
+}
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
 sleep 1
 grep -a '"event":"invite"' "$fa" | tail -1 |
@@ -188,22 +193,20 @@ grep -a '"event":"safety"' "$fb" | tail -1 | grep -a -q '"request":"safety-b"' |
 	exit 1
 }
 
-# Redeeming an own-identity or duplicate-contact invite is a benign rejection,
-# never a reason to disable Tox or Ratchet.
-forbidden_a=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
-forbidden_b=$(grep -a -c '"event":"error","code":"forbidden"' "$fb" || true)
-printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&3
-printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
+# Redeeming an own-identity or duplicate-contact invite is a benign,
+# request-correlated rejection, never a reason to disable Tox or Ratchet.
+printf '{"op":"invite.redeem","payload":"%s","id":"redeem-self-phase2"}\n' "$url" >&3
+printf '{"op":"invite.redeem","payload":"%s","id":"redeem-existing-phase2"}\n' "$url" >&4
 i=0
 while [ "$i" -lt 30 ]; do
-	forbidden_a_after=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
-	forbidden_b_after=$(grep -a -c '"event":"error","code":"forbidden"' "$fb" || true)
-	[ "$forbidden_a_after" -gt "$forbidden_a" ] &&
-		[ "$forbidden_b_after" -gt "$forbidden_b" ] && break
+	grep -a '"code":"invite_self"' "$fa" |
+		grep -a -q '"request":"redeem-self-phase2"' &&
+	grep -a '"code":"contact_exists"' "$fb" |
+		grep -a -q '"request":"redeem-existing-phase2"' && break
 	i=$((i + 1))
 	sleep 0.1
 done
-[ "$i" -lt 30 ] || { echo "phase2: benign direct invite was not rejected" >&2; exit 1; }
+[ "$i" -lt 30 ] || { echo "phase2: benign direct invite rejection was not specific and correlated" >&2; exit 1; }
 echo '{"op":"status","id":"phase2-after-benign-reject-a"}' >&3
 echo '{"op":"status","id":"phase2-after-benign-reject-b"}' >&4
 sleep 0.2

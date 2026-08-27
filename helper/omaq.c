@@ -24,6 +24,7 @@
 #include "surface.h"
 
 #include "identity.h"
+#include "identity_guard.h"
 #ifdef HAVE_TOX
 #include "tox_adapt.h"
 #endif
@@ -48,10 +49,15 @@
 
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
-#define OMAQ_PROTOCOL_VERSION 9
+#ifndef OMAQ_PROTOCOL_VERSION
+#define OMAQ_PROTOCOL_VERSION 10
+#endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
+
+static void emit_error(const char *code);
+static void emit_identity_primary_state(const char *request);
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
@@ -80,6 +86,13 @@ static struct {
 static uint64_t g_file_request_sequence;
 static uint64_t g_identity_backup_sequence;
 static uint64_t g_friend_generation;
+static int g_identity_guard_state = OMAQ_IDENTITY_GUARD_FRESH;
+static int g_identity_guard_error;
+static int g_identity_guard_replacement_load;
+static int g_guarded_restore_loading;
+static int g_identity_primary_uncertain;
+static int g_resolving_primary_uncertainty;
+static int g_identity_recovery_degraded_state = -1;
 static int g_direct_state_migration_failed;
 static int g_direct_state_reinvite_required;
 static int g_avatar_temps_cleaned;
@@ -856,10 +869,17 @@ static int migrate_direct_state_with_removal(const char *removed_key)
 		if (omaq_direct_state_id(pending_removed, pending_state_id,
 					 sizeof(pending_state_id)) != 0)
 			return -1;
-		if (friend_for_direct_state(pending_state_id, &pending_friend) == 0 &&
-		    omaq_tox_friend_delete(g_tox, pending_friend) != 0)
-			return -1;
-		if (group_binding_forget_friend(pending_removed) != 0)
+		if (friend_for_direct_state(pending_state_id, &pending_friend) == 0) {
+			if (g_resolving_primary_uncertainty) {
+				if (omaq_direct_state_remove_finish(home_dir()) != 0)
+					return -1;
+				pending_state = 0;
+				authorized_removed = removed_key;
+			} else if (omaq_tox_friend_delete(g_tox, pending_friend) != 0) {
+				return -1;
+			}
+		}
+		if (pending_state == 1 && group_binding_forget_friend(pending_removed) != 0)
 			return -1;
 	}
 	marker_state = reinvite_marker_present();
@@ -909,6 +929,16 @@ static int direct_friend_capacity_available(void)
 
 static void fail_direct_state_backend(void)
 {
+	int primary_uncertain = g_tox && omaq_tox_primary_uncertain(g_tox);
+
+	if (primary_uncertain) {
+		(void)omaq_identity_primary_uncertain_persist(state_dir());
+		emit_error("identity_primary_uncertain");
+		g_identity_primary_uncertain = 1;
+		emit_identity_primary_state(NULL);
+		g_identity_guard_error = OMAQ_IDENTITY_GUARD_INVALID;
+		g_shutdown_after_drain = 1;
+	}
 	g_direct_state_migration_failed = 1;
 #ifdef HAVE_SIGNAL
 	if (g_ratchet) {
@@ -921,6 +951,13 @@ static void fail_direct_state_backend(void)
 		g_tox = NULL;
 	}
 	g_connection_online = 0;
+}
+
+static void fail_uncertain_primary(void)
+{
+	if (!g_tox || !omaq_tox_primary_uncertain(g_tox))
+		return;
+	fail_direct_state_backend();
 }
 #endif
 
@@ -1371,6 +1408,69 @@ static void emit_identity_error(const char *code, const char *request)
 		 "{\"event\":\"error\",\"code\":\"%s\",\"request\":\"%s\"}",
 		 code, esc_request);
 	emit(buf);
+}
+
+static void emit_identity_primary_state(const char *request)
+{
+#ifdef HAVE_TOX
+	char escaped_request[160], request_field[192] = "", event[320];
+
+	if (request && request[0] &&
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) == 0)
+		snprintf(request_field, sizeof(request_field),
+			 ",\"request\":\"%s\"", escaped_request);
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"identity.primary\",\"uncertain\":%s%s}",
+		 g_identity_primary_uncertain ? "true" : "false", request_field);
+	emit(event);
+#else
+	(void)request;
+#endif
+}
+
+static void emit_identity_recovery_state(int force)
+{
+#ifdef HAVE_TOX
+	int degraded = g_tox && omaq_tox_recovery_degraded(g_tox);
+
+	if (!force && degraded == g_identity_recovery_degraded_state)
+		return;
+	g_identity_recovery_degraded_state = degraded;
+	emit(degraded
+		? "{\"event\":\"identity.recovery\",\"degraded\":true}"
+		: "{\"event\":\"identity.recovery\",\"degraded\":false}");
+#else
+	(void)force;
+#endif
+}
+
+static void emit_direct_reinvite_state(int required, const char *request)
+{
+	char escaped_request[160], request_field[192] = "", event[384];
+
+	if (request && request[0] &&
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) == 0)
+		snprintf(request_field, sizeof(request_field),
+			 ",\"request\":\"%s\"", escaped_request);
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"direct.reinvite\",\"required\":%s,"
+		 "\"scope\":\"existing_contacts\",\"identityRetained\":true,"
+		 "\"contactsRetained\":true%s}",
+		 required ? "true" : "false", request_field);
+	emit(event);
+}
+
+static void emit_invite_redeemed(const char *kind, const char *request)
+{
+	char escaped_request[160], event[320];
+
+	if (!kind || !request || !request[0] ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"invite.redeemed\",\"kind\":\"%s\",\"request\":\"%s\"}",
+		 kind, escaped_request);
+	emit(event);
 }
 
 static void emit_invite_state(const char *url, int64_t expires,
@@ -1915,6 +2015,16 @@ static int direct_invite_action_op(const omaq_op *op)
 		((strcmp(op->op, "invite.create") == 0 &&
 		  strcmp(op->kind, "direct") == 0) ||
 		 strcmp(op->op, "invite.revoke") == 0);
+}
+
+static int direct_invite_redeem_op(const omaq_op *op)
+{
+	return op && strcmp(op->op, "invite.redeem") == 0 && op->id[0];
+}
+
+static int direct_reinvite_clear_op(const omaq_op *op)
+{
+	return op && strcmp(op->op, "direct.reinvite.clear") == 0 && op->id[0];
 }
 
 static int targeted_group_invite_op(const omaq_op *op)
@@ -3043,6 +3153,7 @@ static void reset_identity_runtime_state(void)
 	memset(g_file_requests, 0, sizeof(g_file_requests));
 	g_file_request_sequence = 0;
 	g_avatar_temps_cleaned = 0;
+	g_identity_recovery_degraded_state = -1;
 #ifdef HAVE_SIGNAL
 	memset(g_ratchet_recovery, 0, sizeof(g_ratchet_recovery));
 #endif
@@ -3309,6 +3420,155 @@ fail:
 	return -1;
 }
 
+static int identity_guard_restore_marker_path(char *path, size_t path_size)
+{
+	return !path || snprintf(path, path_size, "%s/identity-guard-restore.txn",
+				 state_dir()) >= (int)path_size ? -1 : 0;
+}
+
+static int write_identity_guard_restore_marker(const char *token, int had_primary,
+					 int had_uncertainty, int had_stale, int had_ack)
+{
+	char path[640];
+	FILE *file = NULL;
+	int rc = -1;
+
+	if (!identity_token_ok(token) || (had_primary != 0 && had_primary != 1) ||
+	    (had_uncertainty != 0 && had_uncertainty != 1) ||
+	    (had_stale != 0 && had_stale != 1) || (had_ack != 0 && had_ack != 1) ||
+	    identity_guard_restore_marker_path(path, sizeof(path)) != 0)
+		return -1;
+	file = fopen(path, "wx");
+	if (!file)
+		return -1;
+	{
+		int failed = fchmod(fileno(file), 0600) != 0 ||
+			fprintf(file, "OMAQIGR1\n%s\n%d\n%d\n%d\n%d\n", token,
+				had_primary, had_uncertainty, had_stale, had_ack) <= 0 ||
+			fflush(file) != 0 || fsync(fileno(file)) != 0;
+		if (fclose(file) != 0)
+			failed = 1;
+		file = NULL;
+		if (!failed && fsync_directory(state_dir()) == 0)
+			rc = 0;
+	}
+	if (rc != 0) {
+		(void)unlink(path);
+		(void)fsync_directory(state_dir());
+	}
+	return rc;
+}
+
+static int remove_identity_guard_restore_marker(void)
+{
+	char path[640];
+
+	if (identity_guard_restore_marker_path(path, sizeof(path)) != 0 ||
+	    (unlink(path) != 0 && errno != ENOENT) || fsync_directory(state_dir()) != 0)
+		return -1;
+	return 0;
+}
+
+static int rollback_identity_guard_restore(const char *token, int had_primary,
+					    int had_uncertainty, int had_stale, int had_ack)
+{
+	char backup[700], primary[600];
+	struct stat st;
+
+	if (!identity_token_ok(token) || (had_primary != 0 && had_primary != 1) ||
+	    (had_uncertainty != 0 && had_uncertainty != 1) ||
+	    (had_stale != 0 && had_stale != 1) || (had_ack != 0 && had_ack != 1) ||
+	    snprintf(backup, sizeof(backup), "%s/tox.save.guard-backup.%s",
+		     home_dir(), token) >= (int)sizeof(backup) ||
+	    snprintf(primary, sizeof(primary), "%s/tox.save", home_dir()) >=
+		(int)sizeof(primary))
+		return -1;
+	if (had_primary) {
+		if (omaq_identity_import(home_dir(), backup, 1) != 0)
+			return -1;
+	} else if (lstat(primary, &st) == 0) {
+		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+		    (st.st_mode & 0777) != 0600 || unlink(primary) != 0)
+			return -1;
+	} else if (errno != ENOENT) {
+		return -1;
+	}
+	if (fsync_directory(home_dir()) != 0 ||
+	    (had_uncertainty && omaq_identity_primary_uncertain_persist(state_dir()) != 0) ||
+	    omaq_identity_recovery_stale_persist(state_dir()) != 0 ||
+	    (had_ack && omaq_identity_primary_ack_persist(state_dir()) != 0) ||
+	    remove_identity_guard_restore_marker() != 0)
+		return -1;
+	if (had_primary && ((unlink(backup) != 0 && errno != ENOENT) ||
+			    fsync_directory(home_dir()) != 0))
+		g_identity_backup_cleanup_failed = 1;
+	return 0;
+}
+
+static int recover_identity_guard_restore(void)
+{
+	char marker[640], header[16], token[96], had_line[8], uncertainty_line[8];
+	char stale_line[8], ack_line[8], extra[2], backup[700];
+	struct stat st;
+	FILE *file;
+	int fd, had_ack, had_primary, had_stale, had_uncertainty;
+
+	if (identity_guard_restore_marker_path(marker, sizeof(marker)) != 0)
+		return -1;
+	fd = open(marker, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0)
+		return errno == ENOENT ? 0 : -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || (st.st_mode & 0777) != 0600 || st.st_size <= 0 ||
+	    st.st_size > 160) {
+		close(fd);
+		return -1;
+	}
+	file = fdopen(fd, "r");
+	if (!file) {
+		close(fd);
+		return -1;
+	}
+	{
+		int invalid = !fgets(header, sizeof(header), file) ||
+			strcmp(header, "OMAQIGR1\n") != 0 ||
+			!fgets(token, sizeof(token), file) || !strchr(token, '\n') ||
+			!fgets(had_line, sizeof(had_line), file) || !strchr(had_line, '\n') ||
+			!fgets(uncertainty_line, sizeof(uncertainty_line), file) ||
+			!strchr(uncertainty_line, '\n') ||
+			!fgets(stale_line, sizeof(stale_line), file) || !strchr(stale_line, '\n') ||
+			!fgets(ack_line, sizeof(ack_line), file) || !strchr(ack_line, '\n') ||
+			(fgets(extra, sizeof(extra), file) != NULL) || !feof(file);
+		if (fclose(file) != 0)
+			invalid = 1;
+		if (invalid)
+			return -1;
+	}
+	token[strcspn(token, "\n")] = '\0';
+	had_line[strcspn(had_line, "\n")] = '\0';
+	uncertainty_line[strcspn(uncertainty_line, "\n")] = '\0';
+	stale_line[strcspn(stale_line, "\n")] = '\0';
+	ack_line[strcspn(ack_line, "\n")] = '\0';
+	if (!identity_token_ok(token) ||
+	    (strcmp(had_line, "0") != 0 && strcmp(had_line, "1") != 0) ||
+	    (strcmp(uncertainty_line, "0") != 0 && strcmp(uncertainty_line, "1") != 0) ||
+	    (strcmp(stale_line, "0") != 0 && strcmp(stale_line, "1") != 0) ||
+	    (strcmp(ack_line, "0") != 0 && strcmp(ack_line, "1") != 0))
+		return -1;
+	had_primary = had_line[0] == '1';
+	had_uncertainty = uncertainty_line[0] == '1';
+	had_stale = stale_line[0] == '1';
+	had_ack = ack_line[0] == '1';
+	if (had_primary &&
+	    (snprintf(backup, sizeof(backup), "%s/tox.save.guard-backup.%s",
+		      home_dir(), token) >= (int)sizeof(backup) || lstat(backup, &st) != 0 ||
+	     !S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+	     (st.st_mode & 0777) != 0600))
+		return -1;
+	return rollback_identity_guard_restore(token, had_primary, had_uncertainty,
+					       had_stale, had_ack) == 0 ? 1 : -1;
+}
+
 static int identity_marker_path(char *path, size_t path_size)
 {
 	return !path || snprintf(path, path_size, "%s/identity-replace.txn", state_dir()) >=
@@ -3458,7 +3718,9 @@ static int cleanup_orphan_identity_stages(void)
 
 static int cleanup_orphan_identity_backups(void)
 {
-	static const char prefix[] = "tox.save.replace-backup.";
+	static const char *prefixes[] = {
+		"tox.save.replace-backup.", "tox.save.guard-backup."
+	};
 	DIR *dir;
 	struct dirent *entry;
 	int failed = 0;
@@ -3467,12 +3729,16 @@ static int cleanup_orphan_identity_backups(void)
 	if (!dir)
 		return -1;
 	while ((entry = readdir(dir)) != NULL) {
-		const char *token;
+		const char *token = NULL;
 		char path[760];
-		if (strncmp(entry->d_name, prefix, sizeof(prefix) - 1) != 0)
-			continue;
-		token = entry->d_name + sizeof(prefix) - 1;
-		if (!identity_backup_token_ok(token))
+		for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+			size_t length = strlen(prefixes[i]);
+			if (strncmp(entry->d_name, prefixes[i], length) == 0) {
+				token = entry->d_name + length;
+				break;
+			}
+		}
+		if (!token || !identity_backup_token_ok(token))
 			continue;
 		if (snprintf(path, sizeof(path), "%s/%s", home_dir(), entry->d_name) >=
 			    (int)sizeof(path) || unlink(path) != 0)
@@ -3545,6 +3811,9 @@ static int recover_identity_replacement(void)
 	if ((strcmp(phase, "replacement") == 0 && remove_reinvite_marker() != 0) ||
 	    omaq_identity_import(home_dir(), backup, 1) != 0 ||
 	    restore_identity_state(&archive) != 0 || fsync_directory(home_dir()) != 0 ||
+	    omaq_identity_guard_restore(state_dir(), fingerprint) != 0 ||
+	    (strcmp(phase, "replacement") == 0 &&
+	     omaq_identity_recovery_stale_persist(state_dir()) != 0) ||
 	    remove_identity_marker() != 0)
 		return -1;
 	if ((unlink(backup) != 0 && errno != ENOENT) || fsync_directory(home_dir()) != 0)
@@ -7171,9 +7440,66 @@ static int recover_pending_group_accept(void)
 	return group_bind_proof_clear();
 }
 
+static int identity_guard_import_allowed(void)
+{
+	char expected[65];
+	int expected_ok = omaq_identity_guard_expected(state_dir(), expected) == 0;
+
+	if (g_identity_primary_uncertain)
+		return g_identity_guard_error == OMAQ_IDENTITY_GUARD_INVALID && expected_ok;
+	return g_identity_guard_error == OMAQ_IDENTITY_GUARD_MISSING ||
+		g_identity_guard_error == OMAQ_IDENTITY_GUARD_MISMATCH ||
+		(g_identity_guard_error == OMAQ_IDENTITY_GUARD_INVALID && expected_ok);
+}
+
+static int identity_uncertainty_allowed_op(const omaq_op *op)
+{
+	return op &&
+		(strcmp(op->op, "identity.primary.acknowledge") == 0 ||
+		 strcmp(op->op, "identity.ready") == 0 ||
+		 strcmp(op->op, "identity.unlock") == 0 ||
+		 strcmp(op->op, "identity.inspect") == 0 ||
+		 strcmp(op->op, "history") == 0 || strcmp(op->op, "search") == 0 ||
+		 strcmp(op->op, "safety.get") == 0 ||
+		 (strcmp(op->op, "identity.import") == 0 &&
+		  identity_guard_import_allowed()));
+}
+
+static const char *identity_guard_error_code(void)
+{
+	if (g_identity_guard_error == OMAQ_IDENTITY_GUARD_MISSING)
+		return "identity_missing";
+	if (g_identity_guard_error == OMAQ_IDENTITY_GUARD_MISMATCH)
+		return "identity_mismatch";
+	return "identity_guard_invalid";
+}
+
+static int activate_identity_guard(struct omaq_tox *tox)
+{
+	char fingerprint[65];
+	int enable_rc, rc;
+
+	if (!tox || omaq_tox_self_pk_hex(tox, fingerprint) != 0)
+		return -1;
+	rc = omaq_identity_guard_verify_or_create(state_dir(), fingerprint);
+	if (rc != 0)
+		return rc == OMAQ_IDENTITY_GUARD_PUBLISHED
+			? OMAQ_IDENTITY_GUARD_INVALID : rc;
+	enable_rc = omaq_tox_enable_recovery(tox, state_dir(),
+					      g_identity_primary_uncertain);
+	if (enable_rc < 0)
+		return enable_rc == -2 ? OMAQ_IDENTITY_GUARD_PUBLISHED :
+			OMAQ_IDENTITY_GUARD_INVALID;
+	if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED &&
+	    omaq_identity_guard_finish_recovery(state_dir()) != 0)
+		return OMAQ_IDENTITY_GUARD_INVALID;
+	g_identity_guard_state = OMAQ_IDENTITY_GUARD_EXISTING;
+	return 0;
+}
+
 static int load_tox(const char *pass)
 {
-	int err = 0;
+	int err = 0, guard_rc;
 
 	g_tox = omaq_identity_load(home_dir(), pass, &err);
 	if (err == OMAQ_TOX_LOCKED) {
@@ -7181,13 +7507,36 @@ static int load_tox(const char *pass)
 		return 1;
 	}
 	g_locked = 0;
-	if (!g_tox)
+	if (!g_tox) {
+		if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED)
+			(void)omaq_identity_guard_reject_recovery(home_dir(), state_dir());
+		g_identity_guard_error = OMAQ_IDENTITY_GUARD_INVALID;
 		return -1;
+	}
+	if (!g_identity_guard_replacement_load) {
+		guard_rc = activate_identity_guard(g_tox);
+		if (guard_rc != 0) {
+			if (guard_rc == OMAQ_IDENTITY_GUARD_PUBLISHED) {
+				g_identity_primary_uncertain = 1;
+				g_shutdown_after_drain = 1;
+				emit_error("identity_primary_uncertain");
+			} else {
+				if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED)
+					(void)omaq_identity_guard_reject_recovery(home_dir(), state_dir());
+				g_identity_guard_error = guard_rc;
+			}
+			omaq_tox_discard(g_tox);
+			g_tox = NULL;
+			return -1;
+		}
+		g_identity_guard_error = 0;
+	}
 	g_connection_online = -1;
 	attach_hooks();
-	if (recover_group_registry_transaction() != 0 ||
-	    rebuild_group_cache() != 0 || group_bind_pending_load() != 0 ||
-	    recover_pending_group_accept() != 0) {
+	if (!g_identity_primary_uncertain && !g_guarded_restore_loading &&
+	    (recover_group_registry_transaction() != 0 ||
+	     rebuild_group_cache() != 0 || group_bind_pending_load() != 0 ||
+	     recover_pending_group_accept() != 0)) {
 		omaq_tox_discard(g_tox);
 		g_tox = NULL;
 		return -1;
@@ -7198,6 +7547,137 @@ static int load_tox(const char *pass)
 		g_av_reset_reported = 0;
 	}
 	return 0;
+}
+#endif
+
+#ifdef HAVE_TOX
+static void reconcile_loaded_identity_state(void)
+{
+	if (!g_tox || g_direct_state_migration_failed || g_identity_primary_uncertain)
+		return;
+	if (!g_receipt_outbox_invalid)
+		(void)recover_receipt_transaction();
+	if (prune_unavailable_unread() < 0)
+		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
+			 "unread_persist_failed");
+	if (prune_unavailable_receipts() < 0)
+		g_receipt_outbox_invalid = 1;
+}
+
+static int restore_guarded_identity(const char *stage_save, const char *pass,
+				    const char *candidate_fingerprint)
+{
+	char expected[65], primary[600], backup[700], token[96];
+	struct stat st;
+	int had_ack, had_primary = 0, had_stale, had_uncertainty;
+	int marker = 0, original_error = g_identity_guard_error;
+	int load_rc, rollback_ok = 1;
+
+	if (!stage_save || !candidate_fingerprint ||
+	    omaq_identity_guard_expected(state_dir(), expected) != 0 ||
+	    strcmp(expected, candidate_fingerprint) != 0)
+		return -3;
+	if (snprintf(primary, sizeof(primary), "%s/tox.save", home_dir()) >=
+	    (int)sizeof(primary))
+		return -1;
+	had_uncertainty = omaq_identity_primary_uncertain_present(state_dir()) != 0;
+	had_stale = omaq_identity_recovery_stale_present(state_dir()) != 0;
+	had_ack = omaq_identity_primary_ack_present(state_dir()) != 0;
+	if (lstat(primary, &st) == 0) {
+		if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
+		    (st.st_mode & 0777) != 0600)
+			return -1;
+		had_primary = 1;
+	} else if (errno != ENOENT) {
+		return -1;
+	}
+	g_identity_backup_sequence++;
+	if (snprintf(token, sizeof(token), "%s-%llu", g_instance_id,
+		     (unsigned long long)g_identity_backup_sequence) >= (int)sizeof(token) ||
+	    snprintf(backup, sizeof(backup), "%s/tox.save.guard-backup.%s",
+		     home_dir(), token) >= (int)sizeof(backup))
+		return -1;
+	if (had_primary &&
+	    (omaq_identity_export_exclusive(home_dir(), backup) != 0 ||
+	     fsync_directory(home_dir()) != 0))
+		return -1;
+	if (write_identity_guard_restore_marker(token, had_primary, had_uncertainty,
+					       had_stale, had_ack) != 0) {
+		if (had_primary) {
+			(void)unlink(backup);
+			(void)fsync_directory(home_dir());
+		}
+		return -1;
+	}
+	marker = 1;
+	if (omaq_identity_guard_prepare_repair(state_dir()) != 0 ||
+	    omaq_identity_import(home_dir(), stage_save, 1) != 0 ||
+	    fsync_directory(home_dir()) != 0)
+		goto rollback;
+	reset_identity_runtime_state();
+	if (omaq_receipt_outbox_load(&g_receipt_outbox, state_dir()) != 0)
+		g_receipt_outbox_invalid = 1;
+	g_identity_guard_error = 0;
+	g_identity_guard_state = OMAQ_IDENTITY_GUARD_EXISTING;
+	g_identity_guard_replacement_load = 1;
+	g_guarded_restore_loading = 1;
+	load_rc = load_tox(pass);
+	g_guarded_restore_loading = 0;
+	g_identity_guard_replacement_load = 0;
+	if (load_rc != 0)
+		goto rollback;
+	if (init_instance_id() != 0)
+		goto rollback;
+	load_rc = omaq_tox_enable_recovery(g_tox, state_dir(), 0);
+	if (load_rc == -2) {
+		g_identity_recovery_required = 1;
+		g_shutdown_after_drain = 1;
+		return -2;
+	}
+	if (load_rc < 0 || remove_identity_guard_restore_marker() != 0)
+		goto rollback;
+	marker = 0;
+	g_identity_primary_uncertain = 0;
+	emit_identity_primary_state(NULL);
+	if (recover_group_registry_transaction() != 0 || rebuild_group_cache() != 0 ||
+	    group_bind_pending_load() != 0 || recover_pending_group_accept() != 0 ||
+	    ((g_direct_state_migration_failed = migrate_direct_state() != 0))) {
+		fail_direct_state_backend();
+		return -5;
+	}
+#ifdef HAVE_SIGNAL
+	g_ratchet = omaq_ratchet_open(home_dir());
+	if (!g_ratchet) {
+		fail_direct_state_backend();
+		return -5;
+	}
+#endif
+	reconcile_loaded_identity_state();
+	if (had_primary && (unlink(backup) != 0 || fsync_directory(home_dir()) != 0))
+		g_identity_backup_cleanup_failed = 1;
+	g_identity_requires_ready = 1;
+	g_stdin_identity_ready = 0;
+	for (size_t i = 0; i < g_ncli; i++)
+		g_client_identity_ready[i] = 0;
+	return 0;
+
+rollback:
+#ifdef HAVE_SIGNAL
+	if (g_ratchet) {
+		omaq_ratchet_close(g_ratchet);
+		g_ratchet = NULL;
+	}
+#endif
+	if (g_tox) {
+		omaq_tox_discard(g_tox);
+		g_tox = NULL;
+	}
+	if (marker && rollback_identity_guard_restore(token, had_primary,
+						      had_uncertainty, had_stale, had_ack) != 0)
+		rollback_ok = 0;
+	g_identity_guard_state = omaq_identity_guard_preflight(home_dir(), state_dir());
+	g_identity_guard_error = original_error;
+	return rollback_ok ? -1 : -2;
 }
 #endif
 
@@ -7253,6 +7733,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			emit_group_invite_terminal(op, "identity_changed");
 		else if (direct_invite_action_op(op))
 			emit_identity_error("identity_changed", op->request);
+		else if (direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
+			emit_identity_error("identity_changed", op->id);
 		return 0;
 	}
 #endif
@@ -7310,7 +7792,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				 request_field);
 			emit(ev);
 			emit_invite_state("", 0, "status", NULL);
+			emit_identity_primary_state(NULL);
 			emit_all_unread();
+			if (g_identity_primary_uncertain)
+				emit_error("identity_primary_uncertain");
 			return 0;
 		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
@@ -7327,6 +7812,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			emit_friends();
 			emit_groups();
 			emit_self_avatar();
+			emit_identity_recovery_state(1);
+			emit_identity_primary_state(NULL);
 			if (g_issued_url[0] && g_issued_exp > (int64_t)time(NULL))
 				emit_invite_state(g_issued_url, g_issued_exp, "status", NULL);
 			else {
@@ -7334,7 +7821,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_invite_state("", 0, "status", NULL);
 			}
 			emit_all_unread();
-			if (g_direct_state_migration_failed)
+			emit_direct_reinvite_state(g_direct_state_reinvite_required, NULL);
+			if (g_identity_primary_uncertain)
+				emit_error("identity_primary_uncertain");
+			else if (g_direct_state_migration_failed)
 				emit_error("direct_state_migration_failed");
 			else if (g_direct_state_reinvite_required)
 				emit_error("direct_state_reinvite_required");
@@ -7353,17 +7843,45 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			emit(ev);
 			emit_all_unread();
 #ifdef HAVE_TOX
-			if (g_direct_state_migration_failed)
+			if (g_identity_guard_error)
+				emit_error(identity_guard_error_code());
+			else if (g_direct_state_migration_failed)
 				emit_error("direct_state_migration_failed");
 #endif
 		}
 		return 0;
 	}
 #ifdef HAVE_TOX
+	if (g_identity_primary_uncertain && !identity_uncertainty_allowed_op(op)) {
+		if (strcmp(op->op, "msg.send") == 0)
+			emit_message_failed(op->conversation, op->id,
+					    "identity_primary_uncertain", 0);
+		else if (strncmp(op->op, "identity.", 9) == 0 ||
+			 direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
+			emit_identity_error("identity_primary_uncertain", op->id);
+		else if (targeted_group_invite_op(op))
+			emit_group_invite_terminal(op, "identity_primary_uncertain");
+		else
+			emit_error("identity_primary_uncertain");
+		return 0;
+	}
+	if (g_identity_guard_error && strcmp(op->op, "identity.inspect") != 0 &&
+	    !(strcmp(op->op, "identity.import") == 0 &&
+	      identity_guard_import_allowed())) {
+		if (strncmp(op->op, "identity.", 9) == 0 || direct_invite_redeem_op(op) ||
+		    direct_reinvite_clear_op(op))
+			emit_identity_error(identity_guard_error_code(), op->id);
+		else
+			emit_error(identity_guard_error_code());
+		return 0;
+	}
 	if (g_direct_state_migration_failed &&
 	    strncmp(op->op, "identity.", 9) != 0 &&
 	    strcmp(op->op, "invite.revoke") != 0) {
-		emit_error("direct_state_migration_failed");
+		if (direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
+			emit_identity_error("direct_state_migration_failed", op->id);
+		else
+			emit_error("direct_state_migration_failed");
 		return 0;
 	}
 #endif
@@ -7390,6 +7908,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			emit_group_invite_terminal(op, "identity_changed");
 		else if (direct_invite_action_op(op))
 			emit_identity_error("identity_changed", op->request);
+		else if (direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
+			emit_identity_error("identity_changed", op->id);
 		else
 			emit_error("identity_changed");
 		return 0;
@@ -7406,6 +7926,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			emit_group_invite_terminal(op, "locked");
 		else if (direct_invite_action_op(op))
 			emit_identity_error("locked", op->request);
+		else if (direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
+			emit_identity_error("locked", op->id);
 		else
 			emit_error("locked");
 		return 0;
@@ -7424,6 +7946,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		rc = load_tox(op->passphrase);
 		if (rc != 0) {
 			emit_identity_error("locked", op->id);
+			return 0;
+		}
+		if (g_identity_primary_uncertain) {
+			emit_identity_action("unlock", op->id, NULL, -1);
 			return 0;
 		}
 		g_direct_state_migration_failed = migrate_direct_state() != 0;
@@ -7479,6 +8005,67 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		return 0;
 	}
 #endif
+	if (strcmp(op->op, "identity.primary.acknowledge") == 0) {
+#ifdef HAVE_TOX
+		if (!omaq_message_id_ok(op->id)) {
+			emit_identity_error("request_required", op->id);
+			return 0;
+		}
+		if (omaq_identity_primary_ack_persist(state_dir()) != 0 ||
+		    omaq_identity_primary_uncertain_clear(state_dir()) != 0) {
+			emit_identity_error("identity_guard_invalid", op->id);
+			return 0;
+		}
+		{
+			int ack_rc = omaq_tox_primary_acknowledged(g_tox);
+			if (ack_rc == -2) {
+				emit_identity_error("identity_primary_uncertain", op->id);
+				fail_uncertain_primary();
+				return 0;
+			}
+			if (ack_rc < 0) {
+				emit_identity_error("identity_guard_invalid", op->id);
+				return 0;
+			}
+		}
+		{
+			int group_recovery_failed = recover_group_registry_transaction() != 0 ||
+				rebuild_group_cache() != 0 || group_bind_pending_load() != 0 ||
+				recover_pending_group_accept() != 0;
+			g_resolving_primary_uncertainty = 1;
+			g_direct_state_migration_failed = migrate_direct_state() != 0;
+			g_resolving_primary_uncertainty = 0;
+			if (group_recovery_failed || g_direct_state_migration_failed) {
+				fail_direct_state_backend();
+				g_shutdown_after_drain = 1;
+				emit_identity_error("direct_state_migration_failed", op->id);
+				return 0;
+			}
+		}
+#ifdef HAVE_SIGNAL
+		if (!g_ratchet)
+			g_ratchet = omaq_ratchet_open(home_dir());
+		if (!g_ratchet) {
+			fail_direct_state_backend();
+			g_shutdown_after_drain = 1;
+			emit_identity_error("direct_state_migration_failed", op->id);
+			return 0;
+		}
+#endif
+		g_identity_primary_uncertain = 0;
+		reconcile_loaded_identity_state();
+		if (omaq_identity_primary_ack_clear(state_dir()) != 0) {
+			g_identity_primary_uncertain = 1;
+			emit_identity_error("identity_guard_invalid", op->id);
+			return 0;
+		}
+		emit_identity_primary_state(op->id);
+		return 0;
+#else
+		emit_identity_error("unsupported", op->id);
+		return 0;
+#endif
+	}
 	if (strcmp(op->op, "invite.create") == 0) {
 		if (strcmp(op->kind, "group") == 0) {
 #ifdef HAVE_TOX
@@ -7655,11 +8242,11 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 	if (strcmp(op->op, "invite.redeem") == 0) {
 		omaq_invite inv;
 		if (omaq_invite_parse(op->payload, &inv) != 0) {
-			emit_error("unsupported");
+			emit_identity_error("unsupported", op->id);
 			return 0;
 		}
 		if (omaq_invite_expired(&inv, (int64_t)time(NULL))) {
-			emit_error("invite_expired");
+			emit_identity_error("invite_expired", op->id);
 			return 0;
 		}
 		if (inv.kind == INVITE_GROUP) {
@@ -7669,24 +8256,24 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				int add_rc, added_friend = 0;
 				if (g_have_pending || g_have_gauth || g_have_gpending ||
 				    g_group_bind_proof.used) {
-					emit_error("busy");
+					emit_identity_error("busy", op->id);
 					return 0;
 				}
 				if (strlen(inv.group) != 64 ||
 				    strlen(inv.group) >= sizeof(g_gauth_group)) {
-					emit_error("unsupported");
+					emit_identity_error("unsupported", op->id);
 					return 0;
 				}
 				if (friend_for_addr(inv.tox_addr, &fn) != 0) {
 					if (!direct_friend_capacity_available()) {
-						emit_error("forbidden");
+						emit_identity_error("contact_limit", op->id);
 						return 0;
 					}
 					add_rc = omaq_tox_friend_add(g_tox, inv.tox_addr, inv.id, &fn);
 					if (add_rc != 0) {
 						if (add_rc == OMAQ_TOX_ADD_STATE_FAILED)
 							fail_direct_state_backend();
-						emit_error("forbidden");
+						emit_identity_error("invite_rejected", op->id);
 						return 0;
 					}
 					added_friend = 1;
@@ -7696,7 +8283,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 						migrate_direct_state() == 0;
 					if (!rollback)
 						fail_direct_state_backend();
-					emit_error("direct_state_migration_failed");
+					emit_identity_error("direct_state_migration_failed", op->id);
 					return 0;
 				}
 				g_have_gauth = 1;
@@ -7711,11 +8298,12 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					g_gpending_announced = 1;
 					emit("{\"event\":\"request\",\"kind\":\"group\"}");
 				}
+				emit_invite_redeemed("group", op->id);
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
 				return 0;
 			}
 #endif
-			emit_error("unsupported");
+			emit_identity_error("unsupported", op->id);
 			return 0;
 		}
 #ifdef HAVE_TOX
@@ -7728,33 +8316,39 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			char local_rk[OMAQ_RK_HEX + 1];
 			if (!g_ratchet || !inv.rk[0] ||
 			    omaq_ratchet_local_rk(g_ratchet, local_rk) != 0) {
-				emit_error("no_ratchet");
+				emit_identity_error("no_ratchet", op->id);
 				return 0;
 			}
 			if (snprintf(request, sizeof(request), "%s|rk=%s", inv.id, local_rk) >=
 			    (int)sizeof(request)) {
-				emit_error("unsupported");
+				emit_identity_error("unsupported", op->id);
 				return 0;
 			}
 #else
-			emit_error("no_ratchet");
+			emit_identity_error("no_ratchet", op->id);
 			return 0;
 #endif
 			memcpy(contact_key, inv.tox_addr, 64);
 			contact_key[64] = '\0';
-			if (omaq_tox_self_pk_hex(g_tox, self_key) != 0 ||
-			    strcmp(contact_key, self_key) == 0 ||
-			    friend_for_addr(inv.tox_addr, &fn) == 0) {
-				emit_error("forbidden");
+			if (omaq_tox_self_pk_hex(g_tox, self_key) != 0) {
+				emit_identity_error("invite_rejected", op->id);
+				return 0;
+			}
+			if (strcmp(contact_key, self_key) == 0) {
+				emit_identity_error("invite_self", op->id);
+				return 0;
+			}
+			if (friend_for_addr(inv.tox_addr, &fn) == 0) {
+				emit_identity_error("contact_exists", op->id);
 				return 0;
 			}
 			if (omaq_direct_state_add_begin(home_dir(), contact_key, inv.rk) != 0) {
-				emit_error("direct_state_migration_failed");
+				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
 			}
 			if (!direct_friend_capacity_available()) {
 				(void)omaq_direct_state_add_finish(home_dir());
-				emit_error("forbidden");
+				emit_identity_error("contact_limit", op->id);
 				return 0;
 			}
 			add_rc = omaq_tox_friend_add(g_tox, inv.tox_addr, request, &fn);
@@ -7763,7 +8357,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					fail_direct_state_backend();
 				else
 					(void)omaq_direct_state_add_finish(home_dir());
-				emit_error("forbidden");
+				emit_identity_error("invite_rejected", op->id);
 				return 0;
 			}
 #ifdef HAVE_SIGNAL
@@ -7772,16 +8366,17 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					if (omaq_tox_friend_delete(g_tox, fn) != 0 ||
 					    migrate_direct_state() != 0)
 						fail_direct_state_backend();
-					emit_error("forbidden");
+					emit_identity_error("safety_key_changed", op->id);
 					return 0;
 				}
 			}
 #endif
 			if (migrate_direct_state() != 0) {
 				fail_direct_state_backend();
-				emit_error("direct_state_migration_failed");
+				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
 			}
+			emit_invite_redeemed("direct", op->id);
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_friends();
 			return 0;
@@ -7796,6 +8391,24 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 #endif
 		emit_invite_state("", 0, "revoke", op->request);
 		return 0;
+	}
+	if (strcmp(op->op, "direct.reinvite.clear") == 0) {
+#ifdef HAVE_TOX
+		if (!omaq_message_id_ok(op->id)) {
+			emit_identity_error("request_required", op->id);
+			return 0;
+		}
+		if (remove_reinvite_marker() != 0) {
+			emit_identity_error("direct_state_migration_failed", op->id);
+			return 0;
+		}
+		g_direct_state_reinvite_required = 0;
+		emit_direct_reinvite_state(0, op->id);
+		return 0;
+#else
+		emit_identity_error("unsupported", op->id);
+		return 0;
+#endif
 	}
 	if (strcmp(op->op, "invite.qr") == 0) {
 		const char *url = op->payload[0] ? op->payload : NULL;
@@ -9435,7 +10048,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			return 0;
 		}
 #ifdef HAVE_TOX
-		if (replacing && (recover_receipt_transaction() != 0 ||
+		if (replacing && !g_identity_guard_error &&
+		    (recover_receipt_transaction() != 0 ||
 				  group_registry_transaction_present() ||
 				  group_binding_debt_pending() ||
 				  g_group_invite_send_pending ||
@@ -9459,14 +10073,16 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		{
 			char stage[640], stage_save[700], stage_groups[700], stage_bindings[700];
 			char stage_bundle[700], token[96], backup[700];
-			char old_address[77], old_fingerprint[65];
+			char old_address[77], old_fingerprint[65], replacement_fingerprint[65];
+			char candidate_fingerprint[65];
 			struct omaq_tox *candidate;
 			identity_state_archive identity_archive;
 			const char *failure_code = "identity_import_failed";
 			int candidate_error = 0, swapped = 0, archived = 0, marker = 0;
-			int unread_reset = 0, stage_created = 0;
+			int unread_reset = 0, stage_created = 0, guard_swapped = 0;
 			int replacement_reinvite_marker_created = 0;
-			int archive_rc, marker_rc, rollback_load = 0, rollback_ok = 1;
+			int archive_rc, guard_replace_rc, marker_rc;
+			int rollback_load = 0, rollback_ok = 1;
 			size_t replacement_friend_count = 0;
 
 			stage[0] = '\0';
@@ -9501,7 +10117,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				return 0;
 			}
 			candidate = omaq_identity_load(stage, op->passphrase, &candidate_error);
-			if (!candidate || identity_group_files_validate(candidate, stage) != 0) {
+			if (!candidate || identity_group_files_validate(candidate, stage) != 0 ||
+			    omaq_tox_self_pk_hex(candidate, candidate_fingerprint) != 0) {
 				if (candidate)
 					omaq_tox_discard(candidate);
 				(void)cleanup_identity_stage(stage);
@@ -9512,6 +10129,24 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				return 0;
 			}
 			omaq_tox_discard(candidate);
+			if (g_identity_guard_error) {
+				int restore_rc = restore_guarded_identity(stage_save, op->passphrase,
+								 candidate_fingerprint);
+				(void)cleanup_identity_stage(stage);
+				if (restore_rc == 0) {
+					emit_identity_action("import", op->id, NULL, -1);
+				} else if (restore_rc == -3) {
+					emit_identity_error("identity_mismatch", op->id);
+				} else if (restore_rc == -2) {
+					g_identity_recovery_required = 1;
+					g_shutdown_after_drain = 1;
+				} else if (restore_rc == -5) {
+					emit_identity_error("direct_state_migration_failed", op->id);
+				} else {
+					emit_identity_error("identity_import_failed", op->id);
+				}
+				return 0;
+			}
 			if (!g_tox || omaq_tox_self_addr_hex(g_tox, old_address) != 0) {
 				(void)cleanup_identity_stage(stage);
 				emit_identity_error("identity_backup_failed", op->id);
@@ -9574,7 +10209,10 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				g_tox = NULL;
 			}
 			reset_identity_runtime_state();
-			if (load_tox(op->passphrase) != 0 ||
+			g_identity_guard_replacement_load = 1;
+			candidate_error = load_tox(op->passphrase);
+			g_identity_guard_replacement_load = 0;
+			if (candidate_error != 0 ||
 			    ((g_direct_state_migration_failed = migrate_direct_state() != 0))) {
 				goto identity_import_rollback;
 			}
@@ -9585,6 +10223,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			}
 #endif
 			if (omaq_tox_friend_count(g_tox, &replacement_friend_count) != 0 ||
+			    omaq_tox_self_pk_hex(g_tox, replacement_fingerprint) != 0 ||
 			    update_identity_marker_phase(token, old_fingerprint, "replacement") != 0 ||
 			    (replacement_friend_count > 0 && persist_reinvite_marker() != 0)) {
 				failure_code = "identity_state_archive_failed";
@@ -9596,8 +10235,27 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			omaq_unread_init(&g_unread);
 			unread_reset = 1;
 			if (omaq_store_unread_save(&g_unread, state_dir()) != 0 ||
-			    fsync_directory(home_dir()) != 0 || fsync_directory(state_dir()) != 0 ||
-			    remove_identity_marker() != 0) {
+			    fsync_directory(home_dir()) != 0 || fsync_directory(state_dir()) != 0) {
+				failure_code = "identity_state_archive_failed";
+				goto identity_import_rollback;
+			}
+			guard_replace_rc = omaq_identity_guard_replace(state_dir(), old_fingerprint,
+							 replacement_fingerprint);
+			if (guard_replace_rc != 0) {
+				if (guard_replace_rc == OMAQ_IDENTITY_GUARD_PUBLISHED)
+					guard_swapped = 1;
+				failure_code = "identity_state_archive_failed";
+				goto identity_import_rollback;
+			}
+			guard_swapped = 1;
+			guard_replace_rc = omaq_tox_enable_recovery(g_tox, state_dir(), 0);
+			if (guard_replace_rc < 0) {
+				g_identity_recovery_required = 1;
+				g_shutdown_after_drain = 1;
+				(void)cleanup_identity_stage(stage);
+				return 0;
+			}
+			if (remove_identity_marker() != 0) {
 				failure_code = "identity_state_archive_failed";
 				goto identity_import_rollback;
 			}
@@ -9645,6 +10303,12 @@ identity_import_rollback:
 				else
 					g_unread_error_code[0] = '\0';
 			}
+			if (guard_swapped &&
+			    omaq_identity_guard_restore(state_dir(), old_fingerprint) != 0)
+				rollback_ok = 0;
+			guard_swapped = 0;
+			if (swapped && omaq_identity_recovery_stale_persist(state_dir()) != 0)
+				rollback_ok = 0;
 			if (swapped) {
 				reset_identity_runtime_state();
 				if (omaq_receipt_outbox_load(&g_receipt_outbox, state_dir()) != 0) {
@@ -9709,6 +10373,9 @@ static int serve_line(char *line, int *identity_ready)
 	}
 	{
 		int rc = handle_op(&op, identity_ready);
+#ifdef HAVE_TOX
+		fail_uncertain_primary();
+#endif
 		explicit_bzero(op.passphrase, sizeof(op.passphrase));
 		explicit_bzero(line, n + 1);
 		return rc;
@@ -9804,22 +10471,18 @@ static void start_backend(void)
 	if (g_backend_started)
 		return;
 #ifdef HAVE_TOX
-	(void)load_tox(NULL);
-	g_direct_state_migration_failed = g_tox && migrate_direct_state() != 0;
+	if (!g_identity_guard_error)
+		(void)load_tox(NULL);
+	g_direct_state_migration_failed = g_tox && !g_identity_primary_uncertain &&
+		migrate_direct_state() != 0;
 	if (g_direct_state_migration_failed)
 		fail_direct_state_backend();
-	if (g_tox && !g_direct_state_migration_failed && !g_receipt_outbox_invalid)
-		(void)recover_receipt_transaction();
-	if (g_tox && prune_unavailable_unread() < 0)
-		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
-			 "unread_persist_failed");
-	if (g_tox && prune_unavailable_receipts() < 0)
-		g_receipt_outbox_invalid = 1;
+	reconcile_loaded_identity_state();
 #endif
 #ifdef HAVE_SIGNAL
-	g_ratchet = g_tox && !g_direct_state_migration_failed
-		? omaq_ratchet_open(home_dir()) : NULL;
-	if (g_tox && !g_ratchet)
+	g_ratchet = g_tox && !g_direct_state_migration_failed &&
+		!g_identity_primary_uncertain ? omaq_ratchet_open(home_dir()) : NULL;
+	if (g_tox && !g_identity_primary_uncertain && !g_ratchet)
 		fail_direct_state_backend();
 #endif
 	g_backend_started = 1;
@@ -9829,7 +10492,8 @@ int main(int argc, char **argv)
 {
 	int hold = 0;
 #ifdef HAVE_TOX
-	int recovery_rc = 0;
+	int ack_recovery_rc = 0, recovery_rc = 0, guard_recovery_rc = 0;
+	int uncertainty_rc = 0;
 #endif
 
 	signal(SIGPIPE, SIG_IGN);
@@ -9873,26 +10537,50 @@ int main(int argc, char **argv)
 		return 2;
 	if (rc != 0)
 		return 1;
-	if (attachment_stage_cleanup() != 0) {
-		fprintf(stderr, "omaq: attachment staging cleanup failed\n");
-		return 1;
-	}
 #ifdef HAVE_TOX
 	if (cleanup_orphan_identity_stages() != 0)
 		recovery_rc = -1;
 	else
 		recovery_rc = recover_identity_replacement();
+	if (recovery_rc >= 0) {
+		guard_recovery_rc = recover_identity_guard_restore();
+		if (guard_recovery_rc < 0)
+			recovery_rc = -1;
+	}
 	if (recovery_rc < 0) {
 		fprintf(stderr, "omaq: identity replacement recovery failed\n");
 		g_identity_recovery_required = 1;
 		g_shutdown_after_drain = 1;
 	} else {
-		if (recovery_rc > 0)
+		if (recovery_rc > 0 || guard_recovery_rc > 0)
 			g_identity_recovered = 1;
 		g_identity_backup_cleanup_failed =
 			cleanup_orphan_identity_backups() != 0;
 	}
+	if (!g_identity_recovery_required) {
+		g_identity_guard_state = omaq_identity_guard_preflight(home_dir(), state_dir());
+		if (g_identity_guard_state < 0) {
+			g_identity_guard_error = g_identity_guard_state;
+			fprintf(stderr, "omaq: existing identity is unavailable; refusing to create a replacement\n");
+		} else if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED) {
+			g_identity_recovered = 1;
+		}
+		uncertainty_rc = omaq_identity_primary_uncertain_present(state_dir());
+		ack_recovery_rc = omaq_identity_primary_ack_present(state_dir());
+		if (uncertainty_rc < 0 || ack_recovery_rc < 0)
+			g_identity_guard_error = OMAQ_IDENTITY_GUARD_INVALID;
+		else
+			g_identity_primary_uncertain = uncertainty_rc > 0 || ack_recovery_rc > 0;
+	}
 #endif
+#ifdef HAVE_TOX
+	if (!g_identity_guard_error && attachment_stage_cleanup() != 0) {
+#else
+	if (attachment_stage_cleanup() != 0) {
+#endif
+		fprintf(stderr, "omaq: attachment staging cleanup failed\n");
+		return 1;
+	}
 	omaq_unread_init(&g_unread);
 #ifdef HAVE_TOX
 	omaq_receipt_outbox_init(&g_receipt_outbox);
@@ -9941,7 +10629,7 @@ int main(int argc, char **argv)
 	if (hold && !g_shutdown_after_drain) {
 		while (!g_shutdown_after_drain) {
 #ifdef HAVE_TOX
-			if (g_tox) {
+			if (g_tox && !g_identity_primary_uncertain) {
 				omaq_tox_iterate(g_tox);
 				flush_receipt_acknowledgements();
 				expire_group_auth_reservation();
@@ -9960,6 +10648,8 @@ int main(int argc, char **argv)
 				pump_call_audio();
 				reset_call_transport();
 				sync_connection_state();
+				fail_uncertain_primary();
+				emit_identity_recovery_state(0);
 				usleep(omaq_tox_interval_ms(g_tox) * 1000);
 				continue;
 			}
@@ -10017,7 +10707,8 @@ int main(int argc, char **argv)
 		}
 		pr = poll(pf, (nfds_t)nf, ms);
 #ifdef HAVE_TOX
-		if (g_tox && !g_identity_recovery_required) {
+		if (g_tox && !g_identity_recovery_required &&
+		    !g_identity_primary_uncertain) {
 			omaq_tox_iterate(g_tox);
 			flush_receipt_acknowledgements();
 			expire_group_auth_reservation();
@@ -10036,6 +10727,8 @@ int main(int argc, char **argv)
 			pump_call_audio();
 			reset_call_transport();
 			sync_connection_state();
+			fail_uncertain_primary();
+			emit_identity_recovery_state(0);
 		}
 #endif
 		if (pr < 0 && errno != EINTR)

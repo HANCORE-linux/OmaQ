@@ -19,6 +19,15 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err);
 int omaq_tox_protect(struct omaq_tox *t, const char *pass);
 int omaq_tox_unprotect(struct omaq_tox *t, const char *pass);
 int omaq_tox_protected(const struct omaq_tox *t);
+int omaq_tox_enable_recovery(struct omaq_tox *t, const char *state,
+                             int preserve_primary_warning);
+int omaq_tox_primary_acknowledged(struct omaq_tox *t);
+int omaq_tox_recovery_degraded(const struct omaq_tox *t);
+int omaq_tox_primary_uncertain(const struct omaq_tox *t);
+#ifdef OMAQ_TOX_TEST
+void omaq_tox_test_fail_primary_fsync(struct omaq_tox *t);
+void omaq_tox_test_fail_before_primary(struct omaq_tox *t);
+#endif
 void omaq_tox_close(struct omaq_tox *t);
 void omaq_tox_iterate(struct omaq_tox *t);
 uint32_t omaq_tox_interval_ms(const struct omaq_tox *t);

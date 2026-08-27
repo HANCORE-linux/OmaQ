@@ -3,6 +3,7 @@
 #define _DEFAULT_SOURCE
 #include "tox_adapt.h"
 #include "file.h"
+#include "identity_guard.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,6 +24,14 @@ struct omaq_tox {
 	Tox *tox;
 	ToxAV *av;
 	char home[512];
+	char recovery_state[512];
+	int recovery_degraded;
+	int primary_uncertain;
+	int primary_warning_preserved;
+#ifdef OMAQ_TOX_TEST
+	int test_fail_primary_fsync;
+	int test_fail_before_primary;
+#endif
 	omaq_on_request on_req;
 	omaq_on_message on_msg;
 	omaq_on_group_invite on_ginv;
@@ -151,10 +160,15 @@ int omaq_tox_save(struct omaq_tox *t)
 	int tmp_fd = -1;
 	uint8_t *plain, *out;
 	Tox_Err_Encryption eerr = TOX_ERR_ENCRYPTION_OK;
-	int dir_fd = -1, rc = -1;
+	int armed = 0, dir_fd = -1, primary_published = 0, rc = -1;
+	int stale_armed = 0, stale_owned = 0;
 
 	if (!t || !t->tox)
 		return -1;
+	if (t->primary_uncertain)
+		return -2;
+	if (t->primary_warning_preserved)
+		return -3;
 	n = tox_get_savedata_size(t->tox);
 	if (n == 0 || !(plain = malloc(n)))
 		return -1;
@@ -173,6 +187,25 @@ int omaq_tox_save(struct omaq_tox *t)
 		free(plain);
 		plain = NULL;
 	}
+	if (t->recovery_state[0]) {
+		if (omaq_identity_primary_uncertain_persist(t->recovery_state) != 0)
+			goto done;
+		armed = 1;
+		{
+			int stale_state = omaq_identity_recovery_stale_present(t->recovery_state);
+			if (stale_state < 0 ||
+			    omaq_identity_recovery_stale_persist(t->recovery_state) != 0)
+				goto done;
+			stale_owned = stale_state == 0;
+		}
+		stale_armed = 1;
+	}
+#ifdef OMAQ_TOX_TEST
+	if (t->test_fail_before_primary) {
+		t->test_fail_before_primary = 0;
+		goto done;
+	}
+#endif
 	save_path(t->home, path, sizeof(path));
 	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		goto done;
@@ -220,11 +253,42 @@ int omaq_tox_save(struct omaq_tox *t)
 		unlink(tmp);
 		goto done;
 	}
-	rc = 1;
+	primary_published = 1;
+	rc = -2;
 	dir_fd = open(t->home, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+#ifdef OMAQ_TOX_TEST
+	if (dir_fd >= 0 && !t->test_fail_primary_fsync && fsync(dir_fd) == 0)
+#else
 	if (dir_fd >= 0 && fsync(dir_fd) == 0)
+#endif
 		rc = 0;
+	if (rc == 0 && armed &&
+	    omaq_identity_primary_uncertain_clear(t->recovery_state) != 0)
+		rc = -2;
+	if (rc == -2)
+		t->primary_uncertain = 1;
+	if (rc == 0 && t->recovery_state[0]) {
+		if (omaq_identity_recovery_write(t->recovery_state, out, outn) != 0 ||
+		    omaq_identity_recovery_stale_clear(t->recovery_state) != 0) {
+			t->recovery_degraded = 1;
+			rc = 1;
+		} else {
+			stale_armed = 0;
+			t->recovery_degraded = 0;
+		}
+	} else if (rc != 0 && t->recovery_state[0]) {
+		t->recovery_degraded = 1;
+	}
 done:
+	if (stale_armed && stale_owned && !primary_published && rc < 0 &&
+	    omaq_identity_recovery_stale_clear(t->recovery_state) != 0) {
+		t->recovery_degraded = 1;
+	}
+	if (armed && !primary_published && rc < 0 &&
+	    omaq_identity_primary_uncertain_clear(t->recovery_state) != 0) {
+		t->primary_uncertain = 1;
+		rc = -2;
+	}
 	if (dir_fd >= 0)
 		close(dir_fd);
 	if (f) {
@@ -238,6 +302,59 @@ done:
 	if (plain) {
 		explicit_bzero(plain, n);
 		free(plain);
+	}
+	return rc;
+}
+
+int omaq_tox_recovery_degraded(const struct omaq_tox *t)
+{
+	return t && t->recovery_degraded;
+}
+
+int omaq_tox_primary_uncertain(const struct omaq_tox *t)
+{
+	return t && t->primary_uncertain;
+}
+
+#ifdef OMAQ_TOX_TEST
+void omaq_tox_test_fail_primary_fsync(struct omaq_tox *t)
+{
+	if (t)
+		t->test_fail_primary_fsync = 1;
+}
+
+void omaq_tox_test_fail_before_primary(struct omaq_tox *t)
+{
+	if (t)
+		t->test_fail_before_primary = 1;
+}
+#endif
+
+int omaq_tox_enable_recovery(struct omaq_tox *t, const char *state,
+                             int preserve_primary_warning)
+{
+	if (!t || !state || !state[0] || strlen(state) >= sizeof(t->recovery_state))
+		return -1;
+	memcpy(t->recovery_state, state, strlen(state) + 1);
+	t->primary_warning_preserved = preserve_primary_warning ? 1 : 0;
+	if (t->primary_warning_preserved)
+		return 0;
+	return omaq_tox_save(t);
+}
+
+int omaq_tox_primary_acknowledged(struct omaq_tox *t)
+{
+	int rc;
+
+	if (!t)
+		return -1;
+	if (!t->primary_warning_preserved)
+		return 0;
+	t->primary_warning_preserved = 0;
+	rc = omaq_tox_save(t);
+	if (rc < 0) {
+		t->primary_warning_preserved = 1;
+		return rc;
 	}
 	return rc;
 }
@@ -613,7 +730,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	FILE *f = NULL;
 	struct stat st;
 	int save_fd = -1;
-	int encrypted = 0;
+	int encrypted = 0, loaded_savedata = 0;
 
 	if (err_out)
 		*err_out = 0;
@@ -639,6 +756,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	if (save_fd < 0 && errno != ENOENT)
 		goto savedata_fail;
 	if (save_fd >= 0) {
+		loaded_savedata = 1;
 		if (fstat(save_fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
 		    (uint64_t)st.st_size > OMAQ_TOX_SAVE_MAX)
 			goto savedata_fail;
@@ -724,11 +842,11 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 			toxav_callback_call_state(t->av, on_av_state, t);
 		}
 	}
-	if (tox_self_get_name_size(t->tox) == 0)
+	if (!loaded_savedata && tox_self_get_name_size(t->tox) == 0)
 		(void)omaq_tox_set_name(t, "omaq");
 	bootstrap_tox(t, 1);
 	t->next_bootstrap = time(NULL) + 10;
-	if (omaq_tox_save(t) < 0) {
+	if (!loaded_savedata && omaq_tox_save(t) < 0) {
 		omaq_tox_discard(t);
 		return NULL;
 	}
@@ -1236,7 +1354,7 @@ int omaq_tox_group_leave(struct omaq_tox *t, uint32_t gnum)
 		return -1;
 	if (!tox_group_leave(t->tox, gnum, NULL, 0, &err))
 		return -1;
-	return omaq_tox_save(t) != 0 ? 1 : 0;
+	return omaq_tox_save(t) < 0 ? 1 : 0;
 }
 
 int omaq_tox_group_send(struct omaq_tox *t, uint32_t gnum, const char *text)
