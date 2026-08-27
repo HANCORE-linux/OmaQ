@@ -14,8 +14,13 @@ end = text.index("    Item {\n      id: connectedSurface", start)
 header = text[start:end]
 if "MouseArea {" in header or "passThroughBar" in header:
     raise SystemExit("input-mask: popup regained a desktop-sized pointer catcher")
-if "onBackingWindowActiveChanged:" not in header or "root.close()" not in header:
-    raise SystemExit("input-mask: popup lost click-away focus dismissal")
+if "HyprlandFocusGrab {" not in header or "windows: [popup]" not in header or \
+        "onCleared:" not in header or "root.close()" not in header:
+    raise SystemExit("input-mask: popup lost compositor click-away dismissal")
+if "!avatarPick.running && !identityPick.running" not in header:
+    raise SystemExit("input-mask: external pickers can be dismissed by the panel focus grab")
+if "onBackingWindowActiveChanged:" not in header:
+    raise SystemExit("input-mask: popup lost non-grab focus dismissal")
 PY
 python3 - "$root/pages/ChatPage.qml" <<'PY'
 from pathlib import Path

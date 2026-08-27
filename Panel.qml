@@ -5,6 +5,7 @@ import QtQuick.Effects
 import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import Quickshell.Wayland
 import qs.Ui
 import qs.Commons
@@ -2178,6 +2179,14 @@ BarWidget {
     // A stuck panel must never retain a desktop-sized Wayland input region.
     // Only the visible card is clickable; clicks elsewhere pass through.
     mask: Region { item: card }
+
+    HyprlandFocusGrab {
+      id: clickAwayGrab
+      active: root.opened && popup.visible && !avatarPick.running && !identityPick.running
+      windows: [popup]
+      onCleared: if (root.opened && !avatarPick.running && !identityPick.running)
+        root.close()
+    }
 
     onVisibleChanged: {
       if (!visible) {
