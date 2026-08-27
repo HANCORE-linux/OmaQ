@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 8: a persisted Double Ratchet session survives one helper restart.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "ratchet-restart: no helper" >&2; exit 1; }
 
@@ -17,6 +17,7 @@ holdb=$(mktemp -u /tmp/omaq-rrfb-XXXXXX)
 holdb2=$(mktemp -u /tmp/omaq-rrfb2-XXXXXX)
 pa=""
 pb=""
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 5>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -52,11 +53,27 @@ while [ "$i" -lt 90 ]; do
 done
 [ "$i" -lt 90 ] || { echo "ratchet-restart: no request" >&2; exit 1; }
 echo '{"op":"contact.decide","accept":true}' >&3
+i=0
+friend_key_a=""
+friend_key_b=""
+while [ "$i" -lt 60 ]; do
+	friend_key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	[ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ] && break
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ] || {
+	echo "ratchet-restart: stable friend keys missing" >&2
+	exit 1
+}
 
 # Bootstrap A -> B, then exchange one encrypted message in each direction.
 i=0
 while [ "$i" -lt 60 ]; do
-	printf '{"op":"msg.send","conversation":"0","text":"restart-seed","id":"restart-seed-%s"}\n' "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"restart-seed","id":"restart-seed-%s"}\n' "$friend_key_a" "$i" >&3
 	sleep 1
 	if grep -a -q 'restart-seed' "$fb"; then
 		break
@@ -65,7 +82,7 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$i" -lt 60 ] || { echo "ratchet-restart: no seed" >&2; exit 1; }
 
-echo '{"op":"msg.send","conversation":"0","text":"restart-before","id":"restart-before-1"}' >&4
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"restart-before","id":"restart-before-1"}\n' "$friend_key_b" >&4
 sleep 1
 friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
 	tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
@@ -120,7 +137,7 @@ sleep 1
 	exit 1
 }
 
-echo '{"op":"msg.send","conversation":"0","text":"restart-after","id":"restart-after-1"}' >&3
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"restart-after","id":"restart-after-1"}\n' "$friend_key_a" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q 'restart-after' "$fb2"; then

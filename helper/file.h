@@ -53,6 +53,7 @@ int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
 int omaq_file_cancel(struct omaq_tox *t, uint32_t friend, uint32_t fnum);
 void omaq_file_drop(uint32_t friend, uint32_t fnum);
 int omaq_file_busy(void);
+int omaq_file_friend_active(uint32_t friend);
 void omaq_file_reset(void);
 #endif
 

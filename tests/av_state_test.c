@@ -60,6 +60,8 @@ int main(void)
 	omaq_av_reset();
 	check(omaq_av_note_incoming(7) == 1, "incoming transition");
 	check(omaq_av_note_incoming(7) == 0, "incoming idempotence");
+	check(omaq_av_friend_busy(7) && !omaq_av_friend_busy(8),
+	      "friend-specific call busy state");
 	check(omaq_av_status(&status_friend, &status_state) == 1 && status_friend == 7 &&
 	      status_state && strcmp(status_state, "incoming") == 0, "incoming status");
 	check(omaq_av_note_active(7) == 1, "active transition");
@@ -93,6 +95,13 @@ int main(void)
 	check(omaq_av_note_active(7) == -1 && omaq_av_note_incoming(7) == -1 &&
 	      omaq_av_start(tox, 7) == -1, "delayed same-friend callbacks blocked");
 	check(omaq_av_start(tox, 8) == 0, "cooldown is friend-specific");
+	omaq_av_reset();
+	check(omaq_av_start(tox, 7) == 0 && omaq_av_stop(tox, 7) == 0,
+	      "friend forget fixture");
+	omaq_av_forget_friend(7);
+	check(omaq_av_start(tox, 7) == -1 &&
+	      omaq_av_note_active(7) == -1 && omaq_av_note_end(7) == -1,
+	      "friend forget preserves delayed-callback cooldown");
 	omaq_av_reset();
 
 	if (failures)

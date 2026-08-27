@@ -2182,9 +2182,12 @@ BarWidget {
 
     HyprlandFocusGrab {
       id: clickAwayGrab
-      active: root.opened && popup.visible && !avatarPick.running && !identityPick.running
+      active: root.opened && popup.visible && !root.avatarRestorePending &&
+        root.identityPickerMode === "" && !avatarPick.running && !identityPick.running
       windows: [popup]
-      onCleared: if (root.opened && !avatarPick.running && !identityPick.running)
+      onCleared: if (root.opened && !root.avatarRestorePending &&
+                     root.identityPickerMode === "" &&
+                     !avatarPick.running && !identityPick.running)
         root.close()
     }
 
@@ -3833,7 +3836,7 @@ BarWidget {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (omaq.answerCall(omaq.lastCallConv))
+                  if (omaq.answerCall(omaq.lastCallConv, omaq.lastCallKey))
                     OmaQ.CallTone.stopAll()
                 }
               }
@@ -3843,7 +3846,7 @@ BarWidget {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (omaq.stopCall(omaq.lastCallConv))
+                  if (omaq.stopCall(omaq.lastCallConv, omaq.lastCallKey))
                     OmaQ.CallTone.stopAll()
                 }
               }

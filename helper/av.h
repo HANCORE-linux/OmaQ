@@ -20,6 +20,8 @@ int omaq_av_pump(struct omaq_tox *t);
 int omaq_av_is_current(uint32_t friend);
 int omaq_av_take_audio_error(uint32_t *friend);
 int omaq_av_status(uint32_t *friend, const char **state);
+int omaq_av_friend_busy(uint32_t friend);
+void omaq_av_forget_friend(uint32_t friend);
 void omaq_av_reset(void);
 #endif
 

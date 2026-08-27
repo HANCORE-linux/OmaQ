@@ -570,6 +570,22 @@ int omaq_av_status(uint32_t *friend, const char **state)
 	return 1;
 }
 
+int omaq_av_friend_busy(uint32_t friend)
+{
+	return g_call == friend;
+}
+
+void omaq_av_forget_friend(uint32_t friend)
+{
+	/* Keep the short callback cooldown across number reuse. */
+	pthread_mutex_lock(&g_audio_lock);
+	if (g_audio_error_friend == friend) {
+		g_audio_error = 0;
+		g_audio_error_friend = UINT32_MAX;
+	}
+	pthread_mutex_unlock(&g_audio_lock);
+}
+
 int omaq_av_take_audio_error(uint32_t *friend)
 {
 	int failed;

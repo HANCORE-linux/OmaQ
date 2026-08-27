@@ -15,6 +15,7 @@ FocusScope {
   property var theme: ({ bg: "", fg: "", accent: "", unread: "" })
   property real messageScale: 1.0
   property string conversation: ""
+  property string peerKey: ""
   property string peerName: ""
   property string peerAvatar: ""
   property int peerAvatarRevision: 0
@@ -139,7 +140,10 @@ FocusScope {
       return false
     return service.isPeerTyping(root.conversation)
   }
-  readonly property bool directConversation: root.demo || !root.groupConversation
+  readonly property bool directBindingValid: root.demo || root.groupConversation ||
+    !!(root.service && root.service.directBindingMatches(root.conversation, root.peerKey))
+  readonly property bool directConversation: (root.demo || !root.groupConversation) &&
+    root.directBindingValid
   readonly property bool incoming: {
     if (!root.directConversation)
       return false
@@ -897,15 +901,17 @@ FocusScope {
   function confirmDelete() {
     var messageId = root.deleteConfirmId
     root.clearDeleteConfirm()
-    if (!root.demo && root.service && messageId)
-      root.service.deleteMessage(root.conversation, messageId)
+    if (!root.demo && root.service && messageId && root.directBindingValid)
+      root.service.deleteMessage(root.conversation, messageId, root.peerKey)
   }
 
   function clearChat() {
     if (!root.conversation || root.demo || !root.service)
       return
     root.clearConfirm = false
-    root.service.clearHistory(root.conversation)
+    if (!root.directBindingValid)
+      return
+    root.service.clearHistory(root.conversation, root.peerKey)
   }
 
   function newLocalMessageKey() {
@@ -960,13 +966,15 @@ FocusScope {
     var item = lines.get(index)
     if (!item || item.dir !== "out" || !item.local || !item.failed || !item.text)
       return
-    var queued = root.service.sendOp({
+    if (!root.directBindingValid)
+      return
+    var queued = root.service.sendConversationOp({
       op: "msg.send",
       conversation: root.conversation || root.service.lastConversation,
       text: String(item.text),
       reply: String(item.reply || ""),
       id: String(clientKey)
-    })
+    }, root.peerKey, false)
     if (!queued)
       return
     lines.setProperty(index, "failed", false)
@@ -980,8 +988,10 @@ FocusScope {
     if (!messageId || root.demo || !root.service)
       return
     var selectedEmoji = String(emoji || "")
+    if (!root.directBindingValid)
+      return
     root.service.reactMessage(root.conversation, messageId,
-      String(currentEmoji || "") === selectedEmoji ? "" : selectedEmoji)
+      String(currentEmoji || "") === selectedEmoji ? "" : selectedEmoji, root.peerKey)
   }
 
   function sameConv(conv) {
@@ -1151,7 +1161,10 @@ FocusScope {
     if (root.demo || !root.service || !root.conversation || root.readRetryBlocked ||
         root.readRequestPending || root.service.unreadFor(root.conversation) <= 0)
       return
-    root.readRequestPending = root.service.markConversationRead(root.conversation)
+    if (!root.directBindingValid)
+      return
+    root.readRequestPending = root.service.markConversationRead(root.conversation,
+      root.peerKey)
   }
 
   function focusComposer() {
@@ -1496,11 +1509,11 @@ FocusScope {
     root.typingSent = false
     root.typingConversation = ""
     if (!root.demo && service)
-      service.setTyping(conv, false)
+      service.setTyping(conv, false, root.peerKey)
   }
 
   function updateTyping() {
-    if (root.demo || !service)
+    if (root.demo || !service || !root.directBindingValid)
       return
     if (!input.text) {
       root.stopTyping()
@@ -1509,16 +1522,17 @@ FocusScope {
     if (!root.typingSent) {
       root.typingSent = true
       root.typingConversation = String(root.conversation || service.lastConversation || "")
-      service.setTyping(root.typingConversation, true)
+      service.setTyping(root.typingConversation, true, root.peerKey)
     }
     typingStop.restart()
   }
 
   function sendPendingImage() {
     var path = String(root.pendingImagePath || "")
-    if (!path || root.demo || root.groupConversation || !root.service)
+    if (!path || root.demo || root.groupConversation || !root.service ||
+        !root.directBindingValid)
       return false
-    if (!root.service.sendFile(path, root.conversation, "image")) {
+    if (!root.service.sendFile(path, root.conversation, "image", root.peerKey)) {
       root.fileStatus = "A file is already sending"
       root.fileStatusPath = path
       fileStatusTimer.interval = 3000
@@ -1541,7 +1555,7 @@ FocusScope {
     var hasImage = root.pendingImagePath !== ""
     if (!t && !hasImage)
       return
-    if (!root.demo && !service)
+    if (!root.demo && (!service || !root.directBindingValid))
       return
     root.stopTyping()
     root.followLatest = true
@@ -1553,7 +1567,7 @@ FocusScope {
       root.editingId = ""
       input.text = ""
       if (!root.demo && service)
-        service.editMessage(root.conversation, editId, editText)
+        service.editMessage(root.conversation, editId, editText, root.peerKey)
       return
     }
     if (t) {
@@ -1566,7 +1580,9 @@ FocusScope {
       root.restoreLatestPosition()
       if (root.demo) {
         demoReply.restart()
-      } else if (!service.sendOp({ op: "msg.send", conversation: root.conversation || service.lastConversation, text: t, reply: replyId, id: clientKey })) {
+      } else if (!service.sendConversationOp({ op: "msg.send",
+                   conversation: root.conversation || service.lastConversation,
+                   text: t, reply: replyId, id: clientKey }, root.peerKey, false)) {
         root.applyMessageFailure(clientKey, service.lastError || "helper_incompatible", false)
       }
     }
@@ -1593,7 +1609,7 @@ FocusScope {
       return
     }
     if (service)
-      service.startCall(root.conversation)
+      service.startCall(root.conversation, root.peerKey)
   }
 
   function answerCall() {
@@ -1607,7 +1623,7 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service && service.answerCall(root.conversation))
+    if (service && service.answerCall(root.conversation, root.peerKey))
       OmaQ.CallTone.stopAll()
   }
 
@@ -1622,7 +1638,7 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service && service.stopCall(root.conversation))
+    if (service && service.stopCall(root.conversation, root.peerKey))
       OmaQ.CallTone.stopAll()
   }
 
@@ -1865,7 +1881,7 @@ FocusScope {
       root.fileStatus = "Choose a file first"
       return
     }
-    if (!service || !root.conversation) {
+    if (!service || !root.conversation || !root.directBindingValid) {
       root.fileStatus = "No conversation selected"
       return
     }
@@ -1883,7 +1899,7 @@ FocusScope {
       fileStatusTimer.restart()
       return
     }
-    if (!service.sendFile(path, root.conversation)) {
+    if (!service.sendFile(path, root.conversation, "file", root.peerKey)) {
       root.fileStatus = "A file is already sending"
       fileStatusTimer.interval = 3000
       fileStatusTimer.restart()
@@ -1898,7 +1914,8 @@ FocusScope {
     if (root.demo || !root.service)
       return false
     var notice = root.service.fileNotice(root.conversation)
-    if (notice && notice.state === "canceled") {
+    if (notice && notice.state === "canceled" &&
+        String(notice.key || "") === String(root.peerKey || "")) {
       fileStatusTimer.stop()
       root.fileStatus = "File transfer canceled"
       root.fileStatusPath = ""
@@ -1912,9 +1929,12 @@ FocusScope {
   }
 
   function restoreOutgoingFileStatus() {
-    if (root.demo || !root.service || !root.service.fileSendingFor(root.conversation))
+    if (root.demo || !root.service || !root.directBindingValid ||
+        !root.service.fileSendingFor(root.conversation))
       return false
     var transfer = root.service.outgoingFile(root.conversation)
+    if (String(transfer.key || "") !== String(root.peerKey || ""))
+      return false
     fileStatusTimer.stop()
     root.fileStatus = "Sending…"
     root.fileStatusPath = String(transfer.path || "")
@@ -1922,7 +1942,8 @@ FocusScope {
   }
 
   function cancelOutgoingFile() {
-    if (!root.service || !root.service.cancelOutgoingFile(root.conversation))
+    if (!root.service || !root.service.cancelOutgoingFile(root.conversation,
+          root.peerKey))
       return
     root.closeFileChooser()
     root.fileStatus = ""
@@ -2312,7 +2333,7 @@ FocusScope {
       root.readRetryAttempts = 0
       readRetry.interval = 2500
       if (!root.demo && root.service && root.conversation)
-        root.service.requestHistory(root.conversation)
+        root.service.requestHistory(root.conversation, root.peerKey)
     }
     function onHistoryTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastHistoryConv))
@@ -2461,7 +2482,22 @@ FocusScope {
       root.restoreOutgoingFileStatus()
     if (!root.demo && root.service && root.conversation) {
       lines.clear()
-      root.service.requestHistory(root.conversation)
+      root.service.requestHistory(root.conversation, root.peerKey)
+    }
+  }
+
+  onPeerKeyChanged: {
+    lines.clear()
+    if (!root.demo && root.service && root.conversation && root.directBindingValid)
+      root.service.requestHistory(root.conversation, root.peerKey)
+  }
+
+  onDirectBindingValidChanged: {
+    if (!root.directBindingValid) {
+      root.stopTyping()
+      lines.clear()
+    } else if (!root.demo && root.service && root.conversation) {
+      root.service.requestHistory(root.conversation, root.peerKey)
     }
   }
 
@@ -3082,7 +3118,7 @@ FocusScope {
                   root.appendLine({ dir: "sys", text: "Accepted notes.png (demo)", ack: -1 })
                   list.positionViewAtEnd()
                 } else if (service) {
-                  service.acceptFile(root.conversation)
+                  service.acceptFile(root.conversation, root.peerKey)
                 }
               }
             }
@@ -3094,7 +3130,7 @@ FocusScope {
                   root.appendLine({ dir: "sys", text: "Declined file (demo)", ack: -1 })
                   list.positionViewAtEnd()
                 } else if (service) {
-                  service.cancelFile(root.conversation)
+                  service.cancelFile(root.conversation, root.peerKey)
                 }
               }
             }

@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include "av.h"
+#include "auto_open.h"
 #include "avatar.h"
 #include "file.h"
 #include "group.h"
@@ -21,6 +22,7 @@
 #include "safety.h"
 #include "store.h"
 #include "stdout_spool.h"
+#include "state_archive.h"
 #include "surface.h"
 
 #include "identity.h"
@@ -50,12 +52,13 @@
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 #ifndef OMAQ_PROTOCOL_VERSION
-#define OMAQ_PROTOCOL_VERSION 10
+#define OMAQ_PROTOCOL_VERSION 11
 #endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
 
+static void emit(const char *value);
 static void emit_error(const char *code);
 static void emit_identity_primary_state(const char *request);
 
@@ -350,6 +353,102 @@ static int conversation_id_ok(const char *id)
 	return id && id[0] == 'g' && omaq_group_id_parse(id, &group_number) == 0;
 }
 
+static int prepare_surface_state(void)
+{
+	int legacy = omaq_surface_legacy_direct_present(state_dir());
+
+	if (legacy < 0)
+		return -1;
+	if (legacy == 0)
+		return 0;
+	if (omaq_state_archive_copy(state_dir(), "surfaces.jsonl") != 0)
+		return -1;
+	return omaq_surface_discard_legacy_direct(state_dir()) == 1 ? 0 : -1;
+}
+
+static int load_auto_open_state(const char *fingerprint, omaq_auto_open_state *state)
+{
+	omaq_auto_open_source source;
+	char source_name[96];
+
+	if (!fingerprint || !state ||
+	    omaq_auto_open_load(state_dir(), fingerprint, state, &source) != 0)
+		return -1;
+	if (source == OMAQ_AUTO_OPEN_SOURCE_LEGACY_ACTIVE ||
+	    source == OMAQ_AUTO_OPEN_SOURCE_LEGACY_GLOBAL) {
+		if (omaq_auto_open_source_name(fingerprint, source, source_name,
+					       sizeof(source_name)) != 0 ||
+		    omaq_state_archive_copy(state_dir(), source_name) != 0 ||
+		    omaq_auto_open_save(state_dir(), fingerprint, state) != 0)
+			return -1;
+	}
+	if (source != OMAQ_AUTO_OPEN_SOURCE_LEGACY_GLOBAL &&
+	    omaq_state_archive_copy(state_dir(), "auto-open.json") != 0)
+		return -1;
+	return omaq_auto_open_retire_global(state_dir(), fingerprint);
+}
+
+static void emit_auto_open_state(const omaq_auto_open_state *state,
+				 const char *request, const char *error)
+{
+	char escaped_request[80 * 6 + 1];
+	char *event, *cursor;
+	size_t capacity, left;
+	int written;
+
+	if (!request || !request[0] ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+		return;
+	if (error) {
+		char escaped_error[128], value[800];
+		if (omaq_json_escape(error, escaped_error, sizeof(escaped_error)) != 0)
+			return;
+		snprintf(value, sizeof(value),
+			 "{\"event\":\"settings.auto-open.failed\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 escaped_request, escaped_error);
+		emit(value);
+		return;
+	}
+	if (!state || state->count > OMAQ_AUTO_OPEN_MAX)
+		return;
+	capacity = 160u + state->count * 180u;
+	event = malloc(capacity);
+	if (!event)
+		return;
+	written = snprintf(event, capacity,
+			   "{\"event\":\"settings.auto-open\",\"request\":\"%s\",\"directDefault\":%s,\"items\":[",
+			   escaped_request, state->direct_default ? "true" : "false");
+	if (written < 0 || (size_t)written >= capacity) {
+		free(event);
+		return;
+	}
+	cursor = event + written;
+	left = capacity - (size_t)written;
+	for (size_t i = 0; i < state->count; i++) {
+		char escaped_id[OMAQ_AUTO_OPEN_ID_MAX * 2];
+		if (omaq_json_escape(state->entries[i].conversation, escaped_id,
+				     sizeof(escaped_id)) != 0)
+			continue;
+		written = snprintf(cursor, left,
+				   "%s{\"conversation\":\"%s\",\"enabled\":%s}",
+				   i ? "," : "", escaped_id,
+				   state->entries[i].enabled ? "true" : "false");
+		if (written < 0 || (size_t)written >= left) {
+			free(event);
+			return;
+		}
+		cursor += written;
+		left -= (size_t)written;
+	}
+	if (left < 3) {
+		free(event);
+		return;
+	}
+	memcpy(cursor, "]}", 3);
+	emit(event);
+	free(event);
+}
+
 #ifdef HAVE_TOX
 static int direct_state_for_friend(uint32_t friend, char *out, size_t out_size)
 {
@@ -381,6 +480,31 @@ static int storage_conversation(const char *conversation, char *out, size_t out_
 	    snprintf(out, out_size, "%s", conversation) >= (int)out_size)
 		return -1;
 	return 0;
+}
+
+static int direct_conversation_key(const char *conversation, char *key,
+				   size_t key_size)
+{
+	if (!g_tox || !direct_id_ok(conversation) || !key || key_size < 65)
+		return -1;
+	return omaq_tox_friend_pk_hex(g_tox, direct_id_number(conversation), key);
+}
+
+static int direct_operation_binding_matches(const omaq_op *op)
+{
+	char current[65];
+
+	if (!op || !direct_id_ok(op->conversation) || strlen(op->key) != 64 ||
+	    direct_conversation_key(op->conversation, current, sizeof(current)) != 0 ||
+	    strcmp(current, op->key) != 0)
+		return 0;
+	if (strcmp(op->op, "file.accept") == 0 || strcmp(op->op, "file.cancel") == 0) {
+		uint32_t friend, file_number;
+		if (omaq_file_id_parse(op->id, &friend, &file_number) != 0 ||
+		    friend != direct_id_number(op->conversation))
+			return 0;
+	}
+	return 1;
 }
 
 static int friend_for_direct_state(const char *conversation, uint32_t *friend)
@@ -472,80 +596,7 @@ static int bound_storage_conversation(const char *conversation, char *out,
 
 static int copy_state_archive(const char *name)
 {
-	char archive[160], temporary[160], buffer[4096];
-	struct stat source_st, existing;
-	int dir_fd = -1, source_fd = -1, temporary_fd = -1, rc = -1;
-	unsigned int suffix;
-
-	temporary[0] = '\0';
-	if (!name || !name[0] || strchr(name, '/'))
-		return -1;
-	dir_fd = open(state_dir(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-	if (dir_fd < 0)
-		return -1;
-	source_fd = openat(dir_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-	if (source_fd < 0) {
-		rc = errno == ENOENT ? 0 : -1;
-		goto done;
-	}
-	if (fstat(source_fd, &source_st) != 0 || !S_ISREG(source_st.st_mode) ||
-	    source_st.st_uid != geteuid() || source_st.st_nlink != 1 ||
-	    source_st.st_size < 0 || source_st.st_size > 8 * 1024 * 1024)
-		goto done;
-	for (suffix = 0; suffix < 10000; suffix++) {
-		if (snprintf(archive, sizeof(archive), "%s.legacy-direct.%u", name, suffix) >=
-		    (int)sizeof(archive))
-			goto done;
-		if (fstatat(dir_fd, archive, &existing, AT_SYMLINK_NOFOLLOW) != 0) {
-			if (errno == ENOENT)
-				break;
-			goto done;
-		}
-	}
-	if (suffix == 10000 ||
-	    snprintf(temporary, sizeof(temporary), ".%s.legacy-direct.tmp.%ld", name,
-		     (long)getpid()) >= (int)sizeof(temporary))
-		goto done;
-	temporary_fd = openat(dir_fd, temporary,
-			      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-	if (temporary_fd < 0)
-		goto done;
-	for (;;) {
-		ssize_t got = read(source_fd, buffer, sizeof(buffer));
-		if (got < 0) {
-			if (errno == EINTR)
-				continue;
-			goto done;
-		}
-		if (got == 0)
-			break;
-		for (ssize_t offset = 0; offset < got;) {
-			ssize_t written = write(temporary_fd, buffer + offset,
-						(size_t)(got - offset));
-			if (written < 0) {
-				if (errno == EINTR)
-					continue;
-				goto done;
-			}
-			offset += written;
-		}
-	}
-	if (fsync(temporary_fd) != 0 || close(temporary_fd) != 0)
-		goto done;
-	temporary_fd = -1;
-	if (renameat(dir_fd, temporary, dir_fd, archive) != 0 || fsync(dir_fd) != 0)
-		goto done;
-	rc = 0;
-done:
-	if (temporary_fd >= 0)
-		close(temporary_fd);
-	if (rc != 0 && dir_fd >= 0 && temporary[0])
-		(void)unlinkat(dir_fd, temporary, 0);
-	if (source_fd >= 0)
-		close(source_fd);
-	if (dir_fd >= 0)
-		close(dir_fd);
-	return rc;
+	return omaq_state_archive_copy(state_dir(), name);
 }
 
 static int persist_reinvite_marker(void)
@@ -1536,14 +1587,18 @@ static void emit_identity_action(const char *op, const char *request,
 
 static void emit_unread_public(const char *conversation, const char *public_id)
 {
-	char esc_conv[128], ev[320];
+	char esc_conv[128], key_field[96] = "", ev[420];
 
 	if (!conversation || !public_id ||
 	    omaq_json_escape(public_id, esc_conv, sizeof(esc_conv)) != 0)
 		return;
+	if (strlen(conversation) == OMAQ_DIRECT_STATE_ID_MAX - 1u &&
+	    conversation[0] == 'd' && conversation[1] == ':')
+		snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"",
+			 conversation + 2);
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"unread\",\"conversation\":\"%s\",\"count\":%u,\"total\":%u}",
-		 esc_conv, omaq_unread_count(&g_unread, conversation),
+		 "{\"event\":\"unread\",\"conversation\":\"%s\"%s,\"count\":%u,\"total\":%u}",
+		 esc_conv, key_field, omaq_unread_count(&g_unread, conversation),
 		 omaq_unread_total(&g_unread));
 	emit(ev);
 }
@@ -1726,9 +1781,10 @@ static int prune_unavailable_unread(void)
 
 static void emit_json_items(const char *event, const char *conversation,
 			     const char *items, size_t items_len, const char *request,
-			     const char *unread_id)
+			     const char *unread_id, const char *binding_id)
 {
-	char esc_conv[128], esc_request[OMAQ_JSON_STR_MAX], prefix[420];
+	char esc_conv[128], esc_request[OMAQ_JSON_STR_MAX], key_field[96] = "";
+	char prefix[520];
 	char *ev, *p, *line;
 	size_t cap, left;
 	int first = 1;
@@ -1746,19 +1802,22 @@ static void emit_json_items(const char *event, const char *conversation,
 		emit_error("unsupported");
 		return;
 	}
+	if (binding_id && strlen(binding_id) == OMAQ_DIRECT_STATE_ID_MAX - 1u &&
+	    binding_id[0] == 'd' && binding_id[1] == ':')
+		snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"", binding_id + 2);
 	if (esc_request[0] && unread_id)
 		wr = snprintf(prefix, sizeof(prefix),
-			      "{\"event\":\"%s\",\"conversation\":\"%s\",\"request\":\"%s\",\"unread\":%u,\"items\":[",
-			      event, esc_conv, esc_request,
+			      "{\"event\":\"%s\",\"conversation\":\"%s\"%s,\"request\":\"%s\",\"unread\":%u,\"items\":[",
+			      event, esc_conv, key_field, esc_request,
 			      omaq_unread_count(&g_unread, unread_id));
 	else if (esc_request[0])
 		wr = snprintf(prefix, sizeof(prefix),
-			      "{\"event\":\"%s\",\"conversation\":\"%s\",\"request\":\"%s\",\"items\":[",
-			      event, esc_conv, esc_request);
+			      "{\"event\":\"%s\",\"conversation\":\"%s\"%s,\"request\":\"%s\",\"items\":[",
+			      event, esc_conv, key_field, esc_request);
 	else
 		wr = snprintf(prefix, sizeof(prefix),
-			      "{\"event\":\"%s\",\"conversation\":\"%s\",\"items\":[",
-			      event, esc_conv);
+			      "{\"event\":\"%s\",\"conversation\":\"%s\"%s,\"items\":[",
+			      event, esc_conv, key_field);
 	if (wr < 0 || (size_t)wr >= sizeof(prefix)) {
 		emit_error("unsupported");
 		return;
@@ -1832,6 +1891,23 @@ static void emit_error_conv(const char *code, const char *conversation)
 	emit(buf);
 }
 
+static void direct_event_key_field(const char *conversation, char *field,
+				   size_t field_size)
+{
+	if (!field || field_size == 0)
+		return;
+	field[0] = '\0';
+#ifdef HAVE_TOX
+	if (g_tox && direct_id_ok(conversation)) {
+		char key[65];
+		if (direct_conversation_key(conversation, key, sizeof(key)) == 0)
+			(void)snprintf(field, field_size, ",\"key\":\"%s\"", key);
+	}
+#else
+	(void)conversation;
+#endif
+}
+
 static void emit_unread_failed(const char *conversation, const char *code)
 {
 	char esc_conv[128], ev[360];
@@ -1850,7 +1926,7 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 				     const char *kind, const char *request)
 {
 	char esc_conv[128], esc_id[128], esc_reply[128], esc_request[512],
-		esc_text[2800], ev[3800];
+		esc_text[2800], key_field[96], ev[3900];
 	int has_id, has_reply, has_request, is_attachment;
 
 	if (!conversation || !text || !dir ||
@@ -1863,30 +1939,31 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 		omaq_json_escape(request, esc_request, sizeof(esc_request)) == 0;
 	is_attachment = kind &&
 		(strcmp(kind, "file") == 0 || strcmp(kind, "image") == 0);
+	direct_event_key_field(conversation, key_field, sizeof(key_field));
 	if (has_id && has_reply && has_request) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, esc_id, esc_reply, esc_request, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, key_field, esc_id, esc_reply, esc_request, esc_text, dir);
 	} else if (has_id && has_request) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, esc_id, esc_request, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, key_field, esc_id, esc_request, esc_text, dir);
 	} else if (has_id && has_reply) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, esc_id, esc_reply, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, key_field, esc_id, esc_reply, esc_text, dir);
 	} else if (has_id && is_attachment) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\"}",
-			 esc_conv, esc_id, esc_text, dir, kind);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\"}",
+			 esc_conv, key_field, esc_id, esc_text, dir, kind);
 	} else if (has_id) {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, esc_id, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, key_field, esc_id, esc_text, dir);
 	} else {
 		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, esc_text, dir);
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"text\":\"%s\",\"dir\":\"%s\"}",
+			 esc_conv, key_field, esc_text, dir);
 	}
 	emit(ev);
 }
@@ -2060,23 +2137,25 @@ static void emit_group_invite_terminal(const omaq_op *op, const char *code)
 #ifdef HAVE_TOX
 static void emit_message_update(const char *conversation, const char *id, const char *text, int deleted)
 {
-	char esc_conv[128], esc_id[128], esc_text[2800], ev[3200];
+	char esc_conv[128], esc_id[128], esc_text[2800], key_field[96], ev[3300];
 
 	if (!conversation || !id || !text ||
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
 	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0 ||
 	    omaq_json_escape(text, esc_text, sizeof(esc_text)) != 0)
 		return;
+	direct_event_key_field(conversation, key_field, sizeof(key_field));
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"message.updated\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"deleted\":%s,\"edited\":%s}",
-		 esc_conv, esc_id, esc_text, deleted ? "true" : "false", deleted ? "false" : "true");
+		 "{\"event\":\"message.updated\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"deleted\":%s,\"edited\":%s}",
+		 esc_conv, key_field, esc_id, esc_text, deleted ? "true" : "false",
+		 deleted ? "false" : "true");
 	emit(ev);
 }
 
 static void emit_message_reaction(const char *conversation, const char *id,
                                   const char *emoji, const char *actor)
 {
-	char esc_conv[128], esc_id[128], esc_emoji[128], ev[520];
+	char esc_conv[128], esc_id[128], esc_emoji[128], key_field[96], ev[620];
 
 	if (!conversation || !id || !emoji || !actor ||
 	    (strcmp(actor, "me") != 0 && strcmp(actor, "peer") != 0) ||
@@ -2084,9 +2163,10 @@ static void emit_message_reaction(const char *conversation, const char *id,
 	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0 ||
 	    omaq_json_escape(emoji, esc_emoji, sizeof(esc_emoji)) != 0)
 		return;
+	direct_event_key_field(conversation, key_field, sizeof(key_field));
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"message.reaction\",\"conversation\":\"%s\",\"id\":\"%s\",\"emoji\":\"%s\",\"actor\":\"%s\"}",
-		 esc_conv, esc_id, esc_emoji, actor);
+		 "{\"event\":\"message.reaction\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"emoji\":\"%s\",\"actor\":\"%s\"}",
+		 esc_conv, key_field, esc_id, esc_emoji, actor);
 	emit(ev);
 }
 
@@ -2125,7 +2205,7 @@ static void emit_message_reaction_failed(const char *conversation, const char *i
 static void emit_receipt_event_name(const char *event, const char *conversation,
 				    const char *id, const char *state)
 {
-	char esc_conv[128], esc_id[128], ev[360];
+	char esc_conv[128], esc_id[128], key_field[96], ev[460];
 
 	if (!event || (strcmp(event, "receipt") != 0 && strcmp(event, "receipt.sent") != 0) ||
 	    !conversation || !id || !state ||
@@ -2133,9 +2213,10 @@ static void emit_receipt_event_name(const char *event, const char *conversation,
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
 	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0)
 		return;
+	direct_event_key_field(conversation, key_field, sizeof(key_field));
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"%s\",\"conversation\":\"%s\",\"id\":\"%s\",\"state\":\"%s\"}",
-		 event, esc_conv, esc_id, state);
+		 "{\"event\":\"%s\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"state\":\"%s\"}",
+		 event, esc_conv, key_field, esc_id, state);
 	emit(ev);
 }
 
@@ -4733,12 +4814,15 @@ static void hook_friend_status(void *ud, uint32_t friend, int online)
 
 static void hook_typing(void *ud, uint32_t friend, int typing)
 {
-	char conv[16], ev[180];
+	char key[65], event[240];
 
 	(void)ud;
-	snprintf(conv, sizeof(conv), "%u", friend);
-	if (omaq_presence_typing_event(ev, sizeof(ev), conv, typing) == 0)
-		emit(ev);
+	if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"typing\",\"conversation\":\"%u\",\"key\":\"%s\",\"typing\":%s}",
+		 friend, key, typing ? "true" : "false");
+	emit(event);
 }
 
 static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
@@ -5939,12 +6023,14 @@ static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
 		      const char *name, uint64_t size, const char *path, const char *dir,
 		      const char *request)
 {
-	char id[OMAQ_FILE_ID_MAX], conv[16], ev[OMAQ_JSON_STR_MAX * 6 + 1024];
+	char id[OMAQ_FILE_ID_MAX], conv[16], key[65];
+	char ev[OMAQ_JSON_STR_MAX * 6 + 1120];
 	char ename[OMAQ_FILE_NAME_MAX * 6 + 1], epath[OMAQ_JSON_STR_MAX * 6 + 1];
 	char erequest[80 * 6 + 1];
 	int wr;
 
 	if (omaq_file_id_format(friend, fnum, id, sizeof(id)) != 0 ||
+	    omaq_tox_friend_pk_hex(g_tox, friend, key) != 0 ||
 	    (!dir || (strcmp(dir, "in") != 0 && strcmp(dir, "out") != 0)))
 		return;
 	snprintf(conv, sizeof(conv), "%u", friend);
@@ -5959,24 +6045,24 @@ static void emit_file(const char *state, uint32_t friend, uint32_t fnum,
 		return;
 	if (strcmp(state, "offer") == 0) {
 		wr = snprintf(ev, sizeof(ev),
-			      "{\"event\":\"file.offer\",\"id\":\"%s\",\"conversation\":\"%s\",\"name\":\"%s\",\"size\":%llu,\"dir\":\"%s\",\"request\":\"%s\"}",
-			      id, conv, ename, (unsigned long long)size, dir, erequest);
+			      "{\"event\":\"file.offer\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"name\":\"%s\",\"size\":%llu,\"dir\":\"%s\",\"request\":\"%s\"}",
+			      id, conv, key, ename, (unsigned long long)size, dir, erequest);
 	} else if (strcmp(state, "sending") == 0) {
 		wr = snprintf(ev, sizeof(ev),
-			      "{\"event\":\"file.sending\",\"id\":\"%s\",\"conversation\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
-			      id, conv, dir, erequest);
+			      "{\"event\":\"file.sending\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+			      id, conv, key, dir, erequest);
 	} else if (strcmp(state, "done") == 0) {
 		wr = snprintf(ev, sizeof(ev),
-			      "{\"event\":\"file.done\",\"id\":\"%s\",\"conversation\":\"%s\",\"path\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
-			      id, conv, epath, dir, erequest);
+			      "{\"event\":\"file.done\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"path\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+			      id, conv, key, epath, dir, erequest);
 	} else if (strcmp(state, "canceled") == 0) {
 		wr = snprintf(ev, sizeof(ev),
-			      "{\"event\":\"file.canceled\",\"id\":\"%s\",\"conversation\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
-			      id, conv, dir, erequest);
+			      "{\"event\":\"file.canceled\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+			      id, conv, key, dir, erequest);
 	} else if (strcmp(state, "failed") == 0) {
 		wr = snprintf(ev, sizeof(ev),
-			      "{\"event\":\"file.failed\",\"id\":\"%s\",\"conversation\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
-			      id, conv, dir, erequest);
+			      "{\"event\":\"file.failed\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\"}",
+			      id, conv, key, dir, erequest);
 	} else {
 		return;
 	}
@@ -6143,6 +6229,22 @@ static const char *file_request_finish(uint32_t friend, uint32_t fnum, const cha
 		 "%s", state);
 	g_file_requests[slot].sequence = ++g_file_request_sequence;
 	return g_file_requests[slot].request;
+}
+
+static int file_request_friend_busy(uint32_t friend)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++)
+		if (g_file_requests[i].used && g_file_requests[i].friend == friend &&
+		    strcmp(g_file_requests[i].state, "sending") == 0)
+			return 1;
+	return 0;
+}
+
+static void file_request_forget_friend(uint32_t friend)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++)
+		if (g_file_requests[i].used && g_file_requests[i].friend == friend)
+			memset(&g_file_requests[i], 0, sizeof(g_file_requests[i]));
 }
 
 static void cancel_file_after_error(uint32_t friend, uint32_t fnum)
@@ -6324,17 +6426,19 @@ static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control
 
 static void emit_call_state(uint32_t friend, const char *state)
 {
-	char ev[160];
+	char key[65], event[260];
 
-	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"call.state\",\"conversation\":\"%u\",\"state\":\"%s\"}",
-		 friend, state);
-	emit(ev);
+	if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"call.state\",\"conversation\":\"%u\",\"key\":\"%s\",\"state\":\"%s\"}",
+		 friend, key, state);
+	emit(event);
 }
 
 static void hook_call(void *ud, uint32_t friend, int state)
 {
-	char ev[160];
+	char key[65], event[260];
 
 	(void)ud;
 	if (state == OMAQ_TOX_CALL_INCOMING) {
@@ -6346,9 +6450,12 @@ static void hook_call(void *ud, uint32_t friend, int state)
 		}
 		if (transition != 1)
 			return;
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"call.incoming\",\"conversation\":\"%u\"}", friend);
-		emit(ev);
+		if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0)
+			return;
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.incoming\",\"conversation\":\"%u\",\"key\":\"%s\"}",
+			 friend, key);
+		emit(event);
 		return;
 	}
 	if (state == OMAQ_TOX_CALL_ACTIVE) {
@@ -7681,6 +7788,64 @@ rollback:
 }
 #endif
 
+#ifdef HAVE_TOX
+static int operation_uses_direct_conversation(const char *name)
+{
+	static const char *operations[] = {
+		"msg.send", "history", "search", "history.clear",
+		"message.edit", "message.delete", "message.react",
+		"conversation.read", "unread.clear", "receipt.send", "typing.set",
+		"surface.set", "surface.get", "file.send", "file.status",
+		"file.accept", "file.cancel", "call.start", "call.answer", "call.stop"
+	};
+
+	if (!name)
+		return 0;
+	for (size_t i = 0; i < sizeof(operations) / sizeof(operations[0]); i++)
+		if (strcmp(name, operations[i]) == 0)
+			return 1;
+	return 0;
+}
+
+static int operation_allows_group_conversation(const char *name)
+{
+	static const char *operations[] = {
+		"msg.send", "history", "search", "history.clear", "message.edit",
+		"message.delete", "message.react", "conversation.read", "unread.clear",
+		"receipt.send", "surface.set", "surface.get"
+	};
+
+	if (!name)
+		return 0;
+	for (size_t i = 0; i < sizeof(operations) / sizeof(operations[0]); i++)
+		if (strcmp(name, operations[i]) == 0)
+			return 1;
+	return 0;
+}
+
+static void reject_direct_operation_binding(const omaq_op *op)
+{
+	const char *conversation = op && op->conversation[0] ? op->conversation : "0";
+
+	if (!op)
+		return;
+	if (strcmp(op->op, "msg.send") == 0)
+		emit_message_failed(conversation, op->id, "identity_changed", 0);
+	else if (strcmp(op->op, "file.send") == 0)
+		emit_file_rejected(conversation, op->id, "identity_changed");
+	else if (strcmp(op->op, "history") == 0)
+		emit_history_failed(conversation, op->id);
+	else if (strcmp(op->op, "conversation.read") == 0 ||
+		 strcmp(op->op, "unread.clear") == 0)
+		emit_conversation_read("conversation.read.failed", conversation,
+				       "identity_changed");
+	else if (strcmp(op->op, "message.react") == 0)
+		emit_message_reaction_failed(conversation, op->id, "identity_changed");
+	else
+		emit_error_conv("identity_changed", conversation);
+}
+#endif
+
 static int handle_op(const omaq_op *op, int *identity_ready)
 {
 	if (strcmp(op->op, "helper.probe") == 0) {
@@ -7774,17 +7939,22 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				 ",\"request\":\"%s\"", escaped_request);
 		}
 #ifdef HAVE_TOX
-		char addr[77], nickname[129], escaped_nickname[260], call_field[160];
+		char addr[77], nickname[129], escaped_nickname[260], call_field[260];
 		char ev[1200];
 		uint32_t call_friend = UINT32_MAX;
 		const char *call_state = NULL;
 
-		if (omaq_av_status(&call_friend, &call_state))
-			snprintf(call_field, sizeof(call_field),
-				 ",\"call\":{\"conversation\":\"%u\",\"state\":\"%s\"}",
-				 call_friend, call_state);
-		else
+		if (omaq_av_status(&call_friend, &call_state)) {
+			char call_key[65];
+			if (!g_tox || omaq_tox_friend_pk_hex(g_tox, call_friend, call_key) != 0)
+				snprintf(call_field, sizeof(call_field), ",\"call\":null");
+			else
+				snprintf(call_field, sizeof(call_field),
+					 ",\"call\":{\"conversation\":\"%u\",\"key\":\"%s\",\"state\":\"%s\"}",
+					 call_friend, call_key, call_state);
+		} else {
 			snprintf(call_field, sizeof(call_field), ",\"call\":null");
+		}
 		if (g_locked && !g_tox) {
 			snprintf(ev, sizeof(ev),
 				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
@@ -7931,6 +8101,19 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		else
 			emit_error("locked");
 		return 0;
+	}
+	if (g_tox && operation_uses_direct_conversation(op->op) &&
+	    !(op->conversation[0] == 'g' &&
+	      operation_allows_group_conversation(op->op))) {
+#if OMAQ_PROTOCOL_VERSION >= 11
+		if (!direct_operation_binding_matches(op)) {
+#else
+		if (op->key[0] && direct_id_ok(op->conversation) &&
+		    !direct_operation_binding_matches(op)) {
+#endif
+			reject_direct_operation_binding(op);
+			return 0;
+		}
 	}
 	if (strcmp(op->op, "identity.unlock") == 0) {
 		int rc;
@@ -8707,6 +8890,11 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error_conv("receipt_state_failed", cid);
 				return 0;
 			}
+			if (omaq_file_friend_active(fn) || file_request_friend_busy(fn) ||
+			    omaq_av_friend_busy(fn)) {
+				emit_error_conv("busy", cid);
+				return 0;
+			}
 			if (omaq_direct_state_remove_begin(home_dir(), current_key) != 0) {
 				emit_error("direct_state_migration_failed");
 				return 0;
@@ -8716,6 +8904,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error("forbidden");
 				return 0;
 			}
+			file_request_forget_friend(fn);
+			omaq_av_forget_friend(fn);
 #ifdef HAVE_SIGNAL
 			if (g_ratchet)
 				omaq_ratchet_release_peer_cache(g_ratchet, state_cid);
@@ -9026,91 +9216,171 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		return 0;
 	}
 	if (strcmp(op->op, "surface.set") == 0) {
-		omaq_surface s;
-		memset(&s, 0, sizeof(s));
-		snprintf(s.conversation, sizeof(s.conversation), "%s",
-			 op->conversation[0] ? op->conversation : "0");
-		snprintf(s.monitor, sizeof(s.monitor), "%s", op->monitor);
-		s.x = op->x;
-		s.y = op->y;
-		s.pinned = op->has_pinned ? op->pinned : 0;
-		if (omaq_surface_set(state_dir(), &s) != 0) {
-			emit_error("forbidden");
+		omaq_surface surface;
+		const char *public_id = op->conversation[0] ? op->conversation : "0";
+		char current_key[65] = "";
+
+		memset(&surface, 0, sizeof(surface));
+		if (prepare_surface_state() != 0) {
+			emit_error_conv("surface_state_failed", public_id);
+			return 0;
+		}
+		if (direct_id_ok(public_id)) {
+#ifdef HAVE_TOX
+			if (!g_tox || direct_conversation_key(public_id, current_key,
+							 sizeof(current_key)) != 0 ||
+			    omaq_direct_state_id(current_key, surface.conversation,
+						 sizeof(surface.conversation)) != 0) {
+				emit_error_conv("identity_changed", public_id);
+				return 0;
+			}
+#else
+			emit_error_conv("unsupported", public_id);
+			return 0;
+#endif
+		} else if (!stable_group_id_syntax(public_id) ||
+			   snprintf(surface.conversation, sizeof(surface.conversation), "%s",
+				    public_id) >= (int)sizeof(surface.conversation)) {
+			emit_error_conv("forbidden", public_id);
+			return 0;
+		}
+		snprintf(surface.monitor, sizeof(surface.monitor), "%s", op->monitor);
+		surface.x = op->x;
+		surface.y = op->y;
+		surface.pinned = op->has_pinned ? op->pinned : 0;
+		if (omaq_surface_set(state_dir(), &surface) != 0) {
+			emit_error_conv("surface_state_failed", public_id);
 			return 0;
 		}
 		{
-			char ev[320], em[128];
-			if (omaq_json_escape(s.monitor, em, sizeof(em)) != 0)
-				em[0] = '\0';
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
-				 s.conversation, em, s.x, s.y, s.pinned ? "true" : "false");
-			emit(ev);
+			char event[480], escaped_monitor[128];
+			if (omaq_json_escape(surface.monitor, escaped_monitor,
+					     sizeof(escaped_monitor)) != 0)
+				escaped_monitor[0] = '\0';
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 public_id, current_key, escaped_monitor, surface.x, surface.y,
+				 surface.pinned ? "true" : "false");
+			emit(event);
 		}
 		return 0;
 	}
 	if (strcmp(op->op, "surface.list") == 0) {
 		omaq_surface surfaces[OMAQ_SURFACE_MAX];
-		int n = omaq_surface_list(state_dir(), surfaces, OMAQ_SURFACE_MAX);
-		size_t cap = 64u + (size_t)(n > 0 ? n : 0) * 260u;
-		char *ev = malloc(cap);
-		char *p;
+		int count;
+		size_t capacity;
+		char *event, *cursor;
 		size_t left;
-		int i, first = 1;
-		if (n < 0 || !ev) {
-			free(ev);
+		int first = 1;
+
+		if (prepare_surface_state() != 0) {
+			emit_error("surface_state_failed");
 			emit("{\"event\":\"surfaces\",\"items\":[]}");
 			return 0;
 		}
-		p = ev;
-		left = cap;
-		if (snprintf(p, left, "{\"event\":\"surfaces\",\"items\":[") >= (int)left) {
-			free(ev);
+		count = omaq_surface_list(state_dir(), surfaces, OMAQ_SURFACE_MAX);
+		capacity = 64u + (size_t)(count > 0 ? count : 0) * 360u;
+		event = malloc(capacity);
+		if (count < 0 || !event) {
+			free(event);
 			emit("{\"event\":\"surfaces\",\"items\":[]}");
 			return 0;
 		}
-		p += strlen(p);
-		left = cap - (size_t)(p - ev);
-		for (i = 0; i < n; i++) {
-			char ec[160], em[128];
-			int wr;
-			if (omaq_json_escape(surfaces[i].conversation, ec, sizeof(ec)) != 0 ||
-			    omaq_json_escape(surfaces[i].monitor, em, sizeof(em)) != 0)
+		cursor = event;
+		left = capacity;
+		if (snprintf(cursor, left, "{\"event\":\"surfaces\",\"items\":[") >=
+		    (int)left) {
+			free(event);
+			emit("{\"event\":\"surfaces\",\"items\":[]}");
+			return 0;
+		}
+		cursor += strlen(cursor);
+		left = capacity - (size_t)(cursor - event);
+		for (int i = 0; i < count; i++) {
+			char public_id[OMAQ_DIRECT_STATE_ID_MAX], current_key[65] = "";
+			char escaped_id[160], escaped_monitor[128];
+			int written;
+
+			if (surfaces[i].conversation[0] == 'd') {
+#ifdef HAVE_TOX
+				if (!g_tox || public_conversation(surfaces[i].conversation,
+							      public_id, sizeof(public_id)) != 0)
+					continue;
+				memcpy(current_key, surfaces[i].conversation + 2, 65);
+#else
 				continue;
-			wr = snprintf(p, left, "%s{\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
-				      first ? "" : ",", ec, em, surfaces[i].x, surfaces[i].y,
-				      surfaces[i].pinned ? "true" : "false");
-			if (wr < 0 || (size_t)wr >= left)
+#endif
+			} else if (snprintf(public_id, sizeof(public_id), "%s",
+					    surfaces[i].conversation) >= (int)sizeof(public_id)) {
+				continue;
+			}
+			if (omaq_json_escape(public_id, escaped_id, sizeof(escaped_id)) != 0 ||
+			    omaq_json_escape(surfaces[i].monitor, escaped_monitor,
+					     sizeof(escaped_monitor)) != 0)
+				continue;
+			written = snprintf(cursor, left,
+					   "%s{\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+					   first ? "" : ",", escaped_id, current_key,
+					   escaped_monitor, surfaces[i].x, surfaces[i].y,
+					   surfaces[i].pinned ? "true" : "false");
+			if (written < 0 || (size_t)written >= left)
 				break;
-			p += wr;
-			left -= (size_t)wr;
+			cursor += written;
+			left -= (size_t)written;
 			first = 0;
 		}
 		if (left < 3) {
-			free(ev);
+			free(event);
 			emit("{\"event\":\"surfaces\",\"items\":[]}");
 			return 0;
 		}
-		memcpy(p, "]}", 3);
-		emit(ev);
-		free(ev);
+		memcpy(cursor, "]}", 3);
+		emit(event);
+		free(event);
 		return 0;
 	}
 	if (strcmp(op->op, "surface.get") == 0) {
-		omaq_surface s;
-		const char *cid = op->conversation[0] ? op->conversation : "0";
-		if (omaq_surface_get(state_dir(), cid, &s) != 0) {
+		omaq_surface surface;
+		const char *public_id = op->conversation[0] ? op->conversation : "0";
+		char stored_id[OMAQ_DIRECT_STATE_ID_MAX], current_key[65] = "";
+
+		if (prepare_surface_state() != 0) {
+			emit_error_conv("surface_state_failed", public_id);
+			emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
+			return 0;
+		}
+		if (direct_id_ok(public_id)) {
+#ifdef HAVE_TOX
+			if (!g_tox || direct_conversation_key(public_id, current_key,
+							 sizeof(current_key)) != 0 ||
+			    omaq_direct_state_id(current_key, stored_id, sizeof(stored_id)) != 0) {
+				emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
+				return 0;
+			}
+#else
+			emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
+			return 0;
+#endif
+		} else if (!stable_group_id_syntax(public_id) ||
+			   snprintf(stored_id, sizeof(stored_id), "%s", public_id) >=
+				   (int)sizeof(stored_id)) {
+			emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
+			return 0;
+		}
+		if (omaq_surface_get(state_dir(), stored_id, &surface) != 0) {
 			emit("{\"event\":\"surface\",\"conversation\":\"\",\"pinned\":false}");
 			return 0;
 		}
 		{
-			char ev[320], em[128];
-			if (omaq_json_escape(s.monitor, em, sizeof(em)) != 0)
-				em[0] = '\0';
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
-				 s.conversation, em, s.x, s.y, s.pinned ? "true" : "false");
-			emit(ev);
+			char event[480], escaped_monitor[128];
+			if (omaq_json_escape(surface.monitor, escaped_monitor,
+					     sizeof(escaped_monitor)) != 0)
+				escaped_monitor[0] = '\0';
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 public_id, current_key, escaped_monitor, surface.x, surface.y,
+				 surface.pinned ? "true" : "false");
+			emit(event);
 		}
 		return 0;
 	}
@@ -9137,33 +9407,51 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		emit_error("unsupported");
 		return 0;
 	}
+	if (strcmp(op->op, "settings.auto-open.get") == 0 ||
+	    strcmp(op->op, "settings.auto-open.set") == 0) {
+#ifdef HAVE_TOX
+		omaq_auto_open_state settings;
+		char fingerprint[65];
+		int setting = strcmp(op->op, "settings.auto-open.set") == 0;
+
+		if (!g_tox || !omaq_message_id_ok(op->request) ||
+		    omaq_tox_self_pk_hex(g_tox, fingerprint) != 0 ||
+		    load_auto_open_state(fingerprint, &settings) != 0) {
+			emit_auto_open_state(NULL, op->request, "settings_failed");
+			return 0;
+		}
+		if (setting) {
+			uint32_t ignored;
+			int valid = op->has_enabled &&
+				((op->conversation[0] == 'd' &&
+				  find_friend_for_direct_state(op->conversation, &ignored) == 0) ||
+				 (op->conversation[0] == 'g' &&
+				  omaq_group_id_parse(op->conversation, &ignored) == 0));
+			if (!valid || omaq_auto_open_set(&settings, op->conversation,
+						      op->enabled) != 0 ||
+			    omaq_auto_open_save(state_dir(), fingerprint, &settings) != 0) {
+				emit_auto_open_state(NULL, op->request, "settings_failed");
+				return 0;
+			}
+		}
+		emit_auto_open_state(&settings, op->request, NULL);
+		return 0;
+#else
+		emit_error("unsupported");
+		return 0;
+#endif
+	}
 	if (strcmp(op->op, "settings.auto-open.migrated") == 0) {
 #ifdef HAVE_TOX
-		char address[77], source[640], migrated[760];
-		struct stat st;
+		char fingerprint[65];
 		if (!g_tox || strlen(op->id) != 64 ||
-		    omaq_tox_self_addr_hex(g_tox, address) != 0 ||
-		    strncmp(address, op->id, 64) != 0 ||
-		    snprintf(source, sizeof(source), "%s/auto-open.json", state_dir()) >=
-			    (int)sizeof(source) ||
-		    snprintf(migrated, sizeof(migrated), "%s/auto-open.migrated.%s.json",
-			     state_dir(), op->id) >= (int)sizeof(migrated)) {
+		    omaq_tox_self_pk_hex(g_tox, fingerprint) != 0 ||
+		    strcmp(fingerprint, op->id) != 0 ||
+		    omaq_state_archive_copy(state_dir(), "auto-open.json") != 0 ||
+		    omaq_auto_open_retire_global(state_dir(), fingerprint) != 0) {
 			emit_error("forbidden");
 			return 0;
 		}
-		if (lstat(source, &st) != 0) {
-			if (errno != ENOENT)
-				emit_error("forbidden");
-			return 0;
-		}
-		if (lstat(migrated, &st) == 0) {
-			if (unlink(source) != 0 || fsync_directory(state_dir()) != 0)
-				emit_error("forbidden");
-			return 0;
-		}
-		if (errno != ENOENT || rename(source, migrated) != 0 ||
-		    fsync_directory(state_dir()) != 0)
-			emit_error("forbidden");
 		return 0;
 #else
 		emit_error("unsupported");
@@ -9573,7 +9861,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 	if (strcmp(op->op, "history.clear") == 0) {
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		const char *history_cid = cid;
-		char esc_cid[128], ev[192];
+		char esc_cid[128], key_field[96] = "", ev[300];
 #ifdef HAVE_TOX
 		char state_cid[OMAQ_DIRECT_STATE_ID_MAX];
 #endif
@@ -9603,12 +9891,15 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (receipt_outbox_drop_conversation(history_cid) != 0)
 			emit_error_conv("receipt_state_failed", cid);
 #endif
+		if (history_cid[0] == 'd' && history_cid[1] == ':')
+			snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"",
+				 history_cid + 2);
 		if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
 			emit("{\"event\":\"history\",\"conversation\":\"0\",\"cleared\":true,\"items\":[]}");
 		else {
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"history\",\"conversation\":\"%s\",\"cleared\":true,\"items\":[]}",
-				 esc_cid);
+				 "{\"event\":\"history\",\"conversation\":\"%s\"%s,\"cleared\":true,\"items\":[]}",
+				 esc_cid, key_field);
 			emit(ev);
 		}
 		return 0;
@@ -9629,7 +9920,8 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 			history_cid = state_cid;
 #endif
 		if (omaq_message_history(home_dir(), history_cid, lim, &out, &n) == 0 && out) {
-			emit_json_items("history", cid, out, n, op->id, history_cid);
+			emit_json_items("history", cid, out, n, op->id, history_cid,
+					 history_cid);
 			free(out);
 			return 0;
 		}
@@ -9645,22 +9937,22 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 #ifdef HAVE_TOX
 		char state_cid[OMAQ_DIRECT_STATE_ID_MAX];
 		if (g_tox && storage_conversation(cid, state_cid, sizeof(state_cid)) != 0) {
-			emit_json_items("search", cid, "", 0, op->id, NULL);
+			emit_json_items("search", cid, "", 0, op->id, NULL, NULL);
 			return 0;
 		}
 		if (g_tox)
 			history_cid = state_cid;
 #endif
 		if (!op->text[0]) {
-			emit_json_items("search", cid, "", 0, op->id, NULL);
+			emit_json_items("search", cid, "", 0, op->id, NULL, history_cid);
 			return 0;
 		}
 		if (omaq_message_search(home_dir(), history_cid, op->text, lim, &out, &n) == 0 && out) {
-			emit_json_items("search", cid, out, n, op->id, NULL);
+			emit_json_items("search", cid, out, n, op->id, NULL, history_cid);
 			free(out);
 			return 0;
 		}
-		emit_json_items("search", cid, "", 0, op->id, NULL);
+		emit_json_items("search", cid, "", 0, op->id, NULL, history_cid);
 		return 0;
 	}
 	if (strcmp(op->op, "identity.export") == 0) {
@@ -9896,7 +10188,6 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			uint32_t fn;
-			char ev[160];
 
 			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
@@ -9907,10 +10198,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error("forbidden");
 				return 0;
 			}
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ringing\"}",
-				 cid);
-			emit(ev);
+			emit_call_state(fn, "ringing");
 			return 0;
 		}
 #endif
@@ -9922,7 +10210,6 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			uint32_t fn;
-			char ev[160];
 
 			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
@@ -9933,10 +10220,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				emit_error("forbidden");
 				return 0;
 			}
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"active\"}",
-				 cid);
-			emit(ev);
+			emit_call_state(fn, "active");
 			return 0;
 		}
 #endif
@@ -9948,7 +10232,6 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			uint32_t fn;
-			char ev[160];
 
 			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
@@ -9967,10 +10250,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 					return 0;
 				}
 				if (has_active == 0) {
-					snprintf(ev, sizeof(ev),
-						 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"state\":\"ended\"}",
-						 cid);
-					emit(ev);
+					emit_call_state(fn, "ended");
 					return 0;
 				}
 				stopped = omaq_av_stop(g_tox, fn);
@@ -9980,10 +10260,7 @@ static int handle_op(const omaq_op *op, int *identity_ready)
 				}
 				g_av_reset_requested = 1;
 			}
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"call.state\",\"conversation\":\"%u\",\"state\":\"ended\"}",
-				 fn);
-			emit(ev);
+			emit_call_state(fn, "ended");
 			return 0;
 		}
 #endif

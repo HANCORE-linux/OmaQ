@@ -9,9 +9,9 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Manifest version:** `0.8.0` in source and on both live systems
 - **Source:** `/home/hancore/Projects/omaq`
 - **Live plugins:** `~/.config/omarchy/plugins/hancore.omaq` on machine and `/home/drdeltree/.config/omarchy/plugins/hancore.omaq` on machine2
-- **Source release:** local `main` is `4a00e0f`; `origin/main` remains `91fda31` until the separately approved push
-- **Live machine:** Protocol 10 with the `4a00e0f` panel and helper SHA-256 `d883580a5756296df44968f6a3b68c4ede44b02c00dd79de671d667b916a530f`
-- **Live machine2:** the same Protocol-10 runtime at `192.168.2.108`, with the same panel and helper hash
+- **Source release:** local `main` and `origin/main` are `6dfc2b9`
+- **Live machine:** synchronized through `6dfc2b9`, running Protocol 10 with helper SHA-256 `d883580a5756296df44968f6a3b68c4ede44b02c00dd79de671d667b916a530f`
+- **Live machine2:** the same synchronized Protocol-10 runtime at `192.168.2.108`, with the same helper hash
 - **AUR:** paused; no registration or upload
 - **User guide:** [`USER-GUIDE.md`](USER-GUIDE.md)
 
@@ -47,7 +47,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The helper continues to bind `Remove contact` and targeted group invitations to the selected contact's stable public key, which it rechecks immediately before destructive or transport actions.
 - A process-wide owner loops the bundled `phone.oga` progress tone for incoming and outgoing ringing, stops it on answer, decline, hangup, or terminal state, and prevents duplicate playback across monitor surfaces.
 
-### Committed and deployed through `4a00e0f`
+### Committed and deployed through `6dfc2b9`
 
 - Normal file cancellation is projected to both peers as `file.canceled`, with a persistent dismissible status instead of a silent clear or generic failure. Correlated group-invite success remains visible as sent and waiting for acceptance. Incoming and legacy avatars pass exclusive no-follow staging, full PNG/JPEG/WebP decoding, dimension and decoded-memory bounds, adaptive canonical-PNG sizing, atomic installation, and crash-temp cleanup before they are exposed to QML.
 - Direct history, avatars, Ratchet pins, Signal identities, Signal sessions, unread counts, and receipt debt use the contact's canonical Tox public key instead of the unstable numeric friend handle. A versioned private binding file authorizes legacy migration before Ratchet startup and after unlock; unbound numeric state is archived with a reinvite warning, while collisions, malformed input, oversized friend lists, and symlinked paths fail closed. Per-peer one-time prekeys are unique, peer-bound, persisted before publication, durably consumed, and replay-safe across restart. Exact, canonical `OQB2` requests and durable responses recover half-sessions and lost prekeys without duplicate ping-pong; malformed records, wrong-peer consumption, interrupted writes, and failed session rollback fail closed.
@@ -60,6 +60,13 @@ This is the current product snapshot. It intentionally contains no historical ph
 - Group-name and Search inputs now use the same full width and standard field height as the Identity bundle-path input, with their actions below. Search results and safety-code display/copy remain bound to the explicitly user-selected conversation, unaffected by background messages or delayed helper responses. The Invite view shows the helper-issued 24-hour expiry as a live countdown and provides confirmed Revoke and sequential Revoke → New link actions. Receipt projection is monotonic, so delayed or replayed `delivered` events cannot downgrade a message already shown as `Read`. Sound choices use a uniform three-column grid with complete labels, and Show safety code has a short identity-verification explanation.
 - One `SurfaceCoordinator` owns chat, demo, notification, and Hyprland-rule surfaces across monitor instances. First mapping may float a chat, but focus, reopen, and config reload preserve manual tiling. The panel input mask covers only its visible card, and Escape or the visible close action always closes it without retaining a desktop-sized pointer region. The current follow-up adds Hyprland's compositor focus grab so a click anywhere outside the card also dismisses it even when the desktop itself does not take keyboard focus.
 
+### Protocol-11 follow-up
+
+- Direct window persistence now stores canonical `d:<public-key>` IDs instead of temporary Tox friend numbers. Before removing ambiguous numeric surface records, the helper copies the complete private source to a non-overwriting `legacy-direct` archive; it never assigns those records from the number's current holder.
+- Auto-open schema version 2 uses only stable `d:`/`g:` keys. The helper now owns bounded no-follow parsing and atomic writes, rejects malformed or duplicate fields, archives every pre-v2 source, disables numeric Direct preferences, and returns a request-correlated snapshot with a conservative Direct default. Users explicitly re-enable intended Direct Auto-open entries.
+- Every live Direct card, queued open, and queued Direct operation retains the expected public key. QML waits for the authoritative Friend projection before replay, revalidates pending work before flush, and clears stale page/search/notification state on a binding change. Replayable Direct events carry the key, while the Protocol-11 helper requires it on Direct operations and refuses contact removal during active files or calls. A stale card therefore closes rather than displaying or sending as another contact.
+- The separately tested picker focus-grab race fix is included in `Panel.qml` and `tests/input-mask.sh`; compositor click-away releases ownership before an external picker starts.
+
 ### Existing validation gaps
 
 1. A complete 1:1 test over separate networks is still missing, including presence, typing, delivery, unread badge, and the `New messages` divider.
@@ -70,6 +77,8 @@ This is the current product snapshot. It intentionally contains no historical ph
 ## Latest validation
 
 Protocol 10 passes the full unit/IPC sanitizer suite, hardened helper and no-Signal builds, architecture checks, plugin validation, Service/ChatSurface/ChatPage QML lint, phases 2, 5, and 8, EncryptSave, and focused identity-guard, Protocol-7 local-helper compatibility, structured-reinvite, input-mask, surface-owner, nonblocking-invite, clipboard-bound, orphan-cleanup, and verified-uninstall regressions. Identity-guard coverage restores a sandbox Tox savedata containing a real contact and verifies the same public fingerprint/contact count; missing primary and recovery copies fail closed without creating `tox.save`. A historical Protocol-7 sandbox migration retained the exact Tox public key and projected contact while entering structured direct-chat recovery. Its cross-version Friend Request was delivered, but the Protocol-10↔7 encrypted-message run was inconclusive because both historical endpoints stayed offline; current Protocol-10↔10 Ratchet messaging passed on an isolated retry after one relay-connect timeout. Both live systems run this Protocol-10 baseline. The click-away follow-up passes the full test target, focused input-mask regression, plugin validation, core QML lint, an independent zero-finding QML review, and native local interaction. Native separate-network, real clipboard/drop, multi-monitor handoff, and floating/tiling acceptance remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
+
+The Protocol-11 follow-up passes `make clean && make test`, hardened helper and no-Signal builds, architecture checks, plugin validation, ShellCheck, core QML lint, phases 2, 4, 5, 6, and 8, EncryptSave, Ratchet restart, and two-home messaging. Phase 6 verifies that active files and calls block contact removal; Phase 8 verifies stable Direct surfaces, required Direct keys, transfer/conversation binding, helper-owned Auto-open archival and rewrite, Direct Search keys, and no transport under a wrong binding. Two adversarial QML/AppSec reviews ended with zero findings after remediation. The historical Phase-3 orphan fixture still deletes `tox.save` without a matching guard/recovery state and now correctly stops as `identity_missing`; that obsolete fixture needs modernization before it can test group-orphan pruning under the current Identity Guard.
 
 ## Next order
 

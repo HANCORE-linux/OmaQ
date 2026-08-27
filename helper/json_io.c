@@ -245,6 +245,10 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 			if (parse_bool(&p, &out->pinned) != 0)
 				return -1;
 			out->has_pinned = 1;
+		} else if (strcmp(key, "enabled") == 0) {
+			if (parse_bool(&p, &out->enabled) != 0)
+				return -1;
+			out->has_enabled = 1;
 		} else if (strcmp(key, "typing") == 0) {
 			if (parse_bool(&p, &out->typing) != 0)
 				return -1;

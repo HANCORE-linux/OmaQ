@@ -12,7 +12,9 @@ typedef struct {
 	int pinned;
 } omaq_surface;
 
-/* Read/write $OMAQ_STATE/surfaces.jsonl. Only this module opens that file. */
+/* Persist only canonical d:/g: ids. Numeric direct ids are legacy input only. */
+int omaq_surface_legacy_direct_present(const char *state);
+int omaq_surface_discard_legacy_direct(const char *state);
 int omaq_surface_set(const char *state, const omaq_surface *s);
 int omaq_surface_get(const char *state, const char *conv, omaq_surface *s);
 int omaq_surface_list(const char *state, omaq_surface *out, int cap);

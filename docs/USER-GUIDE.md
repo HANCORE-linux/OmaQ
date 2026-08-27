@@ -82,6 +82,8 @@ The download directory can be changed with `OMAQ_DOWNLOAD_DIR` or `XDG_DOWNLOAD_
 
 Unread messages are marked in the chat with a **New messages** divider.
 
+Direct window and Auto-open preferences are bound to the contact's stable public key. On the first Protocol-11 update, OmaQ archives ambiguous numeric window and Auto-open records instead of assigning them to whoever currently holds that temporary friend number. An affected pinned direct window may need to be opened once from the current Friends list. Legacy Direct Auto-open entries are disabled conservatively; use **Auto-open** in each intended chat to enable them again. Group preferences remain unchanged.
+
 ## 6. Voice calls
 
 Voice calls are available only in direct chats.

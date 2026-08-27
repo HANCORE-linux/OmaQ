@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 8: two homes, invite with rk, ratchet ciphertext is not plaintext, RSS.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "phase8: no helper" >&2; exit 1; }
 
@@ -16,6 +16,7 @@ holda=$(mktemp -u /tmp/omaq-p8fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p8fb-XXXXXX)
 pa=""
 pb=""
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -60,12 +61,55 @@ while [ "$i" -lt 90 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase8: no request" >&2; exit 1; }
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+i=0
+while [ "$i" -lt 60 ]; do
+	friend_key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	if [ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 60 ] || { echo "phase8: stable friend keys missing" >&2; exit 1; }
+
+# Protocol 11 rejects missing/defaulted bindings and independently checks that
+# a transfer id belongs to the bound conversation.
+identity_before=$(grep -a -c '"code":"identity_changed"' "$fa" || true)
+printf '%s\n' \
+	'{"op":"msg.send","conversation":"0","text":"missing-key","id":"phase8-missing-key"}' \
+	"{\"op\":\"msg.send\",\"key\":\"$friend_key_a\",\"text\":\"missing-conversation\",\"id\":\"phase8-missing-conversation\"}" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	identity_after=$(grep -a -c '"code":"identity_changed"' "$fa" || true)
+	[ "$identity_after" -ge $((identity_before + 2)) ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase8: incomplete Direct bindings were accepted" >&2; exit 1; }
+! grep -a -q 'missing-key\|missing-conversation' "$fb" || {
+	echo "phase8: incomplete Direct binding reached transport" >&2
+	exit 1
+}
+transfer_before=$(grep -a -c '"code":"identity_changed"' "$fa" || true)
+printf '{"op":"file.accept","conversation":"0","key":"%s","id":"1:0"}\n' \
+	"$friend_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	transfer_after=$(grep -a -c '"code":"identity_changed"' "$fa" || true)
+	[ "$transfer_after" -gt "$transfer_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase8: mismatched transfer binding was accepted" >&2; exit 1; }
 
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do
-	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping","id":"phase8-ping-a-%s"}\n' "$i" >&3
-	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-ping","id":"phase8-ping-b-%s"}\n' "$i" >&4
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"secret-ratchet-ping","id":"phase8-ping-a-%s"}\n' "$friend_key_a" "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"secret-ratchet-ping","id":"phase8-ping-b-%s"}\n' "$friend_key_b" "$i" >&4
 	sleep 1
 	if grep -a -q 'secret-ratchet-ping' "$fb"; then
 		sent=1
@@ -74,10 +118,22 @@ while [ "$i" -lt 60 ]; do
 	i=$((i + 1))
 done
 [ "$sent" -eq 1 ] || { echo "phase8: no ratchet plaintext event" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
+printf '{"op":"search","conversation":"0","key":"%s","text":"secret-ratchet-ping","id":"phase8-direct-search"}\n' \
+	"$friend_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"search"' "$fa" | grep -a '"request":"phase8-direct-search"' |
+	   grep -a -q '"key":"'"$friend_key_a"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase8: Direct search key binding missing" >&2; exit 1; }
 
 message_id=$(grep -a '"event":"message"' "$fb" | grep -a '"dir":"in"' | grep -a 'secret-ratchet-ping' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$message_id" ] || { echo "phase8: no message id" >&2; exit 1; }
-printf '{"op":"conversation.read","conversation":"0"}\n' >&4
+printf '{"op":"conversation.read","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
 i=0
 while [ "$i" -lt 60 ]; do
 	if grep -a -q '"event":"receipt".*"id":"'"$message_id"'".*"state":"read"' "$fa" &&
@@ -90,7 +146,7 @@ while [ "$i" -lt 60 ]; do
 	sleep 0.2
 done
 [ "$i" -lt 60 ] || { echo "phase8: no acknowledged read receipt" >&2; tail -30 "$fa" >&2; tail -30 "$fb" >&2; exit 1; }
-printf '{"op":"msg.send","conversation":"0","text":"semantic-reply","reply":"%s","id":"phase8-reply-1"}\n' "$message_id" >&3
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"semantic-reply","reply":"%s","id":"phase8-reply-1"}\n' "$friend_key_a" "$message_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q '"reply":"'"$message_id"'"' "$fb" && grep -a -q 'semantic-reply' "$fb"; then
@@ -106,7 +162,7 @@ grep -a '"event":"message"' "$fa" | grep -a 'semantic-reply' | grep -a -q '"requ
 }
 reply_id=$(grep -a '"event":"message"' "$fa" | grep -a 'semantic-reply' | tail -1 | sed -n 's/.*"id":"\([^" ]*\)".*/\1/p')
 [ -n "$reply_id" ] || { echo "phase8: no reply id" >&2; exit 1; }
-printf '{"op":"message.edit","conversation":"0","id":"%s","text":"semantic-edited"}\n' "$reply_id" >&3
+printf '{"op":"message.edit","conversation":"0","key":"%s","id":"%s","text":"semantic-edited"}\n' "$friend_key_a" "$reply_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q '"event":"message.updated"' "$fb" && grep -a -q 'semantic-edited' "$fb"; then
@@ -116,7 +172,7 @@ while [ "$i" -lt 30 ]; do
 	sleep 0.2
 done
 [ "$i" -lt 30 ] || { echo "phase8: no message edit" >&2; exit 1; }
-printf '{"op":"message.delete","conversation":"0","id":"%s"}\n' "$reply_id" >&3
+printf '{"op":"message.delete","conversation":"0","key":"%s","id":"%s"}\n' "$friend_key_a" "$reply_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a -q '"event":"message.updated"' "$fa" && grep -a -q '"deleted":true' "$fa"; then
@@ -133,8 +189,8 @@ if grep -a '"message"' "$fa" "$fb" | grep -E -q 'OQR1|OQB1'; then
 fi
 
 # Parallel identical texts must remain correlated when one request fails and the other succeeds.
-printf '{"op":"msg.send","conversation":"999999","text":"parallel-identical","reply":"missing","id":"phase8-parallel-fail"}\n' >&3
-printf '{"op":"msg.send","conversation":"0","text":"parallel-identical","reply":"%s","id":"phase8-parallel-ok"}\n' "$message_id" >&3
+printf '{"op":"msg.send","conversation":"999999","key":"%s","text":"parallel-identical","reply":"missing","id":"phase8-parallel-fail"}\n' "$friend_key_a" >&3
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"parallel-identical","reply":"%s","id":"phase8-parallel-ok"}\n' "$friend_key_a" "$message_id" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a '"event":"message.failed"' "$fa" | grep -a -q '"request":"phase8-parallel-fail"' &&
@@ -156,10 +212,107 @@ friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
 	echo "phase8: stable friend keys missing" >&2
 	exit 1
 }
+self_key_a=$(grep -a '"event":"snapshot"' "$fa" | grep -a '"addr"' | tail -1 |
+	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]*".*/\1/p')
+[ "${#self_key_a}" -eq 64 ] || { echo "phase8: self key missing" >&2; exit 1; }
+
+# Protocol 11 persists a Direct surface under the exact projected key and rejects
+# a stale window that supplies the same number with another key.
+printf '{"op":"surface.set","conversation":"0","key":"%s","monitor":"DP-1","x":10,"y":20,"pinned":true}\n' \
+	"$friend_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"surface"' "$fa" | grep -a '"conversation":"0"' |
+	   grep -a -q '"key":"'"$friend_key_a"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: stable Direct surface result missing" >&2; exit 1; }
+grep -a -q '"conversation":"d:'"$friend_key_a"'"' "$sa/surfaces.jsonl" || {
+	echo "phase8: Direct surface was not persisted by stable key" >&2
+	exit 1
+}
+printf '{"op":"surface.set","conversation":"0","key":"%s","monitor":"WRONG","x":1,"y":2,"pinned":true}\n' \
+	"$self_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"error"' "$fa" | grep -a '"code":"identity_changed"' |
+	   grep -a -q '"conversation":"0"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: stale surface binding was not rejected" >&2; exit 1; }
+! grep -a -q 'WRONG' "$sa/surfaces.jsonl" || {
+	echo "phase8: stale surface binding changed durable state" >&2
+	exit 1
+}
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"wrong-binding-must-not-send","id":"phase8-wrong-binding"}\n' \
+	"$self_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"message.failed"' "$fa" |
+	   grep -a -q '"request":"phase8-wrong-binding".*"code":"identity_changed"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: stale message binding was not rejected" >&2; exit 1; }
+! grep -a -q 'wrong-binding-must-not-send' "$fb" || {
+	echo "phase8: stale message binding reached the wrong transport target" >&2
+	exit 1
+}
+
+auto_open="$sa/auto-open.$self_key_a.json"
+printf '%s\n' '{"version":1,"users":{"0":true}}' >"$auto_open"
+chmod 600 "$auto_open"
+printf '%s\n' '{"op":"settings.auto-open.get","request":"ao-phase8-get"}' >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"settings.auto-open"' "$fa" |
+	   grep -a -q '"request":"ao-phase8-get".*"directDefault":false'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: helper-owned Auto-open result missing" >&2; exit 1; }
+auto_archive="$auto_open.legacy-direct.0"
+if [ ! -f "$auto_archive" ] || ! grep -a -q '"0":true' "$auto_archive"; then
+	echo "phase8: legacy Auto-open archive missing" >&2
+	exit 1
+fi
+if ! grep -a -q '"version":2' "$auto_open" ||
+   ! grep -a -q '"directDefault":false' "$auto_open" ||
+   grep -a -q '"0"' "$auto_open"; then
+	echo "phase8: active Auto-open state was not rewritten safely" >&2
+	exit 1
+fi
+printf '{"op":"settings.auto-open.set","conversation":"d:%s","enabled":true,"request":"ao-phase8-set"}\n' \
+	"$friend_key_a" >&3
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"settings.auto-open"' "$fa" |
+	   grep -a -q '"request":"ao-phase8-set".*"conversation":"d:'"$friend_key_a"'"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 30 ] || { echo "phase8: stable Auto-open set missing" >&2; exit 1; }
+grep -a -q '"d:'"$friend_key_a"'":true' "$auto_open" || {
+	echo "phase8: stable Auto-open preference was not persisted" >&2
+	exit 1
+}
+
 history_file="$ha/history/d:$friend_key_a/messages.jsonl"
 [ -f "$history_file" ] || { echo "phase8: sender history missing" >&2; exit 1; }
 chmod 400 "$history_file"
-echo '{"op":"msg.send","conversation":"0","text":"delivered-history-failure","id":"phase8-store-fail"}' >&3
+printf '{"op":"msg.send","conversation":"0","key":"%s","text":"delivered-history-failure","id":"phase8-store-fail"}\n' "$friend_key_a" >&3
 i=0
 while [ "$i" -lt 30 ]; do
 	if grep -a '"event":"message.failed"' "$fa" | grep -a '"request":"phase8-store-fail"' |
@@ -176,7 +329,7 @@ chmod 600 "$history_file"
 sent2=0
 i=0
 while [ "$i" -lt 30 ]; do
-	printf '{"op":"msg.send","conversation":"0","text":"secret-ratchet-pong","id":"phase8-pong-%s"}\n' "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"secret-ratchet-pong","id":"phase8-pong-%s"}\n' "$friend_key_a" "$i" >&3
 	sleep 1
 	if grep -a -q 'secret-ratchet-pong' "$fb"; then
 		sent2=1
@@ -194,10 +347,10 @@ exec 3>&-
 kill "$pa" 2>/dev/null || true
 wait "$pa" 2>/dev/null || true
 pa=""
-printf '{"op":"conversation.read","conversation":"0"}\n' >&4
+printf '{"op":"conversation.read","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
 i=0
 while [ "$i" -lt 30 ]; do
-	if grep -a -q "d:$friend_key_b[[:space:]]$offline_id" "$sb/read-receipts.tsv" 2>/dev/null; then
+	if grep -a -q "d:${friend_key_b}[[:space:]]$offline_id" "$sb/read-receipts.tsv" 2>/dev/null; then
 		break
 	fi
 	i=$((i + 1))
@@ -205,16 +358,16 @@ while [ "$i" -lt 30 ]; do
 done
 [ "$i" -lt 30 ] || { echo "phase8: offline read was not persisted" >&2; exit 1; }
 # Simulate the legacy numeric receipt namespace; the durable friend binding must migrate it.
-sed -i "s/^d:$friend_key_b[[:space:]]/0\t/" "$sb/read-receipts.tsv"
+sed -i "s/^d:${friend_key_b}[[:space:]]/0\t/" "$sb/read-receipts.tsv"
 awk -F '\t' -v OFS='\t' -v stable="d:$friend_key_b" '$1 == "0" { $1 = stable; print }' \
 	"$sb/read-receipts.tsv" >>"$sb/read-receipts.tsv.duplicate"
 cat "$sb/read-receipts.tsv.duplicate" >>"$sb/read-receipts.tsv"
 rm -f "$sb/read-receipts.tsv.duplicate"
-grep -a -q "0[[:space:]]$offline_id" "$sb/read-receipts.tsv" &&
-grep -a -q "d:$friend_key_b[[:space:]]$offline_id" "$sb/read-receipts.tsv" || {
+if ! grep -a -q "0[[:space:]]$offline_id" "$sb/read-receipts.tsv" ||
+   ! grep -a -q "d:${friend_key_b}[[:space:]]$offline_id" "$sb/read-receipts.tsv"; then
 	echo "phase8: legacy receipt migration fixture failed" >&2
 	exit 1
-}
+fi
 exec 4>&-
 kill "$pb" 2>/dev/null || true
 wait "$pb" 2>/dev/null || true

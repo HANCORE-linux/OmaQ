@@ -40,6 +40,7 @@ Item {
   property bool floatRulesReady: false
   property bool floatRuleReloadBlocked: false
   property string blockedOpenConversation: ""
+  property string blockedOpenKey: ""
   property string blockedOpenName: ""
   property string lastNotifiedMessageId: ""
   property string focusConversation: ""
@@ -58,21 +59,12 @@ Item {
   property bool autoOpenUnavailable: false
   property string autoOpenWarning: ""
   property var pendingIncoming: []
-  property bool autoOpenSavePending: false
   property var pendingAutoOpenToggles: []
-  property var autoOpenPersisted: ({})
-  property var autoOpenSaveSnapshot: ({})
-  property bool legacyAutoOpenMigrationPending: false
-  property bool legacyAutoOpenMigrationSaving: false
-
-  readonly property string autoOpenPath: service && service.identityFingerprint
-    ? service.stateDir + "/auto-open." + service.identityFingerprint + ".json"
-    : ""
-  readonly property string legacyAutoOpenPath: service
-    ? service.stateDir + "/auto-open.json" : ""
+  property bool autoOpenDirectDefault: true
+  property string autoOpenRequest: ""
+  property int autoOpenSequence: 0
   readonly property string floatScriptPath:
     String(Qt.resolvedUrl("scripts/float-omaq.sh")).replace(/^file:\/\//, "")
-  readonly property var autoOpenFile: autoOpenLoader.item
   readonly property var visualTokens: root.bar && "visualTokens" in root.bar
     ? root.bar.visualTokens : null
   readonly property var paletteState: visualTokens ? visualTokens.stateService : null
@@ -111,18 +103,22 @@ Item {
   }
 
   function openConversation(conv, name) {
-    OmaQ.SurfaceCoordinator.requestChat(String(conv || ""), String(name || ""))
+    var conversation = String(conv || "")
+    var expectedKey = conversation.charAt(0) === "g" ? "" : root.friendKey(conversation)
+    OmaQ.SurfaceCoordinator.requestChat(conversation, expectedKey, String(name || ""))
   }
 
-  function acceptOpenRequest(conv, name) {
+  function acceptOpenRequest(conv, expectedKey, name) {
     if (!root.isSurfaceOwner)
       return
     if (root.floatRuleReloadBlocked) {
       root.blockedOpenConversation = String(conv || "")
+      root.blockedOpenKey = String(expectedKey || "")
       root.blockedOpenName = String(name || "")
       return
     }
-    root.ensureCard(String(conv || ""), String(name || ""))
+    root.ensureCard(String(conv || ""), String(name || ""),
+      String(expectedKey || ""))
     root.requestChatFocus(String(conv || ""))
   }
 
@@ -174,6 +170,12 @@ Item {
     return null
   }
 
+  function friendKey(conv) {
+    var friend = root.friendData(conv)
+    var key = friend ? String(friend.key || "") : ""
+    return /^[0-9a-f]{64}$/.test(key) ? key : ""
+  }
+
   function friendName(conv) {
     var friend = root.friendData(conv)
     return friend && friend.name ? String(friend.name) : ""
@@ -216,131 +218,148 @@ Item {
             Number(key) <= 4294967295) || /^g:[0-9a-f]{64}$/.test(key)
   }
 
-  function autoOpenFor(conv) {
-    var key = String(conv || "")
-    if (root.autoOpenUnavailable || !root.conversationKeyOk(key))
+  function stableConversationKey(conv, expectedKey) {
+    var conversation = String(conv || "")
+    if (/^g:[0-9a-f]{64}$/.test(conversation))
+      return conversation
+    if (!/^(0|[1-9][0-9]*)$/.test(conversation) || conversation.length > 10 ||
+        Number(conversation) > 4294967295)
+      return ""
+    var key = String(expectedKey || "")
+    if (!/^[0-9a-f]{64}$/.test(key)) {
+      var friend = root.friendData(conversation)
+      key = friend ? String(friend.key || "") : ""
+    }
+    if (!root.service || !root.service.directBindingMatches(conversation, key))
+      return ""
+    return "d:" + key
+  }
+
+  function autoOpenFor(conv, expectedKey) {
+    var stable = root.stableConversationKey(conv, expectedKey)
+    if (root.autoOpenUnavailable || stable === "")
       return false
-    return root.autoOpenByConversation[key] !== false
+    if (root.autoOpenByConversation[stable] !== undefined)
+      return root.autoOpenByConversation[stable] === true
+    return stable.charAt(0) === "d" ? root.autoOpenDirectDefault : true
   }
 
-  function cloneAutoOpen(value) {
-    try { return JSON.parse(JSON.stringify(value || {})) } catch (e) { return ({}) }
+  function nextAutoOpenRequest() {
+    root.autoOpenSequence++
+    return "ao-" + Date.now().toString(36) + "-" +
+      root.autoOpenSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
   }
 
-  function loadAutoOpen(raw) {
-    var parsed
-    try { parsed = JSON.parse(String(raw || "")) } catch (e) { return false }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return false
-    var users
-    if (parsed.version !== undefined) {
-      if (typeof parsed.version !== "number" || parsed.version !== 1 || !parsed.users ||
-          typeof parsed.users !== "object" || Array.isArray(parsed.users))
-        return false
-      users = parsed.users
-    } else {
-      users = parsed
-    }
-    var key
-    for (key in users) {
-      if (!root.conversationKeyOk(key) || typeof users[key] !== "boolean")
-        return false
-    }
-    root.autoOpenUnavailable = false
-    root.autoOpenWarning = ""
-    root.autoOpenByConversation = users
-    root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenByConversation)
-    return true
+  function releasePendingIncoming() {
+    var queued = root.pendingIncoming.slice()
+    root.pendingIncoming = []
+    for (var i = 0; i < queued.length; i++)
+      root.onIncoming(queued[i].conversation, queued[i])
   }
 
-  function queueAutoOpenSave() {
-    if (root.autoOpenSavePending || !root.autoOpenFile)
-      return
-    root.autoOpenSavePending = true
-    root.autoOpenSaveSnapshot = root.cloneAutoOpen(root.autoOpenByConversation)
-    root.autoOpenFile.setText(JSON.stringify({ version: 1, users: root.autoOpenSaveSnapshot }, null, 2) + "\n")
-  }
-
-  function finishAutoOpenSave() {
-    root.autoOpenSavePending = false
-    if (root.legacyAutoOpenMigrationSaving) {
-      root.legacyAutoOpenMigrationSaving = false
-      if (root.service)
-        root.service.confirmAutoOpenMigration()
-    }
-    root.autoOpenPersisted = root.cloneAutoOpen(root.autoOpenSaveSnapshot)
-    if (JSON.stringify(root.autoOpenByConversation) !== JSON.stringify(root.autoOpenSaveSnapshot))
-      root.queueAutoOpenSave()
-  }
-
-  function failAutoOpenSave() {
-    root.autoOpenSavePending = false
-    root.autoOpenByConversation = root.cloneAutoOpen(root.autoOpenPersisted)
-    root.autoOpenWarning = "Auto-open settings could not be saved."
-  }
-
-  function failAutoOpenLoad(error) {
+  function failAutoOpenLoad(warning) {
     root.autoOpenUnavailable = true
-    root.autoOpenWarning = "Auto-open settings could not be read; Auto-open is disabled."
+    root.autoOpenWarning = warning ||
+      "Auto-open settings could not be read; Auto-open is disabled."
     root.autoOpenByConversation = ({})
-    root.autoOpenPersisted = ({})
+    root.autoOpenDirectDefault = false
     root.autoOpenLoaded = true
-    root.legacyAutoOpenMigrationPending = false
-    root.legacyAutoOpenMigrationSaving = false
+    root.autoOpenRequest = ""
     root.pendingAutoOpenToggles = []
-    var queued = root.pendingIncoming.slice()
-    root.pendingIncoming = []
-    for (var i = 0; i < queued.length; i++)
-      root.onIncoming(queued[i].conversation, queued[i])
+    root.releasePendingIncoming()
   }
 
-  function loadLegacyAutoOpen() {
-    if (root.legacyAutoOpenMigrationPending)
+  function requestAutoOpenState() {
+    if (root.autoOpenRequest !== "" || root.autoOpenLoaded || !root.service ||
+        root.service.helperCompatibility !== "compatible")
       return
-    root.legacyAutoOpenMigrationPending = true
-  }
-
-  function finishLegacyAutoOpen(raw) {
-    if (!root.finishAutoOpenLoad(raw))
+    if (!root.service.supportsStableDirectState) {
+      root.failAutoOpenLoad(
+        "Helper update required for stable Auto-open settings; Auto-open is disabled.")
       return
-    root.legacyAutoOpenMigrationSaving = true
-    root.queueAutoOpenSave()
-    Qt.callLater(function() { root.legacyAutoOpenMigrationPending = false })
+    }
+    root.autoOpenRequest = root.nextAutoOpenRequest()
+    if (!root.service.requestAutoOpen(root.autoOpenRequest))
+      root.failAutoOpenLoad(
+        "Auto-open settings could not be requested; Auto-open is disabled.")
   }
 
-  function finishAutoOpenLoad(raw) {
-    if (!root.loadAutoOpen(raw)) {
-      root.failAutoOpenLoad(FileViewError.Unknown)
+  function applyAutoOpenResult() {
+    if (!root.service || root.autoOpenRequest === "" ||
+        root.service.lastAutoOpenRequest !== root.autoOpenRequest)
+      return
+    var wasLoaded = root.autoOpenLoaded
+    root.autoOpenRequest = ""
+    if (!root.service.lastAutoOpenSucceeded) {
+      if (!wasLoaded)
+        root.failAutoOpenLoad(
+          "Auto-open settings could not be read; Auto-open is disabled.")
+      else
+        root.autoOpenWarning = "Auto-open settings could not be saved."
+    } else {
+      var next = {}
+      var items = root.service.lastAutoOpenItems || []
+      for (var i = 0; i < items.length; i++) {
+        var stable = String(items[i].conversation || "")
+        if (!/^[dg]:[0-9a-f]{64}$/.test(stable) ||
+            typeof items[i].enabled !== "boolean" || next[stable] !== undefined) {
+          root.failAutoOpenLoad(
+            "Auto-open settings were invalid; Auto-open is disabled.")
+          return
+        }
+        next[stable] = items[i].enabled
+      }
+      root.autoOpenUnavailable = false
+      root.autoOpenWarning = ""
+      root.autoOpenByConversation = next
+      root.autoOpenDirectDefault = !!root.service.lastAutoOpenDirectDefault
+      root.autoOpenLoaded = true
+      if (!wasLoaded)
+        root.releasePendingIncoming()
+    }
+    if (root.pendingAutoOpenToggles.length > 0) {
+      var pending = root.pendingAutoOpenToggles.slice()
+      root.pendingAutoOpenToggles = pending.slice(1)
+      root.toggleAutoOpen(pending[0].conversation, pending[0].key)
+    }
+  }
+
+  function toggleAutoOpen(conv, expectedKey) {
+    var conversation = String(conv || "")
+    var key = String(expectedKey || "")
+    var stable = root.stableConversationKey(conversation, key)
+    if (stable === "")
+      return
+    if (!root.autoOpenLoaded || root.autoOpenRequest !== "") {
+      var pending = { conversation: conversation, key: key }
+      for (var i = 0; i < root.pendingAutoOpenToggles.length; i++)
+        if (root.pendingAutoOpenToggles[i].conversation === pending.conversation &&
+            root.pendingAutoOpenToggles[i].key === pending.key)
+          return
+      var queued = root.pendingAutoOpenToggles.slice()
+      queued.push(pending)
+      root.pendingAutoOpenToggles = queued
+      root.requestAutoOpenState()
+      return
+    }
+    root.autoOpenRequest = root.nextAutoOpenRequest()
+    if (!root.service.setAutoOpen(stable,
+          !root.autoOpenFor(conversation, key), root.autoOpenRequest)) {
+      root.autoOpenRequest = ""
+      root.autoOpenWarning = "Auto-open settings could not be saved."
+    }
+  }
+
+  function cardBindingValid(card) {
+    if (!card || !card.conversation)
       return false
-    }
-    root.autoOpenLoaded = true
-    var toggles = root.pendingAutoOpenToggles.slice()
-    root.pendingAutoOpenToggles = []
-    for (var t = 0; t < toggles.length; t++)
-      root.toggleAutoOpen(toggles[t])
-    var queued = root.pendingIncoming.slice()
-    root.pendingIncoming = []
-    for (var i = 0; i < queued.length; i++)
-      root.onIncoming(queued[i].conversation, queued[i])
-    return true
-  }
-
-  function toggleAutoOpen(conv) {
-    var key = String(conv || "")
-    if (!root.conversationKeyOk(key))
-      return
-    if (!root.autoOpenLoaded) {
-      if (root.pendingAutoOpenToggles.indexOf(key) === -1)
-        root.pendingAutoOpenToggles.push(key)
-      return
-    }
-    var next = {}
-    var current
-    for (current in root.autoOpenByConversation)
-      next[current] = root.autoOpenByConversation[current]
-    next[key] = !root.autoOpenFor(key)
-    root.autoOpenByConversation = next
-    root.queueAutoOpenSave()
+    var conversation = String(card.conversation)
+    if (conversation.charAt(0) === "g")
+      return !!(!root.service || !root.service.groupsReady ||
+        root.service.groupById(conversation))
+    return !!(root.service &&
+      root.service.directBindingMatches(conversation, String(card.directKey || "")))
   }
 
   function closeRemovedGroup(conv) {
@@ -349,7 +368,7 @@ Item {
       return
     for (var i = 0; i < openCards.length; i++) {
       if (String(openCards[i].conversation) === key) {
-        root.dismissCard(key)
+        root.dismissCard(key, "")
         return
       }
     }
@@ -357,20 +376,32 @@ Item {
     for (var j = 0; j < persisted.length; j++) {
       if (String(persisted[j].conversation) === key) {
         service.setSurface(key, persisted[j].monitor || "", Number(persisted[j].x || 0),
-          Number(persisted[j].y || 0), false)
+          Number(persisted[j].y || 0), false, "")
         return
       }
     }
   }
 
-  function reconcileOpenGroups() {
-    if (!service || !service.groupsReady)
+  function reconcileOpenCards() {
+    if (!service)
       return
     var current = openCards.slice()
-    for (var i = 0; i < current.length; i++)
-      if (String(current[i].conversation || "").charAt(0) === "g" &&
-          !service.groupById(current[i].conversation))
-        root.closeRemovedGroup(current[i].conversation)
+    var next = []
+    for (var i = 0; i < current.length; i++) {
+      var conversation = String(current[i].conversation || "")
+      if (conversation.charAt(0) === "g") {
+        if (!service.groupsReady || service.groupById(conversation))
+          next.push(current[i])
+      } else if (root.cardBindingValid(current[i])) {
+        next.push(current[i])
+      }
+    }
+    if (next.length !== current.length)
+      openCards = next
+  }
+
+  function reconcileOpenGroups() {
+    root.reconcileOpenCards()
   }
 
   function restoreSurfaces() {
@@ -379,20 +410,20 @@ Item {
     var next = []
     var i, j, saved, found
     for (i = 0; i < current.length; i++) {
-      if (String(current[i].conversation).charAt(0) === "g" && service &&
-          service.groupsReady && !service.groupById(current[i].conversation)) {
-        root.closeRemovedGroup(current[i].conversation)
+      if (!root.cardBindingValid(current[i]))
         continue
-      }
       saved = null
       for (j = 0; j < persisted.length; j++) {
-        if (String(persisted[j].conversation) === String(current[i].conversation)) {
+        if (String(persisted[j].conversation) === String(current[i].conversation) &&
+            (String(current[i].conversation).charAt(0) === "g" ||
+             String(persisted[j].key || "") === String(current[i].directKey || ""))) {
           saved = persisted[j]
           break
         }
       }
       next.push(saved ? {
         conversation: current[i].conversation,
+        directKey: current[i].directKey || "",
         monitor: saved.monitor || "",
         x: isFinite(Number(saved.x)) ? Number(saved.x) : 40,
         y: isFinite(Number(saved.y)) ? Number(saved.y) : 80,
@@ -403,24 +434,33 @@ Item {
     for (i = 0; i < persisted.length; i++) {
       if (!persisted[i].pinned || !persisted[i].conversation)
         continue
-      if (String(persisted[i].conversation).charAt(0) === "g" && service &&
-          service.groupsReady && !service.groupById(persisted[i].conversation)) {
-        service.setSurface(String(persisted[i].conversation), persisted[i].monitor || "",
-          Number(persisted[i].x || 0), Number(persisted[i].y || 0), false)
+      var persistedConversation = String(persisted[i].conversation)
+      var persistedKey = String(persisted[i].key || "")
+      if (persistedConversation.charAt(0) === "g") {
+        if (service && service.groupsReady && !service.groupById(persistedConversation)) {
+          service.setSurface(persistedConversation, persisted[i].monitor || "",
+            Number(persisted[i].x || 0), Number(persisted[i].y || 0), false, "")
+          continue
+        }
+      } else if (!service ||
+                 !service.directBindingMatches(persistedConversation, persistedKey)) {
         continue
       }
       found = false
       for (j = 0; j < next.length; j++)
-        if (String(next[j].conversation) === String(persisted[i].conversation))
+        if (String(next[j].conversation) === persistedConversation &&
+            (persistedConversation.charAt(0) === "g" ||
+             String(next[j].directKey || "") === persistedKey))
           found = true
       if (!found)
         next.push({
-          conversation: String(persisted[i].conversation),
+          conversation: persistedConversation,
+          directKey: persistedConversation.charAt(0) === "g" ? "" : persistedKey,
           monitor: persisted[i].monitor || "",
           x: isFinite(Number(persisted[i].x)) ? Number(persisted[i].x) : 40,
           y: isFinite(Number(persisted[i].y)) ? Number(persisted[i].y) : 80,
           pinned: true,
-          name: friendName(persisted[i].conversation)
+          name: friendName(persistedConversation)
         })
     }
     if (surfaceMode === "bundled" && next.length > 1)
@@ -435,8 +475,10 @@ Item {
     root.floatRulesReady = false
     if (!installFloatRules.running)
       installFloatRules.running = true
-    if (service)
+    if (service) {
       service.sendOp({ op: "surface.list" })
+      root.requestAutoOpenState()
+    }
     OmaQ.SurfaceCoordinator.deliverPending()
   }
 
@@ -450,6 +492,7 @@ Item {
       root.ownershipTeardown = true
       root.floatRuleReloadBlocked = false
       root.blockedOpenConversation = ""
+      root.blockedOpenKey = ""
       root.blockedOpenName = ""
       floatRuleWatcher.running = false
       installFloatRules.running = false
@@ -564,65 +607,100 @@ Item {
     }
   }
 
-  function ensureCard(conv, name) {
-    if (!conv)
-      return
-    var i
-    var label = name ? String(name) : ""
-    for (i = 0; i < openCards.length; i++) {
-      if (openCards[i].conversation === conv) {
-        if (label && openCards[i].name !== label) {
-          var upd = openCards.slice()
-          upd[i] = { conversation: conv, monitor: openCards[i].monitor, x: openCards[i].x, y: openCards[i].y, pinned: true, name: label }
-          openCards = upd
-        }
-        if (!openCards[i].pinned)
-          root.pin(conv, true)
+  function ensureCard(conv, name, expectedKey) {
+    var conversation = String(conv || "")
+    if (!conversation)
+      return false
+    var directKey = conversation.charAt(0) === "g" ? "" : String(expectedKey || "")
+    if (conversation.charAt(0) !== "g") {
+      if (!/^[0-9a-f]{64}$/.test(directKey) || !service ||
+          !service.directBindingMatches(conversation, directKey))
         return false
-      }
     }
-    var next = openCards.slice()
-    var card = { conversation: conv, monitor: "", x: 40 + next.length * 16, y: 80 + next.length * 16, pinned: true, name: label }
+    var label = name ? String(name) : ""
+    var filtered = []
+    var existing = -1
+    for (var i = 0; i < openCards.length; i++) {
+      var item = openCards[i]
+      if (String(item.conversation) === conversation &&
+          String(item.directKey || "") !== directKey)
+        continue
+      if (String(item.conversation) === conversation)
+        existing = filtered.length
+      filtered.push(item)
+    }
+    if (existing >= 0) {
+      var current = filtered[existing]
+      filtered[existing] = {
+        conversation: conversation,
+        directKey: directKey,
+        monitor: current.monitor,
+        x: current.x,
+        y: current.y,
+        pinned: true,
+        name: label || current.name || ""
+      }
+      openCards = filtered
+      if (!current.pinned)
+        root.pin(conversation, true, directKey)
+      return false
+    }
+    var card = { conversation: conversation, directKey: directKey, monitor: "",
+      x: 40 + filtered.length * 16, y: 80 + filtered.length * 16,
+      pinned: true, name: label }
     if (surfaceMode === "bundled")
-      next = [{ conversation: conv, monitor: "", x: 40, y: 80, pinned: true, name: label }]
+      filtered = [card]
     else
-      next.push(card)
-    openCards = next
+      filtered.push(card)
+    openCards = filtered
     if (surfacesHydrated)
-      service.sendOp({ op: "surface.set", conversation: conv, monitor: "", x: card.x, y: card.y, pinned: true })
+      service.setSurface(conversation, "", card.x, card.y, true, directKey)
     return true
   }
 
-  function dismissCard(conv) {
-    var i, next = [], removed = null
-    for (i = 0; i < openCards.length; i++) {
-      if (openCards[i].conversation !== conv)
+  function dismissCard(conv, expectedKey) {
+    var conversation = String(conv || "")
+    var bindingKey = String(expectedKey || "")
+    var next = []
+    var removed = null
+    for (var i = 0; i < openCards.length; i++) {
+      if (String(openCards[i].conversation) !== conversation ||
+          (bindingKey !== "" && String(openCards[i].directKey || "") !== bindingKey))
         next.push(openCards[i])
       else
         removed = openCards[i]
     }
     openCards = next
     if (removed)
-      service.setSurface(conv, removed.monitor, removed.x, removed.y, false)
+      service.setSurface(conversation, removed.monitor, removed.x, removed.y, false,
+        String(removed.directKey || ""))
   }
 
-  function pin(conv, on) {
-    var i, next = [], saved = null
-    for (i = 0; i < openCards.length; i++) {
-      var c = openCards[i]
-      if (c.conversation === conv) {
-        saved = c
-        c = { conversation: c.conversation, monitor: c.monitor, x: c.x, y: c.y, pinned: !!on, name: c.name || "" }
+  function pin(conv, on, expectedKey) {
+    var conversation = String(conv || "")
+    var bindingKey = String(expectedKey || "")
+    var next = []
+    var saved = null
+    for (var i = 0; i < openCards.length; i++) {
+      var card = openCards[i]
+      if (String(card.conversation) === conversation &&
+          (bindingKey === "" || String(card.directKey || "") === bindingKey)) {
+        saved = card
+        card = { conversation: card.conversation, directKey: card.directKey || "",
+          monitor: card.monitor, x: card.x, y: card.y, pinned: !!on,
+          name: card.name || "" }
       }
-      next.push(c)
+      next.push(card)
     }
     openCards = next
     if (saved)
-      service.setSurface(conv, saved.monitor, saved.x, saved.y, !!on)
+      service.setSurface(conversation, saved.monitor, saved.x, saved.y, !!on,
+        String(saved.directKey || ""))
   }
 
-  function savePos(conv, mon, x, y, pinned) {
-    service.sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
+  function savePos(conv, mon, x, y, pinned, expectedKey) {
+    service.setSurface(String(conv || ""), mon || "", x, y, !!pinned,
+      String(expectedKey || ""))
   }
 
   function toggleMute() {
@@ -683,7 +761,13 @@ Item {
       ? String(event.dir || "") : (service ? String(service.lastChatDir || "") : "")
     var messageText = event.text !== undefined
       ? String(event.text || "") : (service ? String(service.lastChatText || "") : "")
-    if (!service || !key || messageDir !== "in" || !messageText)
+    var messageKey = event.key !== undefined
+      ? String(event.key || "") : (service ? String(service.lastChatKey || "") : "")
+    if (service && key.charAt(0) !== "g" && messageKey === "" &&
+        !service.supportsStableDirectState)
+      messageKey = root.friendKey(key)
+    if (!service || !key || messageDir !== "in" || !messageText ||
+        (key.charAt(0) !== "g" && !service.directBindingMatches(key, messageKey)))
       return
     if (!root.autoOpenLoaded) {
       if (messageId) {
@@ -692,19 +776,21 @@ Item {
           if (root.pendingIncoming[queuedIndex].id === messageId)
             return
         }
-        root.pendingIncoming.push({ conversation: key, id: messageId, text: messageText, dir: messageDir })
+        root.pendingIncoming.push({ conversation: key, key: messageKey, id: messageId,
+          text: messageText, dir: messageDir })
       }
       return
     }
     if (!messageId || key + "|" + messageId === root.lastNotifiedMessageId)
       return
+    var directKey = key.charAt(0) === "g" ? "" : messageKey
     root.lastNotifiedMessageId = key + "|" + messageId
-    if (root.autoOpenFor(key))
-      ensureCard(key)
+    if (root.autoOpenFor(key, directKey))
+      ensureCard(key, "", directKey)
     if (animateUnread)
       pulseConv = key
     playSound()
-    if (root.autoOpenFor(key))
+    if (root.autoOpenFor(key, directKey))
       desktopNotify()
   }
 
@@ -715,6 +801,7 @@ Item {
       root.onIncoming(service.lastChatConv || service.lastConversation, {
         conversation: service.lastChatConv || service.lastConversation,
         id: service.lastChatId,
+        key: service.lastChatKey,
         text: service.lastChatText,
         dir: service.lastChatDir
       })
@@ -722,67 +809,32 @@ Item {
     function onMessageTickChanged() { handleIncoming() }
     function onSurfacesTickChanged() { root.restoreSurfaces() }
     function onGroupsTickChanged() { root.reconcileOpenGroups() }
+    function onFriendsTickChanged() { root.reconcileOpenCards() }
+    function onAutoOpenTickChanged() { root.applyAutoOpenResult() }
+    function onHelperHandshakeTickChanged() {
+      if (!root.service)
+        return
+      if (root.autoOpenRequest !== "") {
+        if (!root.service.requestAutoOpen(root.autoOpenRequest))
+          root.failAutoOpenLoad(
+            "Auto-open settings could not be requested; Auto-open is disabled.")
+      } else if (!root.autoOpenLoaded) {
+        root.requestAutoOpenState()
+      }
+    }
     function onRemovedGroupTickChanged() { root.closeRemovedGroup(service.lastRemovedGroup) }
     function onIdentityTickChanged() {
       root.openCards = []
       root.pendingIncoming = []
       root.focusConversation = ""
       root.autoOpenByConversation = ({})
-      root.autoOpenPersisted = ({})
       root.autoOpenUnavailable = false
       root.autoOpenWarning = ""
-      root.autoOpenSaveSnapshot = ({})
-      root.autoOpenSavePending = false
-      root.legacyAutoOpenMigrationPending = false
-      root.legacyAutoOpenMigrationSaving = false
+      root.autoOpenDirectDefault = true
+      root.autoOpenRequest = ""
       root.pendingAutoOpenToggles = []
       root.autoOpenLoaded = false
-    }
-  }
-
-  Loader {
-    id: autoOpenLoader
-    active: root.isSurfaceOwner && !!(root.service && root.service.identityFingerprint)
-    sourceComponent: Component {
-      FileView {
-        path: root.autoOpenPath
-        watchChanges: true
-        atomicWrites: true
-        printErrors: false
-        onFileChanged: if (!root.autoOpenSavePending) reload()
-        onLoaded: if (!root.autoOpenSavePending) root.finishAutoOpenLoad(text())
-        onLoadFailed: function(error) {
-          if (root.autoOpenSavePending)
-            return
-          if (error === FileViewError.FileNotFound)
-            root.loadLegacyAutoOpen()
-          else
-            root.failAutoOpenLoad(error)
-        }
-        onSaved: root.finishAutoOpenSave()
-        onSaveFailed: {
-          console.warn("OmaQ: could not save per-contact auto-open settings")
-          root.failAutoOpenSave()
-        }
-      }
-    }
-  }
-
-  Loader {
-    id: legacyAutoOpenLoader
-    active: root.legacyAutoOpenMigrationPending && root.legacyAutoOpenPath !== ""
-    sourceComponent: Component {
-      FileView {
-        path: root.legacyAutoOpenPath
-        printErrors: false
-        onLoaded: root.finishLegacyAutoOpen(text())
-        onLoadFailed: function(error) {
-          if (error === FileViewError.FileNotFound)
-            root.finishLegacyAutoOpen("{}")
-          else
-            root.failAutoOpenLoad(error)
-        }
-      }
+      Qt.callLater(root.requestAutoOpenState)
     }
   }
 
@@ -807,10 +859,12 @@ Item {
         floatRuleWatcher.running = true
       if (root.blockedOpenConversation !== "") {
         var conversation = root.blockedOpenConversation
+        var expectedKey = root.blockedOpenKey
         var name = root.blockedOpenName
         root.blockedOpenConversation = ""
+        root.blockedOpenKey = ""
         root.blockedOpenName = ""
-        root.acceptOpenRequest(conversation, name)
+        root.acceptOpenRequest(conversation, expectedKey, name)
       }
     }
   }
@@ -912,6 +966,7 @@ Item {
               theme: root.theme()
               messageScale: root.messageScale
               conversation: card.modelData.conversation
+              peerKey: String(card.modelData.directKey || "")
               peerName: root.friendLabel(card.modelData.conversation)
               peerAvatar: root.friendAvatar(card.modelData.conversation)
               peerAvatarRevision: root.service ? root.service.avatarTick : 0
@@ -921,8 +976,10 @@ Item {
               receiptSentColor: root.receiptSentColor
               receiptDeliveredColor: root.receiptDeliveredColor
               receiptReadColor: root.receiptReadColor
-              autoOpenEnabled: root.autoOpenFor(card.modelData.conversation)
-              onAutoOpenToggled: root.toggleAutoOpen(card.modelData.conversation)
+              autoOpenEnabled: root.autoOpenFor(card.modelData.conversation,
+                card.modelData.directKey || "")
+              onAutoOpenToggled: root.toggleAutoOpen(card.modelData.conversation,
+                card.modelData.directKey || "")
               formatToolbarEnabled: root.formatToolbarEnabled
               onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
               pulseUnread: root.animateUnread && root.pulseConv === card.modelData.conversation
@@ -939,7 +996,8 @@ Item {
               SurfaceBtn {
                 text: "Pin"
                 helpText: "Pin chat window"
-                onClicked: root.pin(card.modelData.conversation, true)
+                onClicked: root.pin(card.modelData.conversation, true,
+                  card.modelData.directKey || "")
               }
             }
 
@@ -949,7 +1007,9 @@ Item {
               height: 16
               drag.target: card
               cursorShape: Qt.SizeAllCursor
-              onReleased: root.savePos(card.modelData.conversation, overlay.modelData.name, card.x, card.y, false)
+              onReleased: root.savePos(card.modelData.conversation,
+                overlay.modelData.name, card.x, card.y, false,
+                card.modelData.directKey || "")
             }
           }
         }
@@ -960,7 +1020,10 @@ Item {
   PanelWindow {
     id: rightDock
     visible: root.isSurfaceOwner && root.notifyRight && service && service.lastChatDir === "in" &&
-      service.lastChatText !== "" && root.autoOpenFor(root.notificationConversation)
+      service.lastChatText !== "" &&
+      (root.notificationConversation.charAt(0) === "g" ||
+       service.directBindingMatches(root.notificationConversation, service.lastChatKey)) &&
+      root.autoOpenFor(root.notificationConversation, service.lastChatKey)
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "omaq-dock"
@@ -988,6 +1051,7 @@ Item {
         theme: root.theme()
         messageScale: root.messageScale
         conversation: root.notificationConversation
+        peerKey: String(service.lastChatKey || "")
         peerName: root.friendLabel(root.notificationConversation)
         peerAvatar: root.friendAvatar(root.notificationConversation)
         peerAvatarRevision: root.service ? root.service.avatarTick : 0
@@ -997,8 +1061,10 @@ Item {
         receiptSentColor: root.receiptSentColor
         receiptDeliveredColor: root.receiptDeliveredColor
         receiptReadColor: root.receiptReadColor
-        autoOpenEnabled: root.autoOpenFor(root.notificationConversation)
-        onAutoOpenToggled: root.toggleAutoOpen(root.notificationConversation)
+        autoOpenEnabled: root.autoOpenFor(root.notificationConversation,
+          service.lastChatKey)
+        onAutoOpenToggled: root.toggleAutoOpen(root.notificationConversation,
+          service.lastChatKey)
         formatToolbarEnabled: root.formatToolbarEnabled
         onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
       }
@@ -1064,7 +1130,8 @@ Item {
             pinWin.modelData.conversation) {
           if (pinPage.inCall || pinPage.incoming)
             pinPage.hangUp()
-          root.dismissCard(pinWin.modelData.conversation)
+          root.dismissCard(pinWin.modelData.conversation,
+            pinWin.modelData.directKey || "")
         }
       }
 
@@ -1112,7 +1179,7 @@ Item {
                 pinPage.hangUp()
               pinWin.closing = true
               pinWin.visible = false
-              root.dismissCard(conv)
+              root.dismissCard(conv, pinWin.modelData.directKey || "")
             }
           }
         }
@@ -1125,6 +1192,7 @@ Item {
           theme: root.theme()
           messageScale: root.messageScale
           conversation: pinWin.modelData.conversation
+          peerKey: pinWin.modelData ? String(pinWin.modelData.directKey || "") : ""
           peerName: root.friendLabel(pinWin.modelData ? pinWin.modelData.conversation : "",
             pinWin.modelData ? pinWin.modelData.name : "")
           peerAvatarRevision: root.service ? root.service.avatarTick : 0
@@ -1146,8 +1214,12 @@ Item {
           receiptSentColor: root.receiptSentColor
           receiptDeliveredColor: root.receiptDeliveredColor
           receiptReadColor: root.receiptReadColor
-          autoOpenEnabled: root.autoOpenFor(pinWin.modelData ? pinWin.modelData.conversation : "")
-          onAutoOpenToggled: root.toggleAutoOpen(pinWin.modelData ? pinWin.modelData.conversation : "")
+          autoOpenEnabled: root.autoOpenFor(
+            pinWin.modelData ? pinWin.modelData.conversation : "",
+            pinWin.modelData ? pinWin.modelData.directKey || "" : "")
+          onAutoOpenToggled: root.toggleAutoOpen(
+            pinWin.modelData ? pinWin.modelData.conversation : "",
+            pinWin.modelData ? pinWin.modelData.directKey || "" : "")
           formatToolbarEnabled: root.formatToolbarEnabled
           onFormatToolbarToggled: function(enabled) { root.formatToolbarToggled(enabled) }
           readActive: {

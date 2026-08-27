@@ -28,4 +28,6 @@ PY
 grep -q 'function unregisterHost(host)' "$coordinator"
 grep -q 'coordinator.selectOwner()' "$coordinator"
 grep -q 'property bool pendingDemoOpen: false' "$coordinator"
+grep -q 'property string pendingKey: ""' "$coordinator"
+grep -q 'host.acceptOpenRequest(conversation, expectedKey, name)' "$coordinator"
 echo "surface-owner: ok"

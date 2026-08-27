@@ -1,4 +1,5 @@
 #define _DEFAULT_SOURCE
+#include "../helper/auto_open.h"
 #include "../helper/conversation.h"
 #include "../helper/direct_state.h"
 #include "../helper/avatar.h"
@@ -21,6 +22,7 @@
 #include "../helper/safety.h"
 #include "../helper/store.h"
 #include "../helper/surface.h"
+#include "../helper/state_archive.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -1727,57 +1729,241 @@ static void test_group_plan(void)
 
 static void test_surface(void)
 {
+	static const char direct[] =
+		"d:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	static const char group[] =
+		"g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 	char dir[] = "/tmp/omaq-surf-XXXXXX";
-	omaq_surface s, g, listed[2];
+	omaq_surface surface, got, listed[2];
 	int listed_n;
 
 	if (!mkdtemp(dir)) {
 		fail("surface mkdtemp");
 		return;
 	}
-	memset(&s, 0, sizeof(s));
-	memcpy(s.conversation, "0", 2);
-	memcpy(s.monitor, "DP-1", 5);
-	s.x = 12;
-	s.y = 34;
-	s.pinned = 0;
-	if (omaq_surface_set(dir, &s) != 0)
-		fail("surface set");
-	if (omaq_surface_get(dir, "0", &g) != 0)
-		fail("surface get");
-	else if (g.x != 12 || g.y != 34 || strcmp(g.monitor, "DP-1") != 0 || g.pinned)
-		fail("surface fields");
-	s.pinned = 1;
-	s.x = 99;
-	if (omaq_surface_set(dir, &s) != 0)
-		fail("surface update");
-	if (omaq_surface_get(dir, "0", &g) != 0 || !g.pinned || g.x != 99)
-		fail("surface pinned");
-	if (omaq_surface_get(dir, "missing", &g) == 0)
+	memset(&surface, 0, sizeof(surface));
+	memcpy(surface.conversation, direct, sizeof(direct));
+	memcpy(surface.monitor, "DP-1", 5);
+	surface.x = 12;
+	surface.y = 34;
+	surface.pinned = 0;
+	if (omaq_surface_set(dir, &surface) != 0)
+		fail("surface stable set");
+	if (omaq_surface_get(dir, direct, &got) != 0)
+		fail("surface stable get");
+	else if (got.x != 12 || got.y != 34 || strcmp(got.monitor, "DP-1") != 0 ||
+		 got.pinned)
+		fail("surface stable fields");
+	surface.pinned = 1;
+	surface.x = 99;
+	if (omaq_surface_set(dir, &surface) != 0)
+		fail("surface stable update");
+	if (omaq_surface_get(dir, direct, &got) != 0 || !got.pinned || got.x != 99)
+		fail("surface stable pinned");
+	if (omaq_surface_get(dir, group, &got) == 0)
 		fail("surface missing");
-	if (omaq_surface_list(dir, listed, 2) != 1 || strcmp(listed[0].conversation, "0") != 0)
-		fail("surface list");
+	if (omaq_surface_list(dir, listed, 2) != 1 ||
+	    strcmp(listed[0].conversation, direct) != 0)
+		fail("surface stable list");
 	listed_n = omaq_surface_list(dir, listed, 0);
 	if (listed_n != -1)
 		fail("surface list cap");
-	if (omaq_surface_set(dir, &(omaq_surface){ .conversation = "a/../b" }) == 0)
-		fail("surface path escape");
+	if (omaq_surface_set(dir, &(omaq_surface){ .conversation = "0" }) == 0 ||
+	    omaq_surface_set(dir, &(omaq_surface){ .conversation = "a/../b" }) == 0)
+		fail("surface unstable id rejection");
+	{
+		char path[256], body[640];
+		int written;
+
+		written = snprintf(body, sizeof(body),
+			"{\"conversation\":\"0\",\"monitor\":\"old\",\"x\":1,\"y\":2,\"pinned\":true}\n"
+			"{\"conversation\":\"%s\",\"monitor\":\"new\",\"x\":3,\"y\":4,\"pinned\":true}\n",
+			group);
+		if (written < 0 || (size_t)written >= sizeof(body) ||
+		    snprintf(path, sizeof(path), "%s/surfaces.jsonl", dir) >=
+			    (int)sizeof(path) ||
+		    unlink(path) != 0 || write_private_test_file(path, body) != 0 ||
+		    omaq_surface_legacy_direct_present(dir) != 1 ||
+		    omaq_surface_list(dir, listed, 2) >= 0 ||
+		    omaq_surface_set(dir, &surface) == 0 ||
+		    omaq_surface_discard_legacy_direct(dir) != 1 ||
+		    omaq_surface_legacy_direct_present(dir) != 0 ||
+		    omaq_surface_list(dir, listed, 2) != 1 ||
+		    strcmp(listed[0].conversation, group) != 0)
+			fail("surface legacy direct discard");
+	}
+	{
+		char path[256], sentinel[256];
+		const char *duplicate =
+			"{\"conversation\":\"0\",\"conversation\":\"1\",\"monitor\":\"bad\",\"x\":1,\"y\":2,\"pinned\":true}\n";
+
+		if (snprintf(path, sizeof(path), "%s/surfaces.jsonl", dir) >=
+			    (int)sizeof(path) ||
+		    unlink(path) != 0 || write_private_test_file(path, duplicate) != 0 ||
+		    omaq_surface_legacy_direct_present(dir) >= 0 ||
+		    omaq_surface_list(dir, listed, 2) >= 0 || unlink(path) != 0 ||
+		    write_private_test_file(path,
+			"{\"conversation\":\"0\",\"monitor\":\"bad\",\"x\":1,\"y\":2,\"pinned\":true}") != 0 ||
+		    omaq_surface_legacy_direct_present(dir) >= 0 || unlink(path) != 0 ||
+		    mkfifo(path, 0600) != 0 || omaq_surface_list(dir, listed, 2) >= 0 ||
+		    unlink(path) != 0 ||
+		    snprintf(sentinel, sizeof(sentinel), "%s/surface-sentinel", dir) >=
+			    (int)sizeof(sentinel) ||
+		    write_private_test_file(sentinel, "unchanged\n") != 0 ||
+		    symlink(sentinel, path) != 0 || omaq_surface_list(dir, listed, 2) >= 0 ||
+		    unlink(path) != 0 || unlink(sentinel) != 0 ||
+		    omaq_surface_set(dir, &surface) != 0)
+			fail("surface malformed input rejection");
+	}
 	{
 		char temporary[256], sentinel[256], content[32];
 		if (snprintf(temporary, sizeof(temporary), "%s/surfaces.jsonl.tmp", dir) >=
 			    (int)sizeof(temporary) ||
 		    write_private_test_file(temporary, "stale\n") != 0 ||
-		    omaq_surface_set(dir, &s) != 0 || access(temporary, F_OK) == 0 ||
+		    omaq_surface_set(dir, &surface) != 0 || access(temporary, F_OK) == 0 ||
 		    snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir) >=
 			    (int)sizeof(sentinel) ||
 		    write_private_test_file(sentinel, "unchanged\n") != 0 ||
-		    symlink(sentinel, temporary) != 0 || omaq_surface_set(dir, &s) == 0 ||
+		    symlink(sentinel, temporary) != 0 || omaq_surface_set(dir, &surface) == 0 ||
 		    read_file(sentinel, content, sizeof(content)) != 0 ||
 		    strcmp(content, "unchanged") != 0)
 			fail("surface temporary symlink rejection");
 		unlink(temporary);
 		unlink(sentinel);
 	}
+}
+
+static void test_state_archive(void)
+{
+	char dir[] = "/tmp/omaq-state-archive-XXXXXX";
+	char source[256], archive0[288], archive1[288], archive2[288];
+	char sentinel[256], content[64];
+
+	if (!mkdtemp(dir)) {
+		fail("state archive mkdtemp");
+		return;
+	}
+	if (snprintf(source, sizeof(source), "%s/preferences.json", dir) >=
+		    (int)sizeof(source) ||
+	    snprintf(archive0, sizeof(archive0),
+		     "%s/preferences.json.legacy-direct.0", dir) >= (int)sizeof(archive0) ||
+	    snprintf(archive1, sizeof(archive1),
+		     "%s/preferences.json.legacy-direct.1", dir) >= (int)sizeof(archive1) ||
+	    snprintf(archive2, sizeof(archive2),
+		     "%s/preferences.json.legacy-direct.2", dir) >= (int)sizeof(archive2) ||
+	    write_private_test_file(source, "legacy\n") != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") != 0 ||
+	    access(archive1, F_OK) == 0 ||
+	    read_file(source, content, sizeof(content)) != 0 ||
+	    strcmp(content, "legacy") != 0 ||
+	    read_file(archive0, content, sizeof(content)) != 0 ||
+	    strcmp(content, "legacy") != 0 ||
+	    unlink(source) != 0 || write_private_test_file(source, "new legacy\n") != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") != 0 ||
+	    read_file(archive1, content, sizeof(content)) != 0 ||
+	    strcmp(content, "new legacy") != 0)
+		fail("state archive copies");
+	if (chmod(source, 0666) != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") == 0 ||
+	    chmod(source, 0600) != 0)
+		fail("state archive unsafe mode rejection");
+	if (unlink(source) != 0 || write_private_test_file(source, "third\n") != 0 ||
+	    mkfifo(archive2, 0600) != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") == 0 ||
+	    unlink(archive2) != 0 || unlink(source) != 0 || mkfifo(source, 0600) != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") == 0 ||
+	    unlink(source) != 0)
+		fail("state archive fifo rejection");
+	if (snprintf(sentinel, sizeof(sentinel), "%s/sentinel", dir) >=
+		    (int)sizeof(sentinel) ||
+	    write_private_test_file(sentinel, "unchanged\n") != 0 ||
+	    symlink(sentinel, source) != 0 ||
+	    omaq_state_archive_copy(dir, "preferences.json") == 0 ||
+	    read_file(sentinel, content, sizeof(content)) != 0 ||
+	    strcmp(content, "unchanged") != 0)
+		fail("state archive symlink rejection");
+	unlink(source);
+	unlink(sentinel);
+	unlink(archive1);
+	unlink(archive0);
+	rmdir(dir);
+}
+
+static void test_auto_open(void)
+{
+	static const char fingerprint[] =
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	static const char group[] =
+		"g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+	char dir[] = "/tmp/omaq-auto-open-XXXXXX";
+	char active[256], global[256], migrated[320], body[512];
+	omaq_auto_open_state settings;
+	omaq_auto_open_source source;
+
+	if (!mkdtemp(dir)) {
+		fail("auto open mkdtemp");
+		return;
+	}
+	if (snprintf(active, sizeof(active), "%s/auto-open.%s.json", dir,
+		     fingerprint) >= (int)sizeof(active) ||
+	    snprintf(global, sizeof(global), "%s/auto-open.json", dir) >=
+		    (int)sizeof(global) ||
+	    snprintf(migrated, sizeof(migrated), "%s/auto-open.migrated.%s.json",
+		     dir, fingerprint) >= (int)sizeof(migrated) ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) != 0 ||
+	    source != OMAQ_AUTO_OPEN_SOURCE_NONE || !settings.direct_default ||
+	    snprintf(body, sizeof(body),
+		     "{\"version\":1,\"users\":{\"0\":true,\"%s\":false}}\n",
+		     group) >= (int)sizeof(body) ||
+	    write_private_test_file(active, body) != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) != 0 ||
+	    source != OMAQ_AUTO_OPEN_SOURCE_LEGACY_ACTIVE ||
+	    settings.direct_default || settings.count != 1 ||
+	    strcmp(settings.entries[0].conversation, group) != 0 ||
+	    settings.entries[0].enabled ||
+	    omaq_auto_open_set(&settings,
+		"d:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		1) != 0 ||
+	    omaq_auto_open_save(dir, fingerprint, &settings) != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) != 0 ||
+	    source != OMAQ_AUTO_OPEN_SOURCE_CURRENT || settings.direct_default ||
+	    settings.count != 2)
+		fail("auto open stable migration");
+	if (write_private_test_file(global, "{}\n") != 0 ||
+	    omaq_auto_open_retire_global(dir, fingerprint) != 0 ||
+	    access(global, F_OK) == 0 || access(migrated, F_OK) != 0)
+		fail("auto open legacy retirement");
+	unlink(migrated);
+	if (unlink(active) != 0 ||
+	    write_private_test_file(active,
+		"{\"version\":1,\"users\":{\"0\":true},\"users\":{}}\n") != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0 ||
+	    unlink(active) != 0 ||
+	    write_private_test_file(active,
+		"{\"version\":\"2\",\"directDefault\":true,\"users\":{}}\n") != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0 ||
+	    unlink(active) != 0 ||
+	    write_private_test_file(active,
+		"{\"version\":2,\"directDefault\":true,\"users\":{\"0\":true}}\n") != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0 ||
+	    unlink(active) != 0 ||
+	    write_private_test_file(active,
+		"{\"version\":2,\"directDefault\":true,\"users\":{},\"extra\":true}\n") != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0 ||
+	    unlink(active) != 0 ||
+	    write_private_test_file(active,
+		"{\"version\":2,\"directDefault\":true,\"users\":{}}\n") != 0 ||
+	    chmod(active, 0644) != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) != 0 ||
+	    source != OMAQ_AUTO_OPEN_SOURCE_LEGACY_ACTIVE ||
+	    chmod(active, 0666) != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0 ||
+	    unlink(active) != 0 || mkfifo(active, 0600) != 0 ||
+	    omaq_auto_open_load(dir, fingerprint, &settings, &source) == 0)
+		fail("auto open malformed input rejection");
+	unlink(active);
+	rmdir(dir);
 }
 
 static void test_qr_path(void)
@@ -2294,6 +2480,8 @@ int main(void)
 	test_group_id();
 	test_group_plan();
 	test_surface();
+	test_state_archive();
+	test_auto_open();
 	test_qr_path();
 	test_file();
 	test_receipts();

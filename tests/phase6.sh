@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 6: two homes, one file on disk, call start/stop, record peak RSS.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "phase6: no helper" >&2; exit 1; }
 
@@ -25,6 +25,7 @@ cap_a="${pulse_tag}_cap_a"
 out_a="${pulse_tag}_out_a"
 cap_b="${pulse_tag}_cap_b"
 out_b="${pulse_tag}_out_b"
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -128,11 +129,27 @@ while [ "$i" -lt 90 ]; do
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no friend request" >&2; exit 1; }
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+i=0
+friend_key_a=""
+friend_key_b=""
+while [ "$i" -lt 60 ]; do
+	friend_key_a=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	friend_key_b=$(grep -a '"event":"friend.info"' "$fb" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	[ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ] && break
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "${#friend_key_a}" -eq 64 ] && [ "${#friend_key_b}" -eq 64 ] || {
+	echo "phase6: stable friend keys missing" >&2
+	exit 1
+}
 
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do
-	printf '{"op":"msg.send","conversation":"0","text":"ping","id":"phase6-ping-%s"}\n' "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"ping","id":"phase6-ping-%s"}\n' "$friend_key_a" "$i" >&3
 	sleep 1
 	if grep -a -q '"message"' "$fb"; then
 		sent=1
@@ -142,7 +159,7 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$sent" -eq 1 ] || { echo "phase6: not connected" >&2; exit 1; }
 
-printf '{"op":"file.send","conversation":"0","path":"%s","id":"phase6-file-send"}\n' "$src" >&3
+printf '{"op":"file.send","conversation":"0","key":"%s","path":"%s","id":"phase6-file-send"}\n' "$friend_key_a" "$src" >&3
 ok=0
 fid=""
 i=0
@@ -156,8 +173,18 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.25
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no file.offer" >&2; tail -20 "$fb" >&2; exit 1; }
+busy_before=$(grep -a -c '"code":"busy"' "$fb" || true)
+printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$friend_key_b" >&4
+i=0
+while [ "$i" -lt 20 ]; do
+	busy_after=$(grep -a -c '"code":"busy"' "$fb" || true)
+	[ "$busy_after" -gt "$busy_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: contact removal ignored active file" >&2; exit 1; }
 
-printf '{"op":"file.accept","id":"%s"}\n' "$fid" >&4
+printf '{"op":"file.accept","conversation":"0","key":"%s","id":"%s"}\n' "$friend_key_b" "$fid" >&4
 ok=0
 i=0
 while [ "$i" -lt 40 ]; do
@@ -178,7 +205,7 @@ grep -a -q 'omaq-file-probe' "$got" || { echo "phase6: dest mismatch" >&2; exit 
 offer_before=$(grep -a -c '"event":"file.offer"' "$fb" || true)
 cancel_a_before=$(grep -a -c '"event":"file.canceled"' "$fa" || true)
 cancel_b_before=$(grep -a -c '"event":"file.canceled"' "$fb" || true)
-printf '{"op":"file.send","conversation":"0","path":"%s","id":"phase6-file-cancel"}\n' "$src" >&3
+printf '{"op":"file.send","conversation":"0","key":"%s","path":"%s","id":"phase6-file-cancel"}\n' "$friend_key_a" "$src" >&3
 i=0
 cancel_fid=""
 while [ "$i" -lt 40 ]; do
@@ -192,7 +219,7 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.25
 done
 [ -n "$cancel_fid" ] || { echo "phase6: cancel offer missing" >&2; exit 1; }
-printf '{"op":"file.cancel","id":"%s"}\n' "$cancel_fid" >&4
+printf '{"op":"file.cancel","conversation":"0","key":"%s","id":"%s"}\n' "$friend_key_b" "$cancel_fid" >&4
 i=0
 while [ "$i" -lt 40 ]; do
 	cancel_a_after=$(grep -a -c '"event":"file.canceled"' "$fa" || true)
@@ -212,7 +239,7 @@ grep -a '"event":"file.canceled"' "$fb" | tail -1 | grep -a -q '"dir":"in"' || {
 	exit 1
 }
 
-echo '{"op":"call.start","conversation":"0"}' >&3
+printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
 ok=0
 i=0
 while [ "$i" -lt 40 ]; do
@@ -220,14 +247,14 @@ while [ "$i" -lt 40 ]; do
 		ok=1
 		break
 	fi
-	echo '{"op":"call.start","conversation":"0"}' >&3
+	printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
 	i=$((i + 1))
 	sleep 0.5
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no call.incoming" >&2; tail -20 "$fb" >&2; exit 1; }
 
 ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
-echo '{"op":"call.stop","conversation":"0"}' >&4
+printf '{"op":"call.stop","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
 i=0
 while [ "$i" -lt 40 ]; do
 	ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
@@ -242,7 +269,7 @@ sleep 0.5
 incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
 i=0
 while [ "$i" -lt 40 ]; do
-	echo '{"op":"call.start","conversation":"0"}' >&3
+	printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
 	sleep 0.2
 	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
 	if [ "$incoming_after" -gt "$incoming_before" ]; then
@@ -252,7 +279,7 @@ while [ "$i" -lt 40 ]; do
 done
 [ "$i" -lt 40 ] || { echo "phase6: second incoming call missing" >&2; exit 1; }
 
-echo '{"op":"call.answer","conversation":"0"}' >&4
+printf '{"op":"call.answer","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
 i=0
 while [ "$i" -lt 40 ]; do
 	if grep -a '"event":"call.state"' "$fa" | grep -a -q '"state":"active"' &&
@@ -263,17 +290,27 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 40 ] || { echo "phase6: call did not become active on both peers" >&2; exit 1; }
+busy_before=$(grep -a -c '"code":"busy"' "$fa" || true)
+printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$friend_key_a" >&3
+i=0
+while [ "$i" -lt 20 ]; do
+	busy_after=$(grep -a -c '"code":"busy"' "$fa" || true)
+	[ "$busy_after" -gt "$busy_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: contact removal ignored active call" >&2; exit 1; }
 probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b"
 probe_call_audio "$cap_b" "${out_a}.monitor" "$audio_a"
 if grep -a -q '"code":"audio_unavailable"' "$fa" "$fb"; then
 	echo "phase6: audio backend unavailable" >&2
 	exit 1
 fi
-ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0","state":"ended"' || true)
-echo '{"op":"call.stop","conversation":"999"}' >&3
+ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+printf '{"op":"call.stop","conversation":"999","key":"%s"}\n' "$friend_key_a" >&3
 i=0
 while [ "$i" -lt 20 ]; do
-	if grep -a '"event":"error"' "$fa" | grep -a '"code":"forbidden"' |
+	if grep -a '"event":"error"' "$fa" | grep -a '"code":"identity_changed"' |
 	   grep -a -q '"conversation":"999"'; then
 		break
 	fi
@@ -281,7 +318,7 @@ while [ "$i" -lt 20 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 20 ] || { echo "phase6: stale call stop was not rejected" >&2; exit 1; }
-ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0","state":"ended"' || true)
+ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
 [ "$ended_after" -eq "$ended_before" ] || { echo "phase6: stale stop ended active call" >&2; exit 1; }
 peak_a=$(ps -o rss= -p "$pa" | tr -d ' ')
 peak_b=$(ps -o rss= -p "$pb" | tr -d ' ')
@@ -289,11 +326,11 @@ peak=$peak_a
 if [ "$peak_b" -gt "$peak" ]; then
 	peak=$peak_b
 fi
-remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0","state":"ended"' || true)
-echo '{"op":"call.stop","conversation":"0"}' >&3
+remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+printf '{"op":"call.stop","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
 i=0
 while [ "$i" -lt 40 ]; do
-	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0","state":"ended"' || true)
+	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
 	if [ "$remote_ended_after" -gt "$remote_ended_before" ]; then
 		break
 	fi

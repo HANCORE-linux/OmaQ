@@ -17,8 +17,10 @@ if "MouseArea {" in header or "passThroughBar" in header:
 if "HyprlandFocusGrab {" not in header or "windows: [popup]" not in header or \
         "onCleared:" not in header or "root.close()" not in header:
     raise SystemExit("input-mask: popup lost compositor click-away dismissal")
-if "!avatarPick.running && !identityPick.running" not in header:
-    raise SystemExit("input-mask: external pickers can be dismissed by the panel focus grab")
+if "!root.avatarRestorePending" not in header or \
+        'root.identityPickerMode === ""' not in header or \
+        "!avatarPick.running && !identityPick.running" not in header:
+    raise SystemExit("input-mask: pending or active external pickers can be dismissed by the panel focus grab")
 if "onBackingWindowActiveChanged:" not in header:
     raise SystemExit("input-mask: popup lost non-grab focus dismissal")
 PY

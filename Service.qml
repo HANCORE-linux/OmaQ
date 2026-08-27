@@ -34,7 +34,14 @@ Item {
   property var pendingHandshakeEvents: []
   property bool handshakeEventOverflow: false
   property int pendingHandshakeBytes: 0
+  property bool friendsReady: false
+  property var pendingCallSnapshot: null
+  property bool pendingCallSnapshotSet: false
+  property var pendingDirectEvents: []
+  property int pendingDirectEventBytes: 0
+  property bool pendingDirectEventOverflow: false
   readonly property int handshakeEventByteLimit: 4 * 1024 * 1024
+  readonly property int directEventByteLimit: 4 * 1024 * 1024
   property int helperProtocolPid: 0
   property int helperProtocolVersion: 0
   property int activeHelperProtocol: 0
@@ -47,6 +54,7 @@ Item {
   readonly property bool supportsAttachments: root.activeHelperProtocol >= 9
   readonly property bool supportsDirectRecovery: root.activeHelperProtocol >= 10
   readonly property bool supportsRedeemResults: root.activeHelperProtocol >= 10
+  readonly property bool supportsStableDirectState: root.activeHelperProtocol >= 11
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -75,6 +83,7 @@ Item {
   property bool pending: false
   property string lastConversation: "0"
   property string lastDirectId: ""
+  property string lastDirectKey: ""
   property string selectedConversation: ""
   property string selectedDirectId: ""
   property string selectedDirectKey: ""
@@ -108,6 +117,7 @@ Item {
   property string lastChatKind: ""
   property string lastChatSender: ""
   property string lastChatRequest: ""
+  property string lastChatKey: ""
   property string lastMessageFailedConv: ""
   property string lastMessageFailedRequest: ""
   property string lastMessageFailedCode: ""
@@ -146,6 +156,7 @@ Item {
   property var pendingHistoryUnread: ({})
   property var historyRetryTickByConversation: ({})
   property var historyRequestByConversation: ({})
+  property var historyKeyByConversation: ({})
   property int historyRequestSequence: 0
   property int reconnectGeneration: 0
   property int helperInstanceGeneration: 0
@@ -174,6 +185,12 @@ Item {
   property var lastSurface: ({})
   property var surfaces: []
   property int surfacesTick: 0
+  property var lastAutoOpenItems: []
+  property bool lastAutoOpenDirectDefault: true
+  property string lastAutoOpenRequest: ""
+  property string lastAutoOpenCode: ""
+  property bool lastAutoOpenSucceeded: false
+  property int autoOpenTick: 0
   property string lastFileId: ""
   property string lastFileName: ""
   property string lastFilePath: ""
@@ -199,11 +216,13 @@ Item {
   property bool incomingCall: false
   property string lastCallState: ""
   property string lastCallConv: ""
+  property string lastCallKey: ""
   property bool callToneSuppressed: false
   property int callDurationSeconds: 0
   property bool locked: false
   property bool saveProtected: false
   property var friends: []
+  property int friendsTick: 0
   property string pendingFriendGeneration: ""
   property var pendingFriendBuild: []
   property var searchItems: []
@@ -248,13 +267,19 @@ Item {
 
   function applyCallSnapshot(snapshotCall) {
     var conv = ""
+    var key = ""
     var state = ""
     if (snapshotCall && typeof snapshotCall === "object") {
       conv = String(snapshotCall.conversation || "")
+      key = String(snapshotCall.key || "")
       state = String(snapshotCall.state || "")
       if (!/^(0|[1-9][0-9]*)$/.test(conv) ||
-          ["incoming", "ringing", "active"].indexOf(state) === -1) {
+          ["incoming", "ringing", "active"].indexOf(state) === -1 ||
+          (root.supportsStableDirectState &&
+           (!/^[0-9a-f]{64}$/.test(key) ||
+            (root.friendsReady && !root.directBindingMatches(conv, key))))) {
         conv = ""
+        key = ""
         state = ""
       }
     }
@@ -267,21 +292,144 @@ Item {
     root.callToneSuppressed = state !== "incoming" && state !== "ringing"
     root.lastCallState = state
     root.lastCallConv = conv
+    root.lastCallKey = conv ? (key || root.friendKeyForConversation(conv)) : ""
     if (conv) {
       root.lastConversation = conv
       root.lastDirectId = conv
+      root.lastDirectKey = key || root.friendKeyForConversation(conv)
     }
   }
 
+  function applyPendingCallSnapshot() {
+    if (!root.pendingCallSnapshotSet)
+      return
+    var snapshot = root.pendingCallSnapshot
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.applyCallSnapshot(snapshot)
+  }
+
+  function friendKeyForConversation(conversation) {
+    var id = String(conversation || "")
+    if (!/^(0|[1-9][0-9]*)$/.test(id))
+      return ""
+    for (var i = 0; i < root.friends.length; i++)
+      if (String(root.friends[i].id || "") === id) {
+        var key = String(root.friends[i].key || "")
+        return /^[0-9a-f]{64}$/.test(key) ? key : ""
+      }
+    return ""
+  }
+
+  function directBindingMatches(conversation, expectedKey) {
+    var id = String(conversation || "")
+    var key = String(expectedKey || "")
+    return /^(0|[1-9][0-9]*)$/.test(id) && /^[0-9a-f]{64}$/.test(key) &&
+      root.friendKeyForConversation(id) === key
+  }
+
+  function directEventBindingValid(event) {
+    var ev = event || ({})
+    var conversation = String(ev.conversation || "")
+    if (!/^(0|[1-9][0-9]*)$/.test(conversation) ||
+        !root.supportsStableDirectState)
+      return true
+    return root.directBindingMatches(conversation, String(ev.key || ""))
+  }
+
+  function withoutConversation(source, conversation) {
+    var next = {}
+    for (var key in (source || {}))
+      if (String(key) !== String(conversation))
+        next[key] = source[key]
+    return next
+  }
+
+  function purgeReboundConversation(conversation) {
+    var id = String(conversation || "")
+    if (!/^(0|[1-9][0-9]*)$/.test(id))
+      return
+    var pending = []
+    for (var i = 0; i < root.pendingOps.length; i++) {
+      var operation
+      try { operation = JSON.parse(root.pendingOps[i]) } catch (e) {
+        continue
+      }
+      if (String(operation.conversation || "") === id &&
+          root.directConversationOperation(operation.op)) {
+        root.rejectBoundOperation(operation, "identity_changed")
+        continue
+      }
+      pending.push(root.pendingOps[i])
+    }
+    root.pendingOps = pending
+    var outgoing = root.outgoingFile(id)
+    if (outgoing.pending) {
+      root.lastFileConv = id
+      root.lastFileState = "failed"
+      root.lastFileDir = "out"
+      root.lastFileError = "identity_changed"
+      root.lastFileTick = root.lastFileTick + 1
+    }
+    root.fileOffers = root.withoutConversation(root.fileOffers, id)
+    root.outgoingFiles = root.withoutConversation(root.outgoingFiles, id)
+    root.fileNotices = root.withoutConversation(root.fileNotices, id)
+    root.peerTypingByConv = root.withoutConversation(root.peerTypingByConv, id)
+    root.unreadByConversation = root.withoutConversation(root.unreadByConversation, id)
+    root.unreadClearPendingByConversation = root.withoutConversation(
+      root.unreadClearPendingByConversation, id)
+    root.unreadClearRetryAfter = root.withoutConversation(root.unreadClearRetryAfter, id)
+    root.pendingHistoryUnread = root.withoutConversation(root.pendingHistoryUnread, id)
+    root.historyRetryTickByConversation = root.withoutConversation(
+      root.historyRetryTickByConversation, id)
+    root.historyRequestByConversation = root.withoutConversation(
+      root.historyRequestByConversation, id)
+    root.historyKeyByConversation = root.withoutConversation(
+      root.historyKeyByConversation, id)
+    if (String(root.searchConversation || "") === id) {
+      root.searchItems = []
+      root.searchConversation = ""
+      root.searchRequest = ""
+      root.searchTick = root.searchTick + 1
+    }
+    if (String(root.lastChatConv || "") === id) {
+      root.lastChatText = ""
+      root.lastChatId = ""
+      root.lastChatReply = ""
+      root.lastChatDir = ""
+      root.lastChatKind = ""
+      root.lastChatSender = ""
+      root.lastChatRequest = ""
+      root.lastChatKey = ""
+      root.lastChatConv = ""
+      root.messageTick = root.messageTick + 1
+    }
+    root.unreadCount = root.localUnreadTotal()
+  }
+
   function applyFriendSnapshot(items) {
+    var previous = root.friends || []
     root.friends = items || []
+    for (var previousIndex = 0; previousIndex < previous.length; previousIndex++) {
+      var previousId = String(previous[previousIndex].id || "")
+      var previousKey = String(previous[previousIndex].key || "")
+      if (/^[0-9a-f]{64}$/.test(previousKey) &&
+          !root.directBindingMatches(previousId, previousKey))
+        root.purgeReboundConversation(previousId)
+    }
     var stillFriend = root.lastDirectId === ""
     var selectedStillValid = root.selectedDirectId === ""
     for (var i = 0; i < root.friends.length; i++) {
       var friendId = String(root.friends[i].id || "")
       var friendKey = String(root.friends[i].key || "")
-      if (friendId === String(root.lastDirectId))
+      if (friendId === String(root.lastDirectId) &&
+          (root.lastDirectKey === "" || friendKey === root.lastDirectKey)) {
         stillFriend = true
+        root.lastDirectKey = friendKey
+      }
+      if (friendId === String(root.lastCallConv || "") &&
+          (root.lastCallKey === "" || friendKey === root.lastCallKey))
+        root.lastCallKey = friendKey
       if (friendId === root.selectedDirectId &&
           friendKey === root.selectedDirectKey)
         selectedStillValid = true
@@ -289,8 +437,17 @@ Item {
     if (!stillFriend) {
       var removedDirectId = String(root.lastDirectId)
       root.lastDirectId = ""
+      root.lastDirectKey = ""
       if (String(root.lastConversation || "") === removedDirectId)
         root.lastConversation = ""
+      if (String(root.lastCallConv || "") === removedDirectId) {
+        root.incomingCall = false
+        root.lastCallState = ""
+        root.lastCallConv = ""
+        root.lastCallKey = ""
+        root.callToneSuppressed = true
+        root.callDurationSeconds = 0
+      }
     }
     if (!selectedStillValid) {
       var removedSelectedId = root.selectedDirectId
@@ -302,6 +459,7 @@ Item {
       root.safetyCode = ""
       root.safetyConv = ""
     }
+    root.friendsTick = root.friendsTick + 1
   }
 
   function identityErrorCode(code) {
@@ -341,6 +499,50 @@ Item {
       root.lastErrorRequest = ""
       root.lastErrorTick = root.lastErrorTick + 1
     }
+  }
+
+  function eventNeedsFriendProjection(event) {
+    var ev = event || ({})
+    if (!root.supportsStableDirectState || root.friendsReady ||
+        !/^(0|[1-9][0-9]*)$/.test(String(ev.conversation || "")))
+      return false
+    return ["unread", "message", "message.updated", "message.reaction", "history",
+      "search", "receipt", "receipt.sent", "typing", "file.offer", "file.sending",
+      "file.done", "file.canceled", "file.failed", "call.incoming",
+      "call.state"].indexOf(String(ev.event || "")) >= 0
+  }
+
+  function bufferDirectEvent(line) {
+    if (root.pendingDirectEventOverflow)
+      return
+    var buffered = String(line || "")
+    var bytes = buffered.length * 3 + 1
+    if (bytes > root.directEventByteLimit - root.pendingDirectEventBytes) {
+      root.pendingDirectEvents = []
+      root.pendingDirectEventBytes = 0
+      root.pendingDirectEventOverflow = true
+      return
+    }
+    var next = root.pendingDirectEvents.slice()
+    next.push(buffered)
+    root.pendingDirectEvents = next
+    root.pendingDirectEventBytes = root.pendingDirectEventBytes + bytes
+  }
+
+  function releaseDirectEvents() {
+    var events = root.pendingDirectEvents
+    var overflow = root.pendingDirectEventOverflow
+    root.pendingDirectEvents = []
+    root.pendingDirectEventBytes = 0
+    root.pendingDirectEventOverflow = false
+    if (overflow) {
+      root.lastError = "helper_event_overflow"
+      root.lastErrorConv = ""
+      root.lastErrorTick = root.lastErrorTick + 1
+      return
+    }
+    for (var i = 0; i < events.length; i++)
+      root.handleLine(events[i])
   }
 
   function handleLine(line) {
@@ -393,6 +595,12 @@ Item {
         var nextIdentity = String(ev.addr || "").slice(0, 64)
         var identityChanged = root.identityFingerprint !== "" && nextIdentity !== "" &&
           root.identityFingerprint !== nextIdentity
+        root.friendsReady = false
+        if (processChanged || identityChanged) {
+          root.pendingDirectEvents = []
+          root.pendingDirectEventBytes = 0
+          root.pendingDirectEventOverflow = false
+        }
         if (processChanged) {
           if (root.lastError === root.persistentWarning)
             root.lastError = ""
@@ -433,7 +641,10 @@ Item {
         root.pendingHandshakeEvents = []
         root.pendingHandshakeBytes = 0
         root.handshakeEventOverflow = false
-        root.applyCallSnapshot(ev.call)
+        root.pendingCallSnapshot = ev.call || null
+        root.pendingCallSnapshotSet = true
+        if (ev.locked === true)
+          root.applyPendingCallSnapshot()
         if (previousInstance && previousInstance === nextInstance)
           root.reconcileOutgoingFiles()
       }
@@ -476,6 +687,10 @@ Item {
         for (var replayIndex = 0; replayIndex < replayEventsToApply.length; replayIndex++)
           root.handleLine(replayEventsToApply[replayIndex])
       }
+    }
+    if (root.eventNeedsFriendProjection(ev)) {
+      root.bufferDirectEvent(line)
+      return
     }
     if (ev.event === "connection" && !root.awaitingHelperInstance) {
       if (ev.state === "online") {
@@ -568,6 +783,7 @@ Item {
       }
     }
     if (ev.event === "friend.list.begin") {
+      root.friendsReady = false
       root.pendingFriendGeneration = String(ev.generation || "")
       root.pendingFriendBuild = []
     }
@@ -593,6 +809,9 @@ Item {
       root.applyFriendSnapshot(root.pendingFriendBuild)
       root.pendingFriendGeneration = ""
       root.pendingFriendBuild = []
+      root.friendsReady = true
+      root.applyPendingCallSnapshot()
+      root.releaseDirectEvents()
     }
     if (ev.event === "friends") {
       if (!root.locked && root.lastError !== "helper_down" &&
@@ -600,6 +819,9 @@ Item {
           !root.persistentError(root.lastError))
         root.lastError = root.persistentWarning
       root.applyFriendSnapshot(ev.items || [])
+      root.friendsReady = true
+      root.applyPendingCallSnapshot()
+      root.releaseDirectEvents()
     }
     if (ev.event === "avatar") {
       var id = ev.id || ""
@@ -649,6 +871,8 @@ Item {
         root.saveProtected = !!ev.protected
     }
     if (ev.event === "unread") {
+      if (!root.directEventBindingValid(ev))
+        return
       var unreadConversation = String(ev.conversation || "")
       var unreadCountForConversation = Math.max(0, Number(ev.count || 0))
       var clearWasPending = !!root.unreadClearPendingByConversation[unreadConversation]
@@ -693,6 +917,10 @@ Item {
       root.messageFailedTick = root.messageFailedTick + 1
     }
     if (ev.event === "message") {
+      var messageConversation = String(ev.conversation || "")
+      var messageKey = String(ev.key || "")
+      if (!root.directEventBindingValid(ev))
+        return
       if (ev.dir === "out")
         root.finishInFlightMessage(ev.request)
       root.lastChatId = String(ev.id || "")
@@ -701,6 +929,7 @@ Item {
       root.lastChatKind = String(ev.kind || "")
       root.lastChatSender = String(ev.sender || "")
       root.lastChatRequest = String(ev.request || "")
+      root.lastChatKey = messageKey
       if (root.lastChatDir === "in" &&
           (!root.authoritativeUnreadSeen || root.helperCompatibility === "incompatible")) {
         root.unreadCount = root.unreadCount + 1
@@ -715,14 +944,18 @@ Item {
       }
       if (ev.conversation) {
         root.lastConversation = ev.conversation
-        if (String(ev.conversation).charAt(0) !== "g")
+        if (String(ev.conversation).charAt(0) !== "g") {
           root.lastDirectId = String(ev.conversation)
+          root.lastDirectKey = root.friendKeyForConversation(root.lastDirectId)
+        }
       }
       root.lastChatConv = ev.conversation || root.lastConversation
       root.lastChatText = ev.text || ""
       root.messageTick = root.messageTick + 1
     }
     if (ev.event === "search") {
+      if (!root.directEventBindingValid(ev))
+        return
       if (!ev.conversation || !ev.request ||
           String(ev.conversation) !== root.searchConversation ||
           String(ev.request) !== root.searchRequest)
@@ -731,6 +964,8 @@ Item {
       root.searchTick = root.searchTick + 1
     }
     if (ev.event === "message.updated") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.lastUpdateConv = String(ev.conversation || "")
       root.lastUpdateId = String(ev.id || "")
       root.lastUpdateText = String(ev.text || "")
@@ -739,6 +974,8 @@ Item {
       root.updateTick = root.updateTick + 1
     }
     if (ev.event === "message.reaction") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.lastReactionConv = String(ev.conversation || "")
       root.lastReactionId = String(ev.id || "")
       root.lastReactionEmoji = String(ev.emoji || "")
@@ -770,6 +1007,11 @@ Item {
         if (failedRequestKey !== failedHistoryConv)
           failedHistoryRequests[failedRequestKey] = root.historyRequestByConversation[failedRequestKey]
       root.historyRequestByConversation = failedHistoryRequests
+      var failedHistoryKeys = {}
+      for (var failedKey in root.historyKeyByConversation)
+        if (failedKey !== failedHistoryConv)
+          failedHistoryKeys[failedKey] = root.historyKeyByConversation[failedKey]
+      root.historyKeyByConversation = failedHistoryKeys
       var failedHistoryPending = {}
       for (var failedPendingKey in root.pendingHistoryUnread) {
         if (failedPendingKey !== failedHistoryConv)
@@ -783,6 +1025,8 @@ Item {
       root.historyFailedTick = root.historyFailedTick + 1
     }
     if (ev.event === "history") {
+      if (!root.directEventBindingValid(ev))
+        return
       var historyConv = String(ev.conversation || "")
       var expectedHistoryRequest = String(root.historyRequestByConversation[historyConv] || "")
       if (!ev.cleared && (!expectedHistoryRequest ||
@@ -795,6 +1039,11 @@ Item {
           historyRequestNext[historyRequestKey] = root.historyRequestByConversation[historyRequestKey]
       }
       root.historyRequestByConversation = historyRequestNext
+      var historyKeyNext = {}
+      for (var historyBindingKey in root.historyKeyByConversation)
+        if (historyBindingKey !== historyConv)
+          historyKeyNext[historyBindingKey] = root.historyKeyByConversation[historyBindingKey]
+      root.historyKeyByConversation = historyKeyNext
       var historyQueue = root.pendingHistoryUnread[historyConv] || []
       var historyUnread = ev.unread !== undefined
         ? Math.max(0, Number(ev.unread || 0))
@@ -825,12 +1074,16 @@ Item {
       root.conversationReadFailedTick = root.conversationReadFailedTick + 1
     }
     if (ev.event === "receipt") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.lastReceiptConv = String(ev.conversation || "")
       root.lastReceiptId = String(ev.id || "")
       root.lastReceiptState = String(ev.state || "")
       root.receiptTick = root.receiptTick + 1
     }
     if (ev.event === "receipt.sent") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.lastReceiptSentConv = String(ev.conversation || "")
       root.lastReceiptSentId = String(ev.id || "")
       root.lastReceiptSentState = String(ev.state || "")
@@ -844,6 +1097,8 @@ Item {
       root.receiptFailedTick = root.receiptFailedTick + 1
     }
     if (ev.event === "typing") {
+      if (!root.directEventBindingValid(ev))
+        return
       var typingConv = String(ev.conversation || "")
       var typingNext = {}
       var typingKey
@@ -863,6 +1118,16 @@ Item {
     if (ev.event === "surfaces") {
       root.surfaces = ev.items || []
       root.surfacesTick = root.surfacesTick + 1
+    }
+    if (ev.event === "settings.auto-open" ||
+        ev.event === "settings.auto-open.failed") {
+      root.lastAutoOpenItems = ev.event === "settings.auto-open" ? (ev.items || []) : []
+      root.lastAutoOpenDirectDefault = ev.event === "settings.auto-open"
+        ? !!ev.directDefault : false
+      root.lastAutoOpenRequest = String(ev.request || "")
+      root.lastAutoOpenCode = String(ev.code || "")
+      root.lastAutoOpenSucceeded = ev.event === "settings.auto-open"
+      root.autoOpenTick = root.autoOpenTick + 1
     }
     if (ev.event === "invite") {
       if (ev.url !== undefined)
@@ -1015,28 +1280,37 @@ Item {
       root.attachmentInspectionTick = root.attachmentInspectionTick + 1
     }
     if (ev.event === "file.offer") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.lastFileState = "offer"
       root.lastFileDir = "in"
       root.lastFileError = ""
       var offerConv = String(ev.conversation || root.lastConversation)
+      var offerKey = String(ev.key || root.friendKeyForConversation(offerConv))
       var existingOffer = root.fileOffer(offerConv)
       if (existingOffer.active && existingOffer.id && ev.id &&
           String(existingOffer.id) !== String(ev.id)) {
-        root.sendOp({ op: "file.cancel", id: String(ev.id) })
+        root.sendConversationOp({ op: "file.cancel", conversation: offerConv,
+          id: String(ev.id) }, offerKey, false)
         return
       }
       root.dismissFileNotice(offerConv)
-      root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "", pending: true, active: true })
+      root.setFileOffer(offerConv, { id: ev.id || "", name: ev.name || "", path: "",
+        key: offerKey, pending: true, active: true })
       root.lastFileId = ev.id || ""
       root.lastFileName = ev.name || ""
       root.pendingFile = true
       root.lastConversation = offerConv
       root.lastFileConv = offerConv
-      if (offerConv.charAt(0) !== "g")
+      if (offerConv.charAt(0) !== "g") {
         root.lastDirectId = offerConv
+        root.lastDirectKey = offerKey
+      }
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.sending" && ev.dir === "out") {
+      if (!root.directEventBindingValid(ev))
+        return
       var sendingConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var sendingOld = root.outgoingFile(sendingConv)
       if (!root.outgoingEventMatches(ev, sendingConv))
@@ -1046,6 +1320,7 @@ Item {
         id: String(ev.id || sendingOld.id || ""),
         path: String(sendingOld.path || ""),
         request: String(sendingOld.request || ev.request || ""),
+        key: String(sendingOld.key || ""),
         pending: true,
         cancelRequested: !!sendingOld.cancelRequested
       })
@@ -1053,12 +1328,15 @@ Item {
       root.lastFileConv = sendingConv
       root.lastFileDir = "out"
       if (sendingOld.cancelRequested && ev.id)
-        root.sendOp({ op: "file.cancel", id: String(ev.id) })
+        root.sendConversationOp({ op: "file.cancel", conversation: sendingConv,
+          id: String(ev.id) }, String(sendingOld.key || ""), false)
       else
         root.lastFileState = "sending"
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.done") {
+      if (!root.directEventBindingValid(ev))
+        return
       var doneConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var doneDir = root.fileEventDirection(ev, doneConv)
       if ((doneDir === "out" && !root.outgoingEventMatches(ev, doneConv)) ||
@@ -1071,11 +1349,11 @@ Item {
       if (doneDir === "out") {
         var doneOutgoing = root.outgoingFile(doneConv)
         if (doneOutgoing.pending && (!doneOutgoing.id || String(doneOutgoing.id) === String(ev.id || "")))
-          root.setOutgoingFile(doneConv, { id: doneOutgoing.id || ev.id || "", path: doneOutgoing.path || "", request: doneOutgoing.request || "", pending: false, cancelRequested: false })
+          root.setOutgoingFile(doneConv, { id: doneOutgoing.id || ev.id || "", path: doneOutgoing.path || "", request: doneOutgoing.request || "", key: doneOutgoing.key || "", pending: false, cancelRequested: false })
         root.lastFilePath = ""
       } else {
         var doneOld = root.fileOffer(doneConv)
-        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", pending: false, active: false })
+        root.setFileOffer(doneConv, { id: ev.id || doneOld.id || "", name: doneOld.name || root.lastFileName, path: ev.path || "", key: doneOld.key || root.friendKeyForConversation(doneConv), pending: false, active: false })
         root.pendingFile = false
         root.lastFilePath = ev.path || ""
       }
@@ -1084,6 +1362,8 @@ Item {
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.canceled") {
+      if (!root.directEventBindingValid(ev))
+        return
       var canceledConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var canceledDir = root.fileEventDirection(ev, canceledConv)
       if ((canceledDir === "out" && !root.outgoingEventMatches(ev, canceledConv)) ||
@@ -1095,18 +1375,21 @@ Item {
       if (canceledDir === "out") {
         var canceledOutgoing = root.outgoingFile(canceledConv)
         if (!canceledOutgoing.id || String(canceledOutgoing.id) === String(ev.id || ""))
-          root.setOutgoingFile(canceledConv, { id: canceledOutgoing.id || ev.id || "", path: canceledOutgoing.path || "", request: canceledOutgoing.request || "", pending: false, cancelRequested: false })
+          root.setOutgoingFile(canceledConv, { id: canceledOutgoing.id || ev.id || "", path: canceledOutgoing.path || "", request: canceledOutgoing.request || "", key: canceledOutgoing.key || "", pending: false, cancelRequested: false })
       } else {
         var canceledOffer = root.fileOffer(canceledConv)
-        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "", name: canceledOffer.name || "", path: "", pending: false, active: false })
+        root.setFileOffer(canceledConv, { id: canceledOffer.id || ev.id || "", name: canceledOffer.name || "", path: "", key: canceledOffer.key || "", pending: false, active: false })
         root.pendingFile = false
       }
       root.lastFilePath = ""
       root.lastFileConv = canceledConv
-      root.setFileNotice(canceledConv, { state: "canceled", dir: canceledDir })
+      root.setFileNotice(canceledConv, { state: "canceled", dir: canceledDir,
+        key: String(ev.key || root.friendKeyForConversation(canceledConv)) })
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "file.failed") {
+      if (String(ev.key || "") !== "" && !root.directEventBindingValid(ev))
+        return
       var failedConv = String(ev.conversation || root.lastFileConv || root.lastConversation)
       var failedDir = root.fileEventDirection(ev, failedConv)
       if ((failedDir === "out" && !root.outgoingEventMatches(ev, failedConv)) ||
@@ -1119,10 +1402,10 @@ Item {
       if (failedDir === "out") {
         var failedOutgoing = root.outgoingFile(failedConv)
         if (!failedOutgoing.id || String(failedOutgoing.id) === String(ev.id || ""))
-          root.setOutgoingFile(failedConv, { id: failedOutgoing.id || ev.id || "", path: failedOutgoing.path || "", request: failedOutgoing.request || "", pending: false, cancelRequested: false })
+          root.setOutgoingFile(failedConv, { id: failedOutgoing.id || ev.id || "", path: failedOutgoing.path || "", request: failedOutgoing.request || "", key: failedOutgoing.key || "", pending: false, cancelRequested: false })
       } else {
         var failedOld = root.fileOffer(failedConv)
-        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", pending: false, active: false })
+        root.setFileOffer(failedConv, { id: failedOld.id || ev.id || "", name: failedOld.name || "", path: "", key: failedOld.key || "", pending: false, active: false })
         root.pendingFile = false
       }
       root.lastError = "file_failed"
@@ -1132,6 +1415,8 @@ Item {
       root.lastFileTick = root.lastFileTick + 1
     }
     if (ev.event === "call.incoming") {
+      if (!root.directEventBindingValid(ev))
+        return
       root.incomingCall = true
       root.callToneSuppressed = false
       root.callDurationSeconds = 0
@@ -1139,10 +1424,15 @@ Item {
       if (ev.conversation)
         root.lastConversation = ev.conversation
       root.lastCallConv = ev.conversation || root.lastConversation
-      if (root.lastCallConv && String(root.lastCallConv).charAt(0) !== "g")
+      if (root.lastCallConv && String(root.lastCallConv).charAt(0) !== "g") {
+        root.lastCallKey = String(ev.key || root.friendKeyForConversation(root.lastCallConv))
         root.lastDirectId = String(root.lastCallConv)
+        root.lastDirectKey = root.lastCallKey
+      }
     }
     if (ev.event === "call.state") {
+      if (!root.directEventBindingValid(ev))
+        return
       var nextCallState = String(ev.state || "")
       if (nextCallState === "active" &&
           (root.lastCallState !== "active" ||
@@ -1161,8 +1451,11 @@ Item {
         root.lastConversation = ev.conversation
       if (ev.conversation)
         root.lastCallConv = ev.conversation
-      if (ev.conversation && String(ev.conversation).charAt(0) !== "g")
+      if (ev.conversation && String(ev.conversation).charAt(0) !== "g") {
+        root.lastCallKey = String(ev.key || root.friendKeyForConversation(ev.conversation))
         root.lastDirectId = String(ev.conversation)
+        root.lastDirectKey = root.lastCallKey
+      }
     }
   }
 
@@ -1279,7 +1572,8 @@ Item {
       var transfer = root.outgoingFiles[key]
       if (!transfer || !transfer.pending || !transfer.request)
         continue
-      root.sendOp({ op: "file.status", conversation: String(key), id: transfer.request })
+      root.sendConversationOp({ op: "file.status", conversation: String(key),
+        id: transfer.request }, String(transfer.key || ""), false)
     }
   }
 
@@ -1325,23 +1619,82 @@ Item {
     }
   }
 
+  function directConversationOperation(name) {
+    return ["msg.send", "history", "search", "history.clear",
+      "message.edit", "message.delete", "message.react", "conversation.read",
+      "unread.clear", "receipt.send", "typing.set", "surface.set", "surface.get",
+      "file.send", "file.status", "file.accept", "file.cancel", "call.start",
+      "call.answer", "call.stop"].indexOf(
+        String(name || "")) >= 0
+  }
+
+  function groupConversationOperation(name) {
+    return ["msg.send", "history", "search", "history.clear", "message.edit",
+      "message.delete", "message.react", "conversation.read", "unread.clear",
+      "receipt.send", "surface.set", "surface.get"].indexOf(String(name || "")) >= 0
+  }
+
+  function operationBindingValid(operation) {
+    if (!operation || !root.directConversationOperation(operation.op))
+      return true
+    var conversation = String(operation.conversation || "")
+    if (/^g:[0-9a-f]{64}$/.test(conversation))
+      return root.groupConversationOperation(operation.op)
+    if (!/^(0|[1-9][0-9]*)$/.test(conversation))
+      return false
+    return root.directBindingMatches(conversation, String(operation.key || ""))
+  }
+
+  function rejectBoundOperation(operation, reason) {
+    var op = operation || ({})
+    var code = String(reason || "identity_changed")
+    var conversation = String(op.conversation || "")
+    root.lastError = code
+    root.lastErrorConv = conversation
+    root.lastErrorRequest = String(op.id || op.request || "")
+    root.lastErrorTick = root.lastErrorTick + 1
+    if (op.op === "msg.send" && op.id) {
+      root.lastMessageFailedConv = conversation
+      root.lastMessageFailedRequest = String(op.id)
+      root.lastMessageFailedCode = code
+      root.lastMessageFailedDelivered = false
+      root.messageFailedTick = root.messageFailedTick + 1
+    } else if (op.op === "file.send") {
+      root.setOutgoingFile(conversation, {})
+      root.lastFileConv = conversation
+      root.lastFileState = "failed"
+      root.lastFileDir = "out"
+      root.lastFileError = code
+      root.lastFileTick = root.lastFileTick + 1
+    }
+  }
+
+  function writeQueuedOperations(lines, writer) {
+    for (var i = 0; i < lines.length; i++) {
+      var operation
+      try { operation = JSON.parse(lines[i]) } catch (e) {
+        continue
+      }
+      if (!root.operationBindingValid(operation)) {
+        root.rejectBoundOperation(operation, "identity_changed")
+        continue
+      }
+      root.trackInFlightMessage(operation)
+      writer(lines[i])
+    }
+  }
+
   function flushOps() {
     if (root.awaitingHelperInstance || !root.pendingOps.length)
       return
     if (sock.connected) {
       var queued = root.pendingOps
       root.pendingOps = []
-      for (var i = 0; i < queued.length; i++) {
-        root.trackSerializedMessage(queued[i])
-        sock.write(queued[i])
-      }
+      root.writeQueuedOperations(queued, function(line) { sock.write(line) })
     } else if (root.procReady) {
       var pending = root.pendingOps
       root.pendingOps = []
-      for (var j = 0; j < pending.length; j++) {
-        root.trackSerializedMessage(pending[j])
-        proc.write(pending[j])
-      }
+      root.writeQueuedOperations(pending, function(line) { proc.write(line) })
     }
   }
 
@@ -1394,6 +1747,12 @@ Item {
     root.pendingHandshakeEvents = []
     root.pendingHandshakeBytes = 0
     root.handshakeEventOverflow = false
+    root.pendingDirectEvents = []
+    root.pendingDirectEventBytes = 0
+    root.pendingDirectEventOverflow = false
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.friendsReady = false
     root.helperCompatibility = "incompatible"
     root.activeHelperProtocol = 0
     root.connectionState = "reconnecting"
@@ -1404,6 +1763,7 @@ Item {
   }
 
   function requestHelperStatus() {
+    root.friendsReady = false
     root.helperStatusSequence = root.helperStatusSequence + 1
     root.helperStatusNonce = Date.now().toString(36) + "-status-" +
       root.helperStatusSequence.toString(36) + "-" +
@@ -1423,6 +1783,10 @@ Item {
       root.lastError = "helper_incompatible"
       root.lastErrorConv = String(obj && obj.conversation || "")
       root.lastErrorTick = root.lastErrorTick + 1
+      return false
+    }
+    if (!root.operationBindingValid(obj)) {
+      root.rejectBoundOperation(obj, "identity_changed")
       return false
     }
     var line = JSON.stringify(obj) + "\n"
@@ -1445,6 +1809,10 @@ Item {
   function sendImmediateOp(obj) {
     if (root.helperCompatibility === "incompatible" || root.awaitingHelperInstance)
       return false
+    if (!root.operationBindingValid(obj)) {
+      root.rejectBoundOperation(obj, "identity_changed")
+      return false
+    }
     var line = JSON.stringify(obj) + "\n"
     if (sock.connected) {
       sock.write(line)
@@ -1455,6 +1823,41 @@ Item {
       return true
     }
     return false
+  }
+
+  function sendConversationOp(operation, expectedKey, immediate) {
+    var op = operation || ({})
+    var conversation = String(op.conversation || "")
+    if (/^(0|[1-9][0-9]*)$/.test(conversation)) {
+      var key = String(expectedKey || "")
+      if (!root.directBindingMatches(conversation, key)) {
+        root.rejectBoundOperation(op, "identity_changed")
+        return false
+      }
+      var bound = {}
+      for (var field in op)
+        bound[field] = op[field]
+      bound.key = key
+      op = bound
+    }
+    return immediate ? root.sendImmediateOp(op) : root.sendOp(op)
+  }
+
+  function requestAutoOpen(request) {
+    var requestId = String(request || "")
+    if (!root.supportsStableDirectState || !requestId)
+      return false
+    return root.sendOp({ op: "settings.auto-open.get", request: requestId })
+  }
+
+  function setAutoOpen(conversation, enabled, request) {
+    var stable = String(conversation || "")
+    var requestId = String(request || "")
+    if (!root.supportsStableDirectState || !/^[dg]:[0-9a-f]{64}$/.test(stable) ||
+        !requestId)
+      return false
+    return root.sendOp({ op: "settings.auto-open.set", conversation: stable,
+      enabled: !!enabled, request: requestId })
   }
 
   function createInvite(request) {
@@ -1540,7 +1943,9 @@ Item {
       pendingClearNext[pendingClearKey] = root.unreadClearPendingByConversation[pendingClearKey]
     pendingClearNext[key] = true
     root.unreadClearPendingByConversation = pendingClearNext
-    if (!root.sendOp({ op: "unread.clear", conversation: key })) {
+    var expectedKey = key.charAt(0) === "g" ? "" : root.friendKeyForConversation(key)
+    if (!root.sendConversationOp({ op: "unread.clear", conversation: key },
+          expectedKey, false)) {
       var failedClearNext = {}
       for (pendingClearKey in root.unreadClearPendingByConversation) {
         if (pendingClearKey !== key)
@@ -1557,17 +1962,21 @@ Item {
       root.historyRequestSequence.toString(36) + "-" +
       Math.floor(Math.random() * 0x100000000).toString(36)
   }
-  function requestHistory(conv) {
+  function requestHistory(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
+    var bindingKey = c.charAt(0) === "g" ? "" : String(expectedKey || "")
+    if (c.charAt(0) !== "g" && !root.directBindingMatches(c, bindingKey))
+      return false
     var existingQueue = root.pendingHistoryUnread[c] || []
     if (existingQueue.length > 0) {
       if (Number(root.historyRetryTickByConversation[c] || 0) < root.reconnectGeneration)
         root.retryHistory(c)
-      return
+      return true
     }
     var next = {}
     var retryNext = {}
     var requestNext = {}
+    var keyNext = {}
     var requestId = root.nextHistoryRequestId()
     var key
     var queue = existingQueue.slice()
@@ -1577,14 +1986,19 @@ Item {
       retryNext[key] = root.historyRetryTickByConversation[key]
     for (key in root.historyRequestByConversation)
       requestNext[key] = root.historyRequestByConversation[key]
+    for (key in root.historyKeyByConversation)
+      keyNext[key] = root.historyKeyByConversation[key]
     queue.push(root.unreadFor(c))
     next[c] = queue
     retryNext[c] = root.reconnectGeneration
     requestNext[c] = requestId
+    keyNext[c] = bindingKey
     root.pendingHistoryUnread = next
     root.historyRetryTickByConversation = retryNext
     root.historyRequestByConversation = requestNext
-    sendOp({ op: "history", conversation: c, limit: 50, id: requestId })
+    root.historyKeyByConversation = keyNext
+    return root.sendConversationOp({ op: "history", conversation: c, limit: 50,
+      id: requestId }, bindingKey, false)
   }
   function retryHistory(conv) {
     var c = String(conv || root.lastConversation || "")
@@ -1592,6 +2006,9 @@ Item {
       return
     var historyQueue = root.pendingHistoryUnread[c] || []
     var unread = historyQueue.length > 0 ? Number(historyQueue[0] || 0) : root.unreadFor(c)
+    var bindingKey = String(root.historyKeyByConversation[c] || "")
+    if (c.charAt(0) !== "g" && !root.directBindingMatches(c, bindingKey))
+      return
     var pendingNext = {}
     var retryNext = {}
     var requestNext = {}
@@ -1611,54 +2028,62 @@ Item {
     root.pendingHistoryUnread = pendingNext
     root.historyRetryTickByConversation = retryNext
     root.historyRequestByConversation = requestNext
-    root.sendOp({ op: "history", conversation: c, limit: 50, id: requestId })
+    root.sendConversationOp({ op: "history", conversation: c, limit: 50,
+      id: requestId }, bindingKey, false)
   }
-  function editMessage(conv, id, text) {
+  function editMessage(conv, id, text, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     var messageId = String(id || "")
     var value = String(text || "")
     if (!c || !messageId || !value)
-      return
-    sendOp({ op: "message.edit", conversation: c, id: messageId, text: value })
+      return false
+    return root.sendConversationOp({ op: "message.edit", conversation: c,
+      id: messageId, text: value }, expectedKey, false)
   }
-  function deleteMessage(conv, id) {
+  function deleteMessage(conv, id, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     var messageId = String(id || "")
     if (!c || !messageId)
-      return
-    sendOp({ op: "message.delete", conversation: c, id: messageId })
+      return false
+    return root.sendConversationOp({ op: "message.delete", conversation: c,
+      id: messageId }, expectedKey, false)
   }
-  function reactMessage(conv, id, emoji) {
+  function reactMessage(conv, id, emoji, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     var messageId = String(id || "")
     if (!c || !messageId)
-      return
-    sendOp({ op: "message.react", conversation: c, id: messageId, text: String(emoji || "") })
+      return false
+    return root.sendConversationOp({ op: "message.react", conversation: c,
+      id: messageId, text: String(emoji || "") }, expectedKey, false)
   }
-  function clearHistory(conv) {
-    var c = String(conv || root.lastConversation || "")
-    if (!c)
-      return
-    sendOp({ op: "history.clear", conversation: c })
-  }
-  function markConversationRead(conv) {
+  function clearHistory(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     if (!c)
       return false
-    return sendOp({ op: "conversation.read", conversation: c })
+    return root.sendConversationOp({ op: "history.clear", conversation: c },
+      expectedKey, false)
   }
-  function sendReceipt(conv, id, state) {
+  function markConversationRead(conv, expectedKey) {
+    var c = String(conv || root.lastConversation || "")
+    if (!c)
+      return false
+    return root.sendConversationOp({ op: "conversation.read", conversation: c },
+      expectedKey, false)
+  }
+  function sendReceipt(conv, id, state, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     var messageId = String(id || "")
     if (!c || !messageId || (state !== "delivered" && state !== "read"))
-      return
-    sendOp({ op: "receipt.send", conversation: c, id: messageId, state: state })
+      return false
+    return root.sendConversationOp({ op: "receipt.send", conversation: c,
+      id: messageId, state: state }, expectedKey, false)
   }
-  function setTyping(conv, typing) {
+  function setTyping(conv, typing, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     if (!c || c.charAt(0) === "g")
-      return
-    sendOp({ op: "typing.set", conversation: c, typing: !!typing })
+      return false
+    return root.sendConversationOp({ op: "typing.set", conversation: c,
+      typing: !!typing }, expectedKey, false)
   }
   function isPeerTyping(conv) {
     var c = String(conv || "")
@@ -1799,6 +2224,7 @@ Item {
       return false
     root.lastConversation = key
     root.lastDirectId = key
+    root.lastDirectKey = foundKey
     root.selectedConversation = key
     root.selectedDirectId = key
     root.selectedDirectKey = foundKey
@@ -1901,10 +2327,13 @@ Item {
     return sendOp({ op: "group.member.remove", group: group, member: key })
   }
   function openCard() {
-    sendOp({ op: "surface.set", conversation: root.lastConversation, monitor: "", x: 40, y: 80, pinned: true })
+    return root.sendConversationOp({ op: "surface.set",
+      conversation: root.lastConversation, monitor: "", x: 40, y: 80,
+      pinned: true }, root.lastDirectKey, false)
   }
-  function setSurface(conv, mon, x, y, pinned) {
-    sendOp({ op: "surface.set", conversation: conv, monitor: mon || "", x: x, y: y, pinned: !!pinned })
+  function setSurface(conv, mon, x, y, pinned, expectedKey) {
+    return root.sendConversationOp({ op: "surface.set", conversation: String(conv || ""),
+      monitor: mon || "", x: x, y: y, pinned: !!pinned }, expectedKey, false)
   }
   function exportIdentity(path, request) {
     if (!root.supportsIdentityActions)
@@ -1942,8 +2371,9 @@ Item {
       Math.floor(Math.random() * 0x100000000).toString(36)
     if (conversation === "")
       return false
-    return sendOp({ op: "search", conversation: conversation, text: q,
-      limit: 20, id: root.searchRequest })
+    var expectedKey = conversation.charAt(0) === "g" ? "" : root.selectedDirectKey
+    return root.sendConversationOp({ op: "search", conversation: conversation,
+      text: q, limit: 20, id: root.searchRequest }, expectedKey, false)
   }
   function unlockIdentity(pass, request) {
     return sendImmediateOp({ op: "identity.unlock", passphrase: pass,
@@ -2027,11 +2457,13 @@ Item {
     return sendImmediateOp({ op: "attachment.inspect", path: filePath,
       id: requestId })
   }
-  function sendFile(path, conv, attachmentKind) {
+  function sendFile(path, conv, attachmentKind, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     var filePath = String(path || "")
     var kind = String(attachmentKind || "file")
+    var bindingKey = String(expectedKey || "")
     if (!c || c.charAt(0) === "g" || !filePath ||
+        !root.directBindingMatches(c, bindingKey) ||
         (kind !== "file" && kind !== "image") ||
         (kind === "image" && !root.supportsAttachments) ||
         root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
@@ -2045,11 +2477,12 @@ Item {
     root.lastFileDir = "out"
     root.lastFileError = ""
     root.lastFilePath = filePath
-    root.setOutgoingFile(c, { id: "", path: filePath, request: requestId, pending: true, cancelRequested: false })
+    root.setOutgoingFile(c, { id: "", path: filePath, request: requestId,
+      key: bindingKey, pending: true, cancelRequested: false })
     root.lastFileTick = root.lastFileTick + 1
     var operation = { op: "file.send", conversation: c, path: filePath,
       kind: kind, id: requestId }
-    var accepted = kind === "image" ? sendImmediateOp(operation) : sendOp(operation)
+    var accepted = root.sendConversationOp(operation, bindingKey, kind === "image")
     if (!accepted) {
       root.setOutgoingFile(c, {})
       root.lastFileState = "failed"
@@ -2059,15 +2492,18 @@ Item {
     }
     return true
   }
-  function cancelOutgoingFile(conv) {
+  function cancelOutgoingFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var transfer = root.outgoingFile(c)
-    if (!transfer.pending || transfer.cancelRequested)
+    if (!root.directBindingMatches(c, expectedKey) ||
+        String(transfer.key || "") !== String(expectedKey || "") ||
+        !transfer.pending || transfer.cancelRequested)
       return false
     root.setOutgoingFile(c, {
       id: transfer.id || "",
       path: transfer.path || "",
       request: transfer.request || "",
+      key: transfer.key || "",
       pending: true,
       cancelRequested: true
     })
@@ -2077,50 +2513,64 @@ Item {
     root.lastFilePath = ""
     root.lastFileTick = root.lastFileTick + 1
     if (transfer.id)
-      root.sendOp({ op: "file.cancel", id: transfer.id })
+      root.sendConversationOp({ op: "file.cancel", conversation: c,
+        id: transfer.id }, expectedKey, false)
     return true
   }
-  function acceptFile(conv) {
+  function acceptFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var offer = fileOffer(c)
-    if (!offer.id)
-      return
-    sendOp({ op: "file.accept", id: offer.id })
-    setFileOffer(c, { id: offer.id, name: offer.name || "", path: offer.path || "", pending: false, active: true })
+    if (!root.directBindingMatches(c, expectedKey) ||
+        String(offer.key || "") !== String(expectedKey || "") || !offer.id)
+      return false
+    if (!root.sendConversationOp({ op: "file.accept", conversation: c,
+          id: offer.id }, expectedKey, false))
+      return false
+    setFileOffer(c, { id: offer.id, name: offer.name || "", path: offer.path || "",
+      key: offer.key || "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
+    return true
   }
-  function cancelFile(conv) {
+  function cancelFile(conv, expectedKey) {
     var c = String(conv || root.lastFileConv || "")
     var offer = fileOffer(c)
-    if (!offer.id)
-      return
-    sendOp({ op: "file.cancel", id: offer.id })
-    setFileOffer(c, { id: offer.id, name: offer.name || "", path: "", pending: false, active: true })
+    if (!root.directBindingMatches(c, expectedKey) ||
+        String(offer.key || "") !== String(expectedKey || "") || !offer.id)
+      return false
+    if (!root.sendConversationOp({ op: "file.cancel", conversation: c,
+          id: offer.id }, expectedKey, false))
+      return false
+    setFileOffer(c, { id: offer.id, name: offer.name || "", path: "",
+      key: offer.key || "", pending: false, active: true })
     if (c === root.lastFileConv)
       root.pendingFile = false
+    return true
   }
-  function startCall(conv) {
+  function startCall(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
     if (!c || c.charAt(0) === "g")
       return false
     root.callToneSuppressed = false
-    return sendOp({ op: "call.start", conversation: c })
+    return root.sendConversationOp({ op: "call.start", conversation: c },
+      expectedKey, false)
   }
-  function answerCall(conv) {
+  function answerCall(conv, expectedKey) {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
     if (!c || c.charAt(0) === "g")
       return false
-    if (!sendOp({ op: "call.answer", conversation: c }))
+    if (!root.sendConversationOp({ op: "call.answer", conversation: c },
+          expectedKey, false))
       return false
     root.callToneSuppressed = true
     return true
   }
-  function stopCall(conv) {
+  function stopCall(conv, expectedKey) {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
     if (!c || c.charAt(0) === "g")
       return false
-    if (!sendOp({ op: "call.stop", conversation: c }))
+    if (!root.sendConversationOp({ op: "call.stop", conversation: c },
+          expectedKey, false))
       return false
     root.callToneSuppressed = true
     return true
@@ -2157,6 +2607,12 @@ Item {
     root.pendingHandshakeEvents = []
     root.pendingHandshakeBytes = 0
     root.handshakeEventOverflow = false
+    root.pendingDirectEvents = []
+    root.pendingDirectEventBytes = 0
+    root.pendingDirectEventOverflow = false
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.friendsReady = false
     root.fileOffers = ({})
     root.outgoingFiles = ({})
     root.fileNotices = ({})
@@ -2165,6 +2621,7 @@ Item {
     root.pendingHistoryUnread = ({})
     root.historyRetryTickByConversation = ({})
     root.historyRequestByConversation = ({})
+    root.historyKeyByConversation = ({})
     root.lastHistoryItems = []
     root.lastHistoryConv = ""
     root.lastHistoryFailedConv = ""
@@ -2182,6 +2639,7 @@ Item {
     root.lastChatKind = ""
     root.lastChatSender = ""
     root.lastChatRequest = ""
+    root.lastChatKey = ""
     root.lastChatConv = ""
     root.lastAttachmentInspectionRequest = ""
     root.lastAttachmentInspectionPath = ""
@@ -2224,6 +2682,7 @@ Item {
     root.selfAvatar = ""
     root.lastConversation = ""
     root.lastDirectId = ""
+    root.lastDirectKey = ""
     root.selectedConversation = ""
     root.selectedDirectId = ""
     root.selectedDirectKey = ""
@@ -2264,13 +2723,20 @@ Item {
     root.connectionState = "starting"
     root.lastCallState = ""
     root.lastCallConv = ""
+    root.lastCallKey = ""
     root.callToneSuppressed = true
     root.callDurationSeconds = 0
     root.friends = []
+    root.friendsTick = root.friendsTick + 1
     root.pendingFriendGeneration = ""
     root.pendingFriendBuild = []
     root.surfaces = []
     root.surfacesTick = root.surfacesTick + 1
+    root.lastAutoOpenItems = []
+    root.lastAutoOpenDirectDefault = true
+    root.lastAutoOpenRequest = ""
+    root.lastAutoOpenCode = ""
+    root.lastAutoOpenSucceeded = false
     root.persistentWarning = ""
     root.lastError = expectedImport ? "" : "identity_changed"
     root.lastErrorRequest = ""
@@ -2288,7 +2754,9 @@ Item {
     for (key in root.outgoingFiles) {
       var transfer = root.outgoingFiles[key]
       if (transfer && transfer.pending) {
-        next[key] = { id: transfer.id || "", path: transfer.path || "", request: transfer.request || "", pending: false, cancelRequested: false }
+        next[key] = { id: transfer.id || "", path: transfer.path || "",
+          request: transfer.request || "", key: transfer.key || "", pending: false,
+          cancelRequested: false }
         failed.push(key)
         if (transfer.request)
           failedRequests[String(transfer.request)] = true
@@ -2334,6 +2802,12 @@ Item {
     root.legacySnapshotSeen = false
     root.awaitingHelperInstance = false
     root.helperStatusNonce = ""
+    root.pendingDirectEvents = []
+    root.pendingDirectEventBytes = 0
+    root.pendingDirectEventOverflow = false
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.friendsReady = false
     root.recoveringHelper = true
     root.connectionState = "reconnecting"
     root.selfOnline = false

@@ -98,6 +98,15 @@ int omaq_file_busy(void)
 	return 0;
 }
 
+int omaq_file_friend_active(uint32_t friend)
+{
+	for (int i = 0; i < XFERS; i++)
+		if ((xf[i].used && xf[i].friend == friend) ||
+		    (of[i].used && of[i].friend == friend))
+			return 1;
+	return 0;
+}
+
 void omaq_file_reset(void)
 {
 	int i;

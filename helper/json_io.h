@@ -31,6 +31,7 @@ typedef struct {
 	int accept;
 	int replace;
 	int pinned;
+	int enabled;
 	int typing;
 	int x, y;
 	int has_text;
@@ -39,6 +40,7 @@ typedef struct {
 	int has_accept;
 	int has_replace;
 	int has_pinned;
+	int has_enabled;
 	int has_typing;
 } omaq_op;
 

@@ -197,6 +197,12 @@ int main(void)
 	}
 	if (omaq_file_offer_store(11, 15, "bad\001name.bin", 4) == 0)
 		fail("file offer control character rejection");
+	if (omaq_file_offer_store(11, 16, "pending.bin", 4) != 0 ||
+	    !omaq_file_friend_active(11) || omaq_file_friend_active(12))
+		fail("friend-specific file busy state");
+	omaq_file_offer_drop(11, 16);
+	if (omaq_file_friend_active(11))
+		fail("friend-specific file busy cleanup");
 
 	/* Collision suffixes preserve the extension used for audio classification. */
 	{

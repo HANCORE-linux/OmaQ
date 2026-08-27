@@ -1,7 +1,7 @@
 #!/bin/sh
 # Two identities, two homes: invite + one text. Requires a HAVE_TOX helper.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "two-homes: no helper" >&2; exit 1; }
 
@@ -15,6 +15,7 @@ holda=$(mktemp -u /tmp/omaq-fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-fb-XXXXXX)
 pa=""
 pb=""
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -68,11 +69,21 @@ if [ "$ok" -ne 1 ]; then
 	exit 1
 fi
 echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+i=0
+friend_key=""
+while [ "$i" -lt 60 ]; do
+	friend_key=$(grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' |
+		tail -1 | sed -n 's/.*"key":"\([0-9a-f]*\)".*/\1/p')
+	[ "${#friend_key}" -eq 64 ] && break
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "${#friend_key}" -eq 64 ] || { echo "two-homes: stable friend key missing" >&2; exit 1; }
 
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do
-	printf '{"op":"msg.send","conversation":"0","text":"ping","id":"two-homes-ping-%s"}\n' "$i" >&3
+	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"ping","id":"two-homes-ping-%s"}\n' "$friend_key" "$i" >&3
 	sleep 1
 	if grep -q '"message"' "$fb"; then
 		sent=1
