@@ -9,9 +9,9 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Manifest version:** `0.8.0` in source and on both live systems
 - **Source:** `/home/hancore/Projects/omaq`
 - **Live plugins:** `~/.config/omarchy/plugins/hancore.omaq` on machine and `/home/drdeltree/.config/omarchy/plugins/hancore.omaq` on machine2
-- **Source commit:** local `main` and `origin/main` are both `91fda31`; compositor click-away dismissal is the only current uncommitted follow-up
-- **Live machine:** Protocol 10 at `91fda31`; deployed helper SHA-256 `d883580a5756296df44968f6a3b68c4ede44b02c00dd79de671d667b916a530f`
-- **Live machine2:** the same Protocol-10 deployment at `192.168.2.108`; deployed helper SHA-256 `d883580a5756296df44968f6a3b68c4ede44b02c00dd79de671d667b916a530f`
+- **Source release:** local `main` is `4a00e0f`; `origin/main` remains `91fda31` until the separately approved push
+- **Live machine:** Protocol 10 with the `4a00e0f` panel and helper SHA-256 `d883580a5756296df44968f6a3b68c4ede44b02c00dd79de671d667b916a530f`
+- **Live machine2:** the same Protocol-10 runtime at `192.168.2.108`, with the same panel and helper hash
 - **AUR:** paused; no registration or upload
 - **User guide:** [`USER-GUIDE.md`](USER-GUIDE.md)
 
@@ -47,7 +47,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The helper continues to bind `Remove contact` and targeted group invitations to the selected contact's stable public key, which it rechecks immediately before destructive or transport actions.
 - A process-wide owner loops the bundled `phone.oga` progress tone for incoming and outgoing ringing, stops it on answer, decline, hangup, or terminal state, and prevents duplicate playback across monitor surfaces.
 
-### Committed and deployed through `91fda31`
+### Committed and deployed through `4a00e0f`
 
 - Normal file cancellation is projected to both peers as `file.canceled`, with a persistent dismissible status instead of a silent clear or generic failure. Correlated group-invite success remains visible as sent and waiting for acceptance. Incoming and legacy avatars pass exclusive no-follow staging, full PNG/JPEG/WebP decoding, dimension and decoded-memory bounds, adaptive canonical-PNG sizing, atomic installation, and crash-temp cleanup before they are exposed to QML.
 - Direct history, avatars, Ratchet pins, Signal identities, Signal sessions, unread counts, and receipt debt use the contact's canonical Tox public key instead of the unstable numeric friend handle. A versioned private binding file authorizes legacy migration before Ratchet startup and after unlock; unbound numeric state is archived with a reinvite warning, while collisions, malformed input, oversized friend lists, and symlinked paths fail closed. Per-peer one-time prekeys are unique, peer-bound, persisted before publication, durably consumed, and replay-safe across restart. Exact, canonical `OQB2` requests and durable responses recover half-sessions and lost prekeys without duplicate ping-pong; malformed records, wrong-peer consumption, interrupted writes, and failed session rollback fail closed.
@@ -69,11 +69,11 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 ## Latest validation
 
-Protocol 10 passes the full unit/IPC sanitizer suite, hardened helper and no-Signal builds, architecture checks, plugin validation, Service/ChatSurface/ChatPage QML lint, phases 2, 5, and 8, EncryptSave, and focused identity-guard, Protocol-7 local-helper compatibility, structured-reinvite, input-mask, surface-owner, nonblocking-invite, clipboard-bound, orphan-cleanup, and verified-uninstall regressions. Identity-guard coverage restores a sandbox Tox savedata containing a real contact and verifies the same public fingerprint/contact count; missing primary and recovery copies fail closed without creating `tox.save`. A historical Protocol-7 sandbox migration retained the exact Tox public key and projected contact while entering structured direct-chat recovery. Its cross-version Friend Request was delivered, but the Protocol-10↔7 encrypted-message run was inconclusive because both historical endpoints stayed offline; current Protocol-10↔10 Ratchet messaging passed on an isolated retry after one relay-connect timeout. Both live systems run this Protocol-10 baseline. The uncommitted click-away follow-up passes the full test target, focused input-mask regression, plugin validation, core QML lint, and an independent zero-finding QML review. Native separate-network, real clipboard/drop, multi-monitor handoff, click-away interaction, and floating/tiling acceptance remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
+Protocol 10 passes the full unit/IPC sanitizer suite, hardened helper and no-Signal builds, architecture checks, plugin validation, Service/ChatSurface/ChatPage QML lint, phases 2, 5, and 8, EncryptSave, and focused identity-guard, Protocol-7 local-helper compatibility, structured-reinvite, input-mask, surface-owner, nonblocking-invite, clipboard-bound, orphan-cleanup, and verified-uninstall regressions. Identity-guard coverage restores a sandbox Tox savedata containing a real contact and verifies the same public fingerprint/contact count; missing primary and recovery copies fail closed without creating `tox.save`. A historical Protocol-7 sandbox migration retained the exact Tox public key and projected contact while entering structured direct-chat recovery. Its cross-version Friend Request was delivered, but the Protocol-10↔7 encrypted-message run was inconclusive because both historical endpoints stayed offline; current Protocol-10↔10 Ratchet messaging passed on an isolated retry after one relay-connect timeout. Both live systems run this Protocol-10 baseline. The click-away follow-up passes the full test target, focused input-mask regression, plugin validation, core QML lint, an independent zero-finding QML review, and native local interaction. Native separate-network, real clipboard/drop, multi-monitor handoff, and floating/tiling acceptance remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
 
 ## Next order
 
-1. Run native Wayland click-away, separate-network, group-invite, image, and floating/tiling acceptance without deploying this worktree to the live plugin silently.
-2. Commit, push, and live-sync the click-away follow-up only after fresh approval for each separate delivery phase.
+1. Run native separate-network, group-invite, image, and floating/tiling acceptance without changing the live plugin silently.
+2. Keep commit, push, and live synchronization as separately approved delivery phases.
 3. Investigate the remaining Panel QML toolchain failure.
 4. Resume Phase 7/AUR only after registration and a new explicit go.
