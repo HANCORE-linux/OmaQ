@@ -1,4 +1,4 @@
-# Current status — 2026-08-28
+# Current status: 2026-08-28
 
 This is the current product snapshot. It intentionally contains no historical phase notes or discarded ideas.
 
@@ -7,13 +7,13 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
 - **Manifest version:** `0.8.0` in source and on both live systems
-- **Source:** `/home/hancore/Projects/omaq`
-- **Live plugins:** `~/.config/omarchy/plugins/hancore.omaq` on machine and `/home/drdeltree/.config/omarchy/plugins/hancore.omaq` on machine2
-- **Source release:** local `main` is `62866f1`; `origin/main` remains `78888ea`
-- **Live machine:** synchronized through `62866f1`, running Protocol 12 with helper SHA-256 `551eade7480d790af1a27f4d1dcaa505d1578462204d2c2a5daced7d829d5bdd`
-- **Live machine2:** the same synchronized Protocol-12 runtime at `192.168.2.108`, with the same helper hash
+- **Source:** repository `main` branch
+- **Live plugins:** current OmaQ runtime on machine and machine2
+- **Runtime baseline:** `98570e3`, running Protocol 13 on source and both live systems
+- **Live machine:** synchronized through `98570e3`, with helper SHA-256 `bc694afb9b9b8bacb79834e448fade49242d082aed211f3dba63479d0423bdff`
+- **Live machine2:** the same 75-file Protocol-13 runtime and helper hash
 - **AUR:** paused; no registration or upload
-- **User guide:** [`USER-GUIDE.md`](USER-GUIDE.md)
+- **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 36 current Machine2 QML captures
 
 ## Working functionality
 
@@ -74,10 +74,10 @@ This is the current product snapshot. It intentionally contains no historical ph
 - GroupChat exposes the Direct composer’s file picker, image selection, clipboard paste, drag-and-drop, canonical staging, 56×56 preview, accept/decline, cancel, history bubble, playback, and path actions. VoiceCall remains Direct-only.
 - Since Tox NGC has no native file primitive, the helper broadcasts only a versioned bounded offer and sends at most 8 MiB privately through ordered lossless NGC packets to each member recorded online at offer time who accepts. Transfer state is bound to the stable group ID, sender member key, durably reserved random transfer ID, exact size, and SHA-256 digest. Application ACK/FAIL distinguishes confirmed, failed, partial, and unknown delivery; sender history is written only while the original source path, inode, size, and content still match. Malformed frames, sender/peer reuse, path errors, hash mismatches, stalls, and unsupported images fail closed; older helpers ignore the envelope.
 
-### Uncommitted Protocol-13 GroupChat remediation
+### Committed and deployed Protocol-13 GroupChat remediation
 
-- Arbitrary valid Unicode-17 emoji-only sequences—including skin tones, ZWJ families, flags, keycaps, and emoji outside the picker—use the same 56-pixel message presentation in DirectChat and GroupChat. Mixed text and non-emoji symbol blocks remain normal-sized.
-- Clipboard images now produce explicit reconnect/update errors instead of disappearing into the text paste path, while text paste remains available during reconnect and with older helpers. The private stage → bounded clipboard copy → canonical image inspection → pending 56×56 preview path has an offscreen end-to-end regression, keeps the preview on transient send failure, and lets the helper—not a transient QML group list—authorize the eventual group send. Stages are bound to their IPC client and are discarded if that client disconnects before transfer adoption.
+- Arbitrary valid Unicode-17 emoji-only sequences, including skin tones, ZWJ families, flags, keycaps, and emoji outside the picker, use the same 56-pixel message presentation in DirectChat and GroupChat. Mixed text and non-emoji symbol blocks remain normal-sized.
+- Clipboard images now produce explicit reconnect/update errors instead of disappearing into the text paste path, while text paste remains available during reconnect and with older helpers. The private stage → bounded clipboard copy → canonical image inspection → pending 56×56 preview path has an offscreen end-to-end regression, keeps the preview on transient send failure, and lets the helper, not a transient QML group list, authorize the eventual group send. Stages are bound to their IPC client and are discarded if that client disconnects before transfer adoption.
 - Protocol 13 binds every complete group projection to helper instance, request, generation, expected group count, and expected member count. Service validates the full snapshot before replacing its last good list, retries incomplete projections, and asks the helper for a fresh list whenever the panel's Groups section opens. The panel distinguishes Loading/Unavailable from an authoritative empty list. Quickshell now starts the helper detached and reconnects only through its private socket, so restarting or reloading the shell attaches to the same helper PID/instance instead of destroying in-memory private NGC memberships.
 - Group typing uses a separately rate-limited lossless `OQGT1` custom packet tied to the current group/member key and expires in Service without consuming receipt/action budgets. Group receipts are persisted and projected per stable member key, so one member's Read no longer presents as if every group member read the message.
 
@@ -90,13 +90,13 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 ## Latest validation
 
-Protocol 10 passes the full unit/IPC sanitizer suite, hardened helper and no-Signal builds, architecture checks, plugin validation, Service/ChatSurface/ChatPage QML lint, phases 2, 5, and 8, EncryptSave, and focused identity-guard, Protocol-7 local-helper compatibility, structured-reinvite, input-mask, surface-owner, nonblocking-invite, clipboard-bound, orphan-cleanup, and verified-uninstall regressions. Identity-guard coverage restores a sandbox Tox savedata containing a real contact and verifies the same public fingerprint/contact count; missing primary and recovery copies fail closed without creating `tox.save`. A historical Protocol-7 sandbox migration retained the exact Tox public key and projected contact while entering structured direct-chat recovery. Its cross-version Friend Request was delivered, but the Protocol-10↔7 encrypted-message run was inconclusive because both historical endpoints stayed offline; current Protocol-10↔10 Ratchet messaging passed on an isolated retry after one relay-connect timeout. Both live systems now run the validated Protocol-11 baseline. The click-away follow-up passes the full test target, focused input-mask regression, plugin validation, core QML lint, an independent zero-finding QML review, and native local interaction. Native separate-network, real clipboard/drop, multi-monitor handoff, and floating/tiling acceptance remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
+The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-The Protocol-11 follow-up passes `make clean && make test`, hardened helper and no-Signal builds, architecture checks, plugin validation, ShellCheck, core QML lint, phases 2, 4, 5, 6, and 8, EncryptSave, Ratchet restart, and two-home messaging. Phase 6 verifies that active files and calls block contact removal; Phase 8 verifies stable Direct surfaces, required Direct keys, transfer/conversation binding, helper-owned Auto-open archival and rewrite, Direct Search keys, and no transport under a wrong binding. Two adversarial QML/AppSec reviews ended with zero findings after remediation.
+Both live systems contain the same 75 runtime files, run exactly one Protocol-13 helper, and retained the same helper PID and instance across the latest QML synchronizations. Their latest authoritative projection contained zero groups and zero members. Machine2 separately reports `direct_state_reinvite_required`; its identity and Tox contacts remain present.
 
-The Protocol-12 worktree passes `make clean && make test`, hardened helper and no-Signal builds, architecture checks, plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, and two-home messaging. Phase 3 now uses a valid pre-group Identity-Guard snapshot for orphan pruning and transfers, verifies, persists, renders, and cancels real group files; it also verifies delayed acceptance, canonical group-image receipt, source-mutation failure, and application acknowledgement. Focused unit coverage verifies strict framing and durable transfer-ID reservation. Multiple adversarial QML/AppSec review passes ended with zero findings after remediation. Native three-peer packet-injection/mixed-result coverage and Wayland interaction remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
+The illustrated guide uses 36 cropped original views from current Machine2 QML components. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
 
-The uncommitted Protocol-13 remediation passes `make clean && make test`, hardened/full/no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, detached-helper reconnect and cross-client attachment-ownership tests, clipboard-image staging end to end, text-paste compatibility, Unicode emoji grammar/render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML/AppSec passes ended with zero findings after the final ownership and ZWJ fixes. A real Wayland clipboard/config-reload interaction and native three-peer typing/receipt aggregation remain open.
+The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclusive because both endpoints did not remain connected to relays. Native three-peer packet injection, mixed group-file results, acknowledgement loss, file-history write failures, and transfer-ID-store crash injection remain open. Native separate-network, group-invite, theme, multi-monitor, and floating-versus-tiling acceptance also remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
 
 ## Next order
 
