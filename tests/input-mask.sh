@@ -23,6 +23,13 @@ if "!root.avatarRestorePending" not in header or \
     raise SystemExit("input-mask: pending or active external pickers can be dismissed by the panel focus grab")
 if "onBackingWindowActiveChanged:" not in header:
     raise SystemExit("input-mask: popup lost non-grab focus dismissal")
+button_start = text.index("  BarIconButton {\n    id: button")
+button_end = text.index("  Rectangle {\n    id: unreadBadge", button_start)
+button = text[button_start:button_end]
+if "root.toggle()" not in button:
+    raise SystemExit("input-mask: OmaQ bar action no longer toggles the panel")
+if "panelCloseButton" in text or 'tooltipText: "Close panel"' in text:
+    raise SystemExit("input-mask: redundant header Close action returned")
 PY
 python3 - "$root/pages/ChatPage.qml" <<'PY'
 from pathlib import Path
@@ -35,8 +42,5 @@ if "radius: Style.cornerRadius" not in tooltip:
     raise SystemExit("input-mask: chat tooltip lost the reactive theme radius")
 PY
 grep -q 'Keys.onEscapePressed: root.close()' "$panel"
-grep -q 'id: panelCloseButton' "$panel"
-grep -q 'tooltipText: "Close panel"' "$panel"
-grep -q 'onClicked: root.close()' "$panel"
 grep -q 'mask: Region { item: cardColumn }' "$chat"
 echo "input-mask: ok"

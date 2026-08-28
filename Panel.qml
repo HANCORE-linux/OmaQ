@@ -2477,7 +2477,7 @@ BarWidget {
               id: selfHeaderContent
               visible: !omaq.pending
               width: Math.max(0, parent.width - selfHeaderAvatar.width -
-                              panelCloseButton.width - parent.spacing * 2)
+                              parent.spacing)
               anchors.verticalCenter: parent.verticalCenter
               spacing: 0
 
@@ -2616,7 +2616,7 @@ BarWidget {
             RowLayout {
               id: pendingRequestContent
               visible: omaq.pending
-              width: Math.max(0, parent.width - panelCloseButton.width - parent.spacing)
+              width: parent.width
               height: parent.height
               spacing: Style.space(5)
               Accessible.name: omaq.pendingGroup
@@ -2692,24 +2692,6 @@ BarWidget {
                 verticalPadding: Style.space(2)
                 onClicked: omaq.decide(false)
               }
-            }
-
-            TokenButton {
-              id: panelCloseButton
-              anchors.verticalCenter: parent.verticalCenter
-              width: Style.space(24)
-              height: Style.space(30)
-              borderless: true
-              iconText: "close"
-              iconFontFamily: "Material Symbols Rounded"
-              tooltipText: "Close panel"
-              accessibleName: tooltipText
-              focusable: true
-              foreground: root.foreground
-              accent: root.systemColors[3] || root.controlAccent
-              horizontalPadding: Style.space(2)
-              verticalPadding: Style.space(2)
-              onClicked: root.close()
             }
           }
         }

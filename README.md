@@ -12,6 +12,8 @@ No signup and no email: the identity is created on this machine. No phone number
 
 Traffic is Tox end-to-end; 1:1 text also uses the Signal Double Ratchet. Relays cannot read messages. OmaQ keeps Tox in TCP-relay privacy mode with direct UDP discovery and hole punching disabled, so contacts do not receive each other's IP addresses. You can lock `tox.save` with a passphrase and revoke or rotate an invite if a link leaks. That passphrase does not encrypt local Ratchet state, avatars, receipts, or chat history; those remain protected by private filesystem permissions.
 
+OmaQ is not a service. There are no accounts, no OmaQ servers, and no operator: the author runs no infrastructure and cannot access, intercept, recover, or delete your messages, identities, or contacts. To join the Tox network and exchange traffic, OmaQ connects to a small set of public bootstrap and relay nodes run by Tox community volunteers, not by this project. These nodes help clients discover the network and forward end-to-end encrypted packets, but they cannot read message contents. Everything OmaQ stores remains on your machine. OmaQ supports lawful private communication between people who trust each other.
+
 ## How OmaQ works
 
 ![How OmaQ messages travel](docs/images/omaq-message-flow.png)

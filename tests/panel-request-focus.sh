@@ -30,9 +30,11 @@ for marker in required:
 
 self_start = panel.index("id: selfHeaderContent")
 pending_start = panel.index("id: pendingRequestContent")
-close_start = panel.index("id: panelCloseButton", pending_start)
+support_start = panel.index("id: supportLinks", pending_start)
 self_block = panel[self_start:pending_start]
-pending_block = panel[pending_start:close_start]
+pending_block = panel[pending_start:support_start]
+if "id: panelCloseButton" in panel or 'tooltipText: "Close panel"' in panel:
+    raise SystemExit("panel-request-focus: redundant panel Close action remains")
 if 'text: "YOU · " + root.connectionLabel().toUpperCase()' not in self_block:
     raise SystemExit("panel-request-focus: normal self status is missing")
 for forbidden in ("omaq.selfAvatar", "omaq.selfNickname", '"YOU · "'):
@@ -141,7 +143,6 @@ aliases = '''  property alias testService: omaq
   property alias testRequestContext: pendingRequestContext
   property alias testAcceptButton: pendingAcceptButton
   property alias testDeclineButton: pendingDeclineButton
-  property alias testCloseButton: panelCloseButton
   property alias testHeaderRow: heroHeaderRow
 '''
 if panel.count(needle) != 1:
@@ -193,6 +194,9 @@ ShellRoot {
         testRoot.check(panel.testSelfAvatar.visible, "self avatar hidden without request")
         testRoot.check(panel.testSelfContent.visible, "self content hidden without request")
         testRoot.check(!panel.testRequestContent.visible, "request visible without request")
+        testRoot.check(Math.abs(panel.testSelfAvatar.width + panel.testSelfContent.width +
+                                panel.testHeaderRow.spacing - panel.testHeaderRow.width) < 1,
+                       "self header geometry overflow")
         panel.testService.pendingGroup = false
         panel.testService.pending = true
       } else if (testRoot.step === 2) {
@@ -214,11 +218,8 @@ ShellRoot {
                        panel.testDeclineButton.width === Style.space(28) &&
                        panel.testDeclineButton.height === Style.space(28),
                        "request action sizing changed")
-        testRoot.check(panel.testCloseButton.width === Style.space(24) &&
-                       panel.testCloseButton.height === Style.space(30),
-                       "Close sizing changed")
-        testRoot.check(Math.abs(panel.testRequestContent.width + panel.testCloseButton.width +
-                                panel.testHeaderRow.spacing - panel.testHeaderRow.width) < 1,
+        testRoot.check(Math.abs(panel.testRequestContent.width -
+                                panel.testHeaderRow.width) < 1,
                        "request header geometry overflow")
         panel.testService.pendingGroup = true
       } else if (testRoot.step === 3) {
