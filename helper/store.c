@@ -426,6 +426,102 @@ fail:
 	return -1;
 }
 
+static int group_receipt_field_count(const char *line)
+{
+	static const char marker[] = ",\"receipt_group_";
+	const char *cursor = line;
+	int count = 0;
+
+	while (cursor && (cursor = strstr(cursor, marker)) != NULL) {
+		const char *key = cursor + sizeof(marker) - 1;
+		int valid = strlen(key) >= 66;
+		for (size_t i = 0; valid && i < 64; i++)
+			if (!((key[i] >= '0' && key[i] <= '9') ||
+			      (key[i] >= 'a' && key[i] <= 'f')))
+				valid = 0;
+		if (valid && key[64] == '\"' && key[65] == ':')
+			count++;
+		cursor = key;
+	}
+	return count;
+}
+
+static int update_file_group_receipt(const char *path, const char *id,
+				     const char *state, const char *field)
+{
+	char **lines = NULL, tmp[640];
+	size_t n = 0, cap = 0, i;
+	int changed = 0, matched = 0, failed = 0;
+	FILE *f;
+
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		return -1;
+	for (i = 0; i < n; i++) {
+		char id_needle[128], field_needle[128], delivered[160], read[160];
+		char *marked = NULL;
+		if (snprintf(id_needle, sizeof(id_needle), "\"id\":\"%s\"", id) >=
+		    (int)sizeof(id_needle) || !strstr(lines[i], id_needle) ||
+		    !strstr(lines[i], "\"from\":\"me\""))
+			continue;
+		matched = 1;
+		if (snprintf(field_needle, sizeof(field_needle), "\"%s\":", field) >=
+			(int)sizeof(field_needle) ||
+		    snprintf(delivered, sizeof(delivered), "\"%s\":\"delivered\"", field) >=
+			(int)sizeof(delivered) ||
+		    snprintf(read, sizeof(read), "\"%s\":\"read\"", field) >=
+			(int)sizeof(read)) {
+			failed = 1;
+			break;
+		}
+		if (strstr(lines[i], read) ||
+		    (strcmp(state, "delivered") == 0 && strstr(lines[i], delivered)))
+			break;
+		if (!strstr(lines[i], field_needle) && group_receipt_field_count(lines[i]) >= 9) {
+			failed = 1;
+			break;
+		}
+		if (append_string_field(lines[i], field, state, &marked) != 0) {
+			failed = 1;
+			break;
+		}
+		free(lines[i]);
+		lines[i] = marked;
+		changed = 1;
+		break;
+	}
+	if (!changed) {
+		for (i = 0; i < n; i++)
+			free(lines[i]);
+		free(lines);
+		return failed ? -1 : (matched ? 2 : 0);
+	}
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >=
+		(int)sizeof(tmp) || !(f = safe_fopen(tmp, "w")))
+		goto fail;
+	if (fchmod(fileno(f), 0600) != 0)
+		goto close_fail;
+	for (i = 0; i < n; i++)
+		if (fprintf(f, "%s\n", lines[i]) < 0)
+			goto close_fail;
+	if (fclose(f) != 0)
+		goto fail_tmp;
+	if (safe_rename(tmp, path) != 0)
+		goto fail;
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	return 1;
+close_fail:
+	fclose(f);
+fail_tmp:
+	safe_unlink(tmp);
+fail:
+	for (i = 0; i < n; i++)
+		free(lines[i]);
+	free(lines);
+	return -1;
+}
+
 static int group_reaction_field_count(const char *line)
 {
 	static const char marker[] = ",\"reaction_group_";
@@ -646,6 +742,40 @@ int omaq_store_update_receipt_changed(const char *home, const char *conv_id,
 	if (result < 0)
 		return -1;
 	result = update_file_receipt(rot, id, state);
+	if (result == 1)
+		return 1;
+	if (result == 2)
+		return 0;
+	return result < 0 ? -1 : -2;
+}
+
+int omaq_store_update_group_receipt_changed(const char *home, const char *conv_id,
+					    const char *id, const char *state,
+					    const char *actor_key)
+{
+	char path[576], rot[580], field[96];
+	int result;
+
+	if (!home || !conv_id || !id || !id[0] || !state || !actor_key ||
+	    (strcmp(state, "delivered") != 0 && strcmp(state, "read") != 0) ||
+	    strlen(actor_key) != 64)
+		return -1;
+	for (size_t i = 0; i < 64; i++)
+		if (!((actor_key[i] >= '0' && actor_key[i] <= '9') ||
+		      (actor_key[i] >= 'a' && actor_key[i] <= 'f')))
+			return -1;
+	if (snprintf(field, sizeof(field), "receipt_group_%s", actor_key) >=
+	    (int)sizeof(field) || hist_file(home, conv_id, path, sizeof(path)) != 0 ||
+	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
+		return -1;
+	result = update_file_group_receipt(path, id, state, field);
+	if (result == 1)
+		return 1;
+	if (result == 2)
+		return 0;
+	if (result < 0)
+		return -1;
+	result = update_file_group_receipt(rot, id, state, field);
 	if (result == 1)
 		return 1;
 	if (result == 2)

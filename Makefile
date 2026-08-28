@@ -69,6 +69,11 @@ endif
 ifeq ($(TOX_OK),yes)
   IDENTITY_GUARD_TEST_TARGET := $(BIN_IDENTITY_GUARD_TEST)
 endif
+ifeq ($(IMAGE_OK),yes)
+  CLIPBOARD_E2E_COMMAND := sh tests/clipboard-image-e2e.sh ./$(BIN_IPC_TEST_HELPER)
+else
+  CLIPBOARD_E2E_COMMAND := @echo "clipboard-image-e2e: skipped (image decoders unavailable)"
+endif
 BIN_HELP := helper/omaq
 ifeq ($(TOX_OK)$(SIG_OK)$(PULSE_OK)$(IMAGE_OK),yesyesyesyes)
   REINVITE_TEST_TARGET := $(BIN_HELP)
@@ -149,8 +154,12 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/nonblocking-invite.sh
 	sh tests/input-mask.sh
 	sh tests/surface-owner.sh
+	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/stable-direct-state.sh
 	sh tests/group-chat-parity.sh
+	sh tests/emoji-parity.sh
+	sh tests/chat-composer-parity.sh
+	$(CLIPBOARD_E2E_COMMAND)
 	sh tests/paste-image.sh
 	sh tests/protocol-compat.sh
 	$(REINVITE_TEST_COMMAND)

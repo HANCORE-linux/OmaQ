@@ -89,7 +89,8 @@ int omaq_control_rate_allow(omaq_control_rate *r, char kind, uint32_t group,
 	int oldest = 0;
 
 	if (!r || !actor ||
-	    (kind != 'r' && kind != 'x' && kind != 'e' && kind != 'd') || now < 0 ||
+	    (kind != 'r' && kind != 'x' && kind != 'e' && kind != 'd' && kind != 't') ||
+	    now < 0 ||
 	    snprintf(key, sizeof(key), "%c%u:%.64s", kind, group, actor) >=
 	    (int)sizeof(key))
 		return -1;

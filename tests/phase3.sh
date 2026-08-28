@@ -34,14 +34,22 @@ pb=""
 pc=""
 pd=""
 pe=""
+# shellcheck disable=SC2329 # Invoked by the EXIT-trap cleanup function.
+stop_helper() {
+	[ -n "$1" ] || return 0
+	kill "$1" 2>/dev/null || true
+	sleep 0.2
+	kill -KILL "$1" 2>/dev/null || true
+	wait "$1" 2>/dev/null || true
+}
 # shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 4>&- 5>&- 6>&- 7>&- 2>/dev/null || true
-	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
-	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
-	[ -n "${pc:-}" ] && kill "$pc" 2>/dev/null || true
-	[ -n "${pd:-}" ] && kill "$pd" 2>/dev/null || true
-	[ -n "${pe:-}" ] && kill "$pe" 2>/dev/null || true
+	stop_helper "${pa:-}"
+	stop_helper "${pb:-}"
+	stop_helper "${pc:-}"
+	stop_helper "${pd:-}"
+	stop_helper "${pe:-}"
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$hd" "$sd" "$he" "$se" \
 		"$fa" "$fb" "$fc" "$fd" "$fe" "$busy_export" "$pre_group_save" \
 		"$holda" "$holdb" "$holdc" "$holdd" "$holde" \
@@ -139,6 +147,22 @@ while [ "$i" -lt 40 ]; do
 done
 [ -n "$gid" ] || { echo "phase3: no group id" >&2; exit 1; }
 sleep 1
+
+printf '%s\n' '{"op":"group.list","id":"phase3-group-list-1"}' >&3
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"group.list.begin"' "$fa" |
+	   grep -a -q '"request":"phase3-group-list-1"' &&
+	   grep -a '"event":"group.info"' "$fa" | grep -a '"group":"'"$gid"'"' |
+	   grep -a -q '"request":"phase3-group-list-1"' &&
+	   grep -a '"event":"group.list.end"' "$fa" |
+	   grep -a -q '"request":"phase3-group-list-1"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase3: correlated group projection missing" >&2; exit 1; }
 
 greq_before=$(grep -a -c '"kind":"group"' "$fb" 2>/dev/null || true)
 greq_before=${greq_before:-0}
@@ -635,7 +659,7 @@ printf '{"op":"receipt.send","conversation":"%s","id":"%s","state":"read"}\n' "$
 i=0
 while [ "$i" -lt 40 ]; do
 	if grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$message_id"'"' |
-	   grep -a -q '"state":"read"'; then
+	   grep -E -a -q '"state":"read","actor":"[0-9a-f]{64}"'; then
 		break
 	fi
 	i=$((i + 1))
@@ -656,6 +680,28 @@ read_events_after=$(grep -a '"event":"receipt"' "$fa" | grep -a '"id":"'"$messag
 	echo "phase3: duplicate group receipt emitted repeated updates" >&2
 	exit 1
 }
+printf '{"op":"typing.set","conversation":"%s","typing":true}\n' "$recipient_gid" >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"typing"' "$fa" | grep -a '"conversation":"'"$gid"'"' |
+	   grep -E -a -q '"actor":"[0-9a-f]{64}","typing":true'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 40 ] || { echo "phase3: group typing start missing" >&2; exit 1; }
+printf '{"op":"typing.set","conversation":"%s","typing":false}\n' "$recipient_gid" >&4
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"typing"' "$fa" | grep -a '"conversation":"'"$gid"'"' |
+	   grep -E -a -q '"actor":"[0-9a-f]{64}","typing":false'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 40 ] || { echo "phase3: group typing stop missing" >&2; exit 1; }
 
 if [ -n "$member_key" ]; then
 	echo '{"op":"status","id":"phase3-before-kick"}' >&4
@@ -670,7 +716,20 @@ if [ -n "$member_key" ]; then
 	done
 	[ "$i" -lt 30 ] || { echo "phase3: pre-kick unread fixture missing" >&2; exit 1; }
 	printf '{"op":"group.member.setRole","group":"%s","member":"%s","role":"member"}\n' "$gid" "$member_key" >&3
-	sleep 0.5
+	i=0
+	while [ "$i" -lt 50 ]; do
+		if grep -a '"event":"group.member"' "$fa" | grep -a '"group":"'"$gid"'"' |
+		   grep -a '"key":"'"$member_key"'"' | tail -1 |
+		   grep -a -q '"role":"member"' &&
+		   grep -a '"event":"group.member"' "$fb" | grep -a '"group":"'"$gid"'"' |
+		   grep -a '"key":"'"$member_key"'"' | tail -1 |
+		   grep -a -q '"role":"member"'; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	[ "$i" -lt 50 ] || { echo "phase3: member role did not converge before kick" >&2; exit 1; }
 	self_leave_before=$(grep -a '"event":"group.changed"' "$fb" | grep -a '"group":"'"$gid"'"' |
 		grep -a -c '"action":"leave"' || true)
 	leave_notices_before=$(grep -a '"event":"message"' "$fa" | grep -a '"dir":"sys"' |

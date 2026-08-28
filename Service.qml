@@ -56,6 +56,8 @@ Item {
   readonly property bool supportsRedeemResults: root.activeHelperProtocol >= 10
   readonly property bool supportsStableDirectState: root.activeHelperProtocol >= 11
   readonly property bool supportsGroupAttachments: root.activeHelperProtocol >= 12
+  readonly property bool supportsCorrelatedGroupProjection: root.activeHelperProtocol >= 13
+  readonly property bool supportsGroupTyping: root.activeHelperProtocol >= 13
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -97,6 +99,16 @@ Item {
   property var pendingGroupBuild: ({})
   property var pendingGroupOrder: []
   property string pendingGroupGeneration: ""
+  property string pendingGroupRequest: ""
+  property string expectedGroupRequest: ""
+  property int pendingGroupExpectedGroups: -1
+  property int pendingGroupExpectedMembers: -1
+  property int pendingGroupReceivedMembers: 0
+  property bool pendingGroupInvalid: false
+  property int lastGroupGeneration: 0
+  property int groupRefreshSequence: 0
+  property int groupRefreshAttempts: 0
+  property bool groupProjectionFailed: false
   property int groupsTick: 0
   property string lastGroupInviteSentGroup: ""
   property string lastGroupInviteSentFriend: ""
@@ -166,6 +178,7 @@ Item {
   property string lastReceiptConv: ""
   property string lastReceiptId: ""
   property string lastReceiptState: ""
+  property string lastReceiptActor: ""
   property int receiptTick: 0
   property string lastReceiptSentConv: ""
   property string lastReceiptSentId: ""
@@ -182,6 +195,7 @@ Item {
   property string lastConversationReadFailedCode: ""
   property int conversationReadFailedTick: 0
   property var peerTypingByConv: ({})
+  property var groupTypingByConv: ({})
   property int typingTick: 0
   property var lastSurface: ({})
   property var surfaces: []
@@ -336,6 +350,120 @@ Item {
         !root.supportsStableDirectState)
       return true
     return root.directBindingMatches(conversation, String(ev.key || ""))
+  }
+
+  function clearPendingGroupProjection() {
+    root.pendingGroupGeneration = ""
+    root.pendingGroupRequest = ""
+    root.pendingGroupBuild = ({})
+    root.pendingGroupOrder = []
+    root.pendingGroupExpectedGroups = -1
+    root.pendingGroupExpectedMembers = -1
+    root.pendingGroupReceivedMembers = 0
+    root.pendingGroupInvalid = false
+  }
+
+  function beginGroupProjection(event) {
+    var ev = event || ({})
+    var generation = String(ev.generation || "")
+    var request = String(ev.request || "")
+    if (!/^(0|[1-9][0-9]*)$/.test(generation))
+      return false
+    if (root.supportsCorrelatedGroupProjection) {
+      var generationNumber = Number(generation)
+      var expectedGroups = Number(ev.groups)
+      var expectedMembers = Number(ev.members)
+      if (String(ev.instance || "") !== root.helperInstance ||
+          !Number.isInteger(generationNumber) || generationNumber <= 0 ||
+          generationNumber > 0xffffffff ||
+          !Number.isInteger(expectedGroups) || expectedGroups < 0 || expectedGroups > 10 ||
+          !Number.isInteger(expectedMembers) || expectedMembers < 0 || expectedMembers > 100 ||
+          (root.expectedGroupRequest !== "" && request !== root.expectedGroupRequest) ||
+          (root.expectedGroupRequest === "" && request !== "") ||
+          (request === "" && generationNumber <= root.lastGroupGeneration))
+        return false
+      root.pendingGroupExpectedGroups = expectedGroups
+      root.pendingGroupExpectedMembers = expectedMembers
+    } else {
+      root.pendingGroupExpectedGroups = -1
+      root.pendingGroupExpectedMembers = -1
+    }
+    root.groupsReady = false
+    root.pendingGroupGeneration = generation
+    root.pendingGroupRequest = request
+    root.pendingGroupBuild = ({})
+    root.pendingGroupOrder = []
+    root.pendingGroupReceivedMembers = 0
+    root.pendingGroupInvalid = false
+    groupProjectionTimer.interval = 5000
+    groupProjectionTimer.restart()
+    return true
+  }
+
+  function groupProjectionEventMatches(event) {
+    var ev = event || ({})
+    if (String(ev.generation || "") !== root.pendingGroupGeneration ||
+        root.pendingGroupGeneration === "")
+      return false
+    if (!root.supportsCorrelatedGroupProjection)
+      return true
+    return String(ev.instance || "") === root.helperInstance &&
+      String(ev.request || "") === root.pendingGroupRequest
+  }
+
+  function groupProjectionComplete(event) {
+    var ev = event || ({})
+    if (!root.groupProjectionEventMatches(ev))
+      return false
+    if (root.supportsCorrelatedGroupProjection) {
+      if (Number(ev.groups) !== root.pendingGroupExpectedGroups ||
+          Number(ev.members) !== root.pendingGroupExpectedMembers ||
+          root.pendingGroupOrder.length !== root.pendingGroupExpectedGroups ||
+          root.pendingGroupReceivedMembers !== root.pendingGroupExpectedMembers)
+        return false
+      for (var index = 0; index < root.pendingGroupOrder.length; index++) {
+        var staged = root.pendingGroupBuild[root.pendingGroupOrder[index]]
+        if (!staged || Number(staged.memberCount) !== (staged.members || []).length)
+          return false
+      }
+    }
+    return !root.pendingGroupInvalid
+  }
+
+  function rejectGroupProjection() {
+    root.clearPendingGroupProjection()
+    root.groupsReady = false
+    groupProjectionTimer.interval = 250
+    groupProjectionTimer.restart()
+  }
+
+  function refreshGroups(resetAttempts) {
+    if (resetAttempts) {
+      root.groupRefreshAttempts = 0
+      root.groupProjectionFailed = false
+    }
+    if (root.helperCompatibility === "incompatible")
+      return false
+    if (!root.supportsCorrelatedGroupProjection) {
+      if (!root.awaitingHelperInstance)
+        root.requestHelperStatus()
+      return true
+    }
+    if (root.groupRefreshAttempts >= 5) {
+      root.groupProjectionFailed = true
+      return false
+    }
+    root.groupRefreshSequence = root.groupRefreshSequence + 1
+    root.groupRefreshAttempts = root.groupRefreshAttempts + 1
+    root.expectedGroupRequest = Date.now().toString(36) + "-groups-" +
+      root.groupRefreshSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    root.clearPendingGroupProjection()
+    root.groupsReady = false
+    groupProjectionTimer.interval = Math.min(8000,
+      1000 * Math.pow(2, root.groupRefreshAttempts - 1))
+    groupProjectionTimer.restart()
+    return root.sendOp({ op: "group.list", id: root.expectedGroupRequest })
   }
 
   function withoutConversation(source, conversation) {
@@ -603,6 +731,8 @@ Item {
           root.pendingDirectEventOverflow = false
         }
         if (processChanged) {
+          root.lastGroupGeneration = 0
+          root.clearPendingGroupProjection()
           if (root.lastError === root.persistentWarning)
             root.lastError = ""
           root.persistentWarning = ""
@@ -615,6 +745,8 @@ Item {
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
         root.activeHelperProtocol = snapshotProtocol
+        if (identityChanged && root.supportsCorrelatedGroupProjection)
+          root.expectedGroupRequest = String(ev.request || "")
         if (nextIdentity !== "")
           root.identityFingerprint = nextIdentity
         root.helperCompatibility = "compatible"
@@ -1077,9 +1209,15 @@ Item {
     if (ev.event === "receipt") {
       if (!root.directEventBindingValid(ev))
         return
-      root.lastReceiptConv = String(ev.conversation || "")
+      var receiptConversation = String(ev.conversation || "")
+      if (receiptConversation.charAt(0) === "g" &&
+          (!/^g:[0-9a-f]{64}$/.test(receiptConversation) ||
+           !/^[0-9a-f]{64}$/.test(String(ev.actor || ""))))
+        return
+      root.lastReceiptConv = receiptConversation
       root.lastReceiptId = String(ev.id || "")
       root.lastReceiptState = String(ev.state || "")
+      root.lastReceiptActor = String(ev.actor || "")
       root.receiptTick = root.receiptTick + 1
     }
     if (ev.event === "receipt.sent") {
@@ -1101,17 +1239,41 @@ Item {
       if (!root.directEventBindingValid(ev))
         return
       var typingConv = String(ev.conversation || "")
-      var typingNext = {}
-      var typingKey
-      for (typingKey in root.peerTypingByConv)
-        typingNext[typingKey] = root.peerTypingByConv[typingKey]
-      if (ev.typing)
-        typingNext[typingConv] = Date.now() + 4500
-      else
-        delete typingNext[typingConv]
-      root.peerTypingByConv = typingNext
-      root.lastTypingConv = typingConv
-      root.peerTyping = root.isPeerTyping(typingConv)
+      if (typingConv.charAt(0) === "g") {
+        var actor = String(ev.actor || "")
+        if (!root.supportsGroupTyping || !/^g:[0-9a-f]{64}$/.test(typingConv) ||
+            !/^[0-9a-f]{64}$/.test(actor))
+          return
+        var groupTypingNext = {}
+        var groupTypingKey
+        for (groupTypingKey in root.groupTypingByConv)
+          groupTypingNext[groupTypingKey] = root.groupTypingByConv[groupTypingKey]
+        var actors = {}
+        var existingActors = root.groupTypingByConv[typingConv] || ({})
+        for (var existingActor in existingActors)
+          actors[existingActor] = existingActors[existingActor]
+        if (ev.typing)
+          actors[actor] = Date.now() + 4500
+        else
+          delete actors[actor]
+        if (Object.keys(actors).length > 0)
+          groupTypingNext[typingConv] = actors
+        else
+          delete groupTypingNext[typingConv]
+        root.groupTypingByConv = groupTypingNext
+      } else {
+        var typingNext = {}
+        var typingKey
+        for (typingKey in root.peerTypingByConv)
+          typingNext[typingKey] = root.peerTypingByConv[typingKey]
+        if (ev.typing)
+          typingNext[typingConv] = Date.now() + 4500
+        else
+          delete typingNext[typingConv]
+        root.peerTypingByConv = typingNext
+        root.lastTypingConv = typingConv
+        root.peerTyping = root.isPeerTyping(typingConv)
+      }
       root.typingTick = root.typingTick + 1
     }
     if (ev.event === "surface")
@@ -1152,16 +1314,18 @@ Item {
       root.pending = true
       root.pendingGroup = ev.kind === "group"
     }
-    if (ev.event === "group.list.begin") {
-      root.groupsReady = false
-      root.pendingGroupGeneration = String(ev.generation || "")
-      root.pendingGroupBuild = ({})
-      root.pendingGroupOrder = []
-    }
-    if (ev.event === "group.info" &&
-        String(ev.generation || "") === root.pendingGroupGeneration) {
+    if (ev.event === "group.list.begin")
+      root.beginGroupProjection(ev)
+    if (ev.event === "group.info" && root.groupProjectionEventMatches(ev)) {
       var groupId = String(ev.group || "")
-      if (groupId) {
+      var memberCount = Number(ev.members)
+      var groupLimit = Number(ev.limit)
+      if (!/^g:[0-9a-f]{64}$/.test(groupId) ||
+          !Number.isInteger(memberCount) || !Number.isInteger(groupLimit) ||
+          memberCount < 0 || groupLimit < 1 || groupLimit > 10 ||
+          memberCount > groupLimit || root.pendingGroupBuild[groupId]) {
+        root.pendingGroupInvalid = true
+      } else {
         var groupBuild = {}
         var existingGroup
         for (existingGroup in root.pendingGroupBuild)
@@ -1169,33 +1333,46 @@ Item {
         groupBuild[groupId] = {
           id: groupId,
           title: String(ev.title || "Group"),
-          memberCount: Math.max(0, Number(ev.members || 0)),
-          limit: Math.max(1, Number(ev.limit || 10)),
+          memberCount: memberCount,
+          limit: groupLimit,
           members: []
         }
         root.pendingGroupBuild = groupBuild
         var groupOrder = root.pendingGroupOrder.slice()
-        if (groupOrder.indexOf(groupId) < 0)
-          groupOrder.push(groupId)
+        groupOrder.push(groupId)
         root.pendingGroupOrder = groupOrder
       }
     }
-    if (ev.event === "group.member" &&
-        String(ev.generation || "") === root.pendingGroupGeneration) {
+    if (ev.event === "group.member" && root.groupProjectionEventMatches(ev)) {
       var memberGroupId = String(ev.group || "")
       var stagedGroup = root.pendingGroupBuild[memberGroupId]
-      if (stagedGroup) {
+      var peer = String(ev.peer || "")
+      var memberKey = String(ev.key || "")
+      var friendKey = String(ev.friendKey || "")
+      var role = String(ev.role || "member")
+      var validMember = !!stagedGroup && /^(0|[1-9][0-9]*)$/.test(peer) &&
+        /^[0-9a-f]{64}$/.test(memberKey) &&
+        (friendKey === "" || /^[0-9a-f]{64}$/.test(friendKey)) &&
+        ["owner", "admin", "member"].indexOf(role) >= 0
+      var members = stagedGroup ? (stagedGroup.members || []).slice() : []
+      for (var memberIndex = 0; validMember && memberIndex < members.length; memberIndex++)
+        if (String(members[memberIndex].peer || "") === peer ||
+            String(members[memberIndex].key || "") === memberKey ||
+            (!!ev.self && !!members[memberIndex].self))
+          validMember = false
+      if (!validMember || members.length >= Number(stagedGroup && stagedGroup.memberCount || 0)) {
+        root.pendingGroupInvalid = true
+      } else {
         var memberBuild = {}
         var stagedKey
         for (stagedKey in root.pendingGroupBuild)
           memberBuild[stagedKey] = root.pendingGroupBuild[stagedKey]
-        var members = (stagedGroup.members || []).slice()
         members.push({
-          peer: String(ev.peer || ""),
-          key: String(ev.key || ""),
-          friendKey: String(ev.friendKey || ""),
+          peer: peer,
+          key: memberKey,
+          friendKey: friendKey,
           name: String(ev.name || "Member"),
-          role: String(ev.role || "member"),
+          role: role,
           online: !!ev.online,
           self: !!ev.self
         })
@@ -1207,24 +1384,31 @@ Item {
           members: members
         }
         root.pendingGroupBuild = memberBuild
+        root.pendingGroupReceivedMembers = root.pendingGroupReceivedMembers + 1
       }
     }
-    if (ev.event === "group.list.end" &&
-        String(ev.generation || "") === root.pendingGroupGeneration) {
-      var nextGroups = []
-      for (var groupIndex = 0; groupIndex < root.pendingGroupOrder.length; groupIndex++) {
-        var completedGroup = root.pendingGroupBuild[root.pendingGroupOrder[groupIndex]]
-        if (completedGroup)
-          nextGroups.push(completedGroup)
+    if (ev.event === "group.list.end" && root.groupProjectionEventMatches(ev)) {
+      if (!root.groupProjectionComplete(ev)) {
+        root.rejectGroupProjection()
+      } else {
+        var nextGroups = []
+        for (var groupIndex = 0; groupIndex < root.pendingGroupOrder.length; groupIndex++) {
+          var completedGroup = root.pendingGroupBuild[root.pendingGroupOrder[groupIndex]]
+          if (completedGroup)
+            nextGroups.push(completedGroup)
+        }
+        root.groups = nextGroups
+        root.groupsReady = true
+        root.groupProjectionFailed = false
+        root.groupRefreshAttempts = 0
+        root.lastGroupGeneration = Number(root.pendingGroupGeneration)
+        root.expectedGroupRequest = ""
+        groupProjectionTimer.stop()
+        root.groupsTick = root.groupsTick + 1
+        if (root.lastGroup && !root.groupById(root.lastGroup))
+          root.lastGroup = nextGroups.length ? String(nextGroups[0].id) : ""
+        root.clearPendingGroupProjection()
       }
-      root.groups = nextGroups
-      root.groupsReady = true
-      root.groupsTick = root.groupsTick + 1
-      if (root.lastGroup && !root.groupById(root.lastGroup))
-        root.lastGroup = nextGroups.length ? String(nextGroups[0].id) : ""
-      root.pendingGroupGeneration = ""
-      root.pendingGroupBuild = ({})
-      root.pendingGroupOrder = []
     }
     if (ev.event === "group.invite.sent") {
       root.lastGroupInviteSentGroup = String(ev.group || "")
@@ -1644,8 +1828,8 @@ Item {
   function groupConversationOperation(name) {
     return ["msg.send", "history", "search", "history.clear", "message.edit",
       "message.delete", "message.react", "conversation.read", "unread.clear",
-      "receipt.send", "surface.set", "surface.get", "file.send", "file.status",
-      "file.accept", "file.cancel"].indexOf(String(name || "")) >= 0
+      "receipt.send", "typing.set", "surface.set", "surface.get", "file.send",
+      "file.status", "file.accept", "file.cancel"].indexOf(String(name || "")) >= 0
   }
 
   function operationBindingValid(operation) {
@@ -1751,6 +1935,7 @@ Item {
 
   function markHelperIncompatible() {
     helperStatusTimer.stop()
+    groupProjectionTimer.stop()
     root.awaitingHelperInstance = false
     root.helperStatusNonce = ""
     root.failActiveOutgoingFiles("helper_incompatible")
@@ -1767,6 +1952,8 @@ Item {
     root.pendingCallSnapshot = null
     root.pendingCallSnapshotSet = false
     root.friendsReady = false
+    root.groupsReady = false
+    root.groupProjectionFailed = true
     root.helperCompatibility = "incompatible"
     root.activeHelperProtocol = 0
     root.connectionState = "reconnecting"
@@ -1778,10 +1965,16 @@ Item {
 
   function requestHelperStatus() {
     root.friendsReady = false
+    root.groupsReady = false
+    root.groupProjectionFailed = false
     root.helperStatusSequence = root.helperStatusSequence + 1
     root.helperStatusNonce = Date.now().toString(36) + "-status-" +
       root.helperStatusSequence.toString(36) + "-" +
       Math.floor(Math.random() * 0x100000000).toString(36)
+    root.expectedGroupRequest = root.helperStatusNonce
+    root.clearPendingGroupProjection()
+    groupProjectionTimer.interval = 8000
+    groupProjectionTimer.restart()
     var line = JSON.stringify({ op: "status", id: root.helperStatusNonce }) + "\n"
     root.awaitingHelperInstance = true
     root.legacySnapshotSeen = false
@@ -2094,10 +2287,21 @@ Item {
   }
   function setTyping(conv, typing, expectedKey) {
     var c = String(conv || root.lastConversation || "")
-    if (!c || c.charAt(0) === "g")
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    if (!c || (c.charAt(0) === "g" && (!group || !root.supportsGroupTyping)))
       return false
     return root.sendConversationOp({ op: "typing.set", conversation: c,
-      typing: !!typing }, expectedKey, false)
+      typing: !!typing }, group ? "" : expectedKey, false)
+  }
+  function groupTypingActors(conv) {
+    var c = String(conv || "")
+    var source = root.groupTypingByConv[c] || ({})
+    var actors = []
+    var now = Date.now()
+    for (var actor in source)
+      if (/^[0-9a-f]{64}$/.test(actor) && Number(source[actor]) > now)
+        actors.push(actor)
+    return actors
   }
   function isPeerTyping(conv) {
     var c = String(conv || "")
@@ -2489,13 +2693,24 @@ Item {
     var kind = String(attachmentKind || "file")
     var bindingKey = String(expectedKey || "")
     var group = /^g:[0-9a-f]{64}$/.test(c)
-    if (!c || !filePath ||
-        (!group && !root.directBindingMatches(c, bindingKey)) ||
-        (group && (!root.supportsGroupAttachments || !root.groupById(c))) ||
-        (kind !== "file" && kind !== "image") ||
-        (kind === "image" && !root.supportsAttachments) ||
-        root.helperCompatibility === "incompatible" || root.outgoingFile(c).pending)
+    var failure = ""
+    if (!c || !filePath || (c.charAt(0) === "g" && !group) ||
+        (kind !== "file" && kind !== "image"))
+      failure = "invalid_request"
+    else if (!group && !root.directBindingMatches(c, bindingKey))
+      failure = "identity_changed"
+    else if ((group && !root.supportsGroupAttachments) ||
+             (kind === "image" && !root.supportsAttachments))
+      failure = "helper_update_required"
+    else if (root.awaitingHelperInstance || root.helperCompatibility !== "compatible")
+      failure = "helper_handshake_pending"
+    else if (root.outgoingFile(c).pending)
+      failure = "busy"
+    if (failure !== "") {
+      root.lastError = failure
+      root.lastErrorConv = c
       return false
+    }
     if (group)
       bindingKey = ""
     root.fileRequestSequence = root.fileRequestSequence + 1
@@ -2528,7 +2743,7 @@ Item {
     var group = /^g:[0-9a-f]{64}$/.test(c)
     if ((!group && (!root.directBindingMatches(c, expectedKey) ||
                     String(transfer.key || "") !== String(expectedKey || ""))) ||
-        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+        (group && (!root.supportsGroupAttachments ||
                    String(transfer.key || "") !== "")) ||
         !transfer.pending || transfer.cancelRequested)
       return false
@@ -2556,7 +2771,7 @@ Item {
     var group = /^g:[0-9a-f]{64}$/.test(c)
     if ((!group && (!root.directBindingMatches(c, expectedKey) ||
                     String(offer.key || "") !== String(expectedKey || ""))) ||
-        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+        (group && (!root.supportsGroupAttachments ||
                    String(offer.key || "") !== "")) || !offer.id)
       return false
     if (!root.sendConversationOp({ op: "file.accept", conversation: c,
@@ -2575,7 +2790,7 @@ Item {
     var group = /^g:[0-9a-f]{64}$/.test(c)
     if ((!group && (!root.directBindingMatches(c, expectedKey) ||
                     String(offer.key || "") !== String(expectedKey || ""))) ||
-        (group && (!root.supportsGroupAttachments || !root.groupById(c) ||
+        (group && (!root.supportsGroupAttachments ||
                    String(offer.key || "") !== "")) || !offer.id)
       return false
     if (!root.sendConversationOp({ op: "file.cancel", conversation: c,
@@ -2706,6 +2921,7 @@ Item {
     root.lastReceiptConv = ""
     root.lastReceiptId = ""
     root.lastReceiptState = ""
+    root.lastReceiptActor = ""
     root.lastReceiptSentConv = ""
     root.lastReceiptSentId = ""
     root.lastReceiptSentState = ""
@@ -2715,6 +2931,7 @@ Item {
     root.lastReceiptFailedCode = ""
     root.peerTyping = false
     root.peerTypingByConv = ({})
+    root.groupTypingByConv = ({})
     root.unreadByConversation = ({})
     root.unreadClearPendingByConversation = ({})
     root.unreadClearRetryAfter = ({})
@@ -2741,9 +2958,12 @@ Item {
     root.lastGroupInviteFailedCode = ""
     root.groupInviteRequestSequence = 0
     root.lastRemovedGroup = ""
-    root.pendingGroupBuild = ({})
-    root.pendingGroupOrder = []
-    root.pendingGroupGeneration = ""
+    root.clearPendingGroupProjection()
+    root.expectedGroupRequest = ""
+    root.lastGroupGeneration = 0
+    root.groupRefreshAttempts = 0
+    root.groupProjectionFailed = false
+    groupProjectionTimer.stop()
     root.groupsTick = root.groupsTick + 1
     root.pending = false
     root.pendingGroup = false
@@ -2849,6 +3069,10 @@ Item {
     root.pendingCallSnapshot = null
     root.pendingCallSnapshotSet = false
     root.friendsReady = false
+    root.groupsReady = false
+    root.expectedGroupRequest = ""
+    root.clearPendingGroupProjection()
+    groupProjectionTimer.stop()
     root.recoveringHelper = true
     root.connectionState = "reconnecting"
     root.selfOnline = false
@@ -2875,6 +3099,14 @@ Item {
     root.attached = true
     sock.path = root.sockPath
     sock.connected = true
+  }
+
+  function launchHelperDetached() {
+    root.attached = true
+    root.procReady = false
+    proc.startDetached()
+    helperAttachTimer.interval = 120
+    helperAttachTimer.restart()
   }
 
   FileView {
@@ -2910,6 +3142,26 @@ Item {
   }
 
   Timer {
+    id: groupProjectionTimer
+    interval: 5000
+    repeat: false
+    onTriggered: {
+      root.clearPendingGroupProjection()
+      root.groupsReady = false
+      if (root.groupRefreshAttempts >= 5) {
+        root.groupProjectionFailed = true
+        return
+      }
+      if (root.awaitingHelperInstance || root.helperCompatibility !== "compatible") {
+        interval = 1000
+        restart()
+        return
+      }
+      root.refreshGroups(false)
+    }
+  }
+
+  Timer {
     id: helperStatusTimer
     interval: 5000
     repeat: false
@@ -2939,10 +3191,28 @@ Item {
         else
           changed = true
       }
-      if (changed) {
+      if (changed)
         root.peerTypingByConv = next
-        root.typingTick = root.typingTick + 1
+      var nextGroups = {}
+      var groupsChanged = false
+      for (var conversation in root.groupTypingByConv) {
+        var currentActors = root.groupTypingByConv[conversation] || ({})
+        var nextActors = {}
+        for (var actor in currentActors) {
+          if (Number(currentActors[actor]) > now)
+            nextActors[actor] = currentActors[actor]
+          else
+            groupsChanged = true
+        }
+        if (Object.keys(nextActors).length > 0)
+          nextGroups[conversation] = nextActors
+        else if (Object.keys(currentActors).length > 0)
+          groupsChanged = true
       }
+      if (groupsChanged)
+        root.groupTypingByConv = nextGroups
+      if (changed || groupsChanged)
+        root.typingTick = root.typingTick + 1
       root.peerTyping = root.isPeerTyping(root.lastTypingConv)
     }
   }
@@ -2954,8 +3224,15 @@ Item {
       root.attached = false
       root.procReady = false
       sock.connected = false
-      proc.running = true
+      root.launchHelperDetached()
     }
+  }
+
+  Timer {
+    id: helperAttachTimer
+    interval: 120
+    repeat: false
+    onTriggered: root.attachSocket()
   }
 
   Socket {
@@ -2986,24 +3263,8 @@ Item {
       "OMAQ_STATE": root.stateDir,
       "OMAQ_PROTOCOL_NONCE": root.helperLaunchNonce
     })
-    running: true
-    stdinEnabled: true
-    stdout: SplitParser {
-      onRead: function(line) { root.handleLine(line) }
-    }
-    onStarted: {
-      root.procReady = true
-      root.connectionState = root.helperInstance === "" ? "starting" : "reconnecting"
-      root.resetBackoff()
-      root.requestHelperStatus()
-    }
-    onExited: function(code) {
-      root.procReady = false
-      if (code === 2) {
-        root.attachSocket()
-        return
-      }
-      root.scheduleRestart()
-    }
+    running: false
   }
+
+  Component.onCompleted: root.launchHelperDetached()
 }

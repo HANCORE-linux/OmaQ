@@ -7,6 +7,7 @@ import Quickshell.Io
 import qs.Ui
 import qs.Commons
 import ".." as OmaQ
+import "../Emoji.js" as Emoji
 
 FocusScope {
   // Keep the live plugin parser cache tied to the current source revision.
@@ -128,11 +129,29 @@ FocusScope {
         count++
     return count
   }
+  readonly property var groupTypingNames: {
+    if (!root.groupConversation || !root.service ||
+        typeof root.service.groupTypingActors !== "function")
+      return []
+    var revision = Number(root.service.typingTick || 0) +
+      Number(root.service.groupsTick || 0)
+    var actors = root.service.groupTypingActors(root.conversation)
+    var names = []
+    for (var i = 0; revision >= 0 && i < actors.length; i++)
+      names.push(root.groupMemberName(actors[i]))
+    return names
+  }
   readonly property string peerConnectionStatus: {
     if (service && service.connectionState && service.connectionState !== "online")
       return service.connectionState === "reconnecting" ? "reconnecting…" : "connecting…"
-    if (root.groupConversation)
+    if (root.groupConversation) {
+      if (root.groupTypingNames.length === 1)
+        return root.groupTypingNames[0] + " typing…"
+      if (root.groupTypingNames.length > 1)
+        return root.groupTypingNames[0] + " + " +
+          (root.groupTypingNames.length - 1) + " typing…"
       return root.groupOnlineCount + "/" + root.groupPeerCount + " online"
+    }
     if (root.peerTyping)
       return "typing…"
     return root.peerOnline ? "online" : "offline"
@@ -191,7 +210,7 @@ FocusScope {
   property bool typingSent: false
   property string typingConversation: ""
 
-  readonly property int smilePx: Math.max(56, Style.font.display * 2)
+  readonly property int smilePx: 56
   readonly property int inlineImagePx: 56
   readonly property int smileTextPx: Style.font.body
   readonly property int messageTextPx: Math.max(Style.font.caption,
@@ -516,28 +535,7 @@ FocusScope {
   }
 
   function splitSmiles(t) {
-    var s = String(t || "")
-    var out = []
-    var i = 0
-    while (i < s.length) {
-      var code = s.charCodeAt(i)
-      if (code === 32 || code === 9 || code === 10 || code === 13) {
-        i++
-        continue
-      }
-      var matched = ""
-      var k
-      for (k = 0; k < root.emojiSet.length; k++) {
-        var g = root.emojiSet[k]
-        if (s.indexOf(g, i) === i && g.length >= matched.length)
-          matched = g
-      }
-      if (!matched)
-        return []
-      out.push(matched)
-      i += matched.length
-    }
-    return out
+    return Emoji.splitEmojiOnly(String(t || ""))
   }
 
   function isSmileOnly(t) {
@@ -949,6 +947,8 @@ FocusScope {
       entry.reactionPeer = ""
     if (entry.groupReactions === undefined)
       entry.groupReactions = []
+    if (entry.groupReceipts === undefined)
+      entry.groupReceipts = []
     if (entry.needsReadReceipt === undefined)
       entry.needsReadReceipt = false
     if (entry.failed === undefined)
@@ -1189,6 +1189,22 @@ FocusScope {
     return false
   }
 
+  function applyGroupReceipt(messageId, actor, state) {
+    var id = String(messageId || "")
+    var actorKey = String(actor || "")
+    if (!id || !/^[0-9a-f]{64}$/.test(actorKey))
+      return false
+    for (var i = lines.count - 1; i >= 0; i--) {
+      var receiptLine = lines.get(i)
+      if (receiptLine && receiptLine.id === id) {
+        lines.setProperty(i, "groupReceipts", root.updatedGroupReceipts(
+          receiptLine.groupReceipts || [], actorKey, state))
+        return true
+      }
+    }
+    return false
+  }
+
   function markRead() {
     if (root.demo || !root.service || !root.conversation || root.readRetryBlocked ||
         root.readRequestPending || root.service.unreadFor(root.conversation) <= 0)
@@ -1285,6 +1301,21 @@ FocusScope {
     return reactions
   }
 
+  function historyGroupReceipts(item) {
+    var receipts = []
+    if (!item)
+      return receipts
+    for (var key in item) {
+      var actor = key.slice("receipt_group_".length)
+      if (key.indexOf("receipt_group_") !== 0 ||
+          !/^[0-9a-f]{64}$/.test(actor) ||
+          (item[key] !== "delivered" && item[key] !== "read"))
+        continue
+      receipts.push({ actor: actor, state: String(item[key]) })
+    }
+    return receipts
+  }
+
   function modelCount(model) {
     if (!model)
       return 0
@@ -1326,6 +1357,50 @@ FocusScope {
     return next
   }
 
+  function updatedGroupReceipts(current, actor, state) {
+    var next = []
+    var actorKey = String(actor || "")
+    var receiptState = String(state || "")
+    var count = root.modelCount(current)
+    for (var i = 0; i < count; i++) {
+      var receipt = root.modelEntry(current, i)
+      if (!receipt)
+        continue
+      if (String(receipt.actor || "") === actorKey) {
+        if (String(receipt.state || "") === "read")
+          receiptState = "read"
+        continue
+      }
+      next.push({ actor: String(receipt.actor || ""), state: String(receipt.state || "") })
+    }
+    if (/^[0-9a-f]{64}$/.test(actorKey) &&
+        (receiptState === "delivered" || receiptState === "read"))
+      next.push({ actor: actorKey, state: receiptState })
+    return next
+  }
+
+  function groupReceiptSummary(current) {
+    var delivered = 0
+    var read = 0
+    var count = root.modelCount(current)
+    for (var i = 0; i < count; i++) {
+      var receipt = root.modelEntry(current, i)
+      if (!receipt)
+        continue
+      if (String(receipt.state || "") === "read")
+        read++
+      else if (String(receipt.state || "") === "delivered")
+        delivered++
+    }
+    if (read > 0 && delivered > 0)
+      return "Read by " + read + " · Delivered to " + (read + delivered)
+    if (read > 0)
+      return "Read by " + read
+    if (delivered > 0)
+      return "Delivered to " + delivered
+    return ""
+  }
+
   function applyHistory(items, cleared) {
     var keep = []
     var unreadCount = 0
@@ -1336,7 +1411,7 @@ FocusScope {
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
       if (!cleared && existing && (existing.local || existing.pending || existing.failed))
-        keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
+        keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], groupReceipts: existing.groupReceipts || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
     if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
@@ -1364,8 +1439,9 @@ FocusScope {
         root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
       var historyAck = -1
       if (dir === "out")
-        historyAck = it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1)
-      root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
+        historyAck = root.groupConversation ? 1 :
+          (it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1))
+      root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), groupReceipts: root.historyGroupReceipts(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
     }
     for (i = 0; i < keep.length; i++) {
       found = false
@@ -1545,7 +1621,8 @@ FocusScope {
   }
 
   function updateTyping() {
-    if (root.demo || !service || !root.directBindingValid)
+    if (root.demo || !service || !root.directBindingValid ||
+        (root.groupConversation && !root.service.supportsGroupTyping))
       return
     if (!input.text) {
       root.stopTyping()
@@ -1565,7 +1642,12 @@ FocusScope {
         !root.directBindingValid)
       return false
     if (!root.service.sendFile(path, root.conversation, "image", root.peerKey)) {
-      root.fileStatus = "A file is already sending"
+      var code = String(root.service.lastError || "helper_unavailable")
+      root.fileStatus = code === "busy" ? "A file is already sending"
+        : code === "helper_update_required" ? "Restart the OmaQ helper before sending group images"
+        : code === "helper_handshake_pending" ? "Wait for OmaQ to reconnect, then send again"
+        : code === "identity_changed" ? "The conversation identity changed"
+        : "Image could not be sent"
       root.fileStatusPath = path
       fileStatusTimer.interval = 3000
       fileStatusTimer.restart()
@@ -1785,6 +1867,8 @@ FocusScope {
 
   function finishAttachmentInspection(accepted) {
     var path = root.attachmentInspectionPath
+    if (accepted && (!path || path.charAt(0) !== "/"))
+      accepted = false
     var stagedRequest = accepted ? root.attachmentInspectionRequest :
       root.clipboardStageRequest
     attachmentInspectionTimer.stop()
@@ -1863,6 +1947,25 @@ FocusScope {
       input.paste()
       return
     }
+    if (!root.service) {
+      root.fileStatus = "OmaQ is unavailable — reconnect before pasting an image"
+      root.fileStatusPath = ""
+      return
+    }
+    if (root.groupConversation && !root.attachmentsAvailable) {
+      root.fileStatus = root.service.awaitingHelperInstance ||
+        root.service.helperCompatibility !== "compatible"
+        ? "Wait for OmaQ to reconnect before pasting a group image"
+        : "Restart the OmaQ helper before pasting group images"
+      root.fileStatusPath = ""
+      return
+    }
+    if (root.service.awaitingHelperInstance ||
+        root.service.helperCompatibility !== "compatible") {
+      root.fileStatus = "Wait for OmaQ to reconnect before pasting an image"
+      root.fileStatusPath = ""
+      return
+    }
     root.clearPendingImage()
     root.discardClipboardStage()
     root.clipboardMime = mime
@@ -1883,13 +1986,13 @@ FocusScope {
   }
 
   function pasteComposer() {
-    if (root.demo || !root.service || !root.attachmentsAvailable) {
+    if (root.demo) {
       input.paste()
       return
     }
     if (clipboardTypeProbe.running || clipboardImageWriter.running ||
         root.clipboardStageRequest !== "" || root.pendingImageSendRequest !== "" ||
-        root.service.fileSendingFor(root.conversation)) {
+        (root.service && root.service.fileSendingFor(root.conversation))) {
       root.fileStatus = "An attachment action is already running"
       return
     }
@@ -2303,7 +2406,11 @@ FocusScope {
     function onReceiptTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastReceiptConv) || !root.service.lastReceiptId)
         return
-      root.applyReceipt(root.service.lastReceiptId, root.service.lastReceiptState)
+      if (root.groupConversation)
+        root.applyGroupReceipt(root.service.lastReceiptId,
+          root.service.lastReceiptActor, root.service.lastReceiptState)
+      else
+        root.applyReceipt(root.service.lastReceiptId, root.service.lastReceiptState)
     }
     function onConversationReadTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastConversationReadConv))
@@ -2339,6 +2446,17 @@ FocusScope {
       }
     }
     function onHelperInstanceGenerationChanged() {
+      if ((root.clipboardStageRequest !== "" ||
+           root.attachmentInspectionRequest !== "") && root.service) {
+        clipboardTypeProbe.running = false
+        clipboardImageWriter.running = false
+        root.discardClipboardStage()
+        root.attachmentInspectionRequest = ""
+        root.attachmentInspectionPath = ""
+        attachmentInspectionTimer.stop()
+        root.fileStatus = "Image preparation stopped because OmaQ restarted"
+        root.fileStatusPath = ""
+      }
       if (root.pendingImageSendRequest !== "" && root.service &&
           root.pendingImageSendGeneration >= 0 &&
           root.pendingImageSendGeneration !==
@@ -2615,6 +2733,8 @@ FocusScope {
   }
 
   Component.onDestruction: {
+    clipboardTypeProbe.running = false
+    clipboardImageWriter.running = false
     root.clearPendingImage()
     root.discardClipboardStage()
     root.cancelAttachmentInspection()
@@ -3316,7 +3436,8 @@ FocusScope {
           id: line
           width: list.messageLaneWidth
           height: model.newMarker ? newDivider.implicitHeight :
-            Math.max(bubble.implicitHeight + (line.hasReaction ? Style.space(12) : 0),
+            Math.max(bubble.implicitHeight +
+              (line.hasReaction || line.hasGroupReceipt ? Style.space(14) : 0),
               sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
@@ -3356,6 +3477,11 @@ FocusScope {
           readonly property var groupReactions: model.groupReactions || []
           readonly property var groupReactionEmojis: root.groupReactionEmojiList(
             line.groupReactions)
+          readonly property var groupReceipts: model.groupReceipts || []
+          readonly property string groupReceiptText: root.groupReceiptSummary(
+            line.groupReceipts)
+          readonly property bool hasGroupReceipt: root.groupConversation &&
+            model.dir === "out" && line.groupReceiptText !== ""
           readonly property bool messageReactions: line.contextId !== "" &&
             !line.fileMessage && !line.deleted
           readonly property bool hasReaction: !line.deleted &&
@@ -3383,6 +3509,13 @@ FocusScope {
             text: line.showGroupSender ? root.groupMemberName(line.senderPeer) : ""
           }
 
+          TextMetrics {
+            id: groupReceiptMetrics
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            text: line.groupReceiptText
+          }
+
           Rectangle {
             id: bubble
             anchors.left: model.dir === "out" ? undefined : parent.left
@@ -3390,6 +3523,8 @@ FocusScope {
             width: Math.max(
               line.showGroupSender
                 ? Math.min(parent.width, groupSenderMetrics.advanceWidth + Style.space(16)) : 0,
+              line.hasGroupReceipt
+                ? Math.min(parent.width, groupReceiptMetrics.advanceWidth + Style.space(16)) : 0,
               line.imageMessage
                 ? root.inlineImagePx + Style.space(12)
                 : (line.fileMessage
@@ -3772,6 +3907,20 @@ FocusScope {
                 }
               }
             }
+          }
+
+          Text {
+            id: groupReceiptStatus
+            visible: line.hasGroupReceipt && model.dir !== "sys" && !model.newMarker
+            anchors.top: bubble.bottom
+            anchors.right: bubble.right
+            anchors.topMargin: Style.space(1)
+            text: line.groupReceiptText
+            color: root.receiptDeliveredColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            renderType: Text.QtRendering
+            z: 4
           }
 
           Rectangle {
@@ -4442,10 +4591,15 @@ FocusScope {
                 Keys.onPressed: function(event) {
                   var blockedModifiers = Qt.ShiftModifier | Qt.ControlModifier |
                     Qt.AltModifier | Qt.MetaModifier
-                  if (event.key === Qt.Key_V &&
-                      (event.modifiers & Qt.ControlModifier) &&
-                      !(event.modifiers & (Qt.ShiftModifier | Qt.AltModifier |
-                        Qt.MetaModifier))) {
+                  var controlPaste = event.key === Qt.Key_V &&
+                    (event.modifiers & Qt.ControlModifier) &&
+                    !(event.modifiers & (Qt.ShiftModifier | Qt.AltModifier |
+                      Qt.MetaModifier))
+                  var insertPaste = event.key === Qt.Key_Insert &&
+                    (event.modifiers & Qt.ShiftModifier) &&
+                    !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier |
+                      Qt.MetaModifier))
+                  if (controlPaste || insertPaste) {
                     root.pasteComposer()
                     event.accepted = true
                   } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&

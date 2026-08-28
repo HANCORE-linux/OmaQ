@@ -1,7 +1,7 @@
 #!/bin/sh
 # Phase 5: import refuses without replace; replace on temp home; search hits.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "phase5: no helper" >&2; exit 1; }
 
@@ -26,10 +26,19 @@ out=$(mktemp /tmp/omaq-p5o-XXXXXX)
 hold=$(mktemp -u /tmp/omaq-p5f-XXXXXX)
 pid=""
 loader_pid=""
+# shellcheck disable=SC2329 # Invoked by the EXIT-trap cleanup function.
+stop_helper() {
+	[ -n "$1" ] || return 0
+	kill "$1" 2>/dev/null || true
+	sleep 0.2
+	kill -KILL "$1" 2>/dev/null || true
+	wait "$1" 2>/dev/null || true
+}
+# shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
 	exec 3>&- 7>&- 2>/dev/null || true
-	[ -n "${pid:-}" ] && kill "$pid" 2>/dev/null || true
-	[ -n "${loader_pid:-}" ] && kill "$loader_pid" 2>/dev/null || true
+	stop_helper "${pid:-}"
+	stop_helper "${loader_pid:-}"
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$loader_home" "$loader_state" \
 		"$loader_out" "$loader_hold" "$loader_out.err" "$exp" "$bad" "$malformed" \
 		"$binding_at" "$binding_over" "$binding_version" "$binding_unknown" \
@@ -401,7 +410,8 @@ echo '{"op":"status","id":"phase5-identity"}' >&3
 i=0
 instance=""
 while [ "$i" -lt 40 ]; do
-	instance=$(grep -a '"request":"phase5-identity"' "$out" | tail -1 |
+	instance=$(grep -a '"event":"snapshot"' "$out" |
+		grep -a '"request":"phase5-identity"' | tail -1 |
 		sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
 	[ -n "$instance" ] && break
 	i=$((i + 1))

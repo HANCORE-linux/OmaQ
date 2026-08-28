@@ -74,8 +74,9 @@ done
 	echo "reinvite-recovery: matching recovery bundle was not exported" >&2
 	exit 1
 }
-identity_before=$(grep -a '"request":"identity-before-guard-test"' "$base/first.out" |
-	tail -1 | sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
+identity_before=$(grep -a '"event":"snapshot"' "$base/first.out" |
+	grep -a '"request":"identity-before-guard-test"' | tail -1 |
+	sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
 [ -n "$identity_before" ] || { echo "reinvite-recovery: original identity missing" >&2; exit 1; }
 stop_helper
 
@@ -227,8 +228,9 @@ done
 [ "$i" -lt 100 ] || { echo "reinvite-recovery: matching bundle did not repair missing identity" >&2; exit 1; }
 printf '%s\n' '{"op":"status","id":"identity-after-guard-test"}' >&3
 sleep 0.2
-identity_after=$(grep -a '"request":"identity-after-guard-test"' "$base/missing.out" |
-	tail -1 | sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
+identity_after=$(grep -a '"event":"snapshot"' "$base/missing.out" |
+	grep -a '"request":"identity-after-guard-test"' | tail -1 |
+	sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
 [ "${identity_before%????????????}" = "${identity_after%????????????}" ] || {
 	echo "reinvite-recovery: guarded import activated a different identity" >&2
 	exit 1
@@ -241,8 +243,9 @@ identity_after=$(grep -a '"request":"identity-after-guard-test"' "$base/missing.
 	echo "reinvite-recovery: guarded import skipped stale unread reconciliation" >&2
 	exit 1
 }
-restored_instance=$(grep -a '"request":"identity-after-guard-test"' "$base/missing.out" |
-	tail -1 | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
+restored_instance=$(grep -a '"event":"snapshot"' "$base/missing.out" |
+	grep -a '"request":"identity-after-guard-test"' | tail -1 |
+	sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
 [ -n "$restored_instance" ] || { echo "reinvite-recovery: restored instance missing" >&2; exit 1; }
 printf '{"op":"identity.ready","id":"%s"}\n' "$restored_instance" >&3
 printf '%s\n' '{"op":"identity.protect","passphrase":"guard-test-pass","id":"identity-before-uncertain-protect"}' >&3

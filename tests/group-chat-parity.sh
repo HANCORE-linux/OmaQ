@@ -48,6 +48,11 @@ if "readonly property bool supportsGroupAttachments: root.activeHelperProtocol >
     raise SystemExit("group-chat-parity: Protocol-12 capability gate missing")
 if '"file.accept", "file.cancel"' not in service:
     raise SystemExit("group-chat-parity: Group operations do not admit file lifecycle operations")
+if "groupById(c)" in service:
+    raise SystemExit("group-chat-parity: transient QML group projection still authorizes file operations")
+if 'import "../Emoji.js" as Emoji' not in page or \
+        "Emoji.splitEmojiOnly" not in page:
+    raise SystemExit("group-chat-parity: arbitrary Unicode emoji-only messages are not enlarged")
 
 wire = (
     "group_file_send_begin(cid, op->path",
@@ -69,6 +74,24 @@ if "if (g_group_file_in[index].completed)\n\t\treturn;" not in helper or \
 if "tox_group_send_custom_private_packet" not in tox or \
         "tox_callback_group_custom_private_packet" not in tox:
     raise SystemExit("group-chat-parity: private lossless NGC transport seam missing")
+
+projection = (
+    'readonly property bool supportsCorrelatedGroupProjection: root.activeHelperProtocol >= 13',
+    'return root.sendOp({ op: "group.list", id: root.expectedGroupRequest })',
+    'String(ev.instance || "") !== root.helperInstance',
+    'root.pendingGroupReceivedMembers !== root.pendingGroupExpectedMembers',
+)
+if not all(value in service for value in projection):
+    raise SystemExit("group-chat-parity: restart-safe group projection is not correlated")
+if r'\"instance\":\"%s\"%s,\"groups\":%d,\"members\":%d' not in helper or \
+        'request_field' not in helper or 'strcmp(op->op, "group.list")' not in helper:
+    raise SystemExit("group-chat-parity: helper group snapshot contract is incomplete")
+if "group_typing_magic" not in helper or "groupTypingActors" not in service or \
+        "groupTypingNames" not in page:
+    raise SystemExit("group-chat-parity: helper-bound GroupChat typing is missing")
+if "omaq_store_update_group_receipt_changed" not in helper or \
+        "lastReceiptActor" not in service or "groupReceiptSummary" not in page:
+    raise SystemExit("group-chat-parity: per-member GroupChat receipts are missing")
 
 # Calls must remain explicitly Direct-only.
 guide = (root / "docs/USER-GUIDE.md").read_text()

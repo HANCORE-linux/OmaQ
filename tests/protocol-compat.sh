@@ -3,6 +3,16 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d /tmp/omaq-protocol-compat-XXXXXX)
 cleanup() {
+	if [ -f "$tmp/state/omaq.pid" ]; then
+		pid=$(cat "$tmp/state/omaq.pid" 2>/dev/null || true)
+		case "$pid" in
+			''|*[!0-9]*) ;;
+			*)
+				exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+				[ "$exe" != "$tmp/helper/omaq" ] || kill "$pid" 2>/dev/null || true
+				;;
+		esac
+	fi
 	rm -rf "$tmp"
 }
 trap cleanup EXIT HUP INT TERM
@@ -47,10 +57,12 @@ ShellRoot {
         var reusePurged = service.pendingOps.length === 0 &&
           service.lastMessageFailedRequest === "stale-queued-message" &&
           service.lastMessageFailedCode === "identity_changed"
-        service.activeHelperProtocol = 12
-        var groupAttachmentGate = service.supportsGroupAttachments
+        service.activeHelperProtocol = 13
+        var groupAttachmentGate = service.supportsGroupAttachments &&
+          service.supportsCorrelatedGroupProjection && service.supportsGroupTyping
         service.activeHelperProtocol = 11
-        groupAttachmentGate = groupAttachmentGate && !service.supportsGroupAttachments
+        groupAttachmentGate = groupAttachmentGate && !service.supportsGroupAttachments &&
+          !service.supportsCorrelatedGroupProjection && !service.supportsGroupTyping
         service.friends = []
         service.friendsReady = false
         service.pendingCallSnapshot = { conversation: "0", key: directKey,
@@ -97,6 +109,46 @@ ShellRoot {
           queuedInvite.id === "0" && queuedInvite.key === directKey &&
           queuedInvite.request === inviteRequest
         service.pendingOps = []
+        service.awaitingHelperInstance = false
+        service.activeHelperProtocol = 13
+        service.helperInstance = "11111111111111111111111111111111"
+        service.expectedGroupRequest = "group-snapshot-1"
+        service.handleLine(JSON.stringify({ event: "group.list.begin", generation: "9",
+          instance: service.helperInstance, request: "group-snapshot-1", groups: 1, members: 1 }))
+        service.handleLine(JSON.stringify({ event: "group.info", generation: "9",
+          instance: service.helperInstance, request: "group-snapshot-1", group: groupId,
+          title: "Restored", members: 1, limit: 10 }))
+        service.handleLine(JSON.stringify({ event: "group.member", generation: "9",
+          instance: service.helperInstance, request: "group-snapshot-1", group: groupId,
+          peer: "0", key: replacementKey, friendKey: "", name: "You",
+          role: "owner", online: true, self: true }))
+        service.handleLine(JSON.stringify({ event: "group.list.end", generation: "9",
+          instance: service.helperInstance, request: "group-snapshot-1", groups: 1, members: 1 }))
+        var correlatedGroups = service.groupsReady && service.groups.length === 1 &&
+          service.groups[0].id === groupId && service.groups[0].members.length === 1 &&
+          service.operationBindingValid({ op: "typing.set", conversation: groupId })
+        service.handleLine(JSON.stringify({ event: "typing", conversation: groupId,
+          actor: replacementKey, typing: true }))
+        var groupTypingProjected = service.groupTypingActors(groupId).length === 1
+        service.handleLine(JSON.stringify({ event: "typing", conversation: groupId,
+          actor: replacementKey, typing: false }))
+        groupTypingProjected = groupTypingProjected &&
+          service.groupTypingActors(groupId).length === 0
+        service.expectedGroupRequest = "group-snapshot-2"
+        service.handleLine(JSON.stringify({ event: "group.list.begin", generation: "10",
+          instance: service.helperInstance, request: "wrong-request", groups: 0, members: 0 }))
+        var wrongGroupRequestIgnored = service.pendingGroupGeneration === "" &&
+          service.groups.length === 1
+        service.handleLine(JSON.stringify({ event: "group.list.begin", generation: "10",
+          instance: service.helperInstance, request: "group-snapshot-2", groups: 1, members: 1 }))
+        service.handleLine(JSON.stringify({ event: "group.info", generation: "10",
+          instance: service.helperInstance, request: "group-snapshot-2", group: groupId,
+          title: "Incomplete", members: 1, limit: 10 }))
+        service.handleLine(JSON.stringify({ event: "group.list.end", generation: "10",
+          instance: service.helperInstance, request: "group-snapshot-2", groups: 1, members: 1 }))
+        var incompleteGroupsPreserved = !service.groupsReady && service.groups.length === 1 &&
+          service.groups[0].title === "Restored"
+        service.pendingOps = []
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -112,7 +164,9 @@ ShellRoot {
             !service.protectIdentity("blocked-pass", "blocked-protect") &&
             !service.unprotectIdentity("blocked-pass", "blocked-unprotect") &&
             !service.setNickname("blocked", "blocked-nickname") &&
-            bindingChecks && groupAttachmentGate && groupInviteWired && reusePurged &&
+            bindingChecks && groupAttachmentGate && groupInviteWired &&
+            correlatedGroups && groupTypingProjected && wrongGroupRequestIgnored &&
+            incompleteGroupsPreserved && reusePurged &&
             bufferedUntilFriends && replayedAfterFriends && reboundContentPurged &&
             delayedSearchRejected &&
             service.redeem("legacy-invite") === "legacy") {

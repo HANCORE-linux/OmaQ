@@ -311,6 +311,36 @@ static void test_store(void)
 			fail("message edit");
 		free(updated);
 		updated = NULL;
+		if (omaq_message_append_id(dir, "gr1", "me", "group receipt", "out",
+					   "group-receipt-message") != 0 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"delivered", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 1 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"delivered", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"read", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 1 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"delivered", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"delivered", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 1 ||
+		    omaq_message_history(dir, "gr1", 20, &updated, &updated_n) != 0 || !updated ||
+		    !strstr(updated, "\"receipt_group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":\"read\"") ||
+		    !strstr(updated, "\"receipt_group_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":\"delivered\""))
+			fail("group receipt actor persistence");
+		free(updated);
+		updated = NULL;
+		for (int receipt_actor = 3; receipt_actor <= 9; receipt_actor++) {
+			snprintf(actor, sizeof(actor), "%064x", (unsigned int)receipt_actor);
+			if (omaq_store_update_group_receipt_changed(dir, "gr1",
+				    "group-receipt-message", "delivered", actor) != 1)
+				fail("group receipt actor bound allowance");
+		}
+		snprintf(actor, sizeof(actor), "%064x", 10u);
+		if (omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"delivered", actor) != -1 ||
+		    omaq_store_update_group_receipt_changed(dir, "gr1", "group-receipt-message",
+			"read", "short") != -1)
+			fail("group receipt actor bound");
 		{
 			static const char marker[] = "\"reaction_group_";
 			size_t used = 0;
@@ -1002,7 +1032,7 @@ static void test_rate_key_only(void)
 
 static void test_control_rate(void)
 {
-	omaq_control_rate r;
+	omaq_control_rate r, typing;
 	char actor[65];
 	int i;
 
@@ -1038,6 +1068,22 @@ static void test_control_rate(void)
 	if (omaq_control_rate_allow(&r, 'e', 7, actor, 4000) == 0 ||
 	    omaq_control_rate_allow(&r, 'd', 7, actor, 4000) == 0)
 		fail("control action rate limit");
+	omaq_control_rate_init(&r);
+	for (i = 0; i < OMAQ_CONTROL_RATE_PER_KEY; i++)
+		if (omaq_control_rate_allow(&r, 't', 7, actor, 5000) != 0)
+			fail("group typing rate allowance");
+	if (omaq_control_rate_allow(&r, 't', 7, actor, 5000) == 0 ||
+	    omaq_control_rate_allow(&r, 'z', 7, actor, 5000) == 0)
+		fail("group typing rate limit");
+	omaq_control_rate_init(&typing);
+	for (i = 0; i < OMAQ_CONTROL_RATE_GLOBAL; i++) {
+		snprintf(actor, sizeof(actor), "%064x", (unsigned int)(i + 1));
+		if (omaq_control_rate_allow(&typing, 't', (uint32_t)(i % 8), actor, 6000) != 0)
+			fail("isolated group typing rate allowance");
+	}
+	if (omaq_control_rate_allow(&typing, 't', 7, actor, 6000) == 0 ||
+	    omaq_control_rate_allow(&r, 'r', 7, actor, 6000) != 0)
+		fail("group typing exhausted receipt budget");
 }
 
 static void test_safety(void)

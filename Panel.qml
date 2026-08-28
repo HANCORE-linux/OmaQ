@@ -590,7 +590,11 @@ BarWidget {
 
   onPrimaryMenuOpenChanged: root.refreshPanelLayout()
   onInviteOpenChanged: root.refreshPanelLayout()
-  onMoreSectionChanged: root.refreshPanelLayout()
+  onMoreSectionChanged: {
+    root.refreshPanelLayout()
+    if (root.moreSection === "groups" && omaq)
+      omaq.refreshGroups(true)
+  }
   onThemeOpenChanged: root.refreshPanelLayout()
   onSoundOpenChanged: root.refreshPanelLayout()
   onFontSizeOpenChanged: root.refreshPanelLayout()
@@ -4275,9 +4279,14 @@ BarWidget {
               }
 
               Text {
-                visible: root.moreSection === "groups" && (!omaq.groups || omaq.groups.length === 0)
+                visible: root.moreSection === "groups" &&
+                  (!omaq.groups || omaq.groups.length === 0)
                 width: parent.width
-                text: "No groups yet"
+                text: !omaq.groupsReady
+                  ? (omaq.groupProjectionFailed
+                    ? "Groups could not be loaded — close and reopen Groups to retry"
+                    : "Loading groups…")
+                  : "No groups yet"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall

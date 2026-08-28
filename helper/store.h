@@ -26,6 +26,9 @@ int omaq_store_update_receipt(const char *home, const char *conv_id, const char 
 /* 1 = changed, 0 = already at this/equivalent state, -2 = not found, -1 = error. */
 int omaq_store_update_receipt_changed(const char *home, const char *conv_id,
 				      const char *id, const char *state);
+int omaq_store_update_group_receipt_changed(const char *home, const char *conv_id,
+					    const char *id, const char *state,
+					    const char *actor_key);
 int omaq_store_message_exists(const char *home, const char *conv_id, const char *id);
 int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id);
 /* Collect receipt-capable IDs among the newest `unread` incoming records. */

@@ -210,11 +210,15 @@ done
 echo '{"op":"status","id":"phase2-after-benign-reject-a"}' >&3
 echo '{"op":"status","id":"phase2-after-benign-reject-b"}' >&4
 sleep 0.2
-grep -a '"request":"phase2-after-benign-reject-a"' "$fa" | tail -1 | grep -a -q '"addr"' &&
-grep -a '"request":"phase2-after-benign-reject-b"' "$fb" | tail -1 | grep -a -q '"addr"' || {
+if ! grep -a '"event":"snapshot"' "$fa" |
+     grep -a '"request":"phase2-after-benign-reject-a"' |
+     tail -1 | grep -a -q '"addr"' ||
+   ! grep -a '"event":"snapshot"' "$fb" |
+     grep -a '"request":"phase2-after-benign-reject-b"' |
+     tail -1 | grep -a -q '"addr"'; then
 	echo "phase2: benign direct invite disabled backend" >&2
 	exit 1
-}
+fi
 
 forbidden_before=$(grep -a -c '"event":"error","code":"forbidden"' "$fa" || true)
 echo '{"op":"contact.remove","id":"0","key":"0000000000000000000000000000000000000000000000000000000000000000"}' >&3
