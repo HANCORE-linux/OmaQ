@@ -2457,12 +2457,14 @@ BarWidget {
           }
 
           Row {
+            id: heroHeaderRow
             anchors.fill: parent
             anchors.margins: root.framePadding
             spacing: Style.space(8)
 
             AvatarPic {
               id: selfHeaderAvatar
+              visible: !omaq.pending
               anchors.verticalCenter: parent.verticalCenter
               px: Style.space(34)
               path: omaq.selfAvatar
@@ -2472,6 +2474,8 @@ BarWidget {
             }
 
             Column {
+              id: selfHeaderContent
+              visible: !omaq.pending
               width: Math.max(0, parent.width - selfHeaderAvatar.width -
                               panelCloseButton.width - parent.spacing * 2)
               anchors.verticalCenter: parent.verticalCenter
@@ -2582,73 +2586,14 @@ BarWidget {
                 Text {
                   Layout.fillWidth: true
                   Layout.alignment: Qt.AlignVCenter
-                  text: omaq.pending
-                    ? (omaq.pendingGroup ? "GROUP INVITATION" : "CONTACT REQUEST")
-                    : ("YOU · " + root.connectionLabel().toUpperCase())
-                  color: omaq.pending
-                    ? (root.systemColors[3] || root.controlAccent)
-                    : (omaq.connectionState === "online"
-                      ? root.onlineStatusColor : root.dim)
+                  text: "YOU · " + root.connectionLabel().toUpperCase()
+                  color: omaq.connectionState === "online"
+                    ? root.onlineStatusColor : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
-                  font.bold: omaq.pending || omaq.connectionState !== "online"
+                  font.bold: omaq.connectionState !== "online"
                   font.letterSpacing: 0.8
                   elide: Text.ElideRight
-                }
-
-                Text {
-                  visible: omaq.pending
-                  Layout.alignment: Qt.AlignVCenter
-                  text: omaq.pendingGroup ? "group_add" : "person_add"
-                  color: root.systemColors[3] || root.controlAccent
-                  opacity: pendingHeaderHover.hovered ? 1.0 : 0.86
-                  font.family: "Material Symbols Rounded"
-                  font.pixelSize: Style.font.icon
-                  Accessible.name: omaq.pendingGroup
-                    ? "New group invitation" : "New contact request"
-                }
-
-                TokenButton {
-                  id: pendingAcceptButton
-                  visible: omaq.pending
-                  Layout.minimumWidth: Style.space(22)
-                  Layout.preferredWidth: Style.space(22)
-                  Layout.maximumWidth: Style.space(22)
-                  Layout.minimumHeight: Style.space(18)
-                  Layout.preferredHeight: Style.space(18)
-                  Layout.maximumHeight: Style.space(18)
-                  iconText: "check"
-                  iconFontFamily: "Material Symbols Rounded"
-                  tooltipText: omaq.pendingGroup ? "Accept group invitation" : "Accept contact request"
-                  accessibleName: tooltipText
-                  focusable: true
-                  foreground: root.foreground
-                  accent: root.systemColors[3] || root.controlAccent
-                  selected: true
-                  horizontalPadding: Style.space(2)
-                  verticalPadding: 0
-                  onClicked: omaq.decide(true)
-                }
-
-                TokenButton {
-                  id: pendingDeclineButton
-                  visible: omaq.pending
-                  Layout.minimumWidth: Style.space(22)
-                  Layout.preferredWidth: Style.space(22)
-                  Layout.maximumWidth: Style.space(22)
-                  Layout.minimumHeight: Style.space(18)
-                  Layout.preferredHeight: Style.space(18)
-                  Layout.maximumHeight: Style.space(18)
-                  iconText: "close"
-                  iconFontFamily: "Material Symbols Rounded"
-                  tooltipText: omaq.pendingGroup ? "Decline group invitation" : "Decline contact request"
-                  accessibleName: tooltipText
-                  focusable: true
-                  foreground: root.foreground
-                  accent: root.systemColors[3] || root.controlAccent
-                  horizontalPadding: Style.space(2)
-                  verticalPadding: 0
-                  onClicked: omaq.decide(false)
                 }
               }
 
@@ -2665,6 +2610,87 @@ BarWidget {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
+              }
+            }
+
+            RowLayout {
+              id: pendingRequestContent
+              visible: omaq.pending
+              width: Math.max(0, parent.width - panelCloseButton.width - parent.spacing)
+              height: parent.height
+              spacing: Style.space(5)
+              Accessible.name: omaq.pendingGroup
+                ? "Group invitation. Join a private group."
+                : "Friend request. Connect as a friend."
+
+              ColumnLayout {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 0
+
+                Text {
+                  id: pendingRequestTitle
+                  Layout.fillWidth: true
+                  text: omaq.pendingGroup ? "Group invite" : "Friend request"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  id: pendingRequestContext
+                  Layout.fillWidth: true
+                  text: omaq.pendingGroup ? "Private group" : "New contact"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+              }
+
+              TokenButton {
+                id: pendingAcceptButton
+                Layout.minimumWidth: Style.space(28)
+                Layout.preferredWidth: Style.space(28)
+                Layout.maximumWidth: Style.space(28)
+                Layout.minimumHeight: Style.space(28)
+                Layout.preferredHeight: Style.space(28)
+                Layout.maximumHeight: Style.space(28)
+                iconText: "check"
+                iconFontFamily: "Material Symbols Rounded"
+                tooltipText: omaq.pendingGroup
+                  ? "Accept group invitation" : "Accept friend request"
+                accessibleName: tooltipText
+                focusable: true
+                foreground: root.foreground
+                accent: root.systemColors[3] || root.controlAccent
+                selected: true
+                horizontalPadding: Style.space(2)
+                verticalPadding: Style.space(2)
+                onClicked: omaq.decide(true)
+              }
+
+              TokenButton {
+                id: pendingDeclineButton
+                Layout.minimumWidth: Style.space(28)
+                Layout.preferredWidth: Style.space(28)
+                Layout.maximumWidth: Style.space(28)
+                Layout.minimumHeight: Style.space(28)
+                Layout.preferredHeight: Style.space(28)
+                Layout.maximumHeight: Style.space(28)
+                iconText: "close"
+                iconFontFamily: "Material Symbols Rounded"
+                tooltipText: omaq.pendingGroup
+                  ? "Decline group invitation" : "Decline friend request"
+                accessibleName: tooltipText
+                focusable: true
+                foreground: root.foreground
+                accent: root.systemColors[3] || root.controlAccent
+                horizontalPadding: Style.space(2)
+                verticalPadding: Style.space(2)
+                onClicked: omaq.decide(false)
               }
             }
 
@@ -2773,6 +2799,13 @@ BarWidget {
 
         Connections {
           target: omaq
+          function onPendingChanged() {
+            if (!omaq.pending)
+              return
+            root.nicknameEditOpen = false
+            if (!root.nicknameSubmitPending)
+              nicknameField.text = omaq.selfNickname
+          }
           function onSelfNicknameChanged() {
             if (!root.nicknameEditOpen && !root.nicknameSubmitPending)
               nicknameField.text = omaq.selfNickname

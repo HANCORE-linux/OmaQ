@@ -21,7 +21,7 @@ To begin, you need a private `omaq://` invite from the other person.
 2. Click **Add**.
 3. Paste the complete `omaq://` invite into **Paste omaq:// invite**.
 4. Click **Join chat**.
-5. The other person uses the pending-request controls beside `YOU · <STATE>` in the fixed panel header to accept or decline.
+5. The other person's fixed panel header replaces its complete self presentation with a clearly labelled **Friend request** card. They use its prominent controls to accept or decline; the normal self header returns when the request ends.
 
 The invite and the explicit **Accept** step are the trust decision. Confirm the person through another trusted channel. A new link expires exactly 24 hours after the helper issues it; closing the panel, restarting the helper, or reconnecting does not restart that lifetime. The Invite view derives its countdown from the helper-issued absolute expiry. If a link was shared with the wrong person, use **Revoke** to invalidate it or **New link** to revoke it and create a replacement; both actions require confirmation, and New link completes the old revocation before creating its replacement. Revocation cannot undo an invitation that was already accepted—remove that contact separately if necessary. For an existing direct contact, **Show safety code** displays an identity code: compare it with that contact over a trusted channel. Matching codes verify that both sides selected the same two Tox identities.
 
@@ -35,7 +35,7 @@ The invite and the explicit **Accept** step are the trust decision. Confirm the 
 
 Close the OmaQ panel with the visible header Close action or `Escape`. Clicking outside may also close it when focus transfers to another window, without placing an invisible input surface over the desktop.
 
-Your own panel nickname can contain up to 18 valid characters. It appears with your avatar in the compact fixed panel header. Friends and groups begin immediately at the top of the lower-left frame; longer remote or legacy panel names are shortened visually with an ellipsis and never cross the border. Every rail menu remains inside that same thin left frame. Friend names switch to `color03` on pointer hover or keyboard focus. The two borderless support glyphs above the right rail use the same size and spacing as the rail icons below, open the OmaQ GitHub repository and HANCORE's Ko-fi page, and change to `color03` on pointer hover or keyboard focus.
+Your own panel nickname can contain up to 18 valid characters. It appears with your avatar in the compact fixed panel header. While a friend or group request is pending, a focused invitation card temporarily replaces the complete self presentation and keeps accept/decline actions clearly visible; the self header returns after the request is accepted, declined, or otherwise ends. Friends and groups begin immediately at the top of the lower-left frame; longer remote or legacy panel names are shortened visually with an ellipsis and never cross the border. Every rail menu remains inside that same thin left frame. Friend names switch to `color03` on pointer hover or keyboard focus. The two borderless support glyphs above the right rail use the same size and spacing as the rail icons below, open the OmaQ GitHub repository and HANCORE's Ko-fi page, and change to `color03` on pointer hover or keyboard focus.
 
 ## 3. Chat controls
 
