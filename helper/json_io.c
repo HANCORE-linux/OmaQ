@@ -113,6 +113,22 @@ int omaq_json_escape(const char *in, char *out, size_t outn)
 	return 0;
 }
 
+static uint64_t json_key_bit(const char *key)
+{
+	static const char *const keys[] = {
+		"op", "kind", "payload", "id", "conversation", "text", "reply",
+		"group", "member", "key", "request", "role", "state", "path",
+		"title", "nickname", "monitor", "passphrase", "ttlSec", "limit",
+		"x", "y", "accept", "replace", "pinned", "enabled", "typing",
+		"width", "height"
+	};
+
+	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+		if (strcmp(key, keys[i]) == 0)
+			return UINT64_C(1) << i;
+	return 0;
+}
+
 static int parse_bool(const char **pp, int *out)
 {
 	if (strncmp(*pp, "true", 4) == 0) {
@@ -148,6 +164,7 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 
 	while (*p && *p != '}') {
 		char key[32];
+		uint64_t field_bit;
 
 		if (!first) {
 			if (*p != ',')
@@ -158,6 +175,10 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		first = 0;
 		if (parse_string(&p, key, sizeof(key)) != 0)
 			return -1;
+		field_bit = json_key_bit(key);
+		if (field_bit == 0 || (out->field_mask & field_bit) != 0)
+			return -1;
+		out->field_mask |= field_bit;
 		p = skip_ws(p);
 		if (*p != ':')
 			return -1;

@@ -6,8 +6,12 @@
 
 #define OMAQ_JSON_LINE_MAX 4096
 #define OMAQ_JSON_STR_MAX 512
+#define OMAQ_JSON_FIELD_OP (UINT64_C(1) << 0)
+#define OMAQ_JSON_FIELD_ID (UINT64_C(1) << 3)
+#define OMAQ_JSON_FIELD_REQUEST (UINT64_C(1) << 10)
 
 typedef struct {
+	uint64_t field_mask;
 	char op[32];
 	char kind[16];
 	char payload[OMAQ_JSON_STR_MAX];

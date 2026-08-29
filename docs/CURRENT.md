@@ -32,6 +32,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The private Tox identity is local; there is no central identity server.
 - The passphrase protects only the local Tox identity data in `tox.save`; Ratchet state, group metadata, avatars, receipts, and JSONL chat history rely on private filesystem permissions instead.
 - Private identities, the private-group registry, ratchet state, and local history must never be synchronized unintentionally.
+- Helper IPC accepts one exact 29-key vocabulary and rejects unknown or duplicate object keys before dispatch. Instance-bound probe and shutdown operations accept only `op`, `id`, and `request`; Protocol-14 surface geometry retains the allowlisted `width` and `height` fields.
 - Direct call audio uses bounded in-memory PCM rings and the local PulseAudio client API; no audio is persisted.
 
 ## Open points
@@ -102,7 +103,7 @@ The source candidate implements the seven requested changes independently from t
 
 ## Latest validation
 
-The independent Protocol-14 source candidate passes `make clean && make test`, the native three-helper admin regression, phases 2 and 8, no-Signal and hardened helper builds, architecture checks, core QML lint, plugin validation, and the focused geometry, message-action, emoji-layout, composer, custom-sound, and protocol-compatibility regressions. Iterative independent QML and application-security review findings were corrected. Package construction, release evidence, and the source updater are deliberately outside this branch. The host still runs Quickshell 0.3.0 rather than the planned 0.3.1, and no visible native Wayland geometry test is claimed.
+The independent Protocol-14 source candidate passes `make clean && make test`, the native three-helper admin regression, phases 2 and 8, no-Signal and hardened helper builds, architecture checks, core QML lint, plugin validation, and the focused geometry, message-action, emoji-layout, composer, custom-sound, and protocol-compatibility regressions. The isolated IPC hardening follow-up additionally passes a 29-key parser matrix, duplicate String/Integer/Boolean rejection at the public socket decision, exact control-operation schemas, and valid Protocol-14 surface geometry. Iterative independent QML and application-security review findings were corrected. Package construction, release evidence, and the source updater are deliberately outside this branch. The host still runs Quickshell 0.3.0 rather than the planned 0.3.1, and no visible native Wayland geometry test is claimed.
 
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
@@ -114,7 +115,7 @@ The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclu
 
 ## Next order
 
-1. Keep the reviewed Protocol-14 source candidate independent from the paused package-release pipeline.
+1. Review and land the isolated duplicate-key IPC hardening before the next live helper synchronization, without importing the paused package-release pipeline.
 2. After the planned Omarchy and Quickshell 0.3.1 update, rerun the exact host evidence.
 3. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
 4. Keep commit, push, live synchronization, and AUR publication as separately approved delivery phases.

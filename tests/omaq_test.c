@@ -168,7 +168,43 @@ static void test_roles(void)
 
 static void test_json(void)
 {
+	static const struct {
+		const char *key;
+		const char *first_value;
+		const char *second_value;
+	} key_cases[] = {
+		{ "op", "\"status\"", "\"nope\"" },
+		{ "kind", "\"one\"", "\"two\"" },
+		{ "payload", "\"one\"", "\"two\"" },
+		{ "id", "\"one\"", "\"two\"" },
+		{ "conversation", "\"one\"", "\"two\"" },
+		{ "text", "\"one\"", "\"two\"" },
+		{ "reply", "\"one\"", "\"two\"" },
+		{ "group", "\"one\"", "\"two\"" },
+		{ "member", "\"one\"", "\"two\"" },
+		{ "key", "\"one\"", "\"two\"" },
+		{ "request", "\"one\"", "\"two\"" },
+		{ "role", "\"one\"", "\"two\"" },
+		{ "state", "\"one\"", "\"two\"" },
+		{ "path", "\"one\"", "\"two\"" },
+		{ "title", "\"one\"", "\"two\"" },
+		{ "nickname", "\"one\"", "\"two\"" },
+		{ "monitor", "\"one\"", "\"two\"" },
+		{ "passphrase", "\"one\"", "\"two\"" },
+		{ "ttlSec", "1", "2" },
+		{ "limit", "1", "2" },
+		{ "x", "1", "2" },
+		{ "y", "1", "2" },
+		{ "accept", "true", "false" },
+		{ "replace", "true", "false" },
+		{ "pinned", "true", "false" },
+		{ "enabled", "true", "false" },
+		{ "typing", "true", "false" },
+		{ "width", "320", "640" },
+		{ "height", "240", "480" },
+	};
 	omaq_op op;
+	uint64_t seen_fields = 0;
 	if (omaq_json_parse_op("{\"op\":\"status\"}", &op) != 0 || strcmp(op.op, "status") != 0)
 		fail("json status");
 	if (omaq_json_parse_op("{\"op\":\"invite.create\",\"ttlSec\":86400,\"kind\":\"direct\"}", &op) != 0)
@@ -188,6 +224,60 @@ static void test_json(void)
 		fail("json contact key");
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
+	for (size_t i = 0; i < sizeof(key_cases) / sizeof(key_cases[0]); i++) {
+		char accepted[256], duplicate[384], failure[128];
+		uint64_t added_fields;
+
+		if (strcmp(key_cases[i].key, "op") == 0) {
+			snprintf(accepted, sizeof(accepted), "{\"op\":%s}",
+				 key_cases[i].first_value);
+			snprintf(duplicate, sizeof(duplicate), "{\"op\":%s,\"op\":%s}",
+				 key_cases[i].first_value, key_cases[i].second_value);
+		} else {
+			snprintf(accepted, sizeof(accepted), "{\"op\":\"status\",\"%s\":%s}",
+				 key_cases[i].key, key_cases[i].first_value);
+			snprintf(duplicate, sizeof(duplicate),
+				 "{\"op\":\"status\",\"%s\":%s,\"%s\":%s}",
+				 key_cases[i].key, key_cases[i].first_value,
+				 key_cases[i].key, key_cases[i].second_value);
+		}
+		if (omaq_json_parse_op(accepted, &op) != 0) {
+			snprintf(failure, sizeof(failure), "json whitelist rejected %s",
+				 key_cases[i].key);
+			fail(failure);
+			continue;
+		}
+		added_fields = op.field_mask & ~OMAQ_JSON_FIELD_OP;
+		if (strcmp(key_cases[i].key, "op") == 0) {
+			if (op.field_mask != OMAQ_JSON_FIELD_OP)
+				fail("json op field mask");
+		} else if (added_fields == 0 ||
+			   (added_fields & (added_fields - UINT64_C(1))) != 0 ||
+			   (seen_fields & added_fields) != 0) {
+			snprintf(failure, sizeof(failure), "json field mask collision %s",
+				 key_cases[i].key);
+			fail(failure);
+		}
+		seen_fields |= op.field_mask;
+		if (omaq_json_parse_op(duplicate, &op) == 0) {
+			snprintf(failure, sizeof(failure), "json duplicate accepted %s",
+				 key_cases[i].key);
+			fail(failure);
+		}
+	}
+	if (seen_fields != ((UINT64_C(1) << 29) - UINT64_C(1)))
+		fail("json whitelist field coverage");
+	if (omaq_json_parse_op("{\"id\":\"one\",\"op\":\"status\",\"id\":\"two\"}",
+			       &op) == 0)
+		fail("json nonadjacent duplicate accepted");
+	if (omaq_json_parse_op("{\"\\u006f\\u0070\":\"status\"}", &op) == 0 ||
+	    omaq_json_parse_op("{\"Op\":\"status\"}", &op) == 0)
+		fail("json ambiguous operation key accepted");
+	if (omaq_json_parse_op("{\"op\":\"status\",\"id\":\"one\",\"request\":\"two\"}",
+			       &op) != 0 ||
+	    op.field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
+			      OMAQ_JSON_FIELD_REQUEST))
+		fail("json public field masks");
 	if (omaq_json_parse_op("{", &op) == 0)
 		fail("json incomplete");
 	if (omaq_json_parse_op("{\"foo\":1}", &op) == 0)

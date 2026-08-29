@@ -9442,7 +9442,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 {
 	if (strcmp(op->op, "helper.probe") == 0) {
 		char escaped_request[80 * 6 + 1], event[768];
-		if (!op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
+		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
+				       OMAQ_JSON_FIELD_REQUEST) ||
+		    !op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
 		    !omaq_message_id_ok(op->request) ||
 		    omaq_json_escape(op->request, escaped_request,
 				     sizeof(escaped_request)) != 0) {
@@ -9460,7 +9462,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 	if (strcmp(op->op, "helper.shutdown") == 0) {
 		char escaped_request[80 * 6 + 1];
-		if (!op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
+		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
+				       OMAQ_JSON_FIELD_REQUEST) ||
+		    !op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
 		    !omaq_message_id_ok(op->request) ||
 		    omaq_json_escape(op->request, escaped_request,
 				     sizeof(escaped_request)) != 0) {

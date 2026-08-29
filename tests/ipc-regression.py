@@ -22,6 +22,25 @@ COMMAND = b'{"op":"status"}\n'
 EVENT = b'{"event":"snapshot","protocol":14,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
 STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":14,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
+UNSUPPORTED_EVENT = b'{"event":"error","code":"unsupported"}\n'
+FORBIDDEN_EVENT = b'{"event":"error","code":"forbidden"}\n'
+DUPLICATE_COMMANDS = (
+    ("string", b'{"op":"status","id":"first","id":"second"}\n'),
+    ("integer-width", b'{"op":"status","width":320,"width":640}\n'),
+    ("boolean", b'{"op":"status","pinned":true,"pinned":false}\n'),
+    ("operation", b'{"op":"status","op":"status"}\n'),
+)
+SURFACE_GROUP = "g:" + "a" * 64
+SURFACE_GEOMETRY_COMMAND = (
+    '{"op":"surface.set","conversation":"' + SURFACE_GROUP
+    + '","monitor":"DP-1","x":10,"y":20,"width":500,"height":600,'
+      '"pinned":true}\n'
+).encode()
+SURFACE_GEOMETRY_EVENT = (
+    '{"event":"surface","conversation":"' + SURFACE_GROUP
+    + '","key":"","monitor":"DP-1","x":10,"y":20,"width":500,'
+      '"height":600,"pinned":true}\n'
+).encode()
 HISTORY_A_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-a"}\n'
 HISTORY_A_EVENT = b'{"event":"history","conversation":"7","request":"history-a","unread":0,"items":[]}\n'
 HISTORY_B_COMMAND = b'{"op":"history","conversation":"7","limit":50,"id":"history-b"}\n'
@@ -103,6 +122,16 @@ def wait_for(predicate, timeout: float, message: str) -> None:
     raise RuntimeError(message)
 
 
+def receive_line(client: socket.socket) -> bytes:
+    response = b""
+    while b"\n" not in response:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    return response
+
+
 def stop(process: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
     if process.poll() is None:
         process.terminate()
@@ -181,8 +210,45 @@ def main() -> int:
                 if not chunk:
                     break
                 response += chunk
-            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
+            instance_match = INSTANCE_FIELD.search(response)
+            if normalize_instances(response) != EVENT or not instance_match:
                 raise RuntimeError(f"socket framing recovery mismatch: {response!r}")
+            instance = instance_match.group(1).decode()
+            for field_class, duplicate_command in DUPLICATE_COMMANDS:
+                framing_client.sendall(duplicate_command)
+                response = receive_line(framing_client)
+                if response != UNSUPPORTED_EVENT:
+                    raise RuntimeError(
+                        f"duplicate {field_class} key reached dispatch: {response!r}"
+                    )
+            framing_client.sendall(COMMAND)
+            response = receive_line(framing_client)
+            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
+                raise RuntimeError(f"helper did not recover after duplicate keys: {response!r}")
+            for operation, extra_field in (
+                ("helper.probe", '"width":1'),
+                ("helper.shutdown", '"pinned":true'),
+            ):
+                command = (
+                    '{"op":"' + operation + '","id":"' + instance
+                    + '","request":"strict-control-1",' + extra_field + '}\n'
+                ).encode()
+                framing_client.sendall(command)
+                response = receive_line(framing_client)
+                if response != FORBIDDEN_EVENT:
+                    raise RuntimeError(
+                        f"{operation} accepted an extra known field: {response!r}"
+                    )
+            framing_client.sendall(COMMAND)
+            response = receive_line(framing_client)
+            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
+                raise RuntimeError(f"helper shutdown schema check had side effects: {response!r}")
+            framing_client.sendall(SURFACE_GEOMETRY_COMMAND)
+            response = receive_line(framing_client)
+            if response != SURFACE_GEOMETRY_EVENT:
+                raise RuntimeError(
+                    f"Protocol-14 surface geometry was not accepted: {response!r}"
+                )
             framing_client.sendall(FILE_REJECT_COMMAND)
             response = b""
             while response.count(b"\n") < 1:
@@ -488,6 +554,11 @@ def main() -> int:
         replayed = replay_path.read_bytes()
         expected = (
             EVENT
+            + UNSUPPORTED_EVENT * len(DUPLICATE_COMMANDS)
+            + EVENT
+            + FORBIDDEN_EVENT * 2
+            + EVENT
+            + SURFACE_GEOMETRY_EVENT
             + FILE_REJECT_EVENTS
             + b"".join(expected for _, expected in IDENTITY_UNSUPPORTED)
             + GROUP_INVITE_UNSUPPORTED_EVENT
@@ -518,7 +589,7 @@ def main() -> int:
         # A fresh helper stdout stream discards the old stream's incomplete JSONL tail.
         combined = first_complete + replayed
         instances = INSTANCE_FIELD.findall(combined)
-        if len(instances) != 5 or len(set(instances)) < 2:
+        if len(instances) != 7 or len(set(instances)) < 2:
             raise RuntimeError(f"helper instance ids missing or not rotated: {instances!r}")
         if normalize_instances(combined) != expected:
             raise RuntimeError(
