@@ -8,6 +8,7 @@ import qs.Ui
 import qs.Commons
 import ".." as OmaQ
 import "../Emoji.js" as Emoji
+import "../MessageLayout.js" as MessageLayout
 
 FocusScope {
   // Keep the live plugin parser cache tied to the current source revision.
@@ -840,15 +841,16 @@ FocusScope {
   }
 
   function messageMarkup(value, replyId, edited) {
-    var reply = root.replyTextFor(replyId)
+    var replyPreview = root.replyPreviewFor(replyId)
     var main = root.markdownText(value)
     if (edited)
       main += " <font color='" + String(Qt.darker(root.fg, 1.35)) + "'>(edited)</font>"
-    if (!reply)
+    if (!replyPreview)
       return main
-    var preview = root.preserveLiteralSeparators(root.escapeMarkup(reply))
-      .replace(/\n/g, "<br/>")
-    return "<font color='" + String(root.accent) + "'><b>↩ " + preview + "</b></font><br/>" + main
+    var previewMarkup = root.preserveLiteralSeparators(
+      root.escapeMarkup(replyPreview))
+    return "<font color='" + String(root.accent) + "'><b>↩ " +
+      previewMarkup + "</b></font><br/>" + main
   }
 
   function smileSrc(glyph) {
@@ -875,6 +877,14 @@ FocusScope {
         return String(item.text || "")
     }
     return ""
+  }
+
+  function compactReplyPreview(value) {
+    return MessageLayout.compactReplyPreview(value, 120)
+  }
+
+  function replyPreviewFor(id) {
+    return root.compactReplyPreview(root.replyTextFor(id))
   }
 
   function beginReply(id, text) {
@@ -1028,9 +1038,9 @@ FocusScope {
           kinds.push(character)
       }
     }
-    var reply = root.replyTextFor(replyId)
-    if (reply) {
-      append(reply)
+    var replyPreview = root.replyPreviewFor(replyId)
+    if (replyPreview) {
+      append(replyPreview)
       kinds.push("\n")
     }
     append(text)
@@ -1567,8 +1577,9 @@ FocusScope {
     root.restoreLatestPosition()
   }
 
-  function bubbleWidth(value, hasCode, withReceipt, availableWidth) {
-    var sourceLines = String(value || "").split("\n")
+  function bubbleWidth(value, replyId, hasCode, withReceipt, availableWidth) {
+    var sourceLines = MessageLayout.replySizingText(value,
+      root.replyPreviewFor(replyId)).split("\n")
     var longest = 0
     for (var i = 0; i < sourceLines.length; i++)
       longest = Math.max(longest, sourceLines[i].length)
@@ -3641,7 +3652,7 @@ FocusScope {
                 : (line.fileMessage
                   ? root.fileBubbleWidth(line.contextText, line.audioMessage, parent.width)
                   : (line.smileOnly ? line.smileWidth :
-                    root.bubbleWidth(model.text, line.hasCode,
+                    root.bubbleWidth(model.text, model.reply, line.hasCode,
                       model.dir === "out" && model.ack !== undefined, parent.width))))
             implicitHeight: Math.max(
               line.imageMessage ? root.inlineImagePx :
@@ -4431,7 +4442,9 @@ FocusScope {
             id: replyPreview
             width: parent.width - clearReplyBtn.implicitWidth - confirmDeleteBtn.width - parent.spacing * 2
             text: root.deleteConfirmId !== "" ? "Delete this message?" :
-              (root.editingId !== "" ? "Editing message" : ("Reply: " + (root.replyToText || root.replyToId)))
+              (root.editingId !== "" ? "Editing message" :
+                ("Reply: " + root.compactReplyPreview(
+                  root.replyToText || root.replyToId)))
             color: root.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

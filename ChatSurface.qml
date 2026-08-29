@@ -40,6 +40,8 @@ Item {
   property bool ownershipTeardown: false
   property bool floatRulesReady: false
   property bool floatRuleReloadBlocked: false
+  property int geometryGeneration: 0
+  property int geometrySnapshotGeneration: -1
   property string lastNotifiedMessageId: ""
   property string activeCustomSoundId: ""
   property string activeCustomSoundPath: ""
@@ -1147,7 +1149,8 @@ Item {
   function applyGeometrySnapshot(raw) {
     var items
     try { items = JSON.parse(String(raw || "")) } catch (error) { return }
-    if (!Array.isArray(items) || items.length > 32)
+    if (root.geometrySnapshotGeneration !== root.geometryGeneration ||
+        !Array.isArray(items) || items.length > 32)
       return
     for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
       var item = items[itemIndex] || ({})
@@ -1167,6 +1170,16 @@ Item {
         var card = openCardModel.get(cardIndex)
         if (root.chatWindowTitle(card.conversation) !== title || card.placeOnMap)
           continue
+        var pinWindow = root.pinWindowAt(cardIndex)
+        if (pinWindow &&
+            (pinWindow.localResizePending || pinWindow.placementStarted)) {
+          if (pinWindow.localResizePending && !pinWindow.placementStarted &&
+              (Number(card.surfaceX) !== x || Number(card.surfaceY) !== y ||
+               String(card.monitor || "") !== monitor))
+            root.updateCard(cardIndex, { monitor: monitor, surfaceX: x,
+              surfaceY: y })
+          break
+        }
         if (Number(card.surfaceX) !== x || Number(card.surfaceY) !== y ||
             Number(card.surfaceWidth) !== width || Number(card.surfaceHeight) !== height ||
             String(card.monitor || "") !== monitor) {
@@ -1196,8 +1209,10 @@ Item {
     repeat: true
     running: root.isSurfaceOwner && root.floatRulesReady && openCardModel.count > 0
     triggeredOnStart: true
-    onTriggered: if (!geometrySnapshot.running)
+    onTriggered: if (!geometrySnapshot.running) {
+      root.geometrySnapshotGeneration = root.geometryGeneration
       geometrySnapshot.running = true
+    }
   }
 
   function overlayVisibleOn(screenName) {
@@ -1396,8 +1411,13 @@ Item {
       // per-conversation title so an existing chat can be moved precisely.
       title: pinWin.everShown && pinWin.modelData
         ? root.chatWindowTitle(pinWin.modelData.conversation) : "OmaQ chat"
-      implicitWidth: Math.max(360, Math.round(Number(pinWin.surfaceWidth || 420)))
-      implicitHeight: Math.max(420, Math.round(Number(pinWin.surfaceHeight || 420)))
+      property int desiredWidth: pinWin.boundedWidth(pinWin.surfaceWidth)
+      property int desiredHeight: pinWin.boundedHeight(pinWin.surfaceHeight)
+      property int pendingWidth: pinWin.boundedWidth(pinWin.surfaceWidth)
+      property int pendingHeight: pinWin.boundedHeight(pinWin.surfaceHeight)
+      property bool localResizePending: false
+      implicitWidth: pinWin.desiredWidth
+      implicitHeight: pinWin.desiredHeight
       minimumSize: Qt.size(360, 420)
       color: root.theme().bg || Color.background
       property bool everShown: false
@@ -1405,12 +1425,71 @@ Item {
       property bool placementStarted: false
       property int placementAttempts: 0
 
+      function boundedWidth(value) {
+        return Math.max(360, Math.min(4096,
+          Math.round(Number(value || 420))))
+      }
+
+      function boundedHeight(value) {
+        return Math.max(420, Math.min(4096,
+          Math.round(Number(value || 420))))
+      }
+
+      function syncDesiredWidth() {
+        var nextWidth = pinWin.boundedWidth(pinWin.surfaceWidth)
+        if (pinWin.localResizePending && nextWidth !== pinWin.pendingWidth)
+          return
+        pinWin.desiredWidth = nextWidth
+        if (!pinWin.localResizePending)
+          pinWin.pendingWidth = nextWidth
+      }
+
+      function syncDesiredHeight() {
+        var nextHeight = pinWin.boundedHeight(pinWin.surfaceHeight)
+        if (pinWin.localResizePending && nextHeight !== pinWin.pendingHeight)
+          return
+        pinWin.desiredHeight = nextHeight
+        if (!pinWin.localResizePending)
+          pinWin.pendingHeight = nextHeight
+      }
+
+      function captureActualWidth() {
+        if (!pinWin.everShown || pinWin.closing || pinWin.placeOnMap ||
+            pinWin.placementStarted)
+          return
+        var nextWidth = pinWin.boundedWidth(pinWin.width)
+        pinWin.desiredWidth = nextWidth
+        pinWin.pendingWidth = nextWidth
+        pinWin.localResizePending = true
+        root.geometryGeneration++
+        var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
+        if (index >= 0 && Number(pinWin.surfaceWidth) !== nextWidth)
+          root.updateCard(index, { surfaceWidth: nextWidth })
+        geometrySave.restart()
+      }
+
+      function captureActualHeight() {
+        if (!pinWin.everShown || pinWin.closing || pinWin.placeOnMap ||
+            pinWin.placementStarted)
+          return
+        var nextHeight = pinWin.boundedHeight(pinWin.height)
+        pinWin.desiredHeight = nextHeight
+        pinWin.pendingHeight = nextHeight
+        pinWin.localResizePending = true
+        root.geometryGeneration++
+        var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
+        if (index >= 0 && Number(pinWin.surfaceHeight) !== nextHeight)
+          root.updateCard(index, { surfaceHeight: nextHeight })
+        geometrySave.restart()
+      }
+
       function requestInitialPlacement() {
         if (!pinWin.placeOnMap || pinWin.placementStarted ||
             !pinWin.backingWindowVisible || pinWin.title === "OmaQ chat")
           return
         pinWin.placementStarted = true
         pinWin.placementAttempts++
+        root.geometryGeneration++
         placeWindow.command = [root.floatScriptPath, "place-title", pinWin.title,
           String(Math.round(pinWin.surfaceX)), String(Math.round(pinWin.surfaceY)),
           String(Math.max(360, Math.round(pinWin.surfaceWidth))),
@@ -1453,19 +1532,21 @@ Item {
         }
       }
       onTitleChanged: Qt.callLater(pinWin.requestInitialPlacement)
-      onWidthChanged: if (pinWin.everShown && !pinWin.closing)
-        geometrySave.restart()
-      onHeightChanged: if (pinWin.everShown && !pinWin.closing)
-        geometrySave.restart()
+      onSurfaceWidthChanged: pinWin.syncDesiredWidth()
+      onSurfaceHeightChanged: pinWin.syncDesiredHeight()
+      onWidthChanged: pinWin.captureActualWidth()
+      onHeightChanged: pinWin.captureActualHeight()
 
       Process {
         id: placeWindow
         running: false
         onExited: function(code) {
           if (code === 0) {
+            root.geometryGeneration++
             var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
             if (index >= 0)
               root.updateCard(index, { placeOnMap: false })
+            placementSettle.restart()
             return
           }
           pinWin.placementStarted = false
@@ -1484,12 +1565,30 @@ Item {
       }
 
       Timer {
+        id: placementSettle
+        interval: 75
+        repeat: false
+        onTriggered: {
+          root.geometryGeneration++
+          pinWin.placementStarted = false
+          if (pinWin.boundedWidth(pinWin.width) !== pinWin.pendingWidth)
+            pinWin.captureActualWidth()
+          if (pinWin.boundedHeight(pinWin.height) !== pinWin.pendingHeight)
+            pinWin.captureActualHeight()
+        }
+      }
+
+      Timer {
         id: geometrySave
         interval: 350
         repeat: false
-        onTriggered: if (pinWin.visible && !pinWin.closing)
-          root.savePos(pinWin.conversation, pinWin.monitor, pinWin.surfaceX,
-            pinWin.surfaceY, true, pinWin.directKey, pinWin.width, pinWin.height)
+        onTriggered: {
+          if (pinWin.visible && !pinWin.closing)
+            root.savePos(pinWin.conversation, pinWin.monitor, pinWin.surfaceX,
+              pinWin.surfaceY, true, pinWin.directKey, pinWin.pendingWidth,
+              pinWin.pendingHeight)
+          pinWin.localResizePending = false
+        }
       }
 
       onVisibleChanged: {
