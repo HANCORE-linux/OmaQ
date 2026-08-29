@@ -58,8 +58,9 @@ intentionally retained:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
 ```
 
-This runs `omarchy plugin remove hancore.omaq` and unloads the plugin. Omarchy
-deletes a Git-managed plugin folder, including local modifications inside it; a
+The wrapper refuses to unload or remove OmaQ while the helper owns an active private group, native and registered group state disagree, group cleanup or identity loading is pending, or helper startup overlaps removal. It binds a running helper to the exact executable inode, requires a delivered correlated group-free shutdown acknowledgement, and holds the private state lock throughout plugin removal. Missing or malformed runtime evidence fails closed without sending a signal.
+
+After a verified group-free shutdown, this runs `omarchy plugin remove hancore.omaq`. Omarchy deletes a Git-managed plugin folder, including local modifications inside it; a
 plain plugin folder is moved to the exact hidden backup path printed by the
 wrapper. Data outside the plugin folder remains in these locations:
 

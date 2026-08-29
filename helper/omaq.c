@@ -339,6 +339,11 @@ static omaq_line_reader g_stdin_reader;
 static int g_stdin_closed;
 static int g_fatal_io;
 static volatile sig_atomic_t g_shutdown_after_drain;
+static volatile sig_atomic_t g_shutdown_signal;
+static int g_shutdown_ack_fd = -1;
+static int g_shutdown_ack_delivered;
+static int g_shutdown_ack_failed;
+static int64_t g_shutdown_ack_deadline_ms;
 static int g_identity_recovered;
 static int g_unread_load_failed;
 static int g_identity_backup_cleanup_failed;
@@ -347,14 +352,115 @@ static int g_identity_recovery_required;
 static int g_replay_mode;
 static int g_backend_started;
 static char g_instance_id[33];
+#ifdef OMAQ_IPC_TEST
+static int g_test_native_group_count;
+static int g_test_group_state_uncertain;
+#endif
 
 static void drop_client(size_t i);
 
 static void request_shutdown_signal(int signal_number)
 {
 	(void)signal_number;
+	g_shutdown_signal = 1;
 	g_shutdown_after_drain = 1;
 }
+
+static int shutdown_requested(void)
+{
+	return g_shutdown_after_drain || g_shutdown_signal;
+}
+
+static int64_t monotonic_millis(void)
+{
+	struct timespec now;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+		return -1;
+	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int shutdown_ack_status(void)
+{
+	int64_t now;
+
+	if (g_shutdown_ack_fd < 0 || g_shutdown_ack_delivered)
+		return 1;
+	if (g_shutdown_ack_failed)
+		return -1;
+	now = monotonic_millis();
+	if (now < 0 || now >= g_shutdown_ack_deadline_ms)
+		return -1;
+	for (size_t i = 0; i < g_ncli; i++)
+		if (g_clients[i] == g_shutdown_ack_fd) {
+			if (g_olen[i] > g_ooff[i])
+				return 0;
+			g_shutdown_ack_delivered = 1;
+			return 1;
+		}
+	return -1;
+}
+
+static void cancel_helper_shutdown(void)
+{
+	int owner_fd = g_shutdown_ack_fd;
+
+	g_shutdown_ack_fd = -1;
+	g_shutdown_ack_delivered = 0;
+	g_shutdown_ack_failed = 0;
+	g_shutdown_ack_deadline_ms = 0;
+	for (size_t i = 0; i < g_ncli; i++)
+		if (g_clients[i] == owner_fd) {
+			drop_client(i);
+			break;
+		}
+#ifdef OMAQ_IPC_TEST
+	{
+		const char *mode = getenv("OMAQ_IPC_TEST_SAFE_SHUTDOWN_MODE");
+		if (mode && strcmp(mode, "ack_fail_signal") == 0)
+			request_shutdown_signal(SIGTERM);
+	}
+#endif
+	g_shutdown_after_drain = 0;
+}
+
+#ifdef OMAQ_IPC_TEST
+static int test_startup_pause(const char *phase)
+{
+	const char *configured = getenv("OMAQ_IPC_TEST_STARTUP_PHASE");
+	const char *ready = getenv("OMAQ_IPC_TEST_STARTUP_READY");
+	const char *release = getenv("OMAQ_IPC_TEST_STARTUP_RELEASE");
+	int fd;
+
+	if (!configured && !ready && !release)
+		return 0;
+	if (!configured || strcmp(configured, phase) != 0)
+		return 0;
+	if (!ready || !release || ready[0] != '/' || release[0] != '/')
+		return -1;
+	fd = open(ready, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return -1;
+	{
+		int ok = write(fd, "ready\n", 6) == 6 && fsync(fd) == 0;
+		if (close(fd) != 0)
+			ok = 0;
+		if (!ok)
+			return -1;
+	}
+	for (int i = 0; i < 400; i++) {
+		struct stat st;
+		if (lstat(release, &st) == 0)
+			return S_ISREG(st.st_mode) && st.st_uid == geteuid() &&
+				st.st_nlink == 1 && (st.st_mode & 0077) == 0 ? 0 : -1;
+		if (errno != ENOENT)
+			return -1;
+		usleep(25000);
+	}
+	return -1;
+}
+#endif
+
 static void emit_unread_failed(const char *conversation, const char *code);
 #ifdef HAVE_TOX
 static int group_registry_save(void);
@@ -1319,9 +1425,32 @@ static int ensure_state_dir(void)
 	return 0;
 }
 
+static int startup_executable_matches(const char *argument)
+{
+	struct stat expected, running;
+	char *resolved;
+	int matches;
+
+	if (!argument || !strchr(argument, '/'))
+		return 0;
+	resolved = realpath(argument, NULL);
+	if (!resolved)
+		return 0;
+	matches = stat(resolved, &expected) == 0 && stat("/proc/self/exe", &running) == 0 &&
+		(expected.st_dev == running.st_dev && expected.st_ino == running.st_ino);
+	free(resolved);
+	return matches;
+}
+
 static int uninstall_marker_present(void)
 {
 	char path[512];
+#ifdef OMAQ_IPC_TEST
+	const char *ignore = getenv("OMAQ_IPC_TEST_IGNORE_UNINSTALL_MARKER");
+
+	if (ignore && strcmp(ignore, "1") == 0)
+		return 0;
+#endif
 	struct stat status;
 
 	if (snprintf(path, sizeof(path), "%s/omaq.uninstalling", state_dir()) >=
@@ -2852,15 +2981,6 @@ static void complete_pending_group_invite(uint32_t friend,
 		return;
 	}
 	clear_pending_group_invite();
-}
-
-static int64_t monotonic_millis(void)
-{
-	struct timespec now;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		return -1;
-	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 static void fail_pending_native_group_invite(const char *code)
@@ -9438,8 +9558,86 @@ static void reject_direct_operation_binding(const omaq_op *op)
 }
 #endif
 
+static int helper_shutdown_group_state(int *groups)
+{
+	size_t native_groups = 0;
+	int cached_groups = omaq_group_count();
+	int uncertain = 0;
+	int reported;
+
+#ifdef HAVE_TOX
+	if (!g_tox) {
+		uncertain = 1;
+	} else {
+		g_group_registry_unmapped = 0;
+		if (rebuild_group_cache() != 0 ||
+		    omaq_tox_group_count(g_tox, &native_groups) != 0 ||
+		    g_group_registry_unmapped)
+			uncertain = 1;
+		for (int i = 0; i < GROUP_CLEANUP_MAX; i++)
+			if (g_group_cleanup[i].used) {
+				uncertain = 1;
+				break;
+			}
+	}
+#endif
+#ifdef OMAQ_IPC_TEST
+	if ((size_t)g_test_native_group_count > native_groups)
+		native_groups = (size_t)g_test_native_group_count;
+	if (g_test_group_state_uncertain)
+		uncertain = 1;
+#endif
+	reported = cached_groups;
+	if (native_groups > (size_t)reported)
+		reported = native_groups > 1024 ? 1024 : (int)native_groups;
+	*groups = reported;
+	if (reported > 0)
+		return 1;
+#ifdef HAVE_TOX
+	if (!uncertain && omaq_tox_save(g_tox) != 0)
+		uncertain = 1;
+#endif
+	return uncertain ? 2 : 0;
+}
+
+static void begin_helper_shutdown(int owner_fd, const char *escaped_request)
+{
+	char event[768];
+	int queued = 0;
+	int64_t now = monotonic_millis();
+
+	g_shutdown_after_drain = 1;
+	g_shutdown_ack_fd = owner_fd;
+	g_shutdown_ack_delivered = 0;
+	g_shutdown_ack_failed = 0;
+	g_shutdown_ack_deadline_ms = now < 0 ? 0 : now + 5000;
+#ifdef OMAQ_IPC_TEST
+	emit("{\"event\":\"test.noise\"}");
+#endif
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"helper.shutdown\",\"instance\":\"%s\",\"request\":\"%s\"}",
+		 g_instance_id, escaped_request);
+	for (size_t i = 0; i < g_ncli; i++)
+		if (g_clients[i] == owner_fd) {
+			queued = queue_client(i, event) == 0;
+			break;
+		}
+	if (!queued)
+		g_shutdown_ack_failed = 1;
+#ifdef OMAQ_IPC_TEST
+	{
+		const char *mode = getenv("OMAQ_IPC_TEST_SAFE_SHUTDOWN_MODE");
+		if (mode && (strcmp(mode, "ack_fail") == 0 ||
+			     strcmp(mode, "ack_fail_signal") == 0))
+			g_shutdown_ack_failed = 1;
+	}
+#endif
+}
+
 static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 {
+	if (shutdown_requested())
+		return 0;
 	if (strcmp(op->op, "helper.probe") == 0) {
 		char escaped_request[80 * 6 + 1], event[768];
 		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
@@ -9460,6 +9658,52 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		emit(event);
 		return 0;
 	}
+	if (strcmp(op->op, "helper.shutdown_if_no_groups") == 0) {
+		char escaped_request[80 * 6 + 1];
+		int groups, group_state;
+
+		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
+				       OMAQ_JSON_FIELD_REQUEST) ||
+		    !op->id[0] || strcmp(op->id, g_instance_id) != 0 ||
+		    !omaq_message_id_ok(op->request) ||
+		    omaq_json_escape(op->request, escaped_request,
+				     sizeof(escaped_request)) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+#ifdef OMAQ_IPC_TEST
+		{
+			const char *mode = getenv("OMAQ_IPC_TEST_SAFE_SHUTDOWN_MODE");
+			if (mode && strcmp(mode, "unsupported") == 0) {
+				emit_error("unsupported");
+				return 0;
+			}
+			if (mode && strcmp(mode, "silent") == 0)
+				return 0;
+			if (mode && strcmp(mode, "malformed") == 0) {
+				char event[768];
+				snprintf(event, sizeof(event),
+					 "{\"event\":\"helper.shutdown_blocked\",\"instance\":\"%s\",\"request\":\"%s\",\"reason\":\"active_groups\",\"groups\":0}",
+					 g_instance_id, escaped_request);
+				emit(event);
+				return 0;
+			}
+		}
+#endif
+		group_state = helper_shutdown_group_state(&groups);
+		if (group_state != 0) {
+			char event[768];
+			const char *reason = group_state == 1 ? "active_groups" :
+				"group_state_uncertain";
+			snprintf(event, sizeof(event),
+				 "{\"event\":\"helper.shutdown_blocked\",\"instance\":\"%s\",\"request\":\"%s\",\"reason\":\"%s\",\"groups\":%d}",
+				 g_instance_id, escaped_request, reason, groups);
+			emit(event);
+			return 0;
+		}
+		begin_helper_shutdown(owner_fd, escaped_request);
+		return 0;
+	}
 	if (strcmp(op->op, "helper.shutdown") == 0) {
 		char escaped_request[80 * 6 + 1];
 		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
@@ -9471,21 +9715,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			emit_error("forbidden");
 			return 0;
 		}
-		g_shutdown_after_drain = 1;
-		if (g_listen >= 0) {
-			close(g_listen);
-			g_listen = -1;
-		}
-		{
-			char event[768];
-#ifdef OMAQ_IPC_TEST
-			emit("{\"event\":\"test.noise\"}");
-#endif
-			snprintf(event, sizeof(event),
-				 "{\"event\":\"helper.shutdown\",\"instance\":\"%s\",\"request\":\"%s\"}",
-				 g_instance_id, escaped_request);
-			emit(event);
-		}
+		begin_helper_shutdown(owner_fd, escaped_request);
 		return 0;
 	}
 #ifdef HAVE_TOX
@@ -9500,6 +9730,40 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 #endif
 #ifdef OMAQ_IPC_TEST
+#if defined(HAVE_TOX) && defined(OMAQ_TOX_TEST)
+	if (strcmp(op->op, "test.tox.fail_save") == 0) {
+		if (op->field_mask != OMAQ_JSON_FIELD_OP || !g_tox) {
+			emit_error("forbidden");
+			return 0;
+		}
+		omaq_tox_test_fail_before_primary(g_tox);
+		emit("{\"event\":\"test.tox.save_failure_armed\"}");
+		return 0;
+	}
+#endif
+	if (strcmp(op->op, "test.group.activate") == 0 ||
+	    strcmp(op->op, "test.group.native_unmapped") == 0 ||
+	    strcmp(op->op, "test.group.uncertain") == 0 ||
+	    strcmp(op->op, "test.group.cache.reset") == 0) {
+		if (op->field_mask != OMAQ_JSON_FIELD_OP) {
+			emit_error("forbidden");
+			return 0;
+		}
+		if (strcmp(op->op, "test.group.activate") == 0)
+			omaq_group_note_peer(0, 0);
+		else if (strcmp(op->op, "test.group.native_unmapped") == 0)
+			g_test_native_group_count = 1;
+		else if (strcmp(op->op, "test.group.uncertain") == 0)
+			g_test_group_state_uncertain = 1;
+		else {
+			omaq_group_reset();
+#ifdef HAVE_TOX
+			g_group_registry_unmapped = 1;
+#endif
+		}
+		emit("{\"event\":\"test.group.active\",\"groups\":1}");
+		return 0;
+	}
 	if (strcmp(op->op, "test.attachment.adopt") == 0) {
 		char event[256];
 		if (attachment_stage_path_owner(op->path, owner_fd) != 1 ||
@@ -12571,16 +12835,29 @@ int main(int argc, char **argv)
 	rc = uninstall_marker_present();
 	if (rc != 0)
 		return rc > 0 ? 0 : 1;
+#ifdef OMAQ_IPC_TEST
+	if (test_startup_pause("before-lock") != 0)
+		return 1;
+#endif
 	rc = take_state_lock();
 	if (rc == 2)
 		return 2;
 	if (rc != 0)
+		return 1;
+	rc = uninstall_marker_present();
+	if (rc != 0)
+		return rc > 0 ? 0 : 1;
+	if (!startup_executable_matches(argv[0]))
 		return 1;
 	rc = take_lock();
 	if (rc == 2)
 		return 2;
 	if (rc != 0)
 		return 1;
+#ifdef OMAQ_IPC_TEST
+	if (test_startup_pause("after-lock") != 0)
+		return 1;
+#endif
 #ifdef HAVE_TOX
 	if (cleanup_orphan_identity_stages() != 0)
 		recovery_rc = -1;
@@ -12668,10 +12945,10 @@ int main(int argc, char **argv)
 #endif
 	if (g_identity_backup_cleanup_failed)
 		emit_error("identity_backup_cleanup_failed");
-	if (!g_replay_mode && !g_shutdown_after_drain)
+	if (!g_replay_mode && !shutdown_requested())
 		start_backend();
-	if (hold && !g_shutdown_after_drain) {
-		while (!g_shutdown_after_drain) {
+	if (hold && !shutdown_requested()) {
+		while (!shutdown_requested()) {
 #ifdef HAVE_TOX
 			if (g_tox && !g_identity_primary_uncertain) {
 				omaq_tox_iterate(g_tox);
@@ -12712,20 +12989,32 @@ int main(int argc, char **argv)
 		int ms = 250;
 		int pr;
 
-		if (g_shutdown_after_drain &&
-		    (g_stdout_closed || (!omaq_stdout_spool_pending(g_stdout_spool) &&
-		     g_stdout_len <= g_stdout_off)))
-			break;
+		if (shutdown_requested()) {
+			int ack_status = g_shutdown_signal ? 1 : shutdown_ack_status();
+
+			if (ack_status < 0) {
+				cancel_helper_shutdown();
+			} else if (ack_status > 0) {
+				if (g_listen >= 0) {
+					close(g_listen);
+					g_listen = -1;
+				}
+				if (g_stdout_closed ||
+				    (!omaq_stdout_spool_pending(g_stdout_spool) &&
+				     g_stdout_len <= g_stdout_off))
+					break;
+			}
+		}
 		if (g_replay_mode && !omaq_stdout_spool_pending(g_stdout_spool)) {
 			g_replay_mode = 0;
-			if (!g_shutdown_after_drain)
+			if (!shutdown_requested())
 				start_backend();
 		}
 #ifdef HAVE_TOX
 		if (g_tox)
 			ms = (int)omaq_tox_interval_ms(g_tox);
 #endif
-		if (!g_replay_mode && !g_stdin_closed) {
+		if (!g_replay_mode && !shutdown_requested() && !g_stdin_closed) {
 			stdin_idx = nf;
 			pf[nf].fd = STDIN_FILENO;
 			pf[nf].events = POLLIN;
@@ -12739,7 +13028,7 @@ int main(int argc, char **argv)
 					g_stdout_len > g_stdout_off) ? POLLOUT : 0;
 			nf++;
 		}
-		if (!g_replay_mode && g_listen >= 0) {
+		if (!g_replay_mode && !shutdown_requested() && g_listen >= 0) {
 			listen_idx = nf;
 			pf[nf].fd = g_listen;
 			pf[nf].events = POLLIN;
@@ -12747,12 +13036,13 @@ int main(int argc, char **argv)
 		}
 		for (size_t i = 0; i < g_ncli; i++) {
 			pf[nf].fd = g_clients[i];
-			pf[nf].events = POLLIN | (g_olen[i] > g_ooff[i] ? POLLOUT : 0);
+			pf[nf].events = (shutdown_requested() ? 0 : POLLIN) |
+				(g_olen[i] > g_ooff[i] ? POLLOUT : 0);
 			nf++;
 		}
 		pr = poll(pf, (nfds_t)nf, ms);
 #ifdef HAVE_TOX
-		if (g_tox && !g_identity_recovery_required &&
+		if (g_tox && !shutdown_requested() && !g_identity_recovery_required &&
 		    !g_identity_primary_uncertain) {
 			omaq_tox_iterate(g_tox);
 			group_file_pump();
@@ -12797,7 +13087,8 @@ int main(int argc, char **argv)
 			if (g_replay_mode && g_stdout_closed)
 				g_fatal_io = 1;
 		}
-		if (listen_idx >= 0 && (pf[listen_idx].revents & POLLIN))
+		if (!shutdown_requested() && listen_idx >= 0 &&
+		    (pf[listen_idx].revents & POLLIN))
 			accept_client();
 		for (size_t i = 0; i < g_ncli; ) {
 			int fd = g_clients[i];
@@ -12806,7 +13097,8 @@ int main(int argc, char **argv)
 				if (pf[k].fd == fd)
 					revents |= pf[k].revents;
 			}
-			if (revents & (POLLIN | POLLHUP | POLLERR))
+			if (!shutdown_requested() &&
+			    (revents & (POLLIN | POLLHUP | POLLERR)))
 				read_client(i);
 			if (i >= g_ncli || g_clients[i] != fd)
 				continue;

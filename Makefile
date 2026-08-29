@@ -62,6 +62,7 @@ BIN_AV_STATE_TEST := tests/av_state_test
 BIN_RATCHET_PREKEY_TEST := tests/ratchet_prekey_test
 BIN_IDENTITY_GUARD_TEST := tests/identity_guard_test
 BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
+BIN_GROUP_ADMIN_TEST_HELPER := tests/omaq_group_admin_test_helper
 
 ifeq ($(SIG_OK),yes)
   SIGNAL_TEST_TARGET := $(BIN_RATCHET_PREKEY_TEST)
@@ -119,6 +120,10 @@ $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
 		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
 		$(AVATAR_LIBS)
+
+$(BIN_GROUP_ADMIN_TEST_HELPER): $(HELPER_SRC)
+	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) \
+		-DOMAQ_IPC_TEST -DOMAQ_TOX_TEST -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 check-signal:
 	@if [ "$(SIG_OK)" != "yes" ]; then \
@@ -218,7 +223,7 @@ verify-2: test arch helper
 	sh tests/phase2.sh
 	@echo "verify-2: ok"
 
-verify-3: test arch helper
+verify-3: test arch helper $(BIN_GROUP_ADMIN_TEST_HELPER)
 	@if [ "$(TOX_OK)" != "yes" ]; then \
 		echo "verify-3: toxcore not installed" >&2; \
 		exit 1; \
@@ -227,7 +232,7 @@ verify-3: test arch helper
 	sh tests/lock-elect.sh
 	omarchy plugin validate .
 	sh tests/phase3.sh
-	python3 tests/group-admin-e2e.py
+	python3 tests/group-admin-e2e.py ./$(BIN_GROUP_ADMIN_TEST_HELPER) --shutdown-test-hooks
 	@echo "verify-3: ok"
 
 verify-4: test arch helper
@@ -322,4 +327,4 @@ verify-8: test arch helper
 clean:
 	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
 		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IDENTITY_GUARD_TEST) \
-		$(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+		$(BIN_IPC_TEST_HELPER) $(BIN_GROUP_ADMIN_TEST_HELPER) $(BIN_HELP)

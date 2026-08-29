@@ -227,6 +227,7 @@ def main() -> int:
                 raise RuntimeError(f"helper did not recover after duplicate keys: {response!r}")
             for operation, extra_field in (
                 ("helper.probe", '"width":1'),
+                ("helper.shutdown_if_no_groups", '"enabled":true'),
                 ("helper.shutdown", '"pinned":true'),
             ):
                 command = (
@@ -556,7 +557,7 @@ def main() -> int:
             EVENT
             + UNSUPPORTED_EVENT * len(DUPLICATE_COMMANDS)
             + EVENT
-            + FORBIDDEN_EVENT * 2
+            + FORBIDDEN_EVENT * 3
             + EVENT
             + SURFACE_GEOMETRY_EVENT
             + FILE_REJECT_EVENTS

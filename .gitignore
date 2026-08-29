@@ -5,6 +5,7 @@ tests/av_state_test
 tests/ratchet_prekey_test
 tests/identity_guard_test
 tests/omaq_ipc_test_helper
+tests/omaq_group_admin_test_helper
 helper/omaq
 *.o
 __pycache__/

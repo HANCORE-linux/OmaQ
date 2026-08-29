@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Callable
 
 
+NETWORK_TIMEOUT = 180
+
+
 class Peer:
     def __init__(self, binary: Path, root: Path, name: str) -> None:
         self.name = name
@@ -23,7 +26,7 @@ class Peer:
         self.state = root / f"state-{name}"
         self.download = root / f"download-{name}"
         for path in (self.home, self.state, self.download):
-            path.mkdir(mode=0o700)
+            path.mkdir(mode=0o700, exist_ok=True)
         env = os.environ.copy()
         env.update(
             OMAQ_HOME=str(self.home),
@@ -41,6 +44,7 @@ class Peer:
             env=env,
         )
         self.events: list[dict] = []
+        self.instance = ""
         self.condition = threading.Condition()
         self.stderr: list[str] = []
         threading.Thread(target=self._read_stdout, daemon=True).start()
@@ -123,6 +127,9 @@ def start_identity(peer: Peer) -> str:
         15,
         description="identity snapshot",
     )
+    peer.instance = str(snapshot.get("instance", ""))
+    if len(peer.instance) != 32:
+        raise RuntimeError(f"{peer.name}: invalid helper instance")
     address = str(snapshot["addr"])
     if len(address) != 76:
         raise RuntimeError(f"{peer.name}: invalid Tox address")
@@ -155,19 +162,22 @@ def pair(inviter: Peer, recipient: Peer, recipient_key: str, label: str) -> dict
             "request": f"{label}-redeem",
         }
     )
-    inviter.wait(event_is("request", kind="direct"), 100, request_start, "direct request")
+    inviter.wait(
+        event_is("request", kind="direct"), NETWORK_TIMEOUT, request_start,
+        "direct request",
+    )
     inviter.send({"op": "contact.decide", "id": label, "accept": True})
     friend = inviter.wait(
         lambda event: event.get("event") == "friend.info"
         and event.get("key") == recipient_key
         and event.get("online") is True,
-        100,
+        NETWORK_TIMEOUT,
         description="online stable friend projection",
     )
     recipient.wait(
         lambda event: event.get("event") == "friend.info"
         and event.get("online") is True,
-        100,
+        NETWORK_TIMEOUT,
         description="reciprocal online friend projection",
     )
     return friend
@@ -175,7 +185,12 @@ def pair(inviter: Peer, recipient: Peer, recipient_key: str, label: str) -> dict
 
 def main() -> int:
     repository = Path(__file__).resolve().parent.parent
-    binary = repository / "helper" / "omaq"
+    arguments = sys.argv[1:]
+    test_hooks = "--shutdown-test-hooks" in arguments
+    paths = [argument for argument in arguments if argument != "--shutdown-test-hooks"]
+    if len(paths) > 1:
+        raise RuntimeError("group-admin-e2e: expected at most one helper path")
+    binary = Path(paths[0]).resolve() if paths else repository / "helper" / "omaq"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise RuntimeError("group-admin-e2e: helper/omaq is not executable")
     temporary = Path(tempfile.mkdtemp(prefix="omaq-group-admin-", dir="/tmp"))
@@ -220,7 +235,7 @@ def main() -> int:
             lambda event: event.get("event") == "group.member"
             and event.get("group") == group_id
             and event.get("friendKey") == admin_key,
-            100,
+            NETWORK_TIMEOUT,
             description="admin member binding",
         )
         admin_member_key = str(joined_admin.get("key", ""))
@@ -267,7 +282,7 @@ def main() -> int:
             and event.get("group") == group_id
             and event.get("friendKey") == member_key
             and event.get("role") == "member",
-            100,
+            NETWORK_TIMEOUT,
             description="accepted admin invitation",
         )
         group_member_key = str(joined_member.get("key", ""))
@@ -301,6 +316,7 @@ def main() -> int:
         admin.wait(event_is("error", code="forbidden"), 15, equal_role_start,
                    "admin removal rejection")
         demotion_start = admin.mark()
+        member_demotion_start = member.mark()
         owner.send(
             {"op": "group.member.setRole", "group": group_id,
              "member": group_member_key, "role": "member"}
@@ -313,6 +329,15 @@ def main() -> int:
             30,
             demotion_start,
             description="ordinary member restoration",
+        )
+        member.wait(
+            lambda event: event.get("event") == "group.member"
+            and event.get("group") == group_id
+            and event.get("self") is True
+            and event.get("role") == "member",
+            30,
+            member_demotion_start,
+            description="native member demotion convergence",
         )
 
         removed_start = member.mark()
@@ -350,6 +375,27 @@ def main() -> int:
             }
         )
         admin.wait(event_is("error", code="forbidden"), 15, forbidden_start, "owner removal rejection")
+        shutdown_start = admin.mark()
+        admin.send(
+            {
+                "op": "helper.shutdown_if_no_groups",
+                "id": admin.instance,
+                "request": "admin-e2e-active-group-shutdown",
+            }
+        )
+        blocked = admin.wait(
+            lambda event: event.get("event") == "helper.shutdown_blocked"
+            and event.get("instance") == admin.instance
+            and event.get("request") == "admin-e2e-active-group-shutdown"
+            and event.get("reason") == "active_groups",
+            15,
+            shutdown_start,
+            "active-group shutdown rejection",
+        )
+        if not isinstance(blocked.get("groups"), int) or blocked["groups"] < 1:
+            raise RuntimeError("admin: active-group shutdown count missing")
+        if admin.process.poll() is not None:
+            raise RuntimeError("admin: blocked shutdown stopped the helper")
         admin.send({"op": "group.list", "id": "admin-e2e-final-list"})
         admin.wait(
             lambda event: event.get("event") == "group.member"
@@ -359,6 +405,119 @@ def main() -> int:
             15,
             description="owner retained after forbidden removal",
         )
+        if test_hooks:
+            reset_start = admin.mark()
+            admin.send({"op": "test.group.cache.reset"})
+            admin.wait(
+                event_is("test.group.active", groups=1),
+                10,
+                reset_start,
+                "native-only group fixture",
+            )
+            native_shutdown_start = admin.mark()
+            admin.send(
+                {
+                    "op": "helper.shutdown_if_no_groups",
+                    "id": admin.instance,
+                    "request": "admin-e2e-native-group-shutdown",
+                }
+            )
+            native_blocked = admin.wait(
+                lambda event: event.get("event") == "helper.shutdown_blocked"
+                and event.get("instance") == admin.instance
+                and event.get("request") == "admin-e2e-native-group-shutdown"
+                and event.get("reason") == "active_groups",
+                15,
+                native_shutdown_start,
+                "native-only group shutdown rejection",
+            )
+            if (not isinstance(native_blocked.get("groups"), int)
+                    or native_blocked["groups"] < 1):
+                raise RuntimeError("admin: native-only group count missing")
+            if admin.process.poll() is not None:
+                raise RuntimeError("admin: native-only blocked shutdown stopped helper")
+            save_failure_start = member.mark()
+            member.send({"op": "test.tox.fail_save"})
+            member.wait(
+                event_is("test.tox.save_failure_armed"),
+                10,
+                save_failure_start,
+                "Tox save-failure fixture",
+            )
+            durability_shutdown_start = member.mark()
+            member.send(
+                {
+                    "op": "helper.shutdown_if_no_groups",
+                    "id": member.instance,
+                    "request": "admin-e2e-save-failure-shutdown",
+                }
+            )
+            durability_blocked = member.wait(
+                lambda event: event.get("event") == "helper.shutdown_blocked"
+                and event.get("instance") == member.instance
+                and event.get("request") == "admin-e2e-save-failure-shutdown"
+                and event.get("reason") == "group_state_uncertain",
+                15,
+                durability_shutdown_start,
+                "Tox-save shutdown rejection",
+            )
+            if durability_blocked.get("groups") != 0:
+                raise RuntimeError("member: save-failure group count was not zero")
+            if member.process.poll() is not None:
+                raise RuntimeError("member: save-failure shutdown stopped helper")
+            protect_start = admin.mark()
+            admin.send(
+                {
+                    "op": "identity.protect",
+                    "passphrase": "shutdown-test-passphrase",
+                    "id": "admin-e2e-protect",
+                }
+            )
+            admin.wait(
+                lambda event: event.get("event") == "identity"
+                and event.get("op") == "protect"
+                and event.get("request") == "admin-e2e-protect"
+                and event.get("protected") is True,
+                15,
+                protect_start,
+                "protected group identity",
+            )
+            admin.stop()
+            locked_admin = Peer(binary, temporary, "admin")
+            peers.append(locked_admin)
+            locked_request = "admin-e2e-locked-status"
+            locked_admin.send({"op": "status", "id": locked_request})
+            locked_snapshot = locked_admin.wait(
+                lambda event: event.get("event") == "snapshot"
+                and event.get("request") == locked_request
+                and event.get("locked") is True,
+                15,
+                description="locked group identity",
+            )
+            locked_admin.instance = str(locked_snapshot.get("instance", ""))
+            if len(locked_admin.instance) != 32:
+                raise RuntimeError("admin: locked helper instance missing")
+            locked_shutdown_start = locked_admin.mark()
+            locked_admin.send(
+                {
+                    "op": "helper.shutdown_if_no_groups",
+                    "id": locked_admin.instance,
+                    "request": "admin-e2e-locked-shutdown",
+                }
+            )
+            locked_blocked = locked_admin.wait(
+                lambda event: event.get("event") == "helper.shutdown_blocked"
+                and event.get("instance") == locked_admin.instance
+                and event.get("request") == "admin-e2e-locked-shutdown"
+                and event.get("reason") == "group_state_uncertain",
+                15,
+                locked_shutdown_start,
+                "locked group shutdown rejection",
+            )
+            if locked_blocked.get("groups") != 0:
+                raise RuntimeError("admin: locked shutdown group count was not zero")
+            if locked_admin.process.poll() is not None:
+                raise RuntimeError("admin: locked shutdown stopped helper")
         print("group-admin-e2e: ok")
         return 0
     finally:

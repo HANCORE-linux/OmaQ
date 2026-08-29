@@ -248,7 +248,7 @@ Run the verified wrapper:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
 ```
 
-The wrapper prevents helper respawn, verifies PID, process start time, UID, executable, socket, and instance, then requests a clean shutdown. It refuses removal when it cannot prove that the target is the current OmaQ helper.
+The wrapper serializes removal against helper startup, prevents respawn, verifies PID, process start time, UID, exact executable inode, socket, and instance, then requests an atomic group-free shutdown. It keeps the private state lock for the complete plugin-removal command. It refuses removal while the helper owns an active private group, native and registered group state disagree, cleanup or identity loading is pending, durable state cannot be saved, the safe operation is unsupported, or its correlated acknowledgement cannot be delivered. It never uses a signal as a fallback.
 
 Uninstall retains these locations intentionally:
 
