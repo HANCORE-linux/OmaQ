@@ -26,6 +26,13 @@ required = (
     "? String(smileSelection.selectedText || \"\")",
     "visible: line.hasTextSelection",
     "onClicked: root.copyText(line.selectedMessageText)",
+    "function compactReplyPreview(value)",
+    "MessageLayout.compactReplyPreview(value, 120)",
+    "function replyPreviewFor(id)",
+    "var replyPreview = root.replyPreviewFor(replyId)",
+    "function bubbleWidth(value, replyId, hasCode, withReceipt, availableWidth)",
+    "MessageLayout.replySizingText(value,",
+    "root.bubbleWidth(model.text, model.reply, line.hasCode,",
     "function messageBreakKinds(text, replyId)",
     "root.clipboardSelectionText(label, model.text, model.reply)",
     "visible: line.replyable",
@@ -42,12 +49,39 @@ if text.count("font.pixelSize: root.messageTextPx") < 2:
     raise SystemExit("chat-message-actions: composer and message text do not share the scale")
 PY
 cp "$root/Emoji.js" "$tmp/Emoji.js"
+cp "$root/MessageLayout.js" "$tmp/MessageLayout.js"
 cat >"$tmp/shell.qml" <<'QML'
 import QtQuick
 import Quickshell
 import "Emoji.js" as Emoji
+import "MessageLayout.js" as MessageLayout
 
 ShellRoot {
+  id: shell
+  property string quoted: Array(30).join("quoted line\n") + "😀 trailing"
+  readonly property string preview: MessageLayout.compactReplyPreview(quoted, 120)
+  readonly property real replyBubbleWidth: bubbleWidth("OK", preview, 360)
+
+  function bubbleWidth(value, replyPreview, availableWidth) {
+    var sourceLines = MessageLayout.replySizingText(value, replyPreview).split("\n")
+    var longest = 0
+    for (var i = 0; i < sourceLines.length; i++)
+      longest = Math.max(longest, sourceLines[i].length)
+    var estimated = longest * 20 * 0.72 + 16
+    return Math.min(Math.max(52, estimated), availableWidth * 0.82)
+  }
+
+  function codePointCount(value) {
+    var source = String(value || "")
+    var offset = 0
+    var count = 0
+    while (offset < source.length) {
+      var codePoint = source.codePointAt(offset)
+      offset += codePoint > 0xffff ? 2 : 1
+      count++
+    }
+    return count
+  }
   TextEdit {
     id: message
     text: "select<br/>exact"
@@ -66,23 +100,69 @@ ShellRoot {
     selectByKeyboard: true
     persistentSelection: true
   }
+  TextEdit {
+    id: directReply
+    width: shell.replyBubbleWidth - 16
+    text: "<b>↩ " + shell.preview + "</b><br/>OK"
+    textFormat: TextEdit.RichText
+    readOnly: true
+    font.pixelSize: 20
+    wrapMode: TextEdit.Wrap
+  }
+  TextEdit {
+    id: groupReply
+    width: shell.replyBubbleWidth - 16
+    text: "<b>↩ " + shell.preview + "</b><br/>OK"
+    textFormat: TextEdit.RichText
+    readOnly: true
+    font.pixelSize: 20
+    wrapMode: TextEdit.Wrap
+  }
   Timer {
     interval: 20
     running: true
     onTriggered: {
       message.selectAll()
       emoji.selectAll()
+      directReply.selectAll()
+      groupReply.selectAll()
       var normalized = message.selectedText.replace(/[\u2028\u2029]/g, "\n")
       var emojiNormalized = emoji.selectedText.replace(/[\u2028\u2029]/g, "\n")
+      var directSelection = directReply.selectedText.replace(/[\u2028\u2029]/g, "\n")
+      var groupSelection = groupReply.selectedText.replace(/[\u2028\u2029]/g, "\n")
       var layout = Emoji.splitEmojiLayout(emoji.text)
       Quickshell.clipboardText = normalized
       var mapped = layout.length === 2
       for (var i = 0; mapped && i < layout.length; i++)
         mapped = emoji.text.slice(layout[i].start, layout[i].end) === layout[i].glyph
+      var boundaryPrefix = Array(120).join("a")
+      var boundaryPreview = MessageLayout.compactReplyPreview(
+        boundaryPrefix + "😀tail", 120)
+      var skinPreview = MessageLayout.compactReplyPreview(
+        boundaryPrefix + "👍🏽tail", 120)
+      var flagPreview = MessageLayout.compactReplyPreview(
+        boundaryPrefix + "🇩🇪tail", 120)
+      var familyPreview = MessageLayout.compactReplyPreview(
+        boundaryPrefix + "👨‍👩‍👧‍👦tail", 120)
+      var combiningPreview = MessageLayout.compactReplyPreview(
+        boundaryPrefix + "étail", 120)
+      var replyExpected = "↩ " + shell.preview + "\nOK"
+      var compact = shell.preview.indexOf("\n") === -1 &&
+        shell.preview.indexOf("\r") === -1 && shell.preview.endsWith("…") &&
+        shell.codePointCount(shell.preview) === 121 &&
+        boundaryPreview === boundaryPrefix + "😀…" &&
+        skinPreview === boundaryPrefix + "👍🏽…" &&
+        flagPreview === boundaryPrefix + "🇩🇪…" &&
+        familyPreview === boundaryPrefix + "👨‍👩‍👧‍👦…" &&
+        combiningPreview === boundaryPrefix + "é…"
+      var boundedReplies = shell.replyBubbleWidth > 250 &&
+        shell.replyBubbleWidth <= 360 * 0.82 && directReply.implicitHeight < 200 &&
+        groupReply.implicitHeight < 200 && directSelection === replyExpected &&
+        groupSelection === replyExpected
       var ok = normalized === "select\nexact" &&
         Quickshell.clipboardText === "select\nexact" && message.selectByMouse &&
-        message.selectByKeyboard && message.persistentSelection && mapped &&
-        emojiNormalized === "  👨‍👩‍👧‍👦\n👍🏽  "
+        message.selectByKeyboard && message.persistentSelection && mapped && compact &&
+        boundedReplies && emojiNormalized === "  👨‍👩‍👧‍👦\n👍🏽  "
       console.log(ok ? "OMAQ_CHAT_ACTIONS_OK" : "OMAQ_CHAT_ACTIONS_BAD")
       Qt.quit()
     }

@@ -8,6 +8,7 @@ ln -s "$root/assets" "$tmp/assets"
 ln -s "$root/scripts" "$tmp/scripts"
 ln -s "$root/CallTone.qml" "$tmp/CallTone.qml"
 ln -s "$root/Emoji.js" "$tmp/Emoji.js"
+ln -s "$root/MessageLayout.js" "$tmp/MessageLayout.js"
 ln -s "$root/SurfaceCoordinator.qml" "$tmp/SurfaceCoordinator.qml"
 ln -s "$root/qmldir" "$tmp/qmldir"
 ln -s /usr/share/omarchy/shell/Ui "$tmp/Ui"
@@ -78,6 +79,16 @@ ShellRoot {
       peerName: "Group"
       theme: ({ bg: "#111111", fg: "#eeeeee", accent: "#77cc66", unread: "#cc7777" })
     }
+    Pages.ChatPage {
+      id: directPage
+      visible: false
+      width: 420
+      height: 520
+      demo: true
+      conversation: "7"
+      peerName: "Direct"
+      theme: ({ bg: "#111111", fg: "#eeeeee", accent: "#77cc66", unread: "#cc7777" })
+    }
   }
   Timer {
     interval: 20
@@ -131,9 +142,55 @@ ShellRoot {
       if (!exactSelection)
         console.log("OMAQ_SELECTION_BAD", JSON.stringify(selectionFixture.selectedText),
           JSON.stringify(copiedSelection), JSON.stringify(selectionSource))
+
+      var longReply = Array(30).join("quoted line\n") +
+        "👨‍👩‍👧‍👦 👍🏽 🇩🇪 é tail"
+      page.appendLine({ id: "group-reply-source", dir: "in", text: longReply,
+        ack: -1 })
+      directPage.appendLine({ id: "direct-reply-source", dir: "in",
+        text: longReply, ack: -1 })
+      var expectedReply = "↩ " + page.compactReplyPreview(longReply) + "\nOK"
+      selectionFixture.text = page.messageMarkup("OK", "group-reply-source", false)
+      var groupRendered = selectionFixture.getText(0, selectionFixture.length)
+      var groupBreak = Math.max(groupRendered.indexOf("\u2028"),
+        groupRendered.indexOf("\u2029"))
+      selectionFixture.select(groupBreak - 2, groupBreak + 3)
+      var groupPartial = page.clipboardSelectionText(selectionFixture, "OK",
+        "group-reply-source") ===
+        groupRendered.slice(groupBreak - 2, groupBreak + 3)
+          .replace(/[\u2028\u2029]/g, "\n")
+      selectionFixture.selectAll()
+      var groupReplyCopy = page.clipboardSelectionText(selectionFixture, "OK",
+        "group-reply-source")
+      selectionFixture.text = directPage.messageMarkup("OK",
+        "direct-reply-source", false)
+      var directRendered = selectionFixture.getText(0, selectionFixture.length)
+      var directBreak = Math.max(directRendered.indexOf("\u2028"),
+        directRendered.indexOf("\u2029"))
+      selectionFixture.select(directBreak - 2, directBreak + 3)
+      var directPartial = directPage.clipboardSelectionText(selectionFixture, "OK",
+        "direct-reply-source") ===
+        directRendered.slice(directBreak - 2, directBreak + 3)
+          .replace(/[\u2028\u2029]/g, "\n")
+      selectionFixture.selectAll()
+      var directReplyCopy = directPage.clipboardSelectionText(selectionFixture,
+        "OK", "direct-reply-source")
+      var groupReplyWidth = page.bubbleWidth("OK", "group-reply-source",
+        false, false, 360)
+      var directReplyWidth = directPage.bubbleWidth("OK", "direct-reply-source",
+        false, false, 360)
+      var replyParity = groupBreak > 1 && directBreak > 1 && groupPartial &&
+        directPartial && groupReplyCopy === expectedReply &&
+        directReplyCopy === expectedReply && groupReplyWidth > 250 &&
+        directReplyWidth === groupReplyWidth && groupReplyWidth <= 360 * 0.82
+      if (!replyParity)
+        console.log("OMAQ_REPLY_BAD", JSON.stringify(groupReplyCopy),
+          JSON.stringify(directReplyCopy), groupReplyWidth, directReplyWidth)
+
       var preview = page.pendingImagePath === "/tmp/canonical.png" &&
         page.pendingImageStageRequest === "stage-1" && page.isSmileOnly("🥳") &&
-        !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection
+        !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection &&
+        replyParity
       var sent = page.sendPendingImage() && fake.sent === 1 &&
         page.pendingImageSendRequest === "image-request-1" &&
         page.pendingImagePath === "/tmp/canonical.png"

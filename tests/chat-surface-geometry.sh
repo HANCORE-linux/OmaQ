@@ -31,6 +31,25 @@ required = (
     'placeWindow.command = [root.floatScriptPath, "place-title", pinWin.title,',
     'command: [root.floatScriptPath, "list-geometry"]',
     'function applyGeometrySnapshot(raw)',
+    "property int geometryGeneration: 0",
+    "property int geometrySnapshotGeneration: -1",
+    "root.geometrySnapshotGeneration !== root.geometryGeneration",
+    "root.geometrySnapshotGeneration = root.geometryGeneration",
+    "root.geometryGeneration++",
+    "(pinWindow.localResizePending || pinWindow.placementStarted)",
+    "property int desiredWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
+    "property int pendingWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
+    "property bool localResizePending: false",
+    "function captureActualWidth()",
+    "function captureActualHeight()",
+    "root.updateCard(index, { surfaceWidth: nextWidth })",
+    "root.updateCard(index, { surfaceHeight: nextHeight })",
+    "onSurfaceWidthChanged: pinWin.syncDesiredWidth()",
+    "onWidthChanged: pinWin.captureActualWidth()",
+    "onHeightChanged: pinWin.captureActualHeight()",
+    "id: placementSettle",
+    "pinWin.pendingWidth,",
+    "pinWin.localResizePending = false",
     "if (pinWin.placementAttempts < 12)",
     'service.setSurface(String(current.conversation || ""),',
     "pinned: keepExplicitlyOpen ? true : !!saved.pinned",
@@ -58,7 +77,33 @@ ShellRoot {
     ListElement { conversation: "a"; monitor: ""; surfaceX: 40 }
     ListElement { conversation: "b"; monitor: "DP-1"; surfaceX: 488 }
   }
+  ListModel {
+    id: resizeCards
+    ListElement { conversation: "7"; surfaceWidth: 420; surfaceHeight: 420 }
+    ListElement {
+      conversation: "g:0000000000000000000000000000000000000000000000000000000000000000"
+      surfaceWidth: 420
+      surfaceHeight: 420
+    }
+  }
   property var survivor: null
+  property var directResize: null
+  property var groupResize: null
+  property bool baseGeometryOk: false
+  property int geometryGeneration: 0
+  property int staleSnapshotGeneration: -1
+  property bool pendingSnapshotRejected: false
+
+  function applyDelayedSnapshot(generation, target, width, height) {
+    if (generation !== geometryGeneration)
+      return false
+    var targetWindow = resizeWindows.objectAt(target)
+    if (targetWindow.localResizePending || targetWindow.placementStarted)
+      return false
+    resizeCards.setProperty(target, "surfaceWidth", width)
+    resizeCards.setProperty(target, "surfaceHeight", height)
+    return true
+  }
   property real nextX: 40
   property bool hydrated: false
   property bool ruleBlocked: true
@@ -143,11 +188,79 @@ ShellRoot {
       readonly property string identity: conversation
     }
   }
+  Instantiator {
+    id: resizeWindows
+    model: resizeCards
+    delegate: QtObject {
+      id: resizeDelegate
+      required property int index
+      required property string conversation
+      required property real surfaceWidth
+      required property real surfaceHeight
+      property int desiredWidth: surfaceWidth
+      property int desiredHeight: surfaceHeight
+      property int pendingWidth: surfaceWidth
+      property int pendingHeight: surfaceHeight
+      property bool localResizePending: false
+      property bool placementStarted: false
+
+      function syncDesiredWidth() {
+        if (localResizePending && surfaceWidth !== pendingWidth)
+          return
+        desiredWidth = surfaceWidth
+        if (!localResizePending)
+          pendingWidth = surfaceWidth
+      }
+      function syncDesiredHeight() {
+        if (localResizePending && surfaceHeight !== pendingHeight)
+          return
+        desiredHeight = surfaceHeight
+        if (!localResizePending)
+          pendingHeight = surfaceHeight
+      }
+      function captureActualSize(actualWidth, actualHeight) {
+        desiredWidth = actualWidth
+        desiredHeight = actualHeight
+        pendingWidth = actualWidth
+        pendingHeight = actualHeight
+        localResizePending = true
+        geometryGeneration++
+        resizeCards.setProperty(index, "surfaceWidth", actualWidth)
+        resizeCards.setProperty(index, "surfaceHeight", actualHeight)
+        geometrySave.restart()
+      }
+      onSurfaceWidthChanged: syncDesiredWidth()
+      onSurfaceHeightChanged: syncDesiredHeight()
+      property Timer geometrySave: Timer {
+        interval: 35
+        repeat: false
+        onTriggered: {
+          resizeCards.setProperty(resizeDelegate.index, "surfaceWidth",
+            resizeDelegate.pendingWidth)
+          resizeCards.setProperty(resizeDelegate.index, "surfaceHeight",
+            resizeDelegate.pendingHeight)
+          resizeDelegate.localResizePending = false
+        }
+      }
+    }
+  }
   Timer {
     interval: 30
     running: true
     onTriggered: {
       survivor = windows.objectAt(1)
+      directResize = resizeWindows.objectAt(0)
+      groupResize = resizeWindows.objectAt(1)
+      staleSnapshotGeneration = geometryGeneration
+      directResize.captureActualSize(700, 760)
+      groupResize.captureActualSize(540, 680)
+      // A stale model echo during the debounce must not restore the old size.
+      resizeCards.setProperty(0, "surfaceWidth", 420)
+      resizeCards.setProperty(0, "surfaceHeight", 420)
+      resizeCards.setProperty(1, "surfaceWidth", 420)
+      resizeCards.setProperty(1, "surfaceHeight", 420)
+      pendingSnapshotRejected = !applyDelayedSnapshot(geometryGeneration,
+        0, 420, 420)
       mergeAutoOpen()
       restoreLegacyFirst()
       nextX = initialX("DP-1")
@@ -172,12 +285,35 @@ ShellRoot {
         restoredCards.get(1).surfaceX === 488
       var explicitPreserved = mergedOpen.focus && mergedOpen.monitor === "DP-2" &&
         mergedOpen.name === "Explicit"
-      if (!flushedEarly && !queuedOpen && cards.count === 2 && preserved &&
-          explicitPreserved && restoreOrdered && nextX === 936 &&
-          windows.objectAt(1).surfaceX - windows.objectAt(0).surfaceX >= 448)
-        console.log("OMAQ_GEOMETRY_OK")
-      else
-        console.log("OMAQ_GEOMETRY_BAD")
+      baseGeometryOk = !flushedEarly && !queuedOpen && cards.count === 2 &&
+        preserved && explicitPreserved && restoreOrdered && nextX === 936 &&
+        windows.objectAt(1).surfaceX - windows.objectAt(0).surfaceX >= 448 &&
+        !directResize.localResizePending && directResize.desiredWidth === 700 &&
+        directResize.desiredHeight === 760 && directResize.pendingWidth === 700 &&
+        directResize.pendingHeight === 760 &&
+        !groupResize.localResizePending && groupResize.desiredWidth === 540 &&
+        groupResize.desiredHeight === 680 && groupResize.pendingWidth === 540 &&
+        groupResize.pendingHeight === 680 && pendingSnapshotRejected &&
+        !applyDelayedSnapshot(staleSnapshotGeneration, 0, 420, 420)
+      directResize.placementStarted = true
+      baseGeometryOk = baseGeometryOk &&
+        !applyDelayedSnapshot(geometryGeneration, 0, 420, 420)
+      directResize.placementStarted = false
+      // An idle helper/compositor snapshot remains authoritative.
+      resizeCards.setProperty(0, "surfaceWidth", 640)
+      resizeCards.setProperty(0, "surfaceHeight", 720)
+    }
+  }
+  Timer {
+    interval: 120
+    running: true
+    onTriggered: {
+      var externalSync = directResize.desiredWidth === 640 &&
+        directResize.desiredHeight === 720 && directResize.pendingWidth === 640 &&
+        directResize.pendingHeight === 720 &&
+        groupResize.desiredWidth === 540 && groupResize.desiredHeight === 680
+      console.log(baseGeometryOk && externalSync
+        ? "OMAQ_GEOMETRY_OK" : "OMAQ_GEOMETRY_BAD")
       Qt.quit()
     }
   }
