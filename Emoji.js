@@ -237,7 +237,7 @@ function consumeEmoji(text, offset) {
   return next
 }
 
-function splitEmojiOnly(value) {
+function splitEmojiLayout(value) {
   var text = String(value || "")
   var result = []
   var offset = 0
@@ -251,8 +251,16 @@ function splitEmojiOnly(value) {
     var next = consumeEmoji(text, offset)
     if (next <= offset)
       return []
-    result.push(text.slice(offset, next))
+    result.push({ glyph: text.slice(offset, next), start: offset, end: next })
     offset = next
   }
+  return result
+}
+
+function splitEmojiOnly(value) {
+  var layout = splitEmojiLayout(value)
+  var result = []
+  for (var i = 0; i < layout.length; i++)
+    result.push(layout[i].glyph)
   return result
 }

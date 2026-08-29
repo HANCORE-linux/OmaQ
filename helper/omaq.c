@@ -21,6 +21,7 @@
 #include "ratchet_pin.h"
 #include "rate.h"
 #include "safety.h"
+#include "sound.h"
 #include "store.h"
 #include "stdout_spool.h"
 #include "state_archive.h"
@@ -54,7 +55,7 @@
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 #ifndef OMAQ_PROTOCOL_VERSION
-#define OMAQ_PROTOCOL_VERSION 13
+#define OMAQ_PROTOCOL_VERSION 14
 #endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
@@ -79,6 +80,18 @@ static struct {
 	char request[80];
 	char path[640];
 } g_attachment_stage_owners[ATTACHMENT_STAGE_OWNER_MAX];
+
+#define SOUND_RESULT_CACHE_MAX 16
+static struct {
+	int used;
+	char request[80];
+	char operation[16];
+	char selected[OMAQ_SOUND_ID_HEX + 1];
+	char error[32];
+} g_sound_results[SOUND_RESULT_CACHE_MAX];
+static size_t g_sound_result_next;
+static size_t g_sound_result_count;
+static int g_replaying_sound_results;
 
 #ifdef HAVE_TOX
 static struct omaq_tox *g_tox;
@@ -467,6 +480,156 @@ static int load_auto_open_state(const char *fingerprint, omaq_auto_open_state *s
 	    omaq_state_archive_copy(state_dir(), "auto-open.json") != 0)
 		return -1;
 	return omaq_auto_open_retire_global(state_dir(), fingerprint);
+}
+
+static void cache_sound_result(const char *request, const char *operation,
+			       const char *selected, const char *error)
+{
+	size_t slot;
+
+	if (g_replaying_sound_results || !request || !request[0] || !operation ||
+	    (strcmp(operation, "import") != 0 && strcmp(operation, "remove") != 0))
+		return;
+	for (size_t i = 0; i < g_sound_result_count; i++) {
+		slot = (g_sound_result_next + SOUND_RESULT_CACHE_MAX -
+			g_sound_result_count + i) % SOUND_RESULT_CACHE_MAX;
+		if (g_sound_results[slot].used &&
+		    strcmp(g_sound_results[slot].request, request) == 0 &&
+		    strcmp(g_sound_results[slot].operation, operation) == 0)
+			return;
+	}
+	slot = g_sound_result_next;
+	memset(&g_sound_results[slot], 0, sizeof(g_sound_results[slot]));
+	g_sound_results[slot].used = 1;
+	snprintf(g_sound_results[slot].request,
+		 sizeof(g_sound_results[slot].request), "%s", request);
+	snprintf(g_sound_results[slot].operation,
+		 sizeof(g_sound_results[slot].operation), "%s", operation);
+	snprintf(g_sound_results[slot].selected,
+		 sizeof(g_sound_results[slot].selected), "%s", selected ? selected : "");
+	snprintf(g_sound_results[slot].error,
+		 sizeof(g_sound_results[slot].error), "%s", error ? error : "");
+	g_sound_result_next = (g_sound_result_next + 1) % SOUND_RESULT_CACHE_MAX;
+	if (g_sound_result_count < SOUND_RESULT_CACHE_MAX)
+		g_sound_result_count++;
+}
+
+static void emit_sound_state(const char *request, const char *operation,
+			     const char *selected, const char *error)
+{
+	omaq_sound sounds[OMAQ_SOUND_MAX];
+	char escaped_request[80 * 6 + 1], escaped_operation[32 * 6 + 1];
+	char escaped_selected[(OMAQ_SOUND_ID_HEX + 1) * 6];
+	char *event = NULL, *cursor;
+	size_t capacity, left;
+	int count, written;
+
+	if (!request || !request[0] || !operation || !operation[0] ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0 ||
+	    omaq_json_escape(operation, escaped_operation,
+			     sizeof(escaped_operation)) != 0)
+		return;
+	if (error) {
+		char escaped_error[128], value[1024];
+		cache_sound_result(request, operation, selected, error);
+		if (omaq_json_escape(error, escaped_error, sizeof(escaped_error)) != 0)
+			return;
+		snprintf(value, sizeof(value),
+			 "{\"event\":\"sound.failed\",\"op\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 escaped_operation, escaped_request, escaped_error);
+		emit(value);
+		return;
+	}
+	count = omaq_sound_list(home_dir(), sounds, OMAQ_SOUND_MAX);
+	if (count < 0) {
+		emit_sound_state(request, operation, NULL, "sound_state_failed");
+		return;
+	}
+	if (selected && selected[0] &&
+	    omaq_json_escape(selected, escaped_selected, sizeof(escaped_selected)) != 0)
+		return;
+	capacity = 320u + (size_t)count *
+		((OMAQ_SOUND_ID_HEX + OMAQ_SOUND_LABEL_MAX + OMAQ_SOUND_PATH_MAX) * 6u + 128u);
+	event = malloc(capacity);
+	if (!event)
+		return;
+	written = snprintf(event, capacity,
+			   "{\"event\":\"sound.list\",\"op\":\"%s\",\"request\":\"%s\",\"selected\":\"%s\",\"items\":[",
+			   escaped_operation, escaped_request,
+			   selected && selected[0] ? escaped_selected : "");
+	if (written < 0 || (size_t)written >= capacity) {
+		free(event);
+		return;
+	}
+	cursor = event + written;
+	left = capacity - (size_t)written;
+	for (int i = 0; i < count; i++) {
+		char escaped_id[(OMAQ_SOUND_ID_HEX + 1) * 6];
+		char escaped_label[(OMAQ_SOUND_LABEL_MAX + 1) * 6];
+		char escaped_path[OMAQ_SOUND_PATH_MAX * 6];
+		if (omaq_json_escape(sounds[i].id, escaped_id, sizeof(escaped_id)) != 0 ||
+		    omaq_json_escape(sounds[i].label, escaped_label,
+				     sizeof(escaped_label)) != 0 ||
+		    omaq_json_escape(sounds[i].path, escaped_path,
+				     sizeof(escaped_path)) != 0) {
+			free(event);
+			return;
+		}
+		written = snprintf(cursor, left,
+				   "%s{\"id\":\"%s\",\"label\":\"%s\",\"path\":\"%s\",\"size\":%llu}",
+				   i ? "," : "", escaped_id, escaped_label, escaped_path,
+				   (unsigned long long)sounds[i].size);
+		if (written < 0 || (size_t)written >= left) {
+			free(event);
+			return;
+		}
+		cursor += written;
+		left -= (size_t)written;
+	}
+	if (left < 3) {
+		free(event);
+		return;
+	}
+	memcpy(cursor, "]}", 3);
+	cache_sound_result(request, operation, selected, NULL);
+	emit(event);
+	free(event);
+}
+
+static int replay_one_sound_result(const char *operation, const char *request)
+{
+	for (size_t i = 0; i < g_sound_result_count; i++) {
+		size_t slot = (g_sound_result_next + SOUND_RESULT_CACHE_MAX -
+			g_sound_result_count + i) % SOUND_RESULT_CACHE_MAX;
+		if (!g_sound_results[slot].used ||
+		    strcmp(g_sound_results[slot].operation, operation) != 0 ||
+		    strcmp(g_sound_results[slot].request, request) != 0)
+			continue;
+		g_replaying_sound_results = 1;
+		emit_sound_state(request, operation,
+				 g_sound_results[slot].selected,
+				 g_sound_results[slot].error[0]
+				 ? g_sound_results[slot].error : NULL);
+		g_replaying_sound_results = 0;
+		return 1;
+	}
+	return 0;
+}
+
+static void replay_sound_results(void)
+{
+	g_replaying_sound_results = 1;
+	for (size_t i = 0; i < g_sound_result_count; i++) {
+		size_t slot = (g_sound_result_next + SOUND_RESULT_CACHE_MAX -
+			g_sound_result_count + i) % SOUND_RESULT_CACHE_MAX;
+		if (g_sound_results[slot].used)
+			emit_sound_state(g_sound_results[slot].request,
+					 g_sound_results[slot].operation,
+					 g_sound_results[slot].selected,
+					 g_sound_results[slot].error[0]
+					 ? g_sound_results[slot].error : NULL);
+	}
+	g_replaying_sound_results = 0;
 }
 
 static void emit_auto_open_state(const omaq_auto_open_state *state,
@@ -9407,6 +9570,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			emit_all_unread();
 			if (g_identity_primary_uncertain)
 				emit_error("identity_primary_uncertain");
+			replay_sound_results();
 			return 0;
 		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
@@ -9442,6 +9606,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #ifdef HAVE_SIGNAL
 			replay_group_invite_results();
 #endif
+			replay_sound_results();
 			return 0;
 		}
 #endif
@@ -9459,6 +9624,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			else if (g_direct_state_migration_failed)
 				emit_error("direct_state_migration_failed");
 #endif
+			replay_sound_results();
 		}
 		return 0;
 	}
@@ -10585,6 +10751,10 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_error("forbidden");
 				return 0;
 			}
+			if (!omaq_role_may(self, ACT_KICK, victim)) {
+				emit_error("forbidden");
+				return 0;
+			}
 			if (omaq_group_id_parse(gid, &group_number) == 0)
 				for (int member = 0; member < omaq_group_peer_count(group_number); member++)
 					if (omaq_group_peer_at(group_number, member) == peer) {
@@ -10710,19 +10880,22 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		snprintf(surface.monitor, sizeof(surface.monitor), "%s", op->monitor);
 		surface.x = op->x;
 		surface.y = op->y;
+		surface.width = op->has_width ? op->width : 420;
+		surface.height = op->has_height ? op->height : 420;
 		surface.pinned = op->has_pinned ? op->pinned : 0;
 		if (omaq_surface_set(state_dir(), &surface) != 0) {
 			emit_error_conv("surface_state_failed", public_id);
 			return 0;
 		}
 		{
-			char event[480], escaped_monitor[128];
+			char event[900], escaped_monitor[384];
 			if (omaq_json_escape(surface.monitor, escaped_monitor,
 					     sizeof(escaped_monitor)) != 0)
 				escaped_monitor[0] = '\0';
 			snprintf(event, sizeof(event),
-				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"pinned\":%s}",
 				 public_id, current_key, escaped_monitor, surface.x, surface.y,
+				 surface.width, surface.height,
 				 surface.pinned ? "true" : "false");
 			emit(event);
 		}
@@ -10742,7 +10915,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			return 0;
 		}
 		count = omaq_surface_list(state_dir(), surfaces, OMAQ_SURFACE_MAX);
-		capacity = 64u + (size_t)(count > 0 ? count : 0) * 360u;
+		capacity = 64u + (size_t)(count > 0 ? count : 0) * 800u;
 		event = malloc(capacity);
 		if (count < 0 || !event) {
 			free(event);
@@ -10761,7 +10934,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		left = capacity - (size_t)(cursor - event);
 		for (int i = 0; i < count; i++) {
 			char public_id[OMAQ_DIRECT_STATE_ID_MAX], current_key[65] = "";
-			char escaped_id[160], escaped_monitor[128];
+			char escaped_id[160], escaped_monitor[384];
 			int written;
 
 			if (surfaces[i].conversation[0] == 'd') {
@@ -10782,9 +10955,10 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					     sizeof(escaped_monitor)) != 0)
 				continue;
 			written = snprintf(cursor, left,
-					   "%s{\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+					   "%s{\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"pinned\":%s}",
 					   first ? "" : ",", escaped_id, current_key,
 					   escaped_monitor, surfaces[i].x, surfaces[i].y,
+					   surfaces[i].width, surfaces[i].height,
 					   surfaces[i].pinned ? "true" : "false");
 			if (written < 0 || (size_t)written >= left)
 				break;
@@ -10835,16 +11009,48 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			return 0;
 		}
 		{
-			char event[480], escaped_monitor[128];
+			char event[900], escaped_monitor[384];
 			if (omaq_json_escape(surface.monitor, escaped_monitor,
 					     sizeof(escaped_monitor)) != 0)
 				escaped_monitor[0] = '\0';
 			snprintf(event, sizeof(event),
-				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}",
+				 "{\"event\":\"surface\",\"conversation\":\"%s\",\"key\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"pinned\":%s}",
 				 public_id, current_key, escaped_monitor, surface.x, surface.y,
+				 surface.width, surface.height,
 				 surface.pinned ? "true" : "false");
 			emit(event);
 		}
+		return 0;
+	}
+	if (strcmp(op->op, "sound.list") == 0 ||
+	    strcmp(op->op, "sound.import") == 0 ||
+	    strcmp(op->op, "sound.remove") == 0) {
+		const char *operation = op->op + strlen("sound.");
+		omaq_sound imported;
+
+		if (!omaq_message_id_ok(op->request)) {
+			emit_error("request_required");
+			return 0;
+		}
+		if (replay_one_sound_result(operation, op->request))
+			return 0;
+		if (strcmp(op->op, "sound.import") == 0) {
+			if (omaq_sound_import(home_dir(), op->path, &imported) != 0) {
+				emit_sound_state(op->request, operation, NULL, "invalid_sound");
+				return 0;
+			}
+			emit_sound_state(op->request, operation, imported.id, NULL);
+			return 0;
+		}
+		if (strcmp(op->op, "sound.remove") == 0) {
+			if (omaq_sound_remove(home_dir(), op->id) != 0) {
+				emit_sound_state(op->request, operation, NULL, "sound_remove_failed");
+				return 0;
+			}
+			emit_sound_state(op->request, operation, NULL, NULL);
+			return 0;
+		}
+		emit_sound_state(op->request, operation, NULL, NULL);
 		return 0;
 	}
 	if (strcmp(op->op, "safety.get") == 0) {

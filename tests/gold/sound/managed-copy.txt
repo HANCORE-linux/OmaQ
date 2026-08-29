@@ -1,0 +1,3 @@
+source retained
+managed removed
+bundled immutable

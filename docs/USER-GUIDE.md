@@ -69,9 +69,9 @@ Panel preferences use the active OmaQ and Omarchy visual system. Message scaling
 <table>
 <thead><tr><th>Message size</th><th>Chat theme</th><th>Notification sound</th><th>Demo window</th></tr></thead>
 <tbody><tr>
-<td><a href="images/guide/07-panel-message-size.png"><img src="images/guide/07-panel-message-size.png" alt="Chat message size options" width="220"></a><br>Choose 90%, 100%, 110%, 120%, or 140% and review the live message preview.</td>
+<td><a href="images/guide/07-panel-message-size.png"><img src="images/guide/07-panel-message-size.png" alt="Chat message size options" width="220"></a><br>Choose 90%, 100%, 110%, 120%, or 140% and review the live preview. The same step scales message bodies and text typed in the composer.</td>
 <td><a href="images/guide/08-panel-themes.png"><img src="images/guide/08-panel-themes.png" alt="OmaQ chat themes" width="220"></a><br>Select the system palette or a bundled chat palette. The panel itself continues to follow Omarchy.</td>
-<td><a href="images/guide/09-panel-sounds.png"><img src="images/guide/09-panel-sounds.png" alt="OmaQ notification sounds" width="220"></a><br>Preview a notification sound or choose Off. Mute changes notification sound only.</td>
+<td><a href="images/guide/09-panel-sounds.png"><img src="images/guide/09-panel-sounds.png" alt="OmaQ notification sounds" width="220"></a><br>Preview a notification sound, choose Off, or import a bounded PCM WAV file. Removing a custom entry deletes only OmaQ's managed copy; the source file and bundled sounds remain unchanged.</td>
 <td><a href="images/guide/35-demo-window.png"><img src="images/guide/35-demo-window.png" alt="OmaQ Demo chat window" width="220"></a><br>Test messages, formatting, wrapping, and the composer locally. Demo sends nothing.</td>
 </tr></tbody>
 </table>
@@ -96,7 +96,7 @@ DirectChat binds its window, history, unread state, files, Ratchet state, and pr
 
 Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` for a line break. Text paste remains available while the helper reconnects or lacks image capability.
 
-Hover or keyboard-focus a message to react, reply, edit your own message, copy it, or request confirmed deletion. A failed pre-delivery message stays visible with a safe Resend action. A message that may already have reached transport reports an unknown result and does not offer automatic resend.
+Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. Message text supports pointer and keyboard selection; the selection Copy action appears only for a non-empty selection and copies exactly that text. A failed pre-delivery message stays visible with a safe Resend action. A message that may already have reached transport reports an unknown result and does not offer automatic resend.
 
 Direct receipt markers remain monotonic:
 
@@ -235,6 +235,8 @@ omarchy plugin update hancore.omaq --yes &&
 make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
 omarchy-shell shell rescanPlugins
 ```
+
+The helper is detached, so rebuilding it and rescanning QML does not replace an already running process. Protocol-14 features remain disabled until the matching helper starts through a separately controlled lifecycle or a later group-free login. This source branch has no supported in-place helper updater; never terminate a helper while it owns an active private group.
 
 Identity, contacts, Ratchet state, history, and preferences live outside the plugin source directory and must never be copied as runtime source files.
 

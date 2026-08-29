@@ -233,6 +233,14 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 		} else if (strcmp(key, "y") == 0) {
 			if (parse_int(&p, &out->y) != 0)
 				return -1;
+		} else if (strcmp(key, "width") == 0) {
+			if (parse_int(&p, &out->width) != 0)
+				return -1;
+			out->has_width = 1;
+		} else if (strcmp(key, "height") == 0) {
+			if (parse_int(&p, &out->height) != 0)
+				return -1;
+			out->has_height = 1;
 		} else if (strcmp(key, "accept") == 0) {
 			if (parse_bool(&p, &out->accept) != 0)
 				return -1;

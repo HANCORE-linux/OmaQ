@@ -6,12 +6,12 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.8.0` in source and on both live systems
-- **Source:** repository `main` branch
+- **Manifest version:** `0.8.1-beta.1` Protocol-14 candidate in source; Machine2 remains on `0.8.0`
+- **Source:** repository `main` candidate, prepared independently from the paused package-release work
 - **Live plugins:** current OmaQ runtime on machine and machine2
-- **Runtime baseline:** `98570e3`, running Protocol 13 on source and both live systems
-- **Live machine:** synchronized through `98570e3`, with helper SHA-256 `bc694afb9b9b8bacb79834e448fade49242d082aed211f3dba63479d0423bdff`
-- **Live machine2:** the same 75-file Protocol-13 runtime and helper hash
+- **Runtime baseline:** the local machine runs the equivalent Protocol-14 product payload; Machine2 remains on Protocol 13
+- **Live machine:** Protocol 14 helper SHA-256 `5c0649730d94d2e88bf09a8682f8c8506d3b4dfb0fef96544a6aaa557d2bfaa4`
+- **Live machine2:** the 75-file Protocol-13 runtime with helper SHA-256 `bc694afb9b9b8bacb79834e448fade49242d082aed211f3dba63479d0423bdff`
 - **AUR:** paused; no registration or upload
 - **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 36 current Machine2 QML captures
 
@@ -19,13 +19,13 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 - **Pairing:** `Invite` creates a one-use, time-limited QR/link. The recipient uses `Add`; the sender explicitly accepts the request.
 - **Direct chat:** first-map floating chat windows without window animations, Signal Double Ratchet, no plaintext fallback. Manual tiling remains unchanged by focus and reopen operations.
-- **Messages:** unmodified Enter sends while modified Enter inserts a line break, request-correlated delivery failures provide safe Resend, compact receipt spacing, a borderless Send action, a horizontally scrollable emoji/tool rail, persisted message-only text scaling, hover reactions, hover and keyboard editing, confirmed deletion, formatting, keyboard navigation, unread badges, and a `New messages` divider.
+- **Messages:** unmodified Enter sends while modified Enter inserts a line break, request-correlated delivery failures provide safe Resend, compact receipt spacing, a borderless Send action, a horizontally scrollable emoji/tool rail, persisted message-and-composer text scaling, selectable message text with exact-selection Copy, inline Reply, hover reactions, hover and keyboard editing, confirmed deletion, formatting, keyboard navigation, unread badges, and a `New messages` divider.
 - **Files:** paused offer, explicit Accept/Decline, cancelable outgoing transfers, default downloads under `~/Downloads/omaq/`, fully decoded and canonically rewritten bounded avatars, in-chat playback for received audio files, and helper-validated 56×56 PNG/JPEG/WebP previews that open the complete local image. Selected, dropped, and clipboard images use private helper-created staging, canonical PNG adoption, request-correlated discard debt, and restart cleanup. Protocol 12 extends this non-call composer and attachment UX to groups through explicit-accept lossless private NGC packets; video previews remain unavailable.
-- **Notifications:** the per-conversation action reads `Auto-off` while enabled and `Auto-open` while disabled, with the on/off state repeated in its tooltip; unread counts remain until the relevant chat is actively opened.
+- **Notifications:** the per-conversation action reads `Auto-off` while enabled and `Auto-open` while disabled, with the on/off state repeated in its tooltip; unread counts remain until the relevant chat is actively opened. Structurally valid bounded PCM WAV sounds are imported as private helper-managed copies and can be removed without touching the source; bundled sounds remain immutable.
 - **Connection state:** Panel and chat distinguish `Connecting…`/`Reconnecting…` from an online service with an offline contact. Tox uses TCP relays with UDP discovery and hole punching disabled so contacts do not learn each other's IP addresses.
 - **Calls:** direct chats provide microphone/speaker audio through an interruptible PulseAudio event loop, a looping `phone.oga` tone while incoming or outgoing calls ring, explicit Answer/Decline/Hang up controls, a call timer, and a `color01` pulsing incoming-call bar icon that opens the caller's chat without answering. Ringing audio stops on answer or termination. Calls never appear in group chats.
 - **Identity:** local `tox.save`, optional passphrase encryption with an 8-character minimum for new passphrases, file-picked version-2 Export bundles with private group and friend-binding mappings, non-destructive staged **Validate bundle**, and separately confirmed rollback-protected **Import identity**. The first action only validates; the second activates the bundle. Version-1 bundles remain importable. Identity outcomes are request-correlated and passphrases are never queued while the helper is unavailable. A fingerprint-bound presence record and current private recovery copy ensure that an established missing identity is restored or fails closed instead of being silently replaced.
-- **Groups:** named private groups are capped at 10 members. Existing contacts receive group tokens through their Signal-encrypted direct session before the native private invite is shown for explicit acceptance, including a fresh invite after removal. The panel and group-chat header use the same stable-key- and request-bound contact invitation. Group chats expose complete sender names, persisted join/leave notices, filled presence indicators, roles, role-aware moderation, reactions, replies, edits, deletes, formatting, emoji, unread state, receipts, files, and images. Calls remain intentionally unavailable.
+- **Groups:** named private groups are capped at 10 members. Existing contacts receive group tokens through their Signal-encrypted direct session before the native private invite is shown for explicit acceptance, including a fresh invite after removal. The panel and group-chat header use the same stable-key- and request-bound contact invitation. A native three-helper regression confirms admin-initiated invitation and acceptance, admin removal of an ordinary member, and denied owner removal. Group chats expose complete sender names, persisted join/leave notices, filled presence indicators, roles, role-aware moderation, reactions, replies, edits, deletes, formatting, emoji, unread state, receipts, files, and images. Calls remain intentionally unavailable.
 
 ## Security boundaries
 
@@ -81,6 +81,18 @@ This is the current product snapshot. It intentionally contains no historical ph
 - Protocol 13 binds every complete group projection to helper instance, request, generation, expected group count, and expected member count. Service validates the full snapshot before replacing its last good list, retries incomplete projections, and asks the helper for a fresh list whenever the panel's Groups section opens. The panel distinguishes Loading/Unavailable from an authoritative empty list. Quickshell now starts the helper detached and reconnects only through its private socket, so restarting or reloading the shell attaches to the same helper PID/instance instead of destroying in-memory private NGC memberships.
 - Group typing uses a separately rate-limited lossless `OQGT1` custom packet tied to the current group/member key and expires in Service without consuming receipt/action budgets. Group receipts are persisted and projected per stable member key, so one member's Read no longer presents as if every group member read the message.
 
+### Protocol-14 product follow-up
+
+The source candidate implements the seven requested changes independently from the paused package-release work:
+
+- Chat windows use a keyed model, so opening or closing one conversation no longer recreates the other native delegates. Saved width/height and non-overlapping first placement belong to the exact conversation.
+- The five fixed message-size steps now scale rendered message bodies and composer input text, not the composer frame, controls, receipts, or member labels.
+- Settings import structurally valid bounded PCM WAV notification sounds into private helper-managed copies and remove only those copies. Original source files and bundled sounds are outside the removal operation.
+- Group admins can open moderation for offline ordinary members. A native three-helper test covers admin invitation and acceptance, ordinary-member removal, and denied owner removal; the role gold tests retain denied admin-on-admin removal.
+- Every replyable text message exposes compact inline Reply beside reaction/edit controls while the existing context menu remains unchanged.
+- DirectChat and GroupChat message text uses pointer/keyboard selection. A compact Copy action appears only for a non-empty selection and copies that exact selection.
+
+
 ### Existing validation gaps
 
 1. A complete 1:1 test over separate networks is still missing, including presence, typing, delivery, unread badge, and the `New messages` divider.
@@ -90,17 +102,20 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 ## Latest validation
 
+The independent Protocol-14 source candidate passes `make clean && make test`, the native three-helper admin regression, phases 2 and 8, no-Signal and hardened helper builds, architecture checks, core QML lint, plugin validation, and the focused geometry, message-action, emoji-layout, composer, custom-sound, and protocol-compatibility regressions. Iterative independent QML and application-security review findings were corrected. Package construction, release evidence, and the source updater are deliberately outside this branch. The host still runs Quickshell 0.3.0 rather than the planned 0.3.1, and no visible native Wayland geometry test is claimed.
+
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-Both live systems contain the same 75 runtime files, run exactly one Protocol-13 helper, and retained the same helper PID and instance across the latest QML synchronizations. Their latest authoritative projection contained zero groups and zero members. Machine2 separately reports `direct_state_reinvite_required`; its identity and Tox contacts remain present.
+The local live plugin runs one Protocol-14 helper after a confirmed group-free transition; Machine2 remains on its 75-file Protocol-13 runtime. Their latest authoritative projections contained zero groups and zero members. Machine2 separately reports `direct_state_reinvite_required`; its identity and Tox contacts remain present.
 
 The illustrated guide uses 36 cropped original views from current Machine2 QML components. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
 
-The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclusive because both endpoints did not remain connected to relays. Native three-peer packet injection, mixed group-file results, acknowledgement loss, file-history write failures, and transfer-ID-store crash injection remain open. Native separate-network, group-invite, theme, multi-monitor, and floating-versus-tiling acceptance also remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
+The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclusive because both endpoints did not remain connected to relays. Native three-peer packet injection, mixed group-file results, acknowledgement loss, file-history write failures, and transfer-ID-store crash injection remain open. Native separate-network, theme, multi-monitor, and floating-versus-tiling acceptance also remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
 
 ## Next order
 
-1. Run native separate-network, group-invite, image, and floating/tiling acceptance without changing the live plugin silently.
-2. Keep commit, push, and live synchronization as separately approved delivery phases.
-3. Investigate the remaining Panel QML toolchain failure.
-4. Resume Phase 7/AUR only after registration and a new explicit go.
+1. Keep the reviewed Protocol-14 source candidate independent from the paused package-release pipeline.
+2. After the planned Omarchy and Quickshell 0.3.1 update, rerun the exact host evidence.
+3. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
+4. Keep commit, push, live synchronization, and AUR publication as separately approved delivery phases.
+5. Investigate the remaining Panel QML toolchain failure.

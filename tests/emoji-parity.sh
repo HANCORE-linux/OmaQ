@@ -32,6 +32,12 @@ ShellRoot {
       for (var j = 0; j < negatives.length; j++)
         if (Emoji.splitEmojiOnly(negatives[j]).length !== 0)
           ok = false
+      var spaced = "  🥳\n🫠  "
+      var layout = Emoji.splitEmojiLayout(spaced)
+      if (layout.length !== 2 || layout[0].start !== 2 ||
+          layout[0].glyph !== "🥳" || layout[1].glyph !== "🫠" ||
+          spaced.slice(layout[1].start, layout[1].end) !== layout[1].glyph)
+        ok = false
       console.log(ok ? "OMAQ_EMOJI_PARITY_OK" : "OMAQ_EMOJI_PARITY_BAD")
       Qt.quit()
     }

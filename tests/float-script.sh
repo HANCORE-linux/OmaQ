@@ -37,8 +37,10 @@ if [ "$1" = "-j" ] && [ "${2:-}" = "clients" ]; then
   if [ "${OMAQ_FLOAT_NO_CLIENTS:-0}" = "1" ]; then
     printf '%s\n' '[]'
   else
-    printf '%s\n' '[{"title":"OmaQ chat — Alice · 0","address":"0xabc"}]'
+    printf '%s\n' '[{"title":"OmaQ chat — Alice · 0","address":"0xabc","floating":true,"monitor":1,"at":[40,80],"size":[420,420]},{"title":"OmaQ chat — Bob · 1","address":"0xdef","floating":true,"monitor":2,"at":[512,144],"size":[460,520]}]'
   fi
+elif [ "$1" = "-j" ] && [ "${2:-}" = "monitors" ]; then
+  printf '%s\n' '[{"id":1,"name":"DP-1"},{"id":2,"name":"HDMI-A-1"}]'
 elif [ "$1" = "-j" ] && [ "${2:-}" = "activeworkspace" ]; then
   if [ "${OMAQ_FLOAT_SPECIAL:-0}" = "1" ]; then
     printf '%s\n' '{"id":-99,"name":"special:scratchpad"}'
@@ -98,6 +100,30 @@ grep -q '^dispatch movetoworkspace current,address:0xabc$' "$OMAQ_FLOAT_TEST_LOG
 }
 grep -q '^dispatch focuswindow address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: address focus missing" >&2
+  exit 1
+}
+"$root/scripts/float-omaq.sh" place-title "OmaQ chat — Bob · 1" 512 144 460 520
+grep -q '^dispatch resizewindowpixel exact 460 520,address:0xdef$' \
+  "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: per-chat resize missing" >&2
+  exit 1
+}
+grep -q '^dispatch movewindowpixel exact 512 144,address:0xdef$' \
+  "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: per-chat placement missing" >&2
+  exit 1
+}
+if grep -E 'windowpixel .*address:0xabc' "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: placing one chat changed another chat" >&2
+  exit 1
+fi
+geometry=$($root/scripts/float-omaq.sh list-geometry)
+printf '%s' "$geometry" | jq -e '
+  length == 2 and .[0].title == "OmaQ chat — Alice · 0" and
+  .[0].x == 40 and .[0].width == 420 and .[0].monitor == "DP-1" and
+  .[1].title == "OmaQ chat — Bob · 1" and .[1].y == 144 and
+  .[1].height == 520 and .[1].monitor == "HDMI-A-1"' >/dev/null || {
+  echo "float-script: bounded geometry snapshot missing" >&2
   exit 1
 }
 

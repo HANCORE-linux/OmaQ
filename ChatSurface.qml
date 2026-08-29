@@ -23,6 +23,7 @@ Item {
   readonly property string surfaceMode: String(setting("surfaceMode", "separate"))
   readonly property string soundName: String(setting("sound", "icq-message"))
   readonly property string soundCustom: String(setting("soundCustomPath", ""))
+  readonly property string soundCustomId: String(setting("soundCustomId", ""))
   readonly property string chatTheme: String(setting("chatTheme", "system"))
   readonly property real messageScale: {
     var value = Number(setting("messageScale", 1.0))
@@ -31,7 +32,7 @@ Item {
   readonly property bool formatToolbarEnabled: !!setting("formatToolbar", false)
   signal formatToolbarToggled(bool enabled)
 
-  property var openCards: []
+  readonly property var openCards: openCardModel
   property bool surfacesHydrated: false
   property string pulseConv: ""
   readonly property bool demoOpen: OmaQ.SurfaceCoordinator.demoOpen
@@ -39,10 +40,9 @@ Item {
   property bool ownershipTeardown: false
   property bool floatRulesReady: false
   property bool floatRuleReloadBlocked: false
-  property string blockedOpenConversation: ""
-  property string blockedOpenKey: ""
-  property string blockedOpenName: ""
   property string lastNotifiedMessageId: ""
+  property string activeCustomSoundId: ""
+  property string activeCustomSoundPath: ""
   property string focusConversation: ""
   property int focusRequestTick: 0
   property var pendingFocusWindow: null
@@ -59,6 +59,7 @@ Item {
   property bool autoOpenUnavailable: false
   property string autoOpenWarning: ""
   property var pendingIncoming: []
+  property var pendingSurfaceOpens: []
   property var pendingAutoOpenToggles: []
   property bool autoOpenDirectDefault: true
   property string autoOpenRequest: ""
@@ -78,6 +79,96 @@ Item {
 
   onCallToneNeededChanged:
     OmaQ.CallTone.setRequested(root.callToneOwner, root.callToneNeeded)
+
+  ListModel {
+    id: openCardModel
+  }
+
+  function cardCount() {
+    return openCardModel.count
+  }
+
+  function cardAt(index) {
+    return index >= 0 && index < openCardModel.count
+      ? openCardModel.get(index) : null
+  }
+
+  function cardIndex(conversation, expectedKey) {
+    var target = String(conversation || "")
+    var binding = String(expectedKey || "")
+    for (var i = 0; i < openCardModel.count; i++) {
+      var card = openCardModel.get(i)
+      if (String(card.conversation || "") === target &&
+          (target.charAt(0) === "g" || String(card.directKey || "") === binding))
+        return i
+    }
+    return -1
+  }
+
+  function appendCard(card) {
+    var value = card || ({})
+    openCardModel.append({
+      conversation: String(value.conversation || ""),
+      directKey: String(value.directKey || ""),
+      monitor: String(value.monitor || ""),
+      surfaceX: Math.round(Number(value.surfaceX || 0)),
+      surfaceY: Math.round(Number(value.surfaceY || 0)),
+      surfaceWidth: Math.max(360, Math.round(Number(value.surfaceWidth || 420))),
+      surfaceHeight: Math.max(420, Math.round(Number(value.surfaceHeight || 420))),
+      pinned: value.pinned !== false,
+      name: String(value.name || ""),
+      placeOnMap: !!value.placeOnMap,
+      explicitOpen: !!value.explicitOpen
+    })
+  }
+
+  function updateCard(index, values) {
+    if (index < 0 || index >= openCardModel.count)
+      return
+    var next = values || ({})
+    for (var key in next)
+      openCardModel.setProperty(index, key, next[key])
+  }
+
+  function clearCards() {
+    while (openCardModel.count > 0)
+      openCardModel.remove(openCardModel.count - 1)
+  }
+
+  function queueSurfaceOpen(conversation, directKey, name, monitor, focus) {
+    var pending = root.pendingSurfaceOpens.slice()
+    var value = { conversation: String(conversation || ""),
+      directKey: String(directKey || ""), name: String(name || ""),
+      monitor: String(monitor || ""), focus: !!focus }
+    for (var i = 0; i < pending.length; i++)
+      if (pending[i].conversation === value.conversation &&
+          pending[i].directKey === value.directKey) {
+        if (pending[i].focus && !value.focus) {
+          value.name = pending[i].name
+          value.monitor = pending[i].monitor
+        }
+        value.focus = value.focus || !!pending[i].focus
+        pending[i] = value
+        root.pendingSurfaceOpens = pending
+        return
+      }
+    pending.push(value)
+    root.pendingSurfaceOpens = pending
+  }
+
+  function flushPendingSurfaceOpens() {
+    if (!root.surfacesHydrated || root.floatRuleReloadBlocked ||
+        root.pendingSurfaceOpens.length === 0)
+      return
+    var pending = root.pendingSurfaceOpens.slice()
+    root.pendingSurfaceOpens = []
+    for (var i = 0; i < pending.length; i++) {
+      root.ensureCard(pending[i].conversation, pending[i].name,
+        pending[i].directKey, pending[i].monitor)
+      if (pending[i].focus)
+        root.requestChatFocus(pending[i].conversation)
+    }
+  }
 
   function setting(name, fallback) {
     var s = settings || (service ? service.settings : {})
@@ -105,20 +196,19 @@ Item {
   function openConversation(conv, name) {
     var conversation = String(conv || "")
     var expectedKey = conversation.charAt(0) === "g" ? "" : root.friendKey(conversation)
-    OmaQ.SurfaceCoordinator.requestChat(conversation, expectedKey, String(name || ""))
+    OmaQ.SurfaceCoordinator.requestChat(conversation, expectedKey, String(name || ""),
+      root.instanceName)
   }
 
-  function acceptOpenRequest(conv, expectedKey, name) {
+  function acceptOpenRequest(conv, expectedKey, name, monitor) {
     if (!root.isSurfaceOwner)
       return
-    if (root.floatRuleReloadBlocked) {
-      root.blockedOpenConversation = String(conv || "")
-      root.blockedOpenKey = String(expectedKey || "")
-      root.blockedOpenName = String(name || "")
+    if (!root.surfacesHydrated || root.floatRuleReloadBlocked) {
+      root.queueSurfaceOpen(conv, expectedKey, name, monitor, true)
       return
     }
     root.ensureCard(String(conv || ""), String(name || ""),
-      String(expectedKey || ""))
+      String(expectedKey || ""), String(monitor || ""))
     root.requestChatFocus(String(conv || ""))
   }
 
@@ -136,7 +226,7 @@ Item {
       .replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
     if (label.length > 48)
       label = label.slice(0, 48)
-    var suffix = key.charAt(0) === "g" ? key.slice(0, 10) : key
+    var suffix = key
     return "OmaQ chat — " + label + (suffix ? " · " + suffix : "")
   }
 
@@ -366,17 +456,17 @@ Item {
     var key = String(conv || "")
     if (!key)
       return
-    for (var i = 0; i < openCards.length; i++) {
-      if (String(openCards[i].conversation) === key) {
-        root.dismissCard(key, "")
-        return
-      }
+    var index = root.cardIndex(key, "")
+    if (index >= 0) {
+      root.dismissCard(key, "")
+      return
     }
     var persisted = service ? (service.surfaces || []) : []
     for (var j = 0; j < persisted.length; j++) {
       if (String(persisted[j].conversation) === key) {
         service.setSurface(key, persisted[j].monitor || "", Number(persisted[j].x || 0),
-          Number(persisted[j].y || 0), false, "")
+          Number(persisted[j].y || 0), false, "", Number(persisted[j].width || 420),
+          Number(persisted[j].height || 420))
         return
       }
     }
@@ -385,53 +475,73 @@ Item {
   function reconcileOpenCards() {
     if (!service)
       return
-    var current = openCards.slice()
-    var next = []
-    for (var i = 0; i < current.length; i++) {
-      var conversation = String(current[i].conversation || "")
-      if (conversation.charAt(0) === "g") {
-        if (!service.groupsReady || service.groupById(conversation))
-          next.push(current[i])
-      } else if (root.cardBindingValid(current[i])) {
-        next.push(current[i])
-      }
-    }
-    if (next.length !== current.length)
-      openCards = next
+    for (var i = openCardModel.count - 1; i >= 0; i--)
+      if (!root.cardBindingValid(openCardModel.get(i)))
+        openCardModel.remove(i)
   }
 
   function reconcileOpenGroups() {
     root.reconcileOpenCards()
   }
 
+  function restoredSize(value, fallback, minimum) {
+    var number = Number(value)
+    return isFinite(number) && number >= minimum && number <= 4096
+      ? Math.round(number) : fallback
+  }
+
   function restoreSurfaces() {
     var persisted = service ? (service.surfaces || []) : []
-    var current = openCards.slice()
-    var next = []
-    var i, j, saved, found
-    for (i = 0; i < current.length; i++) {
-      if (!root.cardBindingValid(current[i]))
-        continue
+    var i, j, saved
+    root.reconcileOpenCards()
+    for (i = 0; i < openCardModel.count; i++) {
+      var current = openCardModel.get(i)
       saved = null
       for (j = 0; j < persisted.length; j++) {
-        if (String(persisted[j].conversation) === String(current[i].conversation) &&
-            (String(current[i].conversation).charAt(0) === "g" ||
-             String(persisted[j].key || "") === String(current[i].directKey || ""))) {
+        if (String(persisted[j].conversation) === String(current.conversation) &&
+            (String(current.conversation).charAt(0) === "g" ||
+             String(persisted[j].key || "") === String(current.directKey || ""))) {
           saved = persisted[j]
           break
         }
       }
-      next.push(saved ? {
-        conversation: current[i].conversation,
-        directKey: current[i].directKey || "",
-        monitor: saved.monitor || "",
-        x: isFinite(Number(saved.x)) ? Number(saved.x) : 40,
-        y: isFinite(Number(saved.y)) ? Number(saved.y) : 80,
-        pinned: !!saved.pinned,
-        name: current[i].name || friendName(current[i].conversation)
-      } : current[i])
+      if (saved) {
+        var keepExplicitlyOpen = !!current.explicitOpen
+        root.updateCard(i, {
+          monitor: String(saved.monitor || ""),
+          surfaceX: isFinite(Number(saved.x)) ? Math.round(Number(saved.x)) : 40,
+          surfaceY: isFinite(Number(saved.y)) ? Math.round(Number(saved.y)) : 80,
+          surfaceWidth: root.restoredSize(saved.width, 420, 360),
+          surfaceHeight: root.restoredSize(saved.height, 420, 420),
+          pinned: keepExplicitlyOpen ? true : !!saved.pinned,
+          name: String(current.name || root.friendName(current.conversation)),
+          explicitOpen: false
+        })
+        if (keepExplicitlyOpen)
+          service.setSurface(String(current.conversation || ""),
+            String(saved.monitor || ""), Number(saved.x || 0), Number(saved.y || 0),
+            true, String(current.directKey || ""),
+            root.restoredSize(saved.width, 420, 360),
+            root.restoredSize(saved.height, 420, 420))
+      } else {
+        service.setSurface(String(current.conversation || ""),
+          String(current.monitor || ""), Number(current.surfaceX || 0),
+          Number(current.surfaceY || 0), !!current.pinned,
+          String(current.directKey || ""), Number(current.surfaceWidth || 420),
+          Number(current.surfaceHeight || 420))
+        root.updateCard(i, { explicitOpen: false })
+      }
     }
-    for (i = 0; i < persisted.length; i++) {
+    var persistedOrder = []
+    for (i = 0; i < persisted.length; i++)
+      if (String(persisted[i].monitor || "") !== "")
+        persistedOrder.push(i)
+    for (i = 0; i < persisted.length; i++)
+      if (String(persisted[i].monitor || "") === "")
+        persistedOrder.push(i)
+    for (var persistedOrderIndex = 0;
+         persistedOrderIndex < persistedOrder.length; persistedOrderIndex++) {
+      i = persistedOrder[persistedOrderIndex]
       if (!persisted[i].pinned || !persisted[i].conversation)
         continue
       var persistedConversation = String(persisted[i].conversation)
@@ -439,34 +549,61 @@ Item {
       if (persistedConversation.charAt(0) === "g") {
         if (service && service.groupsReady && !service.groupById(persistedConversation)) {
           service.setSurface(persistedConversation, persisted[i].monitor || "",
-            Number(persisted[i].x || 0), Number(persisted[i].y || 0), false, "")
+            Number(persisted[i].x || 0), Number(persisted[i].y || 0), false, "",
+            Number(persisted[i].width || 420), Number(persisted[i].height || 420))
           continue
         }
       } else if (!service ||
                  !service.directBindingMatches(persistedConversation, persistedKey)) {
         continue
       }
-      found = false
-      for (j = 0; j < next.length; j++)
-        if (String(next[j].conversation) === persistedConversation &&
-            (persistedConversation.charAt(0) === "g" ||
-             String(next[j].directKey || "") === persistedKey))
-          found = true
-      if (!found)
-        next.push({
+      if (root.cardIndex(persistedConversation, persistedKey) < 0) {
+        var persistedMonitor = String(persisted[i].monitor || "")
+        var persistedLegacyMonitor = persistedMonitor === ""
+        var persistedWidth = root.restoredSize(persisted[i].width, 420, 360)
+        var persistedHeight = root.restoredSize(persisted[i].height, 420, 420)
+        var persistedX = isFinite(Number(persisted[i].x)) ? Number(persisted[i].x) : 40
+        var persistedY = isFinite(Number(persisted[i].y)) ? Number(persisted[i].y) : 80
+        if (persistedMonitor === "") {
+          persistedMonitor = String(root.instanceName || "")
+          for (var occupiedIndex = 0; occupiedIndex < openCardModel.count;
+               occupiedIndex++)
+            if (root.cardMonitorCollides(openCardModel.get(occupiedIndex).monitor,
+                  persistedMonitor) && root.surfaceRectanglesOverlap(persistedX,
+                  persistedY, persistedWidth, persistedHeight,
+                  openCardModel.get(occupiedIndex))) {
+              var legacyGeometry = root.initialGeometry(persistedMonitor,
+                persistedWidth, persistedHeight)
+              persistedX = legacyGeometry.surfaceX
+              persistedY = legacyGeometry.surfaceY
+              break
+            }
+        }
+        root.appendCard({
           conversation: persistedConversation,
           directKey: persistedConversation.charAt(0) === "g" ? "" : persistedKey,
-          monitor: persisted[i].monitor || "",
-          x: isFinite(Number(persisted[i].x)) ? Number(persisted[i].x) : 40,
-          y: isFinite(Number(persisted[i].y)) ? Number(persisted[i].y) : 80,
+          monitor: persistedMonitor,
+          surfaceX: persistedX,
+          surfaceY: persistedY,
+          surfaceWidth: persistedWidth,
+          surfaceHeight: persistedHeight,
           pinned: true,
-          name: friendName(persistedConversation)
+          name: root.friendName(persistedConversation),
+          placeOnMap: true,
+          explicitOpen: false
         })
+        if (persistedLegacyMonitor)
+          service.setSurface(persistedConversation, persistedMonitor,
+            persistedX, persistedY, true,
+            persistedConversation.charAt(0) === "g" ? "" : persistedKey,
+            persistedWidth, persistedHeight)
+      }
     }
-    if (surfaceMode === "bundled" && next.length > 1)
-      next = [next[0]]
-    openCards = next
+    if (surfaceMode === "bundled")
+      while (openCardModel.count > 1)
+        openCardModel.remove(openCardModel.count - 1)
     surfacesHydrated = true
+    root.flushPendingSurfaceOpens()
   }
 
   function activateSurfaceOwner() {
@@ -491,9 +628,7 @@ Item {
     } else {
       root.ownershipTeardown = true
       root.floatRuleReloadBlocked = false
-      root.blockedOpenConversation = ""
-      root.blockedOpenKey = ""
-      root.blockedOpenName = ""
+      root.pendingSurfaceOpens = []
       floatRuleWatcher.running = false
       installFloatRules.running = false
       installFloatRulesRetry.stop()
@@ -607,100 +742,168 @@ Item {
     }
   }
 
-  function ensureCard(conv, name, expectedKey) {
+  function persistedSurface(conversation, directKey) {
+    var persisted = service ? (service.surfaces || []) : []
+    for (var i = 0; i < persisted.length; i++)
+      if (String(persisted[i].conversation || "") === conversation &&
+          (conversation.charAt(0) === "g" ||
+           String(persisted[i].key || "") === directKey))
+        return persisted[i]
+    return null
+  }
+
+  function cardMonitorCollides(cardMonitor, targetMonitor) {
+    var cardName = String(cardMonitor || "")
+    var targetName = String(targetMonitor || "")
+    return cardName === "" || targetName === "" || cardName === targetName
+  }
+
+  function surfaceRectanglesOverlap(x, y, width, height, card) {
+    var otherX = Number(card.surfaceX || 0)
+    var otherY = Number(card.surfaceY || 0)
+    var otherWidth = Math.max(200, Number(card.surfaceWidth || 420))
+    var otherHeight = Math.max(160, Number(card.surfaceHeight || 420))
+    return x < otherX + otherWidth + 12 && x + width + 12 > otherX &&
+      y < otherY + otherHeight + 12 && y + height + 12 > otherY
+  }
+
+  function initialGeometry(monitor, preferredWidth, preferredHeight) {
+    var screenName = String(monitor || root.instanceName || "")
+    var screenX = 0
+    var screenY = 0
+    var screenWidth = 960
+    var screenHeight = 900
+    var screens = Quickshell.screens || []
+    for (var screenIndex = 0; screenIndex < screens.length; screenIndex++)
+      if (String(screens[screenIndex].name || "") === screenName) {
+        screenX = Number(screens[screenIndex].x || 0)
+        screenY = Number(screens[screenIndex].y || 0)
+        screenWidth = Math.max(420, Number(screens[screenIndex].width || 960))
+        screenHeight = Math.max(420, Number(screens[screenIndex].height || 900))
+        break
+      }
+    var width = root.restoredSize(preferredWidth, 420, 360)
+    var height = root.restoredSize(preferredHeight, 420, 420)
+    var x = Math.round(screenX + 40)
+    var y = Math.round(screenY + 80)
+    for (var attempt = 0; attempt < 64; attempt++) {
+      var occupied = false
+      for (var i = 0; i < openCardModel.count; i++) {
+        var card = openCardModel.get(i)
+        if (root.cardMonitorCollides(card.monitor, screenName) &&
+            root.surfaceRectanglesOverlap(x, y, width, height, card)) {
+          occupied = true
+          break
+        }
+      }
+      if (!occupied)
+        break
+      x += width + 28
+      if (x + width > screenX + screenWidth - 20) {
+        x = Math.round(screenX + 40)
+        y += height + 28
+      }
+    }
+    return { monitor: screenName, surfaceX: x, surfaceY: y,
+      surfaceWidth: width, surfaceHeight: height }
+  }
+
+  function ensureCard(conv, name, expectedKey, preferredMonitor) {
     var conversation = String(conv || "")
     if (!conversation)
       return false
     var directKey = conversation.charAt(0) === "g" ? "" : String(expectedKey || "")
+    if (!root.surfacesHydrated || root.floatRuleReloadBlocked) {
+      root.queueSurfaceOpen(conversation, directKey, name, preferredMonitor, false)
+      return false
+    }
     if (conversation.charAt(0) !== "g") {
       if (!/^[0-9a-f]{64}$/.test(directKey) || !service ||
           !service.directBindingMatches(conversation, directKey))
         return false
     }
-    var label = name ? String(name) : ""
-    var filtered = []
-    var existing = -1
-    for (var i = 0; i < openCards.length; i++) {
-      var item = openCards[i]
-      if (String(item.conversation) === conversation &&
-          String(item.directKey || "") !== directKey)
-        continue
-      if (String(item.conversation) === conversation)
-        existing = filtered.length
-      filtered.push(item)
+    for (var stale = openCardModel.count - 1; stale >= 0; stale--) {
+      var staleCard = openCardModel.get(stale)
+      if (String(staleCard.conversation || "") === conversation &&
+          conversation.charAt(0) !== "g" &&
+          String(staleCard.directKey || "") !== directKey)
+        openCardModel.remove(stale)
     }
+    var existing = root.cardIndex(conversation, directKey)
+    var label = name ? String(name) : ""
     if (existing >= 0) {
-      var current = filtered[existing]
-      filtered[existing] = {
-        conversation: conversation,
-        directKey: directKey,
-        monitor: current.monitor,
-        x: current.x,
-        y: current.y,
-        pinned: true,
-        name: label || current.name || ""
-      }
-      openCards = filtered
-      if (!current.pinned)
-        root.pin(conversation, true, directKey)
+      var current = openCardModel.get(existing)
+      root.updateCard(existing, { pinned: true,
+        name: label || String(current.name || "") })
       return false
     }
-    var card = { conversation: conversation, directKey: directKey, monitor: "",
-      x: 40 + filtered.length * 16, y: 80 + filtered.length * 16,
-      pinned: true, name: label }
     if (surfaceMode === "bundled")
-      filtered = [card]
-    else
-      filtered.push(card)
-    openCards = filtered
+      root.clearCards()
+    var saved = root.persistedSurface(conversation, directKey)
+    var geometry = saved ? {
+      monitor: String(saved.monitor || preferredMonitor || root.instanceName || ""),
+      surfaceX: isFinite(Number(saved.x)) ? Number(saved.x) : 40,
+      surfaceY: isFinite(Number(saved.y)) ? Number(saved.y) : 80,
+      surfaceWidth: root.restoredSize(saved.width, 420, 360),
+      surfaceHeight: root.restoredSize(saved.height, 420, 420)
+    } : root.initialGeometry(preferredMonitor)
+    root.appendCard({ conversation: conversation, directKey: directKey,
+      monitor: geometry.monitor, surfaceX: geometry.surfaceX,
+      surfaceY: geometry.surfaceY, surfaceWidth: geometry.surfaceWidth,
+      surfaceHeight: geometry.surfaceHeight, pinned: true, name: label,
+      placeOnMap: true, explicitOpen: true })
     if (surfacesHydrated)
-      service.setSurface(conversation, "", card.x, card.y, true, directKey)
+      service.setSurface(conversation, geometry.monitor, geometry.surfaceX,
+        geometry.surfaceY, true, directKey, geometry.surfaceWidth,
+        geometry.surfaceHeight)
     return true
   }
 
-  function dismissCard(conv, expectedKey) {
+  function dismissCard(conv, expectedKey, width, height) {
     var conversation = String(conv || "")
     var bindingKey = String(expectedKey || "")
-    var next = []
-    var removed = null
-    for (var i = 0; i < openCards.length; i++) {
-      if (String(openCards[i].conversation) !== conversation ||
-          (bindingKey !== "" && String(openCards[i].directKey || "") !== bindingKey))
-        next.push(openCards[i])
-      else
-        removed = openCards[i]
-    }
-    openCards = next
-    if (removed)
-      service.setSurface(conversation, removed.monitor, removed.x, removed.y, false,
-        String(removed.directKey || ""))
+    var index = root.cardIndex(conversation, bindingKey)
+    if (index < 0)
+      return
+    var removed = openCardModel.get(index)
+    var removedMonitor = String(removed.monitor || "")
+    var removedX = Number(removed.surfaceX || 0)
+    var removedY = Number(removed.surfaceY || 0)
+    var removedKey = String(removed.directKey || "")
+    var savedWidth = root.restoredSize(width, Number(removed.surfaceWidth || 420), 360)
+    var savedHeight = root.restoredSize(height, Number(removed.surfaceHeight || 420), 420)
+    openCardModel.remove(index)
+    service.setSurface(conversation, removedMonitor, removedX,
+      removedY, false, removedKey, savedWidth, savedHeight)
   }
 
   function pin(conv, on, expectedKey) {
     var conversation = String(conv || "")
     var bindingKey = String(expectedKey || "")
-    var next = []
-    var saved = null
-    for (var i = 0; i < openCards.length; i++) {
-      var card = openCards[i]
-      if (String(card.conversation) === conversation &&
-          (bindingKey === "" || String(card.directKey || "") === bindingKey)) {
-        saved = card
-        card = { conversation: card.conversation, directKey: card.directKey || "",
-          monitor: card.monitor, x: card.x, y: card.y, pinned: !!on,
-          name: card.name || "" }
-      }
-      next.push(card)
-    }
-    openCards = next
-    if (saved)
-      service.setSurface(conversation, saved.monitor, saved.x, saved.y, !!on,
-        String(saved.directKey || ""))
+    var index = root.cardIndex(conversation, bindingKey)
+    if (index < 0)
+      return
+    var saved = openCardModel.get(index)
+    root.updateCard(index, { pinned: !!on })
+    service.setSurface(conversation, saved.monitor, saved.surfaceX, saved.surfaceY,
+      !!on, String(saved.directKey || ""), saved.surfaceWidth, saved.surfaceHeight)
   }
 
-  function savePos(conv, mon, x, y, pinned, expectedKey) {
-    service.setSurface(String(conv || ""), mon || "", x, y, !!pinned,
-      String(expectedKey || ""))
+  function savePos(conv, mon, x, y, pinned, expectedKey, width, height) {
+    var conversation = String(conv || "")
+    var binding = String(expectedKey || "")
+    var index = root.cardIndex(conversation, binding)
+    if (index >= 0)
+      root.updateCard(index, { monitor: String(mon || ""),
+        surfaceX: Math.round(Number(x || 0)), surfaceY: Math.round(Number(y || 0)),
+        surfaceWidth: root.restoredSize(width, 420, 200),
+        surfaceHeight: root.restoredSize(height, 420, 160) })
+    service.setSurface(conversation, mon || "", x, y, !!pinned, binding,
+      width, height)
+  }
+
+  function pinWindowAt(index) {
+    return pinWindows.objectAt(index)
   }
 
   function toggleMute() {
@@ -717,11 +920,38 @@ Item {
     return selectedSound + ".wav"
   }
 
+  function managedCustomSoundPath() {
+    if (!root.service || root.service.helperCompatibility !== "compatible" ||
+        !root.service.supportsCustomSounds)
+      return ""
+    var revision = Number(root.service.soundTick || 0)
+    var sounds = root.service.customSounds || []
+    for (var i = 0; revision >= 0 && i < sounds.length; i++) {
+      var id = String(sounds[i].id || "")
+      var path = String(sounds[i].path || "")
+      if ((root.soundCustomId !== "" && id === root.soundCustomId) ||
+          (root.soundCustomId === "" && root.soundCustom !== "" &&
+           path === root.soundCustom))
+        return /^[0-9a-f]{32}$/.test(id) ? path : ""
+    }
+    return ""
+  }
+
+  function stopUntrustedCustomSound() {
+    if (root.activeCustomSoundPath === "")
+      return
+    if (root.managedCustomSoundPath() === root.activeCustomSoundPath)
+      return
+    sndProc.running = false
+    root.activeCustomSoundId = ""
+    root.activeCustomSoundPath = ""
+  }
+
   function playNamedSound(name) {
     var selectedSound = String(name || "")
     if (root.muted || selectedSound === "off" || selectedSound === "")
       return
-    var path = soundCustom
+    var path = selectedSound === "custom" ? root.managedCustomSoundPath() : ""
     if (selectedSound === "icq-message")
       path = String(Qt.resolvedUrl("sounds/icq-message.mp3")).replace(/^file:\/\//, "")
     else if (selectedSound !== "custom")
@@ -734,6 +964,8 @@ Item {
       "omaq-message-sound", path
     ]
     sndProc.running = false
+    root.activeCustomSoundId = selectedSound === "custom" ? root.soundCustomId : ""
+    root.activeCustomSoundPath = selectedSound === "custom" ? path : ""
     sndProc.running = true
   }
 
@@ -811,6 +1043,10 @@ Item {
     function onGroupsTickChanged() { root.reconcileOpenGroups() }
     function onFriendsTickChanged() { root.reconcileOpenCards() }
     function onAutoOpenTickChanged() { root.applyAutoOpenResult() }
+    function onSoundTickChanged() { root.stopUntrustedCustomSound() }
+    function onHelperCompatibilityChanged() { root.stopUntrustedCustomSound() }
+    function onActiveHelperProtocolChanged() { root.stopUntrustedCustomSound() }
+    function onHelperInstanceGenerationChanged() { root.stopUntrustedCustomSound() }
     function onHelperHandshakeTickChanged() {
       if (!root.service)
         return
@@ -824,7 +1060,7 @@ Item {
     }
     function onRemovedGroupTickChanged() { root.closeRemovedGroup(service.lastRemovedGroup) }
     function onIdentityTickChanged() {
-      root.openCards = []
+      root.clearCards()
       root.pendingIncoming = []
       root.focusConversation = ""
       root.autoOpenByConversation = ({})
@@ -857,15 +1093,7 @@ Item {
       OmaQ.SurfaceCoordinator.deliverPendingDemo()
       if (!floatRuleWatcher.running)
         floatRuleWatcher.running = true
-      if (root.blockedOpenConversation !== "") {
-        var conversation = root.blockedOpenConversation
-        var expectedKey = root.blockedOpenKey
-        var name = root.blockedOpenName
-        root.blockedOpenConversation = ""
-        root.blockedOpenKey = ""
-        root.blockedOpenName = ""
-        root.acceptOpenRequest(conversation, expectedKey, name)
-      }
+      root.flushPendingSurfaceOpens()
     }
   }
   Timer {
@@ -916,10 +1144,66 @@ Item {
       }
     }
   }
+  function applyGeometrySnapshot(raw) {
+    var items
+    try { items = JSON.parse(String(raw || "")) } catch (error) { return }
+    if (!Array.isArray(items) || items.length > 32)
+      return
+    for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      var item = items[itemIndex] || ({})
+      var title = String(item.title || "")
+      var monitor = String(item.monitor || "")
+      var x = Number(item.x)
+      var y = Number(item.y)
+      var width = Number(item.width)
+      var height = Number(item.height)
+      if (!title || monitor.length > 63 || /[\u0000-\u001f\u007f]/.test(monitor) ||
+          !Number.isInteger(x) || !Number.isInteger(y) ||
+          !Number.isInteger(width) || !Number.isInteger(height) ||
+          x < -32768 || x > 32768 || y < -32768 || y > 32768 ||
+          width < 360 || width > 4096 || height < 420 || height > 4096)
+        continue
+      for (var cardIndex = 0; cardIndex < openCardModel.count; cardIndex++) {
+        var card = openCardModel.get(cardIndex)
+        if (root.chatWindowTitle(card.conversation) !== title || card.placeOnMap)
+          continue
+        if (Number(card.surfaceX) !== x || Number(card.surfaceY) !== y ||
+            Number(card.surfaceWidth) !== width || Number(card.surfaceHeight) !== height ||
+            String(card.monitor || "") !== monitor) {
+          var conversation = String(card.conversation || "")
+          var directKey = String(card.directKey || "")
+          root.updateCard(cardIndex, { monitor: monitor, surfaceX: x, surfaceY: y,
+            surfaceWidth: width, surfaceHeight: height })
+          service.setSurface(conversation, monitor, x, y, !!card.pinned,
+            directKey, width, height)
+        }
+        break
+      }
+    }
+  }
+
+  Process {
+    id: geometrySnapshot
+    running: false
+    command: [root.floatScriptPath, "list-geometry"]
+    stdout: SplitParser {
+      onRead: function(line) { root.applyGeometrySnapshot(line) }
+    }
+  }
+
+  Timer {
+    interval: 1200
+    repeat: true
+    running: root.isSurfaceOwner && root.floatRulesReady && openCardModel.count > 0
+    triggeredOnStart: true
+    onTriggered: if (!geometrySnapshot.running)
+      geometrySnapshot.running = true
+  }
+
   function overlayVisibleOn(screenName) {
     var i, c
-    for (i = 0; i < openCards.length; i++) {
-      c = openCards[i]
+    for (i = 0; i < openCardModel.count; i++) {
+      c = openCardModel.get(i)
       if (c.pinned)
         continue
       if (c.monitor === "" || c.monitor === screenName)
@@ -953,7 +1237,22 @@ Item {
           model: root.openCards
           delegate: Item {
             id: card
-            required property var modelData
+            required property string conversation
+            required property string directKey
+            required property string monitor
+            required property real surfaceX
+            required property real surfaceY
+            required property real surfaceWidth
+            required property real surfaceHeight
+            required property bool pinned
+            required property string name
+            required property bool placeOnMap
+            required property bool explicitOpen
+            readonly property var modelData: ({ conversation: card.conversation,
+              directKey: card.directKey, monitor: card.monitor,
+              x: card.surfaceX, y: card.surfaceY, width: card.surfaceWidth,
+              height: card.surfaceHeight, pinned: card.pinned, name: card.name,
+              placeOnMap: card.placeOnMap, explicitOpen: card.explicitOpen })
             visible: !modelData.pinned && (modelData.monitor === "" || modelData.monitor === overlay.modelData.name)
             width: Style.space(280)
             height: Style.space(220)
@@ -1009,7 +1308,7 @@ Item {
               cursorShape: Qt.SizeAllCursor
               onReleased: root.savePos(card.modelData.conversation,
                 overlay.modelData.name, card.x, card.y, false,
-                card.modelData.directKey || "")
+                card.modelData.directKey || "", card.width, card.height)
             }
           }
         }
@@ -1072,20 +1371,52 @@ Item {
   }
 
   Instantiator {
-    model: root.isSurfaceOwner && root.floatRulesReady ? root.openCards : []
+    id: pinWindows
+    model: root.isSurfaceOwner && root.floatRulesReady ? root.openCards : null
     delegate: FloatingWindow {
       id: pinWin
-      required property var modelData
+      required property string conversation
+      required property string directKey
+      required property string monitor
+      required property real surfaceX
+      required property real surfaceY
+      required property real surfaceWidth
+      required property real surfaceHeight
+      required property bool pinned
+      required property string name
+      required property bool placeOnMap
+      required property bool explicitOpen
+      readonly property var modelData: ({ conversation: pinWin.conversation,
+        directKey: pinWin.directKey, monitor: pinWin.monitor,
+        x: pinWin.surfaceX, y: pinWin.surfaceY, width: pinWin.surfaceWidth,
+        height: pinWin.surfaceHeight, pinned: pinWin.pinned, name: pinWin.name,
+        placeOnMap: pinWin.placeOnMap, explicitOpen: pinWin.explicitOpen })
+      visible: pinWin.pinned
       // Keep the first map title stable for the floating rule, then expose a
       // per-conversation title so an existing chat can be moved precisely.
       title: pinWin.everShown && pinWin.modelData
         ? root.chatWindowTitle(pinWin.modelData.conversation) : "OmaQ chat"
-      implicitWidth: 420
-      implicitHeight: 420
+      implicitWidth: Math.max(360, Math.round(Number(pinWin.surfaceWidth || 420)))
+      implicitHeight: Math.max(420, Math.round(Number(pinWin.surfaceHeight || 420)))
       minimumSize: Qt.size(360, 420)
       color: root.theme().bg || Color.background
       property bool everShown: false
       property bool closing: false
+      property bool placementStarted: false
+      property int placementAttempts: 0
+
+      function requestInitialPlacement() {
+        if (!pinWin.placeOnMap || pinWin.placementStarted ||
+            !pinWin.backingWindowVisible || pinWin.title === "OmaQ chat")
+          return
+        pinWin.placementStarted = true
+        pinWin.placementAttempts++
+        placeWindow.command = [root.floatScriptPath, "place-title", pinWin.title,
+          String(Math.round(pinWin.surfaceX)), String(Math.round(pinWin.surfaceY)),
+          String(Math.max(360, Math.round(pinWin.surfaceWidth))),
+          String(Math.max(420, Math.round(pinWin.surfaceHeight)))]
+        placeWindow.running = true
+      }
 
       function applyRequestedFocus() {
         if (!pinWin.modelData || String(pinWin.modelData.conversation) !== root.focusConversation)
@@ -1113,10 +1444,52 @@ Item {
         if (pinWin.backingWindowVisible)
           pinWin.everShown = true
         pinWin.applyRequestedFocus()
+        Qt.callLater(pinWin.requestInitialPlacement)
       }
       onBackingWindowVisibleChanged: {
-        if (pinWin.backingWindowVisible)
+        if (pinWin.backingWindowVisible) {
           pinWin.everShown = true
+          Qt.callLater(pinWin.requestInitialPlacement)
+        }
+      }
+      onTitleChanged: Qt.callLater(pinWin.requestInitialPlacement)
+      onWidthChanged: if (pinWin.everShown && !pinWin.closing)
+        geometrySave.restart()
+      onHeightChanged: if (pinWin.everShown && !pinWin.closing)
+        geometrySave.restart()
+
+      Process {
+        id: placeWindow
+        running: false
+        onExited: function(code) {
+          if (code === 0) {
+            var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
+            if (index >= 0)
+              root.updateCard(index, { placeOnMap: false })
+            return
+          }
+          pinWin.placementStarted = false
+          if (pinWin.placementAttempts < 12)
+            placementRetry.restart()
+          else
+            console.warn("OmaQ: could not restore independent chat geometry")
+        }
+      }
+
+      Timer {
+        id: placementRetry
+        interval: 150
+        repeat: false
+        onTriggered: pinWin.requestInitialPlacement()
+      }
+
+      Timer {
+        id: geometrySave
+        interval: 350
+        repeat: false
+        onTriggered: if (pinWin.visible && !pinWin.closing)
+          root.savePos(pinWin.conversation, pinWin.monitor, pinWin.surfaceX,
+            pinWin.surfaceY, true, pinWin.directKey, pinWin.width, pinWin.height)
       }
 
       onVisibleChanged: {
@@ -1131,7 +1504,7 @@ Item {
           if (pinPage.inCall || pinPage.incoming)
             pinPage.hangUp()
           root.dismissCard(pinWin.modelData.conversation,
-            pinWin.modelData.directKey || "")
+            pinWin.modelData.directKey || "", pinWin.width, pinWin.height)
         }
       }
 
@@ -1179,7 +1552,8 @@ Item {
                 pinPage.hangUp()
               pinWin.closing = true
               pinWin.visible = false
-              root.dismissCard(conv, pinWin.modelData.directKey || "")
+              root.dismissCard(conv, pinWin.modelData.directKey || "",
+                pinWin.width, pinWin.height)
             }
           }
         }

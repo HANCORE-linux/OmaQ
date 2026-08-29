@@ -12,6 +12,7 @@ QtObject {
   property string pendingConversation: ""
   property string pendingKey: ""
   property string pendingName: ""
+  property string pendingMonitor: ""
 
   function registerHost(host) {
     if (!host || coordinator.hosts.indexOf(host) !== -1)
@@ -40,13 +41,14 @@ QtObject {
     Qt.callLater(coordinator.deliverPending)
   }
 
-  function requestChat(conversation, expectedKey, name) {
+  function requestChat(conversation, expectedKey, name, monitor) {
     var conversationId = String(conversation || "")
     if (!conversationId)
       return
     coordinator.pendingConversation = conversationId
     coordinator.pendingKey = String(expectedKey || "")
     coordinator.pendingName = String(name || "")
+    coordinator.pendingMonitor = String(monitor || "")
     coordinator.deliverPending()
   }
 
@@ -57,10 +59,12 @@ QtObject {
       return
     var expectedKey = coordinator.pendingKey
     var name = coordinator.pendingName
+    var monitor = coordinator.pendingMonitor
     coordinator.pendingConversation = ""
     coordinator.pendingKey = ""
     coordinator.pendingName = ""
-    host.acceptOpenRequest(conversation, expectedKey, name)
+    coordinator.pendingMonitor = ""
+    host.acceptOpenRequest(conversation, expectedKey, name, monitor)
   }
 
   function queueDemo() {

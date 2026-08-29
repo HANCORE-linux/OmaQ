@@ -9,6 +9,7 @@ typedef struct {
 	char conversation[80];
 	char monitor[64];
 	int x, y;
+	int width, height;
 	int pinned;
 } omaq_surface;
 

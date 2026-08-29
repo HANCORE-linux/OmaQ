@@ -5,6 +5,10 @@ set -u
 
 MODE="${1:-install-rules}"
 TARGET_TITLE="${2:-}"
+TARGET_X="${3:-}"
+TARGET_Y="${4:-}"
+TARGET_WIDTH="${5:-}"
+TARGET_HEIGHT="${6:-}"
 
 runtime_root="${XDG_RUNTIME_DIR:-/tmp/omaq-runtime-${UID}}"
 if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
@@ -110,11 +114,48 @@ if [[ "$MODE" == "watch-rules" ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "list-geometry" ]]; then
+  command -v jq >/dev/null 2>&1 || exit 3
+  clients=$(hyprctl -j clients 2>/dev/null) || exit 3
+  monitors=$(hyprctl -j monitors 2>/dev/null) || exit 3
+  (( ${#clients} <= 1048576 && ${#monitors} <= 262144 )) || exit 3
+  jq -cn --argjson clients "$clients" --argjson monitors "$monitors" '
+    [$clients[] |
+      select(((.title // "") | startswith("OmaQ chat — ")) and
+        ((.at // []) | length) == 2 and ((.size // []) | length) == 2) |
+      . as $client |
+      {title: .title, x: .at[0], y: .at[1], width: .size[0], height: .size[1],
+       monitor: (($monitors[] | select(.id == $client.monitor) | .name) // "")}]
+  ' || exit 3
+  exit 0
+fi
+
 install_rules || exit 1
 [[ "$MODE" == "install-rules" ]] && exit 0
-[[ "$MODE" == "focus-title" && -n "$TARGET_TITLE" ]] || exit 2
 command -v jq >/dev/null 2>&1 || exit 3
 
+if [[ "$MODE" == "place-title" ]]; then
+  [[ -n "$TARGET_TITLE" && "$TARGET_X" =~ ^-?[0-9]+$ &&
+     "$TARGET_Y" =~ ^-?[0-9]+$ && "$TARGET_WIDTH" =~ ^[0-9]+$ &&
+     "$TARGET_HEIGHT" =~ ^[0-9]+$ ]] || exit 2
+  (( TARGET_X >= -32768 && TARGET_X <= 32768 &&
+     TARGET_Y >= -32768 && TARGET_Y <= 32768 &&
+     TARGET_WIDTH >= 360 && TARGET_WIDTH <= 4096 &&
+     TARGET_HEIGHT >= 420 && TARGET_HEIGHT <= 4096 )) || exit 2
+  client=$(hyprctl -j clients 2>/dev/null | jq -r --arg title "$TARGET_TITLE" '
+    [.[] | select((.title // "") == $title)] |
+    if length == 1 and (.[0].floating // false) == true and
+       ((.[0].address // "") | test("^0x[0-9a-fA-F]+$"))
+    then .[0].address else empty end')
+  [[ "$client" =~ ^0x[0-9a-fA-F]+$ ]] || exit 3
+  hyprctl dispatch "resizewindowpixel" \
+    "exact ${TARGET_WIDTH} ${TARGET_HEIGHT},address:${client}" >/dev/null || exit 4
+  hyprctl dispatch "movewindowpixel" \
+    "exact ${TARGET_X} ${TARGET_Y},address:${client}" >/dev/null || exit 4
+  exit 0
+fi
+
+[[ "$MODE" == "focus-title" && -n "$TARGET_TITLE" ]] || exit 2
 address=$(hyprctl -j clients 2>/dev/null |
   jq -r --arg title "$TARGET_TITLE" '.[] | select((.title // "") == $title) | .address' |
   head -n 1)

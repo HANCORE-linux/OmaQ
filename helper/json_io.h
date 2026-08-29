@@ -33,7 +33,7 @@ typedef struct {
 	int pinned;
 	int enabled;
 	int typing;
-	int x, y;
+	int x, y, width, height;
 	int has_text;
 	int has_ttl;
 	int has_limit;
@@ -42,6 +42,8 @@ typedef struct {
 	int has_pinned;
 	int has_enabled;
 	int has_typing;
+	int has_width;
+	int has_height;
 } omaq_op;
 
 int omaq_json_parse_op(const char *line, omaq_op *out);

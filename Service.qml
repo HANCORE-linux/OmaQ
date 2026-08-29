@@ -58,6 +58,22 @@ Item {
   readonly property bool supportsGroupAttachments: root.activeHelperProtocol >= 12
   readonly property bool supportsCorrelatedGroupProjection: root.activeHelperProtocol >= 13
   readonly property bool supportsGroupTyping: root.activeHelperProtocol >= 13
+  readonly property bool supportsCustomSounds: root.activeHelperProtocol >= 14
+  onActiveHelperProtocolChanged: {
+    if (root.supportsCustomSounds)
+      return
+    if (root.customSounds.length > 0) {
+      root.customSounds = []
+      root.soundTick = root.soundTick + 1
+    }
+    root.failPendingSoundRequests("helper_incompatible")
+  }
+  onHelperCompatibilityChanged: {
+    if (root.helperCompatibility === "compatible" || root.customSounds.length === 0)
+      return
+    root.customSounds = []
+    root.soundTick = root.soundTick + 1
+  }
   readonly property bool localHelperProtocolConfirmed: !root.attached && proc.processId > 0 &&
     root.helperProtocolPid === proc.processId &&
     root.helperProtocolVersion >= root.requiredHelperProtocol &&
@@ -206,6 +222,15 @@ Item {
   property string lastAutoOpenCode: ""
   property bool lastAutoOpenSucceeded: false
   property int autoOpenTick: 0
+  property var customSounds: []
+  property var pendingSoundRequests: ({})
+  property int soundRequestSequence: 0
+  property string lastSoundRequest: ""
+  property string lastSoundOperation: ""
+  property string lastSoundSelected: ""
+  property string lastSoundCode: ""
+  property bool lastSoundSucceeded: false
+  property int soundTick: 0
   property string lastFileId: ""
   property string lastFileName: ""
   property string lastFilePath: ""
@@ -731,6 +756,8 @@ Item {
           root.pendingDirectEventOverflow = false
         }
         if (processChanged) {
+          root.customSounds = []
+          root.soundTick = root.soundTick + 1
           root.lastGroupGeneration = 0
           root.clearPendingGroupProjection()
           if (root.lastError === root.persistentWarning)
@@ -739,12 +766,20 @@ Item {
           root.failActiveIncomingFiles()
           root.failActiveOutgoingFiles("helper_restarted")
           root.failQueuedGroupInvites("helper_restarted")
+          root.failPendingSoundRequests("helper_restarted")
           root.helperInstanceGeneration = root.helperInstanceGeneration + 1
         }
         if (identityChanged)
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
         root.activeHelperProtocol = snapshotProtocol
+        if (!root.supportsCustomSounds) {
+          if (root.customSounds.length > 0) {
+            root.customSounds = []
+            root.soundTick = root.soundTick + 1
+          }
+          root.failPendingSoundRequests("helper_incompatible")
+        }
         if (identityChanged && root.supportsCorrelatedGroupProjection)
           root.expectedGroupRequest = String(ev.request || "")
         if (nextIdentity !== "")
@@ -767,6 +802,8 @@ Item {
         helperStatusTimer.stop()
         root.sendOp({ op: "identity.ready", id: nextInstance })
         root.flushOps()
+        root.retryPendingSoundRequests()
+        root.refreshCustomSounds()
         root.retryAttachmentCleanupDebts()
         replayOverflowToReport = !identityChanged && root.handshakeEventOverflow
         replayEventsToApply = identityChanged || replayOverflowToReport
@@ -1291,6 +1328,90 @@ Item {
       root.lastAutoOpenCode = String(ev.code || "")
       root.lastAutoOpenSucceeded = ev.event === "settings.auto-open"
       root.autoOpenTick = root.autoOpenTick + 1
+    }
+    if (ev.event === "sound.list" || ev.event === "sound.failed") {
+      if (root.helperCompatibility !== "compatible" || !root.supportsCustomSounds)
+        return
+      if (typeof ev.request !== "string" || ev.request === "")
+        return
+      var soundRequest = ev.request
+      var soundOperation = typeof ev.op === "string" ? ev.op : ""
+      var pendingSound = root.pendingSoundRequests[soundRequest] || ({})
+      var expectedSoundOperation = String(pendingSound.operation || "")
+      if (!expectedSoundOperation)
+        return
+      var remainingSoundRequests = ({})
+      for (var pendingSoundRequest in root.pendingSoundRequests)
+        if (pendingSoundRequest !== soundRequest)
+          remainingSoundRequests[pendingSoundRequest] =
+            root.pendingSoundRequests[pendingSoundRequest]
+      root.pendingSoundRequests = remainingSoundRequests
+      root.lastSoundRequest = soundRequest
+      root.lastSoundOperation = expectedSoundOperation
+      root.lastSoundSelected = ""
+      root.lastSoundCode = String(ev.code || "")
+      root.lastSoundSucceeded = ev.event === "sound.list" &&
+        soundOperation === expectedSoundOperation
+      if (soundOperation !== expectedSoundOperation) {
+        if (expectedSoundOperation === "list")
+          root.customSounds = []
+        root.lastSoundCode = "sound_state_failed"
+        root.soundTick = root.soundTick + 1
+        return
+      }
+      if (ev.event === "sound.failed" && soundOperation === "list")
+        root.customSounds = []
+      if (ev.event === "sound.list") {
+        var soundItems = ev.items
+        var validatedSounds = []
+        var soundIds = ({})
+        var validSounds = Array.isArray(soundItems) && soundItems.length <= 16 &&
+          typeof ev.selected === "string"
+        for (var soundIndex = 0; validSounds && soundIndex < soundItems.length;
+             soundIndex++) {
+          var soundItem = soundItems[soundIndex]
+          if (!soundItem || Array.isArray(soundItem) ||
+              typeof soundItem.id !== "string" ||
+              typeof soundItem.label !== "string" ||
+              typeof soundItem.path !== "string" ||
+              typeof soundItem.size !== "number") {
+            validSounds = false
+            break
+          }
+          var soundId = soundItem.id
+          var soundLabel = soundItem.label
+          var soundPath = soundItem.path
+          var soundSize = soundItem.size
+          var expectedSoundPath = root.homeDir + "/custom-sounds/" +
+            soundId + ".audio"
+          if (!/^[0-9a-f]{32}$/.test(soundId) || soundIds[soundId] ||
+              soundLabel.length < 1 || soundLabel.length > 96 ||
+              /[\u0000-\u001f\u007f]/.test(soundLabel) ||
+              soundPath !== expectedSoundPath || !Number.isInteger(soundSize) ||
+              soundSize < 1 || soundSize > 8 * 1024 * 1024) {
+            validSounds = false
+            break
+          }
+          soundIds[soundId] = true
+          validatedSounds.push({ id: soundId, label: soundLabel,
+            path: soundPath, size: soundSize })
+        }
+        var selectedSound = typeof ev.selected === "string" ? ev.selected : ""
+        if ((soundOperation === "import" &&
+             (!/^[0-9a-f]{32}$/.test(selectedSound) || !soundIds[selectedSound])) ||
+            (soundOperation !== "import" && selectedSound !== ""))
+          validSounds = false
+        if (validSounds) {
+          root.customSounds = validatedSounds
+          root.lastSoundSelected = selectedSound
+          root.lastSoundCode = ""
+        } else {
+          root.customSounds = []
+          root.lastSoundSucceeded = false
+          root.lastSoundCode = "sound_state_failed"
+        }
+      }
+      root.soundTick = root.soundTick + 1
     }
     if (ev.event === "invite") {
       if (ev.url !== undefined)
@@ -1878,7 +1999,13 @@ Item {
         continue
       }
       root.trackInFlightMessage(operation)
-      writer(lines[i])
+      if (operation.op === "surface.set" && root.activeHelperProtocol < 14) {
+        delete operation.width
+        delete operation.height
+        writer(JSON.stringify(operation) + "\n")
+      } else {
+        writer(lines[i])
+      }
     }
   }
 
@@ -1918,6 +2045,20 @@ Item {
     root.pendingOps = remaining
   }
 
+  function failPendingSoundRequests(reason) {
+    var code = String(reason || "helper_restarted")
+    for (var request in root.pendingSoundRequests) {
+      root.lastSoundRequest = request
+      root.lastSoundOperation = String(
+        root.pendingSoundRequests[request].operation || "")
+      root.lastSoundSelected = ""
+      root.lastSoundCode = code
+      root.lastSoundSucceeded = false
+      root.soundTick = root.soundTick + 1
+    }
+    root.pendingSoundRequests = ({})
+  }
+
   function failQueuedMessages(reason) {
     var code = String(reason || "helper_down")
     for (var i = 0; i < root.pendingOps.length; i++) {
@@ -1941,6 +2082,7 @@ Item {
     root.failActiveOutgoingFiles("helper_incompatible")
     root.failQueuedMessages("helper_incompatible")
     root.failQueuedGroupInvites("helper_incompatible")
+    root.failPendingSoundRequests("helper_incompatible")
     root.helperInstanceGeneration = root.helperInstanceGeneration + 1
     root.pendingOps = []
     root.pendingHandshakeEvents = []
@@ -1956,6 +2098,8 @@ Item {
     root.groupProjectionFailed = true
     root.helperCompatibility = "incompatible"
     root.activeHelperProtocol = 0
+    root.customSounds = []
+    root.soundTick = root.soundTick + 1
     root.connectionState = "reconnecting"
     root.selfOnline = false
     root.lastError = "helper_incompatible"
@@ -2065,6 +2209,62 @@ Item {
       return false
     return root.sendOp({ op: "settings.auto-open.set", conversation: stable,
       enabled: !!enabled, request: requestId })
+  }
+
+  function nextSoundRequest(operation) {
+    root.soundRequestSequence = root.soundRequestSequence + 1
+    return "sound-" + String(operation || "list") + "-" +
+      Date.now().toString(36) + "-" + root.soundRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+  }
+  function retryPendingSoundRequests() {
+    if (root.awaitingHelperInstance || root.helperCompatibility !== "compatible")
+      return
+    for (var request in root.pendingSoundRequests) {
+      var pending = root.pendingSoundRequests[request] || ({})
+      if (pending.command)
+        root.sendImmediateOp(pending.command)
+    }
+  }
+  function sendSoundOperation(operation, fields, request) {
+    var action = String(operation || "")
+    var requestId = String(request || "")
+    if (!root.supportsCustomSounds || ["list", "import", "remove"].indexOf(action) < 0 ||
+        requestId === "" || root.pendingSoundRequests[requestId] !== undefined)
+      return false
+    var command = { op: "sound." + action, request: requestId }
+    var values = fields || ({})
+    for (var soundField in values)
+      command[soundField] = values[soundField]
+    var pending = ({})
+    for (var pendingRequest in root.pendingSoundRequests)
+      pending[pendingRequest] = root.pendingSoundRequests[pendingRequest]
+    pending[requestId] = { operation: action, command: command }
+    root.pendingSoundRequests = pending
+    if (root.sendImmediateOp(command))
+      return true
+    delete pending[requestId]
+    root.pendingSoundRequests = pending
+    return false
+  }
+  function refreshCustomSounds() {
+    if (!root.supportsCustomSounds || root.awaitingHelperInstance ||
+        root.helperCompatibility !== "compatible")
+      return false
+    var request = root.nextSoundRequest("list")
+    return root.sendSoundOperation("list", ({}), request)
+  }
+  function importCustomSound(path, request) {
+    var source = String(path || "")
+    if (source.charAt(0) !== "/" || source.length > 511)
+      return false
+    return root.sendSoundOperation("import", { path: source }, request)
+  }
+  function removeCustomSound(id, request) {
+    var soundId = String(id || "")
+    if (!/^[0-9a-f]{32}$/.test(soundId))
+      return false
+    return root.sendSoundOperation("remove", { id: soundId }, request)
   }
 
   function createInvite(request) {
@@ -2557,13 +2757,24 @@ Item {
     return sendOp({ op: "group.member.remove", group: group, member: key })
   }
   function openCard() {
-    return root.sendConversationOp({ op: "surface.set",
-      conversation: root.lastConversation, monitor: "", x: 40, y: 80,
-      pinned: true }, root.lastDirectKey, false)
+    return root.setSurface(root.lastConversation, "", 40, 80, true,
+      root.lastDirectKey, 420, 420)
   }
-  function setSurface(conv, mon, x, y, pinned, expectedKey) {
-    return root.sendConversationOp({ op: "surface.set", conversation: String(conv || ""),
-      monitor: mon || "", x: x, y: y, pinned: !!pinned }, expectedKey, false)
+  function surfaceOperation(conv, mon, x, y, pinned, width, height) {
+    var operation = { op: "surface.set", conversation: String(conv || ""),
+      monitor: mon || "", x: Math.round(Number(x || 0)), y: Math.round(Number(y || 0)),
+      pinned: !!pinned }
+    if (root.awaitingHelperInstance || root.activeHelperProtocol >= 14) {
+      operation.width = Math.max(200,
+        Math.min(4096, Math.round(Number(width || 420))))
+      operation.height = Math.max(160,
+        Math.min(4096, Math.round(Number(height || 420))))
+    }
+    return operation
+  }
+  function setSurface(conv, mon, x, y, pinned, expectedKey, width, height) {
+    return root.sendConversationOp(root.surfaceOperation(conv, mon, x, y,
+      pinned, width, height), expectedKey, false)
   }
   function exportIdentity(path, request) {
     if (!root.supportsIdentityActions)

@@ -149,6 +149,68 @@ ShellRoot {
         var incompleteGroupsPreserved = !service.groupsReady && service.groups.length === 1 &&
           service.groups[0].title === "Restored"
         service.pendingOps = []
+        service.awaitingHelperInstance = false
+        service.activeHelperProtocol = 7
+        var legacySurface = service.surfaceOperation(groupId, "DP-1", 10, 20,
+          true, 500, 600)
+        var legacySurfaceCompatible = legacySurface.width === undefined &&
+          legacySurface.height === undefined && legacySurface.x === 10 && legacySurface.y === 20
+        service.pendingOps = []
+        service.awaitingHelperInstance = true
+        var handshakeSurfaceSent = service.setSurface(groupId, "DP-1", 10, 20,
+          true, "", 500, 600)
+        var handshakeSurface = service.pendingOps.length === 1
+          ? JSON.parse(service.pendingOps[0]) : ({})
+        var handshakeSurfaceQueued = handshakeSurfaceSent &&
+          handshakeSurface.width === 500 && handshakeSurface.height === 600
+        service.pendingOps = []
+        service.activeHelperProtocol = 14
+        service.awaitingHelperInstance = false
+        var handshake14Line = ""
+        service.writeQueuedOperations([JSON.stringify(handshakeSurface) + "\n"],
+          function(line) { handshake14Line = line })
+        var handshake14Surface = JSON.parse(handshake14Line)
+        var handshake14Geometry = handshake14Surface.width === 500 &&
+          handshake14Surface.height === 600
+        var modernSurface = service.surfaceOperation(groupId, "DP-1", 10, 20,
+          true, 500, 600)
+        var modernSurfaceGeometry = modernSurface.width === 500 &&
+          modernSurface.height === 600
+        var downgradedLine = ""
+        service.activeHelperProtocol = 7
+        service.writeQueuedOperations([JSON.stringify(handshakeSurface) + "\n"],
+          function(line) { downgradedLine = line })
+        var downgradedSurface = JSON.parse(downgradedLine)
+        var downgradeQueueCompatible = downgradedSurface.width === undefined &&
+          downgradedSurface.height === undefined && downgradedSurface.pinned === true
+        service.activeHelperProtocol = 14
+        service.customSounds = [{ id: "11111111111111111111111111111111",
+          label: "Valid", path: service.homeDir +
+            "/custom-sounds/11111111111111111111111111111111.audio", size: 48 }]
+        service.pendingSoundRequests = ({
+          "sound-malformed": { operation: "list", command: { op: "sound.list",
+            request: "sound-malformed" } }
+        })
+        service.handleLine(JSON.stringify({ event: "sound.list", op: "list",
+          request: "sound-malformed", selected: "" }))
+        var malformedSoundFailedClosed = service.customSounds.length === 0 &&
+          service.pendingSoundRequests["sound-malformed"] === undefined &&
+          service.lastSoundCode === "sound_state_failed"
+        service.customSounds = [{ id: "22222222222222222222222222222222",
+          label: "Stale", path: service.homeDir +
+            "/custom-sounds/22222222222222222222222222222222.audio", size: 48 }]
+        service.pendingSoundRequests = ({
+          "sound-late": { operation: "import", command: { op: "sound.import",
+            request: "sound-late", path: "/tmp/source.wav" } }
+        })
+        service.activeHelperProtocol = 13
+        service.handleLine(JSON.stringify({ event: "sound.list", op: "import",
+          request: "sound-late", selected: "22222222222222222222222222222222",
+          items: [{ id: "22222222222222222222222222222222", label: "Stale",
+            path: service.homeDir +
+              "/custom-sounds/22222222222222222222222222222222.audio", size: 48 }] }))
+        var staleSoundRejected = service.customSounds.length === 0 &&
+          !service.pendingSoundRequests["sound-late"]
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -165,6 +227,8 @@ ShellRoot {
             !service.unprotectIdentity("blocked-pass", "blocked-unprotect") &&
             !service.setNickname("blocked", "blocked-nickname") &&
             bindingChecks && groupAttachmentGate && groupInviteWired &&
+            legacySurfaceCompatible && handshakeSurfaceQueued && handshake14Geometry &&
+            modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
             correlatedGroups && groupTypingProjected && wrongGroupRequestIgnored &&
             incompleteGroupsPreserved && reusePurged &&
             bufferedUntilFriends && replayedAfterFriends && reboundContentPurged &&

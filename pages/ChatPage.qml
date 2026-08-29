@@ -538,6 +538,10 @@ FocusScope {
     return Emoji.splitEmojiOnly(String(t || ""))
   }
 
+  function smileLayout(t) {
+    return Emoji.splitEmojiLayout(String(t || ""))
+  }
+
   function isSmileOnly(t) {
     var s = String(t || "").replace(/\s+/g, "")
     if (!s)
@@ -751,8 +755,16 @@ FocusScope {
       .replace(/\"/g, "&quot;")
   }
 
+  function preserveLiteralSeparators(value) {
+    return String(value || "")
+      .replace(/\u2063/g, "\u2063\u2063")
+      .replace(/\u2064/g, "\u2064\u2064")
+      .replace(/\u2028/g, "<br/>&#8291;")
+      .replace(/\u2029/g, "<br/>&#8292;")
+  }
+
   function markdownInline(value) {
-    var text = root.escapeMarkup(value)
+    var text = root.preserveLiteralSeparators(root.escapeMarkup(value))
     var protectedParts = []
 
     function token(index) {
@@ -804,7 +816,7 @@ FocusScope {
         continue
       }
       if (fenced) {
-        rendered.push(root.escapeMarkup(line))
+        rendered.push(root.preserveLiteralSeparators(root.escapeMarkup(line)))
         continue
       }
       if ((match = line.match(/^#{1,6}\s+(.+)$/))) {
@@ -834,7 +846,8 @@ FocusScope {
       main += " <font color='" + String(Qt.darker(root.fg, 1.35)) + "'>(edited)</font>"
     if (!reply)
       return main
-    var preview = root.escapeMarkup(reply).replace(/\n/g, "<br/>")
+    var preview = root.preserveLiteralSeparators(root.escapeMarkup(reply))
+      .replace(/\n/g, "<br/>")
     return "<font color='" + String(root.accent) + "'><b>↩ " + preview + "</b></font><br/>" + main
   }
 
@@ -1003,6 +1016,95 @@ FocusScope {
       String(currentEmoji || "") === selectedEmoji ? "" : selectedEmoji, root.peerKey)
   }
 
+  function messageBreakKinds(text, replyId) {
+    var kinds = []
+    function append(value) {
+      var source = String(value || "")
+      for (var i = 0; i < source.length; i++) {
+        var character = source.charAt(i)
+        if (character === "\n")
+          kinds.push("\n")
+        else if (character === "\u2028" || character === "\u2029")
+          kinds.push(character)
+      }
+    }
+    var reply = root.replyTextFor(replyId)
+    if (reply) {
+      append(reply)
+      kinds.push("\n")
+    }
+    append(text)
+    var fenced = false
+    var linesForFences = String(text || "").split("\n")
+    for (var lineIndex = 0; lineIndex < linesForFences.length; lineIndex++)
+      if (/^```/.test(linesForFences[lineIndex]))
+        fenced = !fenced
+    if (fenced)
+      kinds.push("\n")
+    return kinds
+  }
+
+  function clipboardSelectionText(control, text, replyId) {
+    if (!control)
+      return ""
+    var full = String(control.getText(0, control.length) || "")
+    var start = Number(control.selectionStart || 0)
+    var end = Number(control.selectionEnd || 0)
+    var kinds = root.messageBreakKinds(text, replyId)
+    var breakAt = ({})
+    var syntheticAt = ({})
+    var breakIndex = 0
+    for (var position = 0; position < full.length; position++) {
+      var character = full.charAt(position)
+      if (character !== "\u2028" && character !== "\u2029")
+        continue
+      var kind = breakIndex < kinds.length ? kinds[breakIndex] : character
+      breakAt[position] = kind
+      breakIndex++
+      var marker = kind === "\u2028" ? "\u2063" :
+        (kind === "\u2029" ? "\u2064" : "")
+      if (marker !== "" && position + 1 < full.length &&
+          full.charAt(position + 1) === marker)
+        syntheticAt[position + 1] = true
+    }
+    var literalMarkerAt = ({})
+    var markerGroup = 0
+    for (position = 0; position < full.length; position++) {
+      character = full.charAt(position)
+      if ((character !== "\u2063" && character !== "\u2064") ||
+          syntheticAt[position])
+        continue
+      markerGroup++
+      literalMarkerAt[position] = markerGroup
+      if (position + 1 < full.length && !syntheticAt[position + 1] &&
+          full.charAt(position + 1) === character) {
+        literalMarkerAt[position + 1] = markerGroup
+        position++
+      }
+    }
+    var emittedMarkers = ({})
+    var result = ""
+    for (position = start; position < end; position++) {
+      character = full.charAt(position)
+      if (breakAt[position] !== undefined) {
+        result += breakAt[position]
+        continue
+      }
+      if (syntheticAt[position])
+        continue
+      var group = literalMarkerAt[position]
+      if (group !== undefined) {
+        if (!emittedMarkers[group]) {
+          result += character
+          emittedMarkers[group] = true
+        }
+        continue
+      }
+      result += character
+    }
+    return result
+  }
+
   function sameConv(conv) {
     if (!root.conversation)
       return true
@@ -1028,7 +1130,7 @@ FocusScope {
   }
 
   function mayManageGroupMember(member) {
-    if (!member || member.self || !member.online)
+    if (!member || member.self)
       return false
     var selfRole = root.groupSelfRole()
     var targetRole = String(member.role || "member")
@@ -3441,7 +3543,10 @@ FocusScope {
               sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
-          readonly property var smileGlyphs: line.smileOnly ? root.splitSmiles(model.text) : []
+          readonly property var smileLayout: line.smileOnly
+            ? root.smileLayout(model.text) : []
+          readonly property var smileGlyphs: line.smileOnly
+            ? root.splitSmiles(model.text) : []
           readonly property real smileMaxWidth: Math.max(root.smilePx + Style.space(16), list.width * 0.82)
           readonly property real smileReceiptReserve: model.dir === "out" && model.ack !== undefined
             ? Style.space(24) : 0
@@ -3482,15 +3587,21 @@ FocusScope {
             line.groupReceipts)
           readonly property bool hasGroupReceipt: root.groupConversation &&
             model.dir === "out" && line.groupReceiptText !== ""
-          readonly property bool messageReactions: line.contextId !== "" &&
-            !line.fileMessage && !line.deleted
+          readonly property bool replyable: line.contextId !== "" && !line.deleted
+          readonly property bool messageReactions: line.replyable && !line.fileMessage
+          readonly property string selectedMessageText: line.smileOnly
+            ? String(smileSelection.selectedText || "")
+            : (label.visible
+              ? root.clipboardSelectionText(label, model.text, model.reply) : "")
+          readonly property bool hasTextSelection: line.selectedMessageText !== ""
           readonly property bool hasReaction: !line.deleted &&
             (line.reactionMe !== "" || line.reactionPeer !== "" ||
              line.groupReactionEmojis.length > 0)
           property bool reactionPickerOpen: false
           readonly property bool actionControlsVisible: line.failed ||
-            (line.contextId !== "" && !line.deleted && !line.fileMessage &&
-             (lineHover.hovered || line.keyboardSelected || line.activeFocus ||
+            line.hasTextSelection ||
+            (line.replyable && (lineHover.hovered || line.keyboardSelected ||
+              line.activeFocus || label.activeFocus || smileSelection.activeFocus ||
               line.reactionPickerOpen))
           Keys.onEscapePressed: {
             reactionPicker.close()
@@ -3564,8 +3675,9 @@ FocusScope {
               wrapMode: Text.WrapAnywhere
             }
 
-            Text {
+            TextEdit {
               id: label
+              objectName: "messageText"
               visible: !line.smileOnly && !line.fileMessage
               anchors.left: parent.left
               anchors.right: parent.right
@@ -3575,15 +3687,22 @@ FocusScope {
               anchors.rightMargin: line.hasCode ? Style.space(60) :
                 (model.dir === "out" && model.ack !== undefined ? Style.space(32) : Style.space(8))
               text: !line.smileOnly && model.dir !== "sys" ? root.messageMarkup(model.text, model.reply, line.edited) : ""
-              textFormat: Text.RichText
-              linkColor: root.accent
+              textFormat: TextEdit.RichText
+              readOnly: true
+              activeFocusOnTab: visible
+              activeFocusOnPress: true
+              selectByMouse: true
+              selectByKeyboard: true
+              persistentSelection: true
+              selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+              selectedTextColor: root.fg
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: root.messageTextPx
               font.hintingPreference: Font.PreferNoHinting
               renderType: Text.QtRendering
-              wrapMode: Text.Wrap
-              onLinkActivated: Qt.openUrlExternally(link)
+              wrapMode: TextEdit.Wrap
+              onLinkActivated: function(link) { Qt.openUrlExternally(link) }
             }
 
             RowLayout {
@@ -3859,24 +3978,54 @@ FocusScope {
               }
             }
 
-            Flow {
+            Item {
               id: smileRow
               visible: line.smileOnly
               width: Math.max(root.smilePx,
                 line.smileWidth - Style.space(16) - line.smileReceiptReserve)
+              implicitHeight: Math.max(root.smilePx, smileSelection.contentHeight)
               height: implicitHeight
               anchors.left: parent.left
               anchors.verticalCenter: line.showGroupSender ? undefined : parent.verticalCenter
               anchors.top: line.showGroupSender ? groupSenderLabel.bottom : undefined
               anchors.leftMargin: Style.space(8)
-              spacing: Style.space(2)
+
+              TextEdit {
+                id: smileSelection
+                objectName: "emojiMessageText"
+                anchors.fill: parent
+                text: line.smileOnly ? String(model.text || "") : ""
+                textFormat: TextEdit.PlainText
+                readOnly: true
+                activeFocusOnTab: visible
+                activeFocusOnPress: true
+                selectByMouse: true
+                selectByKeyboard: true
+                persistentSelection: true
+                cursorVisible: false
+                color: "transparent"
+                selectedTextColor: "transparent"
+                selectionColor: Qt.rgba(root.accent.r, root.accent.g,
+                  root.accent.b, 0.35)
+                font.family: "Noto Color Emoji"
+                font.pixelSize: root.smilePx
+                wrapMode: TextEdit.Wrap
+                Accessible.name: "Selectable emoji message"
+              }
 
               Repeater {
-                model: line.smileGlyphs
+                model: line.smileLayout
                 delegate: Item {
                   id: smileDelegate
                   required property int index
-                  readonly property string glyph: String(line.smileGlyphs[index] || "")
+                  readonly property var token: line.smileLayout[index] || ({})
+                  readonly property string glyph: String(smileDelegate.token.glyph || "")
+                  readonly property rect glyphRect:
+                    smileSelection.positionToRectangle(
+                      Number(smileDelegate.token.start || 0) +
+                      0 * smileSelection.width + 0 * smileSelection.text.length)
+                  x: smileDelegate.glyphRect.x
+                  y: smileDelegate.glyphRect.y
                   width: root.smilePx
                   height: root.smilePx
 
@@ -3982,6 +4131,24 @@ FocusScope {
               onClicked: root.resendMessage(line.clientKey)
             }
             ReactionAction {
+              id: selectionCopyAction
+              objectName: "copySelectionAction"
+              visible: line.hasTextSelection
+              compact: true
+              materialIcon: "content_copy"
+              tooltipText: "Copy selected text"
+              onClicked: root.copyText(line.selectedMessageText)
+            }
+            ReactionAction {
+              id: inlineReplyAction
+              objectName: "replyAction"
+              visible: line.replyable
+              compact: true
+              materialIcon: "reply"
+              tooltipText: "Reply"
+              onClicked: root.beginReply(line.contextId, line.contextText)
+            }
+            ReactionAction {
               id: moreReactionAction
               visible: line.messageReactions
               compact: true
@@ -3996,7 +4163,8 @@ FocusScope {
               }
             }
             ReactionAction {
-              visible: model.dir === "out" && line.contextId !== "" && !line.failed
+              visible: model.dir === "out" && line.contextId !== "" && !line.failed &&
+                !line.fileMessage
               compact: true
               materialIcon: "edit"
               tooltipText: "Edit message"
@@ -4573,7 +4741,8 @@ FocusScope {
                 selectedTextColor: root.fg
                 placeholderTextColor: Qt.darker(root.fg, 1.6)
                 font.family: root.fontFamily
-                font.pixelSize: root.smileTextPx
+                objectName: "composerInput"
+                font.pixelSize: root.messageTextPx
                 font.hintingPreference: Font.PreferNoHinting
                 wrapMode: TextEdit.Wrap
                 verticalAlignment: Text.AlignVCenter

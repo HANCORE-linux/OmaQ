@@ -41,7 +41,7 @@ for needle in required_service:
         raise SystemExit(f"stable-direct-state: missing Service guard: {needle}")
 
 if "property string pendingKey" not in coordinator or \
-        "host.acceptOpenRequest(conversation, expectedKey, name)" not in coordinator:
+        "host.acceptOpenRequest(conversation, expectedKey, name, monitor)" not in coordinator:
     raise SystemExit("stable-direct-state: queued chat opens lost their key binding")
 
 if "omaq.answerCall(omaq.lastCallConv, omaq.lastCallKey)" not in panel or \
@@ -54,7 +54,7 @@ if "property string peerKey" not in page or "root.directBindingValid" not in pag
     raise SystemExit("stable-direct-state: ChatPage direct actions are not key-bound")
 
 required_helper = [
-    "#define OMAQ_PROTOCOL_VERSION 13",
+    "#define OMAQ_PROTOCOL_VERSION 14",
     'omaq_state_archive_copy(state_dir(), "surfaces.jsonl")',
     "omaq_surface_discard_legacy_direct(state_dir())",
     'omaq_direct_state_id(current_key, surface.conversation',

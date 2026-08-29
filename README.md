@@ -22,7 +22,7 @@ Toxcore transports packets between devices. Direct messages receive an additiona
 
 ## How to chat
 
-Create a one-time invite in the bar panel and send the link or QR out of band. The other person redeems it, you Accept, then open the chat window and type.
+Create a one-time invite in the bar panel and send the link or QR out of band. The other person redeems it, you Accept, then open the chat window and type. Message text can be selected with pointer or keyboard input; inline Reply starts the existing reply flow, and selection Copy copies only the selected text. The fixed message-size setting also applies to text typed in the composer.
 
 ## Install
 
@@ -41,13 +41,13 @@ refused unless the Signal Ratchet helper is available.
 
 ## Update
 
-Update the plugin, rebuild its local helper, and reload the plugin so the newly built helper replaces the running process:
+Update the plugin, rebuild its local helper, and reload the QML source:
 
 ```bash
 omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper && omarchy-shell shell rescanPlugins
 ```
 
-The UI remains compatible with Protocol-7 and newer helpers while this source-update command rebuilds the local binary. Features introduced by newer protocols stay disabled until the matching helper is ready; existing contacts are not projected as an empty replacement identity. OmaQ keeps identity and contact data outside the plugin directory. A private identity-presence record and an encrypted-or-plain recovery copy matching committed `tox.save` state are maintained under `~/.local/state/omaq/`. If the secondary copy cannot be updated, OmaQ keeps the committed primary identity active, marks the older recovery copy as stale, and shows a degraded-recovery warning. A stale copy is never restored. If an established primary identity unexpectedly disappears, the helper restores only its current valid recovery copy or stops visibly without creating a new identity. A confirmed Import can repair that stopped state only when the bundle has the exact protected public fingerprint.
+The helper is detached, so this source-only command does not replace an already running process. Protocol-14 features remain disabled until a matching helper starts through a separately controlled lifecycle or a later group-free login. This branch intentionally does not provide an in-place helper updater; never terminate a helper while it owns an active private group. The UI remains compatible with Protocol-7 and newer helpers, and existing contacts are not projected as an empty replacement identity. OmaQ keeps identity and contact data outside the plugin directory. A private identity-presence record and an encrypted-or-plain recovery copy matching committed `tox.save` state are maintained under `~/.local/state/omaq/`. If the secondary copy cannot be updated, OmaQ keeps the committed primary identity active, marks the older recovery copy as stale, and shows a degraded-recovery warning. A stale copy is never restored. If an established primary identity unexpectedly disappears, the helper restores only its current valid recovery copy or stops visibly without creating a new identity. A confirmed Import can repair that stopped state only when the bundle has the exact protected public fingerprint.
 
 ## Uninstall
 
@@ -63,10 +63,10 @@ deletes a Git-managed plugin folder, including local modifications inside it; a
 plain plugin folder is moved to the exact hidden backup path printed by the
 wrapper. Data outside the plugin folder remains in these locations:
 
-- `~/.local/share/omaq/` — identity, contacts, groups, avatars, history, and Ratchet state
-- `~/.local/state/omaq/` — identity guard/recovery copy, preferences, unread state, receipts, surfaces, and recovery state
-- `~/Downloads/omaq/` — received files
-- `~/.local/state/omaq-deploy-backups/` — deployment backups, when present
+- `~/.local/share/omaq/`: identity, contacts, groups, avatars, history, Ratchet state, and OmaQ-managed custom sound copies
+- `~/.local/state/omaq/`: identity guard/recovery copy, preferences, unread state, receipts, surfaces, and recovery state
+- `~/Downloads/omaq/`: received files
+- `~/.local/state/omaq-deploy-backups/`: deployment backups, when present
 
 Keep retained data if you may reinstall OmaQ or still need the identity or
 history. You can permanently delete any retained directory later,

@@ -21,11 +21,13 @@
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
+#include "../helper/sound.h"
 #include "../helper/store.h"
 #include "../helper/surface.h"
 #include "../helper/state_archive.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1286,6 +1288,159 @@ static int write_private_test_file(const char *path, const char *value)
 	return write_test_file(path, value) != 0 || chmod(path, 0600) != 0 ? -1 : 0;
 }
 
+static int sound_id_ok_for_test(const char *id)
+{
+	if (!id || strlen(id) != OMAQ_SOUND_ID_HEX)
+		return 0;
+	for (size_t i = 0; i < OMAQ_SOUND_ID_HEX; i++)
+		if (!((id[i] >= '0' && id[i] <= '9') ||
+		      (id[i] >= 'a' && id[i] <= 'f')))
+			return 0;
+	return 1;
+}
+
+static int write_pcm_wav_test(const char *path, int trailing)
+{
+	static const unsigned char wav[] = {
+		'R', 'I', 'F', 'F', 40, 0, 0, 0, 'W', 'A', 'V', 'E',
+		'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0,
+		0x40, 0x1f, 0, 0, 0x40, 0x1f, 0, 0, 1, 0, 8, 0,
+		'd', 'a', 't', 'a', 4, 0, 0, 0, 0x80, 0x81, 0x82, 0x83
+	};
+	FILE *file = fopen(path, "wb");
+	int result = 0;
+
+	if (!file)
+		return -1;
+	if (fwrite(wav, 1, sizeof(wav), file) != sizeof(wav) ||
+	    (trailing && fwrite("trailing", 1, 8, file) != 8))
+		result = -1;
+	if (fclose(file) != 0 || chmod(path, 0600) != 0)
+		result = -1;
+	return result;
+}
+
+static void test_sound(void)
+{
+	char home[] = "/tmp/omaq-sound-XXXXXX";
+	char source[512], source_link[512], linked_copy[512], custom[512];
+	char invalid[512], polyglot[512], oversized[512];
+	char orphan_audio[512], orphan_name[512], empty_audio[512], tombstone[512];
+	struct stat source_status, copied_status;
+	omaq_sound imported = { 0 }, second = { 0 }, listed[OMAQ_SOUND_MAX];
+	int count;
+
+	if (!mkdtemp(home) ||
+	    snprintf(source, sizeof(source), "%s/alert.wav", home) >= (int)sizeof(source) ||
+	    snprintf(source_link, sizeof(source_link), "%s/alert-link.wav", home) >=
+		(int)sizeof(source_link) ||
+	    snprintf(linked_copy, sizeof(linked_copy), "%s/linked-copy", home) >=
+		(int)sizeof(linked_copy) ||
+	    snprintf(custom, sizeof(custom), "%s/custom-sounds", home) >= (int)sizeof(custom) ||
+	    snprintf(invalid, sizeof(invalid), "%s/not-a-sound.wav", home) >=
+		(int)sizeof(invalid) ||
+	    snprintf(polyglot, sizeof(polyglot), "%s/polyglot.wav", home) >=
+		(int)sizeof(polyglot) ||
+	    snprintf(oversized, sizeof(oversized), "%s/oversized.wav", home) >=
+		(int)sizeof(oversized) ||
+	    snprintf(orphan_audio, sizeof(orphan_audio),
+		     "%s/11111111111111111111111111111111.audio", custom) >=
+		(int)sizeof(orphan_audio) ||
+	    snprintf(orphan_name, sizeof(orphan_name),
+		     "%s/22222222222222222222222222222222.name", custom) >=
+		(int)sizeof(orphan_name) ||
+	    snprintf(empty_audio, sizeof(empty_audio),
+		     "%s/00000000000000000000000000000000.audio", custom) >=
+		(int)sizeof(empty_audio) ||
+	    snprintf(tombstone, sizeof(tombstone),
+		     "%s/33333333333333333333333333333333.audio.delete", custom) >=
+		(int)sizeof(tombstone) ||
+	    write_pcm_wav_test(source, 0) != 0 ||
+	    write_private_test_file(invalid, "not audio\n") != 0 ||
+	    write_pcm_wav_test(polyglot, 1) != 0) {
+		fail("sound fixture");
+		return;
+	}
+	if (omaq_sound_import(home, source, &imported) != 0 ||
+	    strcmp(imported.label, "alert") != 0 || !sound_id_ok_for_test(imported.id)) {
+		fail("sound import");
+		goto done;
+	}
+	if (stat(source, &source_status) != 0 || stat(imported.path, &copied_status) != 0 ||
+	    source_status.st_size != copied_status.st_size ||
+	    strcmp(source, imported.path) == 0) {
+		fail("sound managed copy");
+		goto done;
+	}
+	{
+		int oversized_fd = open(oversized, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		if (oversized_fd < 0 ||
+		    ftruncate(oversized_fd, (off_t)OMAQ_SOUND_FILE_MAX + 1) != 0 ||
+		    close(oversized_fd) != 0 ||
+		    omaq_sound_import(home, invalid, &second) == 0 ||
+		    omaq_sound_import(home, polyglot, &second) == 0 ||
+		    omaq_sound_import(home, oversized, &second) == 0)
+			fail("sound format and size rejection");
+	}
+	count = omaq_sound_list(home, listed, OMAQ_SOUND_MAX);
+	if (count != 1 || strcmp(listed[0].id, imported.id) != 0 ||
+	    strcmp(listed[0].path, imported.path) != 0)
+		fail("sound list");
+	if (write_private_test_file(orphan_audio, "orphan") != 0 ||
+	    write_private_test_file(orphan_name, "orphan\n") != 0 ||
+	    write_private_test_file(empty_audio, "") != 0 ||
+	    write_private_test_file(tombstone, "tombstone") != 0 ||
+	    omaq_sound_list(home, listed, OMAQ_SOUND_MAX) != 1 ||
+	    access(orphan_audio, F_OK) == 0 || access(orphan_name, F_OK) == 0 ||
+	    access(empty_audio, F_OK) == 0 || access(tombstone, F_OK) == 0)
+		fail("sound interrupted transaction recovery");
+	if (symlink(source, source_link) != 0 ||
+	    omaq_sound_import(home, source_link, &second) == 0)
+		fail("sound source symlink rejection");
+	unlink(source_link);
+	if (link(imported.path, linked_copy) != 0 ||
+	    omaq_sound_list(home, listed, OMAQ_SOUND_MAX) >= 0)
+		fail("sound managed hardlink rejection");
+	unlink(linked_copy);
+	if (omaq_sound_import(home, source, &second) != 0 ||
+	    omaq_sound_remove(home, "../not-a-managed-sound") == 0 ||
+	    omaq_sound_remove(home, imported.id) != 0 || access(source, F_OK) != 0 ||
+	    access(imported.path, F_OK) == 0 ||
+	    omaq_sound_list(home, listed, OMAQ_SOUND_MAX) != 1 ||
+	    strcmp(listed[0].id, second.id) != 0)
+		fail("sound scoped remove");
+	if (omaq_sound_remove(home, second.id) != 0 ||
+	    omaq_sound_list(home, listed, OMAQ_SOUND_MAX) != 0)
+		fail("sound remove final");
+done:
+	unlink(source_link);
+	unlink(linked_copy);
+	unlink(imported.path);
+	unlink(second.path);
+	if (sound_id_ok_for_test(imported.id)) {
+		char path[512];
+		if (snprintf(path, sizeof(path), "%s/%s.name", custom, imported.id) <
+		    (int)sizeof(path))
+			unlink(path);
+	}
+	if (sound_id_ok_for_test(second.id)) {
+		char path[512];
+		if (snprintf(path, sizeof(path), "%s/%s.name", custom, second.id) <
+		    (int)sizeof(path))
+			unlink(path);
+	}
+	unlink(source);
+	unlink(invalid);
+	unlink(polyglot);
+	unlink(oversized);
+	unlink(orphan_audio);
+	unlink(orphan_name);
+	unlink(empty_audio);
+	unlink(tombstone);
+	rmdir(custom);
+	rmdir(home);
+}
+
 static int make_direct_state_dirs(const char *home)
 {
 	char path[768];
@@ -1912,13 +2067,15 @@ static void test_surface(void)
 	memcpy(surface.monitor, "DP-1", 5);
 	surface.x = 12;
 	surface.y = 34;
+	surface.width = 460;
+	surface.height = 500;
 	surface.pinned = 0;
 	if (omaq_surface_set(dir, &surface) != 0)
 		fail("surface stable set");
 	if (omaq_surface_get(dir, direct, &got) != 0)
 		fail("surface stable get");
-	else if (got.x != 12 || got.y != 34 || strcmp(got.monitor, "DP-1") != 0 ||
-		 got.pinned)
+	else if (got.x != 12 || got.y != 34 || got.width != 460 ||
+		 got.height != 500 || strcmp(got.monitor, "DP-1") != 0 || got.pinned)
 		fail("surface stable fields");
 	surface.pinned = 1;
 	surface.x = 99;
@@ -2647,6 +2804,7 @@ int main(void)
 	test_group_id();
 	test_group_plan();
 	test_surface();
+	test_sound();
 	test_state_archive();
 	test_auto_open();
 	test_qr_path();

@@ -62,6 +62,12 @@ ShellRoot {
     function discardAttachmentStage(path, request) { return true }
   }
   Item {
+    TextEdit {
+      id: selectionFixture
+      text: ""
+      textFormat: TextEdit.RichText
+      readOnly: true
+    }
     Pages.ChatPage {
       id: page
       width: 420
@@ -96,9 +102,38 @@ ShellRoot {
       page.attachmentInspectionRequest = "stage-1"
       page.clipboardStageRequest = "stage-1"
       page.finishAttachmentInspection(true)
+      var selectionSource = "line one\nliteral \u2028 separator\nliteral \u2029 paragraph " +
+        "marker \u2063 and \u2064 repeated \u2063\u2063 plus \u2064\u2064"
+      selectionFixture.text = page.messageMarkup(selectionSource, "", false)
+      var renderedSelection = selectionFixture.getText(0, selectionFixture.length)
+      var markerPosition = renderedSelection.indexOf("\u2063\u2063")
+      selectionFixture.select(markerPosition, markerPosition + 1)
+      var exactPartialSelection = markerPosition >= 0 &&
+        page.clipboardSelectionText(selectionFixture, selectionSource, "") === "\u2063"
+      selectionFixture.select(markerPosition + 1, markerPosition + 2)
+      exactPartialSelection = exactPartialSelection &&
+        page.clipboardSelectionText(selectionFixture, selectionSource, "") === "\u2063"
+      selectionFixture.select(markerPosition, markerPosition + 2)
+      exactPartialSelection = exactPartialSelection &&
+        page.clipboardSelectionText(selectionFixture, selectionSource, "") === "\u2063"
+      var repeatedPosition = renderedSelection.indexOf("\u2063\u2063\u2063\u2063")
+      selectionFixture.select(repeatedPosition + 1, repeatedPosition + 3)
+      exactPartialSelection = exactPartialSelection && repeatedPosition >= 0 &&
+        page.clipboardSelectionText(selectionFixture, selectionSource, "") === "\u2063\u2063"
+      var repeatedParagraph = renderedSelection.indexOf("\u2064\u2064\u2064\u2064")
+      selectionFixture.select(repeatedParagraph + 1, repeatedParagraph + 3)
+      exactPartialSelection = exactPartialSelection && repeatedParagraph >= 0 &&
+        page.clipboardSelectionText(selectionFixture, selectionSource, "") === "\u2064\u2064"
+      selectionFixture.selectAll()
+      var copiedSelection = page.clipboardSelectionText(selectionFixture,
+        selectionSource, "")
+      var exactSelection = copiedSelection === selectionSource && exactPartialSelection
+      if (!exactSelection)
+        console.log("OMAQ_SELECTION_BAD", JSON.stringify(selectionFixture.selectedText),
+          JSON.stringify(copiedSelection), JSON.stringify(selectionSource))
       var preview = page.pendingImagePath === "/tmp/canonical.png" &&
         page.pendingImageStageRequest === "stage-1" && page.isSmileOnly("🥳") &&
-        !page.isSmileOnly("⌘") && page.smilePx === 56
+        !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection
       var sent = page.sendPendingImage() && fake.sent === 1 &&
         page.pendingImageSendRequest === "image-request-1" &&
         page.pendingImagePath === "/tmp/canonical.png"

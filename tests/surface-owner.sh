@@ -7,7 +7,7 @@ coordinator="$root/SurfaceCoordinator.qml"
 grep -q 'readonly property bool isSurfaceOwner: OmaQ.SurfaceCoordinator.owner === root' "$chat"
 grep -q 'root.ownershipTeardown = true' "$chat"
 grep -q 'if (root.isSurfaceOwner && !root.ownershipTeardown' "$chat"
-grep -q 'model: root.isSurfaceOwner && root.floatRulesReady ? root.openCards : \[\]' "$chat"
+grep -q 'model: root.isSurfaceOwner && root.floatRulesReady ? root.openCards : null' "$chat"
 python3 - "$chat" <<'PY'
 from pathlib import Path
 import sys
@@ -29,5 +29,5 @@ grep -q 'function unregisterHost(host)' "$coordinator"
 grep -q 'coordinator.selectOwner()' "$coordinator"
 grep -q 'property bool pendingDemoOpen: false' "$coordinator"
 grep -q 'property string pendingKey: ""' "$coordinator"
-grep -q 'host.acceptOpenRequest(conversation, expectedKey, name)' "$coordinator"
+grep -q 'host.acceptOpenRequest(conversation, expectedKey, name, monitor)' "$coordinator"
 echo "surface-owner: ok"

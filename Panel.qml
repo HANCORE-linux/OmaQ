@@ -53,6 +53,16 @@ BarWidget {
   property bool themeOpen: false
   property bool soundOpen: false
   property bool fontSizeOpen: false
+  property int soundPickerExitCode: -1
+  property bool soundPickerStreamDone: false
+  property string soundActionRequest: ""
+  property string soundAction: ""
+  property string soundFeedback: ""
+  property bool soundFeedbackError: false
+  property string soundRemoveId: ""
+  property string soundRemoveLabel: ""
+  property string soundRemovePath: ""
+  property bool soundRemoveConfirm: false
   property bool copied: false
   property bool safetyCodeVisible: false
   property bool safetyCopied: false
@@ -93,8 +103,8 @@ BarWidget {
   property bool identityPickerStreamDone: false
   property var systemColors: ["#101315", "#565d60", "#9fa5a9", "#d9dbdc", "#798186", "#aeaeae", "#707070", "#cbc2be"]
   property string systemThemeName: "System"
-  readonly property var notificationSounds: [
-    { id: "off", label: "Off" },
+  readonly property var bundledNotificationSounds: [
+    { id: "off", label: "Off", custom: false, path: "" },
     { id: "icq-message", label: "ICQ" },
     { id: "qq", label: "QQ" },
     { id: "wechat", label: "WeChat" },
@@ -109,8 +119,19 @@ BarWidget {
     { id: "pop", label: "Pop" },
     { id: "bell", label: "Bell" },
     { id: "soft", label: "Soft" },
-    { id: "knock", label: "Knock" }
+    { id: "knock", label: "Knock", custom: false, path: "" }
   ]
+  readonly property var notificationSounds: {
+    var revision = Number(omaq.soundTick || 0)
+    var result = root.bundledNotificationSounds.slice()
+    var custom = omaq.customSounds || []
+    for (var i = 0; revision >= 0 && i < custom.length; i++)
+      result.push({ id: "custom:" + String(custom[i].id || ""),
+        soundId: String(custom[i].id || ""),
+        label: String(custom[i].label || "Custom sound"),
+        path: String(custom[i].path || ""), custom: true })
+    return result
+  }
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color barForeground: bar && "barForeground" in bar ? bar.barForeground : foreground
   readonly property var shibumiTokens: bar && "visualTokens" in bar ? bar.visualTokens : null
@@ -211,6 +232,15 @@ BarWidget {
     "  exec kdialog --getopenfilename \"$HOME\" '*.png *.jpg *.jpeg *.webp|Images'\n" +
     "elif command -v yad >/dev/null 2>&1; then\n" +
     "  exec yad --file --title='Set avatar'\n" +
+    "fi\n" +
+    "exit 2\n"
+  readonly property string soundPickerScript:
+    "if command -v zenity >/dev/null 2>&1; then\n" +
+    "  exec zenity --file-selection --title='Import notification sound' --file-filter='PCM WAV audio | *.wav'\n" +
+    "elif command -v kdialog >/dev/null 2>&1; then\n" +
+    "  exec kdialog --getopenfilename \"$HOME\" '*.wav|PCM WAV audio'\n" +
+    "elif command -v yad >/dev/null 2>&1; then\n" +
+    "  exec yad --file --title='Import notification sound'\n" +
     "fi\n" +
     "exit 2\n"
   readonly property string identityPickerScript:
@@ -649,6 +679,15 @@ BarWidget {
     root.themeOpen = false
     root.soundOpen = false
     root.fontSizeOpen = false
+    root.soundRemoveConfirm = false
+    root.soundRemoveId = ""
+    root.soundRemoveLabel = ""
+    root.soundRemovePath = ""
+    if (root.soundActionRequest === "" && !soundPick.running) {
+      root.soundAction = ""
+      root.soundFeedback = ""
+      root.soundFeedbackError = false
+    }
     root.safetyCodeVisible = false
     root.safetyCopied = false
     root.copied = false
@@ -713,6 +752,15 @@ BarWidget {
     root.themeOpen = false
     root.soundOpen = false
     root.fontSizeOpen = false
+    root.soundRemoveConfirm = false
+    root.soundRemoveId = ""
+    root.soundRemoveLabel = ""
+    root.soundRemovePath = ""
+    if (root.soundActionRequest === "" && !soundPick.running) {
+      root.soundAction = ""
+      root.soundFeedback = ""
+      root.soundFeedbackError = false
+    }
     root.moreOpen = false
     root.moreSection = ""
     root.safetyCodeVisible = false
@@ -1563,12 +1611,113 @@ BarWidget {
     var value = root.settings && root.settings.sound
     return value ? String(value) : "icq-message"
   }
+  readonly property string notificationSoundPath:
+    String(root.settings && root.settings.soundCustomPath || "")
+  readonly property string notificationSoundId:
+    String(root.settings && root.settings.soundCustomId || "")
 
-  function setNotificationSound(name) {
-    var selectedSound = String(name || "off")
-    root.persistSettings({ sound: selectedSound })
+  function notificationSoundSelected(option) {
+    var sound = option || ({})
+    if (sound.custom)
+      return root.notificationSound === "custom" &&
+        ((root.notificationSoundId !== "" &&
+          root.notificationSoundId === String(sound.soundId || "")) ||
+         (root.notificationSoundId === "" &&
+          root.notificationSoundPath === String(sound.path || "")))
+    return root.notificationSound === String(sound.id || "")
+  }
+
+  function selectedCustomSoundOption() {
+    for (var i = 0; i < root.notificationSounds.length; i++)
+      if (root.notificationSounds[i].custom &&
+          root.notificationSoundSelected(root.notificationSounds[i]))
+        return root.notificationSounds[i]
+    return null
+  }
+
+  function setNotificationSound(option) {
+    var sound = option || ({})
+    var selectedSound = sound.custom ? "custom" : String(sound.id || "off")
+    var selectedPath = sound.custom ? String(sound.path || "") : ""
+    if (sound.custom && (selectedPath.charAt(0) !== "/" ||
+        !/^[0-9a-f]{32}$/.test(String(sound.soundId || ""))))
+      return
+    root.persistSettings({ sound: selectedSound, soundCustomPath: selectedPath,
+      soundCustomId: sound.custom ? String(sound.soundId || "") : "" })
+    root.soundRemoveConfirm = false
     if (chatSurface)
       chatSurface.previewSound(selectedSound)
+  }
+
+  function startSoundPicker() {
+    if (!omaq.supportsCustomSounds || soundPick.running ||
+        root.soundActionRequest !== "")
+      return
+    root.soundPickerExitCode = -1
+    root.soundPickerStreamDone = false
+    root.soundFeedback = "Choose a PCM WAV notification sound to import."
+    root.soundFeedbackError = false
+    soundPick.running = false
+    soundPick.running = true
+  }
+
+  function finishSoundPicker() {
+    if (root.soundPickerExitCode < 0 || !root.soundPickerStreamDone)
+      return
+    var code = root.soundPickerExitCode
+    var path = String(soundPickOutput.text || "").trim()
+    root.soundPickerExitCode = -1
+    root.soundPickerStreamDone = false
+    if (code !== 0 || path === "") {
+      root.soundFeedbackError = code !== 0 && code !== 1
+      root.soundFeedback = root.soundFeedbackError
+        ? "No supported file picker is available." : ""
+      return
+    }
+    if (path.charAt(0) !== "/" || path.length > 511) {
+      root.soundFeedbackError = true
+      root.soundFeedback = "Choose a valid absolute sound-file path."
+      return
+    }
+    var request = omaq.nextSoundRequest("import")
+    if (!omaq.importCustomSound(path, request)) {
+      root.soundFeedbackError = true
+      root.soundFeedback = "OmaQ is not ready to import that sound."
+      return
+    }
+    root.soundAction = "import"
+    root.soundActionRequest = request
+    root.soundFeedback = "Importing notification sound…"
+    root.soundFeedbackError = false
+    soundActionTimer.restart()
+  }
+
+  function requestSoundRemoval(option) {
+    var sound = option || ({})
+    if (!sound.custom || !/^[0-9a-f]{32}$/.test(String(sound.soundId || "")))
+      return
+    root.soundRemoveId = String(sound.soundId)
+    root.soundRemoveLabel = String(sound.label || "Custom sound")
+    root.soundRemovePath = String(sound.path || "")
+    root.soundRemoveConfirm = true
+  }
+
+  function confirmSoundRemoval() {
+    if (!root.soundRemoveConfirm || root.soundActionRequest !== "" ||
+        !/^[0-9a-f]{32}$/.test(root.soundRemoveId))
+      return
+    var request = omaq.nextSoundRequest("remove")
+    if (!omaq.removeCustomSound(root.soundRemoveId, request)) {
+      root.soundFeedbackError = true
+      root.soundFeedback = "OmaQ is not ready to remove that sound."
+      return
+    }
+    root.soundAction = "remove"
+    root.soundActionRequest = request
+    root.soundRemoveConfirm = false
+    root.soundFeedback = "Removing managed notification sound…"
+    root.soundFeedbackError = false
+    soundActionTimer.restart()
   }
 
   function toggleThemeSettings() {
@@ -1726,6 +1875,26 @@ BarWidget {
   }
 
   Process {
+    id: soundPick
+    running: false
+    command: ["bash", "-c", root.soundPickerScript, "omaq-sound-picker"]
+    stdout: StdioCollector {
+      id: soundPickOutput
+      waitForEnd: true
+      onStreamFinished: {
+        root.soundPickerStreamDone = true
+        root.finishSoundPicker()
+      }
+    }
+    onExited: function(code) {
+      root.soundPickerExitCode = code
+      root.finishSoundPicker()
+    }
+    onRunningChanged: if (!running && root.opened)
+      Qt.callLater(function() { if (root.opened) panelFocus.forceActiveFocus() })
+  }
+
+  Process {
     id: identityPick
     running: false
     command: ["bash", "-c", root.identityPickerScript,
@@ -1789,6 +1958,16 @@ BarWidget {
       root.nicknameFeedback = "Nickname update timed out. Try again."
       root.nicknameFeedbackError = true
       root.nicknameRequest = ""
+    }
+  }
+
+  Timer {
+    id: soundActionTimer
+    interval: 12000
+    repeat: false
+    onTriggered: {
+      root.soundFeedback = "The sound action is delayed. OmaQ will apply its correlated result after reconnecting."
+      root.soundFeedbackError = true
     }
   }
 
@@ -1870,6 +2049,60 @@ BarWidget {
     }
     function onGroupsChanged() {
       root.clearStaleGroupInviteSelection()
+    }
+    function onSoundTickChanged() {
+      if (root.soundActionRequest === "" ||
+          String(omaq.lastSoundRequest || "") !== root.soundActionRequest ||
+          String(omaq.lastSoundOperation || "") !== root.soundAction)
+        return
+      soundActionTimer.stop()
+      var action = root.soundAction
+      root.soundActionRequest = ""
+      root.soundAction = ""
+      if (!omaq.lastSoundSucceeded) {
+        root.soundFeedbackError = true
+        root.soundFeedback = omaq.lastSoundCode === "invalid_sound"
+          ? "Choose a valid PCM WAV file up to 8 MiB and 30 seconds."
+          : (omaq.lastSoundCode === "sound_remove_failed"
+            ? "The managed sound copy could not be removed." :
+              "Custom sound storage is unavailable.")
+        if (action === "remove" && root.soundRemoveId !== "")
+          root.soundRemoveConfirm = true
+        return
+      }
+      if (action === "import") {
+        var selectedId = String(omaq.lastSoundSelected || "")
+        var imported = null
+        var sounds = omaq.customSounds || []
+        for (var i = 0; i < sounds.length; i++)
+          if (String(sounds[i].id || "") === selectedId) {
+            imported = sounds[i]
+            break
+          }
+        if (!imported) {
+          root.soundFeedbackError = true
+          root.soundFeedback = "The imported sound could not be verified."
+          return
+        }
+        root.persistSettings({ sound: "custom",
+          soundCustomPath: String(imported.path || ""),
+          soundCustomId: String(imported.id || "") })
+        root.soundFeedback = "Imported " + String(imported.label || "custom sound") + "."
+        root.soundFeedbackError = false
+        if (chatSurface)
+          chatSurface.previewSound("custom")
+      } else {
+        if (root.notificationSound === "custom" &&
+            root.notificationSoundPath === root.soundRemovePath)
+          root.persistSettings({ sound: "off", soundCustomPath: "",
+            soundCustomId: "" })
+        root.soundFeedback = "Removed the OmaQ-managed sound copy."
+        root.soundFeedbackError = false
+        root.soundRemoveId = ""
+        root.soundRemoveLabel = ""
+        root.soundRemovePath = ""
+        root.soundRemoveConfirm = false
+      }
     }
     function onInviteUrlChanged() {
       root.inviteNow = Math.floor(Date.now() / 1000)
@@ -2181,11 +2414,12 @@ BarWidget {
     HyprlandFocusGrab {
       id: clickAwayGrab
       active: root.opened && popup.visible && !root.avatarRestorePending &&
-        root.identityPickerMode === "" && !avatarPick.running && !identityPick.running
+        root.identityPickerMode === "" && !avatarPick.running && !identityPick.running &&
+        !soundPick.running
       windows: [popup]
       onCleared: if (root.opened && !root.avatarRestorePending &&
                      root.identityPickerMode === "" &&
-                     !avatarPick.running && !identityPick.running)
+                     !avatarPick.running && !identityPick.running && !soundPick.running)
         root.close()
     }
 
@@ -2208,11 +2442,12 @@ BarWidget {
         observedActiveFocus = true
         return
       }
-      if (!observedActiveFocus || !root.opened || avatarPick.running || identityPick.running)
+      if (!observedActiveFocus || !root.opened || avatarPick.running ||
+          identityPick.running || soundPick.running)
         return
       Qt.callLater(function() {
         if (root.opened && !popup.backingWindowActive &&
-            !avatarPick.running && !identityPick.running)
+            !avatarPick.running && !identityPick.running && !soundPick.running)
           root.close()
       })
     }
@@ -3447,7 +3682,7 @@ BarWidget {
 
             Text {
               width: parent.width
-              text: "Changes message text only."
+              text: "Changes message text and text typed in the composer."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -3554,10 +3789,92 @@ BarWidget {
                   text: String(modelData.label)
                   fontSize: Style.font.bodySmall
                   horizontalPadding: Style.space(3)
-                  selected: root.notificationSound === String(modelData.id)
-                  onClicked: root.setNotificationSound(modelData.id)
+                  selected: root.notificationSoundSelected(modelData)
+                  tooltipText: modelData.custom
+                    ? "Use imported sound " + String(modelData.label) : ""
+                  onClicked: root.setNotificationSound(modelData)
                 }
               }
+            }
+
+            Text {
+              visible: !omaq.supportsCustomSounds
+              width: parent.width
+              text: "Update the local OmaQ helper to import or remove custom sounds."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            ActionButton {
+              width: parent.width
+              text: soundPick.running ? "Choosing sound…" : "Import sound"
+              iconText: "audio_file"
+              iconFontFamily: "Material Symbols Rounded"
+              enabled: omaq.supportsCustomSounds && !soundPick.running &&
+                root.soundActionRequest === ""
+              onClicked: root.startSoundPicker()
+            }
+
+            ActionButton {
+              visible: !!root.selectedCustomSoundOption() && !root.soundRemoveConfirm
+              width: parent.width
+              text: "Remove selected sound"
+              iconText: "delete"
+              iconFontFamily: "Material Symbols Rounded"
+              enabled: root.soundActionRequest === ""
+              onClicked: root.requestSoundRemoval(root.selectedCustomSoundOption())
+            }
+
+            Text {
+              visible: root.soundRemoveConfirm
+              width: parent.width
+              text: "Remove " + root.soundRemoveLabel +
+                " from OmaQ? The original source file stays unchanged."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            GridLayout {
+              visible: root.soundRemoveConfirm
+              width: parent.width
+              columns: 2
+              columnSpacing: root.btnGap
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Cancel"
+                enabled: root.soundActionRequest === ""
+                onClicked: {
+                  root.soundRemoveConfirm = false
+                  root.soundRemoveId = ""
+                  root.soundRemoveLabel = ""
+                  root.soundRemovePath = ""
+                }
+              }
+
+              ActionButton {
+                Layout.fillWidth: true
+                text: "Remove"
+                iconText: "delete"
+                iconFontFamily: "Material Symbols Rounded"
+                accent: root.urgent
+                enabled: root.soundActionRequest === ""
+                onClicked: root.confirmSoundRemoval()
+              }
+            }
+
+            Text {
+              visible: root.soundFeedback !== ""
+              width: parent.width
+              text: root.soundFeedback
+              color: root.soundFeedbackError ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 

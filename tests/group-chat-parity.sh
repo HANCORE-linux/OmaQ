@@ -29,6 +29,12 @@ invite = (
 )
 if not all(value in page for value in invite):
     raise SystemExit("group-chat-parity: GroupChat invite path diverged from Service validation")
+manage_start = page.index("function mayManageGroupMember(member)")
+manage_end = page.index("function selectGroupInviteFriend", manage_start)
+manage = page[manage_start:manage_end]
+if "!member.online" in manage or \
+        '(selfRole === "admin" && targetRole === "member")' not in manage:
+    raise SystemExit("group-chat-parity: admin removal remains online-only or role-blind")
 if "function groupInviteCandidateMatches(groupId, friendId, expectedKey)" not in service:
     raise SystemExit("group-chat-parity: authoritative invite candidate validation missing")
 if "return omaq.groupInviteCandidateMatches" not in panel:
@@ -86,6 +92,12 @@ if not all(value in service for value in projection):
 if r'\"instance\":\"%s\"%s,\"groups\":%d,\"members\":%d' not in helper or \
         'request_field' not in helper or 'strcmp(op->op, "group.list")' not in helper:
     raise SystemExit("group-chat-parity: helper group snapshot contract is incomplete")
+remove_start = helper.index('if (strcmp(op->op, "group.member.remove") == 0)')
+remove_end = helper.index('if (strcmp(op->op, "group.leave") == 0)', remove_start)
+remove = helper[remove_start:remove_end]
+if remove.index("omaq_role_may(self, ACT_KICK, victim)") > \
+        remove.index("group_binding_forget_member(gid, member_key)"):
+    raise SystemExit("group-chat-parity: denied moderation mutates binding state first")
 if "group_typing_magic" not in helper or "groupTypingActors" not in service or \
         "groupTypingNames" not in page:
     raise SystemExit("group-chat-parity: helper-bound GroupChat typing is missing")

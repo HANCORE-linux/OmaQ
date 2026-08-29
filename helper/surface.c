@@ -187,13 +187,29 @@ static int parse_line(const char *line, omaq_surface *surface)
 			bit = 1u << 4;
 			if ((fields & bit) || parse_bool(&p, &surface->pinned) != 0)
 				return -1;
+		} else if (strcmp(key, "width") == 0) {
+			bit = 1u << 5;
+			if ((fields & bit) || parse_int(&p, &surface->width) != 0)
+				return -1;
+		} else if (strcmp(key, "height") == 0) {
+			bit = 1u << 6;
+			if ((fields & bit) || parse_int(&p, &surface->height) != 0)
+				return -1;
 		} else {
 			return -1;
 		}
 		fields |= bit;
 		p = skip_ws(p);
 	}
-	if (*p++ != '}' || *skip_ws(p) != '\0' || fields != 0x1fu)
+	if (*p++ != '}' || *skip_ws(p) != '\0' ||
+	    (fields != 0x1fu && fields != 0x7fu))
+		return -1;
+	if (fields == 0x1fu) {
+		surface->width = 420;
+		surface->height = 420;
+	}
+	if (surface->width < 200 || surface->width > 4096 ||
+	    surface->height < 160 || surface->height > 4096)
 		return -1;
 	return stable_conversation_ok(surface->conversation) ||
 		legacy_direct_ok(surface->conversation) ? 0 : -1;
@@ -316,10 +332,13 @@ static int write_all_fd(int directory, const omaq_surface *surfaces, int count)
 				     sizeof(escaped_conversation)) != 0 ||
 		    omaq_json_escape(surfaces[i].monitor, escaped_monitor,
 				     sizeof(escaped_monitor)) != 0 ||
+		    surfaces[i].width < 200 || surfaces[i].width > 4096 ||
+		    surfaces[i].height < 160 || surfaces[i].height > 4096 ||
 		    fprintf(file,
-			    "{\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s}\n",
+			    "{\"conversation\":\"%s\",\"monitor\":\"%s\",\"x\":%d,\"y\":%d,\"pinned\":%s,\"width\":%d,\"height\":%d}\n",
 			    escaped_conversation, escaped_monitor, surfaces[i].x,
-			    surfaces[i].y, surfaces[i].pinned ? "true" : "false") < 0)
+			    surfaces[i].y, surfaces[i].pinned ? "true" : "false",
+			    surfaces[i].width, surfaces[i].height) < 0)
 			goto done;
 	}
 	if (fflush(file) != 0 || fsync(fileno(file)) != 0 || fclose(file) != 0) {
@@ -382,7 +401,9 @@ int omaq_surface_set(const char *state, const omaq_surface *surface)
 	omaq_surface surfaces[OMAQ_SURFACE_MAX];
 	int directory, count = 0, legacy = 0, found = 0, result = -1;
 
-	if (!surface || !stable_conversation_ok(surface->conversation))
+	if (!surface || !stable_conversation_ok(surface->conversation) ||
+	    surface->width < 200 || surface->width > 4096 ||
+	    surface->height < 160 || surface->height > 4096)
 		return -1;
 	directory = state_directory(state, 1);
 	if (directory < 0)
