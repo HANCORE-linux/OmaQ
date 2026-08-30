@@ -382,7 +382,7 @@ static int receipt_state_save(const omaq_receipt_outbox *outbox,
 	}
 	if (rename(tmp, path) != 0)
 		goto done;
-	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 	if (dirfd < 0 || fsync(dirfd) != 0)
 		goto done;
 	rc = 0;
@@ -446,7 +446,7 @@ int omaq_receipt_transaction_mark_committed(const char *state_dir)
 	fd = -1;
 	if (rename(tmp, path) != 0)
 		goto done;
-	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 	if (dirfd < 0 || fsync(dirfd) != 0)
 		goto done;
 	rc = 0;
@@ -493,7 +493,7 @@ int omaq_receipt_transaction_clear(const char *state_dir)
 	    (unlink(path) != 0 && errno != ENOENT) ||
 	    (unlink(committed) != 0 && errno != ENOENT))
 		return -1;
-	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	dirfd = open(state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 	if (dirfd < 0)
 		return -1;
 	if (fsync(dirfd) != 0) {

@@ -31,6 +31,8 @@ int omaq_store_update_group_receipt_changed(const char *home, const char *conv_i
 					    const char *actor_key);
 int omaq_store_message_exists(const char *home, const char *conv_id, const char *id);
 int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id);
+/* Drop process-local history indexes when the complete identity namespace moves. */
+void omaq_store_message_index_reset(void);
 /* Collect receipt-capable IDs among the newest `unread` incoming records. */
 int omaq_store_unread_receipt_ids(const char *home, const char *conv_id,
 				  unsigned unread, omaq_store_message_id **ids,

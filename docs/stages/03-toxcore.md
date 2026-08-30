@@ -37,4 +37,4 @@ No `tox_group_get_peer_list`. Peers are tracked from `group_peer_join` / `group_
 
 ## What `group.c` implements
 
-Only the gap: stable chat-ID conversation mapping, dissolve plan, peer table, and `role_may` before each Tox call. Promotions are explicit post-join `setRole` operations. No second role engine. Observer is never set.
+Only the gap: stable chat-ID conversation mapping, dissolve plan, peer table, and `role_may` before each Tox call. Promotions are explicit post-join `setRole` operations. No second role engine. OmaQ never sets Observer; if an unsupported native role is nevertheless observed, conversion fails closed instead of mapping it to member.

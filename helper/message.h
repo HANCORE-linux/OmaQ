@@ -2,7 +2,11 @@
 #define OMAQ_MESSAGE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
+#define OMAQ_MESSAGE_TEXT_MAX 1399u
+
+int omaq_message_text_bytes_ok(const uint8_t *text, size_t length);
 int omaq_message_id_new(char *out, size_t outn);
 int omaq_message_id_ok(const char *id);
 int omaq_message_id_reserved(const char *id);

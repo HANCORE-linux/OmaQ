@@ -19,6 +19,7 @@ typedef enum {
 	ACT_DISSOLVE
 } omaq_action;
 
+bool omaq_role_valid(omaq_role role);
 bool omaq_role_may(omaq_role actor, omaq_action what, omaq_role target);
 int omaq_role_parse(const char *s, omaq_role *out);
 int omaq_action_parse(const char *s, omaq_action *out);

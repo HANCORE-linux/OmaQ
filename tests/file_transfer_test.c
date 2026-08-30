@@ -257,6 +257,19 @@ int main(void)
 				if (omaq_file_can_cancel(21, outgoing_fnum))
 					fail("outgoing transfer cancel cleanup");
 			}
+			{
+				char link_path[512], fifo_path[512];
+				if (snprintf(link_path, sizeof(link_path), "%s/outgoing-link", home) >=
+					(int)sizeof(link_path) ||
+				    snprintf(fifo_path, sizeof(fifo_path), "%s/outgoing-fifo", home) >=
+					(int)sizeof(fifo_path) || symlink(dest, link_path) != 0 ||
+				    omaq_file_send_begin(NULL, 22, link_path, NULL) == 0 ||
+				    mkfifo(fifo_path, 0600) != 0 ||
+				    omaq_file_send_begin(NULL, 23, fifo_path, NULL) == 0)
+					fail("outgoing special file rejection");
+				unlink(link_path);
+				unlink(fifo_path);
+			}
 		}
 		unlink(dest);
 	}

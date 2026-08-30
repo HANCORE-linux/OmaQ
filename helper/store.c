@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -16,6 +17,9 @@
 #define UNREAD_STATE_BYTES (1024 * 1024)
 #define STORE_LINE_MAX 16384u
 #define GROUP_REACTION_ACTORS_MAX 32
+#define MESSAGE_INDEX_SLOTS 8
+#define MESSAGE_INDEX_BLOOM_BYTES (128u * 1024u)
+#define MESSAGE_INDEX_RECENT 256
 
 static int open_parent_dir(const char *path, char *base, size_t base_size)
 {
@@ -148,7 +152,7 @@ static int fsync_dir(const char *path)
 {
 	int fd, rc;
 
-	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 	if (fd < 0)
 		return -1;
 	rc = fsync(fd);
@@ -185,6 +189,193 @@ static int hist_file(const char *home, const char *conv_id, char *buf, size_t n)
 }
 
 static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap);
+static int history_line_id(const char *line, char *out, size_t outn);
+
+struct message_index_entry {
+	int used;
+	char home[PATH_MAX];
+	char conversation[OMAQ_CONV_ID_MAX];
+	uint8_t *bloom;
+	char recent[MESSAGE_INDEX_RECENT][97];
+	size_t recent_count;
+	size_t recent_next;
+	uint64_t age;
+};
+
+static struct message_index_entry message_indexes[MESSAGE_INDEX_SLOTS];
+static uint64_t message_index_age;
+static uint64_t message_index_seed[2];
+static int message_index_seeded;
+
+static int message_index_seed_init(void)
+{
+	size_t offset = 0;
+
+	if (message_index_seeded)
+		return 0;
+	while (offset < sizeof(message_index_seed)) {
+		ssize_t got = getrandom((uint8_t *)message_index_seed + offset,
+					sizeof(message_index_seed) - offset, 0);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0)
+			return -1;
+		offset += (size_t)got;
+	}
+	message_index_seeded = 1;
+	return 0;
+}
+
+static uint64_t message_index_hash(const char *id, uint64_t seed)
+{
+	uint64_t hash = seed ^ UINT64_C(1469598103934665603);
+
+	for (const unsigned char *p = (const unsigned char *)id; *p; p++) {
+		hash ^= *p;
+		hash *= UINT64_C(1099511628211);
+	}
+	hash ^= hash >> 33;
+	hash *= UINT64_C(0xff51afd7ed558ccd);
+	hash ^= hash >> 33;
+	return hash;
+}
+
+static void message_index_note(struct message_index_entry *entry, const char *id)
+{
+	uint64_t first, step;
+
+	if (!entry || !entry->bloom || !id || !id[0])
+		return;
+	first = message_index_hash(id, message_index_seed[0]);
+	step = message_index_hash(id, message_index_seed[1]) | UINT64_C(1);
+	for (unsigned int i = 0; i < 4; i++) {
+		size_t bit = (size_t)((first + i * step) %
+				      (MESSAGE_INDEX_BLOOM_BYTES * 8u));
+		entry->bloom[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+	}
+	for (size_t i = 0; i < entry->recent_count; i++)
+		if (strcmp(entry->recent[i], id) == 0)
+			return;
+	snprintf(entry->recent[entry->recent_next],
+		 sizeof(entry->recent[entry->recent_next]), "%s", id);
+	entry->recent_next = (entry->recent_next + 1u) % MESSAGE_INDEX_RECENT;
+	if (entry->recent_count < MESSAGE_INDEX_RECENT)
+		entry->recent_count++;
+}
+
+static int message_index_maybe_used(const struct message_index_entry *entry,
+				    const char *id)
+{
+	uint64_t first, step;
+
+	for (size_t i = 0; i < entry->recent_count; i++)
+		if (strcmp(entry->recent[i], id) == 0)
+			return 2;
+	first = message_index_hash(id, message_index_seed[0]);
+	step = message_index_hash(id, message_index_seed[1]) | UINT64_C(1);
+	for (unsigned int i = 0; i < 4; i++) {
+		size_t bit = (size_t)((first + i * step) %
+				      (MESSAGE_INDEX_BLOOM_BYTES * 8u));
+		if ((entry->bloom[bit / 8u] & (uint8_t)(1u << (bit % 8u))) == 0)
+			return 0;
+	}
+	return 1;
+}
+
+static int message_index_load_file(struct message_index_entry *entry,
+				   const char *path)
+{
+	FILE *file;
+	char line[STORE_LINE_MAX + 2], id[97];
+
+	file = safe_fopen(path, "r");
+	if (!file)
+		return errno == ENOENT ? 0 : -1;
+	while (fgets(line, sizeof(line), file)) {
+		size_t length = strlen(line);
+		if (length == 0 || length > STORE_LINE_MAX || line[length - 1] != '\n') {
+			fclose(file);
+			return -1;
+		}
+		line[--length] = '\0';
+		if (omaq_json_validate(line) != 0 ||
+		    history_line_id(line, id, sizeof(id)) != 0) {
+			fclose(file);
+			return -1;
+		}
+		message_index_note(entry, id);
+	}
+	{
+		int failed = ferror(file);
+		if (fclose(file) != 0)
+			failed = 1;
+		return failed ? -1 : 0;
+	}
+}
+
+static void message_index_reset(struct message_index_entry *entry)
+{
+	if (!entry)
+		return;
+	free(entry->bloom);
+	memset(entry, 0, sizeof(*entry));
+}
+
+void omaq_store_message_index_reset(void)
+{
+	for (size_t i = 0; i < MESSAGE_INDEX_SLOTS; i++)
+		message_index_reset(&message_indexes[i]);
+	message_index_age = 0;
+}
+
+static void message_index_invalidate(const char *home, const char *conversation)
+{
+	for (size_t i = 0; i < MESSAGE_INDEX_SLOTS; i++)
+		if (message_indexes[i].used && strcmp(message_indexes[i].home, home) == 0 &&
+		    strcmp(message_indexes[i].conversation, conversation) == 0) {
+			message_index_reset(&message_indexes[i]);
+			return;
+		}
+}
+
+static struct message_index_entry *message_index_get(const char *home,
+						      const char *conversation)
+{
+	struct message_index_entry *entry = NULL;
+	char path[576], rotated[580];
+
+	for (size_t i = 0; i < MESSAGE_INDEX_SLOTS; i++) {
+		if (message_indexes[i].used && strcmp(message_indexes[i].home, home) == 0 &&
+		    strcmp(message_indexes[i].conversation, conversation) == 0) {
+			message_indexes[i].age = ++message_index_age;
+			return &message_indexes[i];
+		}
+		if (!entry || !message_indexes[i].used ||
+		    (entry->used && message_indexes[i].age < entry->age))
+			entry = &message_indexes[i];
+	}
+	if (!entry || message_index_seed_init() != 0 ||
+	    hist_file(home, conversation, path, sizeof(path)) != 0 ||
+	    snprintf(rotated, sizeof(rotated), "%s.1", path) >= (int)sizeof(rotated))
+		return NULL;
+	message_index_reset(entry);
+	entry->bloom = calloc(1, MESSAGE_INDEX_BLOOM_BYTES);
+	if (!entry->bloom || snprintf(entry->home, sizeof(entry->home), "%s", home) >=
+		(int)sizeof(entry->home) ||
+	    snprintf(entry->conversation, sizeof(entry->conversation), "%s", conversation) >=
+		(int)sizeof(entry->conversation)) {
+		message_index_reset(entry);
+		return NULL;
+	}
+	entry->used = 1;
+	entry->age = ++message_index_age;
+	if (message_index_load_file(entry, rotated) != 0 ||
+	    message_index_load_file(entry, path) != 0) {
+		message_index_reset(entry);
+		return NULL;
+	}
+	return entry;
+}
 
 static int unread_file(const char *state_dir, char *out, size_t outn)
 {
@@ -662,17 +853,28 @@ int omaq_store_message_exists(const char *home, const char *conv_id, const char 
 
 int omaq_store_message_id_used(const char *home, const char *conv_id, const char *id)
 {
+	struct message_index_entry *index;
 	char path[576], rot[580];
-	int result;
+	int maybe, result;
 
 	if (!home || !conv_id || !id || !id[0] ||
 	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
 	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 		return -1;
+	index = message_index_get(home, conv_id);
+	if (index) {
+		maybe = message_index_maybe_used(index, id);
+		if (maybe == 0)
+			return 0;
+		if (maybe == 2)
+			return 1;
+	}
 	result = file_message_id(path, id, 1);
-	if (result != 0)
-		return result;
-	return file_message_id(rot, id, 1);
+	if (result == 0)
+		result = file_message_id(rot, id, 1);
+	if (result > 0 && index)
+		message_index_note(index, id);
+	return result;
 }
 
 int omaq_store_update_reaction(const char *home, const char *conv_id, const char *id,
@@ -956,6 +1158,7 @@ int omaq_store_clear(const char *home, const char *conv_id)
 	    hist_file(home, conv_id, path, sizeof(path)) != 0 ||
 	    snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 		return -1;
+	message_index_invalidate(home, conv_id);
 	if (safe_unlink(path) != 0 && errno != ENOENT)
 		rc = -1;
 	if (safe_unlink(rot) != 0 && errno != ENOENT)
@@ -987,6 +1190,7 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 	if (safe_stat(path, &st) == 0 && st.st_size >= ROTATE_BYTES) {
 		if (snprintf(rot, sizeof(rot), "%s.1", path) >= (int)sizeof(rot))
 			return -1;
+		message_index_invalidate(home, conv_id);
 		if (safe_rename(path, rot) != 0)
 			return -1;
 	}
@@ -1001,7 +1205,16 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 		fclose(f);
 		return -1;
 	}
-	return fclose(f) == 0 ? 0 : -1;
+	if (fclose(f) != 0)
+		return -1;
+	{
+		char id[97];
+		struct message_index_entry *index;
+		if (history_line_id(line, id, sizeof(id)) == 0 &&
+		    (index = message_index_get(home, conv_id)) != NULL)
+			message_index_note(index, id);
+	}
+	return 0;
 }
 
 static void reset_read_lines(char ***lines, size_t *n, size_t *cap)

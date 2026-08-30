@@ -331,7 +331,8 @@ static FILE *open_download_file(const char *dir, const char *name,
 		}
 		if (wr < 0 || (size_t)wr >= destn)
 			return NULL;
-		fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0600);
+		fd = open(dest, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+			  0600);
 		if (fd >= 0) {
 			FILE *fp = fdopen(fd, "wb");
 			if (fp)
@@ -386,23 +387,45 @@ void omaq_file_offer_drop(uint32_t friend, uint32_t fnum)
 		memset(&of[i], 0, sizeof(of[i]));
 }
 
+static FILE *open_send_regular(const char *path, uint64_t maximum, uint64_t *size)
+{
+	struct stat status;
+	FILE *file;
+	int fd;
+
+	if (!path || !size)
+		return NULL;
+	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+	    status.st_size <= 0 || (uint64_t)status.st_size > maximum) {
+		close(fd);
+		return NULL;
+	}
+	file = fdopen(fd, "rb");
+	if (!file) {
+		close(fd);
+		return NULL;
+	}
+	*size = (uint64_t)status.st_size;
+	return file;
+}
+
 int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, uint32_t *fnum_out)
 {
-	struct stat st;
 	char name[OMAQ_FILE_NAME_MAX + 1];
+	uint64_t file_size;
 	uint32_t fnum;
 	int i;
 	FILE *fp;
 
 	if (!omaq_file_path_ok(path) || omaq_file_basename(path, name, sizeof(name)) != 0)
 		return -1;
-	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-	    (uint64_t)st.st_size > OMAQ_FILE_MAX)
-		return -1;
-	fp = fopen(path, "rb");
+	fp = open_send_regular(path, OMAQ_FILE_MAX, &file_size);
 	if (!fp)
 		return -1;
-	if (omaq_tox_file_send(t, friend, (uint64_t)st.st_size, name, &fnum) != 0) {
+	if (omaq_tox_file_send(t, friend, file_size, name, &fnum) != 0) {
 		fclose(fp);
 		return -1;
 	}
@@ -415,7 +438,7 @@ int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, 
 	xf[i].sending = 1;
 	xf[i].avatar = 0;
 	xf[i].fp = fp;
-	xf[i].size = (uint64_t)st.st_size;
+	xf[i].size = file_size;
 	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", path) >= (int)sizeof(xf[i].path)) {
 		(void)omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL);
 		xf_drop(i);
@@ -429,20 +452,17 @@ int omaq_file_send_begin(struct omaq_tox *t, uint32_t friend, const char *path, 
 int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char *path,
 				const uint8_t file_id[32], uint32_t *fnum_out)
 {
-	struct stat st;
+	uint64_t file_size;
 	uint32_t fnum;
 	int i;
 	FILE *fp;
 
 	if (!omaq_file_path_ok(path) || !file_id)
 		return -1;
-	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-	    (uint64_t)st.st_size > OMAQ_AVATAR_MAX)
-		return -1;
-	fp = fopen(path, "rb");
+	fp = open_send_regular(path, OMAQ_AVATAR_MAX, &file_size);
 	if (!fp)
 		return -1;
-	if (omaq_tox_file_send_avatar(t, friend, (uint64_t)st.st_size, file_id, &fnum) != 0) {
+	if (omaq_tox_file_send_avatar(t, friend, file_size, file_id, &fnum) != 0) {
 		fclose(fp);
 		return -1;
 	}
@@ -455,7 +475,7 @@ int omaq_file_send_avatar_begin(struct omaq_tox *t, uint32_t friend, const char 
 	xf[i].sending = 1;
 	xf[i].avatar = 1;
 	xf[i].fp = fp;
-	xf[i].size = (uint64_t)st.st_size;
+	xf[i].size = file_size;
 	if (snprintf(xf[i].path, sizeof(xf[i].path), "%s", path) >= (int)sizeof(xf[i].path)) {
 		(void)omaq_tox_file_control(t, friend, fnum, OMAQ_TOX_FILE_CANCEL);
 		xf_drop(i);

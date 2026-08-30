@@ -1,4 +1,5 @@
 #include "group.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -39,64 +40,28 @@ int omaq_group_take_save_error(void)
 	return error;
 }
 
-static int utf8_text_ok(const char *value, size_t len, size_t max_len,
-			int reject_controls)
-{
-	const unsigned char *text = (const unsigned char *)value;
-	size_t i = 0;
-
-	if (!value || len == 0 || len > max_len)
-		return 0;
-	while (i < len) {
-		unsigned char c = text[i++];
-		if (c == 0 || (reject_controls && (c < 0x20 || c == 0x7f)))
-			return 0;
-		if (c < 0x80)
-			continue;
-		if (c >= 0xc2 && c <= 0xdf) {
-			if (i >= len || text[i] < 0x80 || text[i] > 0xbf ||
-			    (reject_controls && c == 0xc2 && text[i] <= 0x9f))
-				return 0;
-			i++;
-			continue;
-		}
-		if (c >= 0xe0 && c <= 0xef) {
-			if (i + 1 >= len || text[i] < 0x80 || text[i] > 0xbf ||
-			    text[i + 1] < 0x80 || text[i + 1] > 0xbf ||
-			    (c == 0xe0 && text[i] < 0xa0) ||
-			    (c == 0xed && text[i] > 0x9f))
-				return 0;
-			i += 2;
-			continue;
-		}
-		if (c >= 0xf0 && c <= 0xf4) {
-			if (i + 2 >= len || text[i] < 0x80 || text[i] > 0xbf ||
-			    text[i + 1] < 0x80 || text[i + 1] > 0xbf ||
-			    text[i + 2] < 0x80 || text[i + 2] > 0xbf ||
-			    (c == 0xf0 && text[i] < 0x90) ||
-			    (c == 0xf4 && text[i] > 0x8f))
-				return 0;
-			i += 3;
-			continue;
-		}
-		return 0;
-	}
-	return 1;
-}
-
 int omaq_group_title_bytes_ok(const char *title, size_t len)
 {
-	return utf8_text_ok(title, len, OMAQ_GROUP_TITLE_MAX, 1);
+	return title && len > 0 && len <= OMAQ_GROUP_TITLE_MAX &&
+		omaq_utf8_bytes_ok((const uint8_t *)title, len, 1);
 }
 
 int omaq_group_member_name_bytes_ok(const char *name, size_t len)
 {
-	return utf8_text_ok(name, len, OMAQ_GROUP_MEMBER_NAME_MAX, 1);
+	return name && len > 0 && len <= OMAQ_GROUP_MEMBER_NAME_MAX &&
+		omaq_utf8_bytes_ok((const uint8_t *)name, len, 1);
 }
 
 int omaq_group_message_bytes_ok(const uint8_t *message, size_t len)
 {
-	return utf8_text_ok((const char *)message, len, OMAQ_GROUP_MESSAGE_MAX, 0);
+	if (!message || len == 0 || len > OMAQ_GROUP_MESSAGE_MAX ||
+	    !omaq_utf8_bytes_ok(message, len, 0))
+		return 0;
+	for (size_t i = 0; i < len; i++)
+		if (message[i] < 0x20 && message[i] != '\n' && message[i] != '\r' &&
+		    message[i] != '\t')
+			return 0;
+	return 1;
 }
 
 int omaq_group_title_ok(const char *title)
@@ -220,7 +185,8 @@ int omaq_group_note_member(uint32_t gnum, uint32_t peer, const char *key,
 	size_t key_len = key ? strlen(key) : 0;
 	size_t name_len = name ? strlen(name) : 0;
 
-	if (i < 0 || key_len > OMAQ_GROUP_MEMBER_KEY_HEX ||
+	if (i < 0 || !omaq_role_valid(role) ||
+	    key_len > OMAQ_GROUP_MEMBER_KEY_HEX ||
 	    name_len > OMAQ_GROUP_MEMBER_NAME_MAX ||
 	    (name_len > 0 && !omaq_group_member_name_bytes_ok(name, name_len)))
 		return -1;

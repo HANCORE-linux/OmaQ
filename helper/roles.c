@@ -69,8 +69,16 @@ int omaq_action_parse(const char *s, omaq_action *out)
 	return -1;
 }
 
+bool omaq_role_valid(omaq_role role)
+{
+	return role == ROLE_MEMBER || role == ROLE_ADMIN || role == ROLE_OWNER;
+}
+
 bool omaq_role_may(omaq_role actor, omaq_action what, omaq_role target)
 {
+	if (!omaq_role_valid(actor) || !omaq_role_valid(target) ||
+	    what < ACT_READ || what > ACT_DISSOLVE)
+		return false;
 	switch (what) {
 	case ACT_READ:
 	case ACT_WRITE:

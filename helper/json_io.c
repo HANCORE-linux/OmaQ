@@ -1,4 +1,5 @@
 #include "json_io.h"
+#include "text.h"
 
 #include <ctype.h>
 #include <string.h>
@@ -46,6 +47,8 @@ static int parse_string(const char **pp, char *dst, size_t dstlen)
 	if (*p != '"')
 		return -1;
 	dst[n] = '\0';
+	if (!omaq_utf8_bytes_ok((const uint8_t *)dst, n, 0))
+		return -1;
 	*pp = p + 1;
 	return 0;
 }

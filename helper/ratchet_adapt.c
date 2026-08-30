@@ -2198,7 +2198,8 @@ int omaq_ratchet_encrypt(struct omaq_ratchet *r, const char *peer,
 }
 
 int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
-			 const char *wire, char *out, size_t n)
+			 const char *wire, char *out, size_t n,
+			 size_t *out_length)
 {
 	session_cipher *c = NULL;
 	signal_protocol_address addr;
@@ -2207,7 +2208,10 @@ int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
 	signal_buffer *plain = NULL;
 	int rc = -1;
 
-	if (!r || r->failed || !peer || !wire || !out || strncmp(wire, "OQR1", 4) != 0)
+	if (out_length)
+		*out_length = 0;
+	if (!r || r->failed || !peer || !wire || !out || !out_length ||
+	    strncmp(wire, "OQR1", 4) != 0)
 		return -1;
 	hexn = strlen(wire + 4);
 	if (hexn < 4 || hexn % 2 != 0)
@@ -2264,8 +2268,9 @@ int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
 		signal_buffer_bzero_free(plain);
 		return -1;
 	}
-	memcpy(out, signal_buffer_data(plain), signal_buffer_len(plain));
-	out[signal_buffer_len(plain)] = '\0';
+	*out_length = signal_buffer_len(plain);
+	memcpy(out, signal_buffer_data(plain), *out_length);
+	out[*out_length] = '\0';
 	signal_buffer_bzero_free(plain);
 	return 0;
 }

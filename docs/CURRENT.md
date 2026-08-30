@@ -5,10 +5,10 @@ This is the current product snapshot. It intentionally contains no historical ph
 ## Snapshot
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
-- **Branch:** isolated `security-qml-plaintext` candidate based on current `origin/main`
+- **Branch:** temporary integration candidate combining approved commits `aaf2f1d` and `381e4dc` from exact base `b560fd0`
 - **Manifest version:** `0.8.1-beta.1`, Protocol 14
-- **Source:** current product source plus an unreleased QML privacy candidate, independent from the paused package-release work
-- **Live plugins:** matching 68-file Protocol-14 product payloads on machine1 and machine2; this QML privacy candidate is not deployed
+- **Source:** current product source plus unreleased QML privacy and helper-security candidates, independent from the paused package-release work
+- **Live plugins:** matching 68-file Protocol-14 product payloads on machine1 and machine2; neither security candidate is deployed
 - **Live helper:** SHA-256 `942fbfc0344b3bbb3318f53b5bd72ec1fd9b3f98299b431006005989249a736f` on both machines
 - **AUR:** paused; no registration or upload
 - **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 35 retained neutral QML captures; the revised sound picker is documented textually until a fresh neutral capture is available
@@ -33,6 +33,10 @@ This is the current product snapshot. It intentionally contains no historical ph
 - Helper IPC accepts one exact 29-key vocabulary and rejects unknown or duplicate object keys before dispatch. Instance-bound probe and shutdown operations accept only `op`, `id`, and `request`; Protocol-14 surface geometry retains the allowlisted `width` and `height` fields. Uninstall uses only an atomic group-free shutdown request and aborts without signaling when native or registered groups, uncertain cleanup state, overlapping startup, incomplete runtime identity, or an unverifiable acknowledgement make removal unsafe.
 - QML renders names, filenames, system rows, search results, tooltips, and other non-message strings as explicit plain text. Only the escaped chat header and escaped Markdown message body may use rich text; remote values never reach an external shell label, icon, or tooltip that can auto-promote markup. The source gate pins the exact reviewed QML source set, uses Qt's parser output to check object-level properties and inherited controls, forbids AutoText, dynamic QML, indirect/reflective/computed text writes, compound assignments, and unreviewed text mutation methods, executes the actual message renderer against hostile tags, and uses Qt HTTP fixtures to prove both the raw RichText hazard and that escaped OmaQ output performs no resource request.
 - Direct call audio uses bounded in-memory PCM rings and the local PulseAudio client API; no audio is persisted.
+- Signal support is a compile-time invariant whenever Tox support is enabled. Incoming DirectChat plaintext is admitted only with the exact decrypted byte length, strict scalar UTF-8, no embedded NUL, and message-safe controls; GroupChat uses the same text boundary with its native packet length. Public IPC string fields reject malformed UTF-8 before dispatch.
+- Ordinary incoming direct and group messages share burst and sustained process-wide budgets and have additional stable-sender budgets before replay lookup, history append, unread persistence, or event fan-out. A bounded keyed Bloom index avoids repeated full-history scans while exact recent IDs and an on-disk fallback preserve replay decisions.
+- Group-file offers are bounded per stable group/member and globally. An offer holds only sender-fair in-memory pending state; durable transfer-ID reservation and history checks occur after explicit acceptance. The durable replay ledger is versioned, bounded to 4,096 IDs, atomically replaced, and compacts legacy state during migration.
+- The product role domain contains only member, admin, and owner. Invalid or unsupported native roles fail closed instead of being mapped to member.
 
 ## Open points
 
@@ -72,7 +76,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The group-member menu keeps its presence row informational without applying disabled text colors; online members use the same filled green dot as the member strip.
 - GroupChat Add member now uses an explicit selected-contact action and the same Service-level candidate, stable-key, capacity, request, and helper-result validation as the panel path. A raced member-list update clears the stale selection.
 - GroupChat exposes the Direct composer’s file picker, image selection, clipboard paste, drag-and-drop, canonical staging, 56×56 preview, accept/decline, cancel, history bubble, playback, and path actions. VoiceCall remains Direct-only.
-- Since Tox NGC has no native file primitive, the helper broadcasts only a versioned bounded offer and sends at most 8 MiB privately through ordered lossless NGC packets to each member recorded online at offer time who accepts. Transfer state is bound to the stable group ID, sender member key, durably reserved random transfer ID, exact size, and SHA-256 digest. Application ACK/FAIL distinguishes confirmed, failed, partial, and unknown delivery; sender history is written only while the original source path, inode, size, and content still match. Malformed frames, sender/peer reuse, path errors, hash mismatches, stalls, and unsupported images fail closed; older helpers ignore the envelope.
+- Since Tox NGC has no native file primitive, the helper broadcasts only a versioned bounded offer and sends at most 8 MiB privately through ordered lossless NGC packets to each member recorded online at offer time who accepts. Transfer state is bound to the stable group ID, sender member key, durably reserved random transfer ID, exact size, and SHA-256 digest. Incoming offers consume sender and global budgets, occupy only sender-fair pending slots, and do not reserve durable IDs or scan history before explicit acceptance. The accepted-ID ledger is bounded and atomically compacted. Application ACK/FAIL distinguishes confirmed, failed, partial, and unknown delivery; sender history is written only while the original source path, inode, size, and content still match. Malformed frames, sender/peer reuse, path errors, hash mismatches, stalls, and unsupported images fail closed; older helpers ignore the envelope.
 
 ### Committed and deployed Protocol-13 GroupChat remediation
 
@@ -93,6 +97,13 @@ The source candidate implements the seven requested changes independently from t
 - DirectChat and GroupChat message text uses pointer/keyboard selection. A compact Copy action appears only for a non-empty selection and copies that exact selection.
 
 
+### Unreleased helper-security candidate
+
+- Concurrent native invite callbacks use one first-writer pending claim, so a later request cannot overwrite the public key or request key belonging to the invitation shown to the user.
+- `HAVE_TOX` without `HAVE_SIGNAL` is rejected at compile time, including the native group-admin test helper.
+- Incoming ordinary messages are byte-validated and rate-limited by stable sender plus a global budget before durable work. Duplicate lookup uses one bounded in-memory index path rather than two full history scans, and unread increments no longer clone the full conversation map before each durable snapshot.
+- Outgoing file reads, avatar hashing, state-directory syncs, and history access use descriptor-based no-follow checks. Native and pure-policy role conversion rejects values outside the three-role product domain.
+
 ### Existing validation gaps
 
 1. A complete 1:1 test over separate networks is still missing, including presence, typing, delivery, unread badge, and the `New messages` divider.
@@ -102,11 +113,13 @@ The source candidate implements the seven requested changes independently from t
 
 ## Latest validation
 
-The isolated QML privacy candidate passes clean `verify-0`, including Qt-parser canonicalization, the exact reviewed QML source-set gate, adversarial inherited-control and imperative-mutation fixtures, the actual OmaQ message renderer with hostile tags, and HTTP controls for raw RichText, inherited GroupBox text, compound assignment, and TextEdit insertion. Escaped OmaQ message and reply markup performs no HTTP resource request. Final independent QML and application-security review reports no findings. Package construction, release evidence, and the source updater remain outside this branch. No visible native Wayland validation is claimed.
+The isolated QML privacy candidate passes clean `verify-0`, including Qt-parser canonicalization, the exact reviewed QML source-set gate, adversarial inherited-control and imperative-mutation fixtures, the actual OmaQ message renderer with hostile tags, and HTTP controls for raw RichText, inherited GroupBox text, compound assignment, and TextEdit insertion. Escaped OmaQ message and reply markup performs no HTTP resource request. Final independent QML and application-security review reports no findings.
+
+The isolated helper-security candidate passes `verify-0`, the calibrated two-home `verify-1-tox`, `verify-2`, native group-admin `verify-3`, and Ratchet `verify-8`, including sanitizer-backed policy/store tests, the Signal prekey restart test, file special-path rejection, IPC regression, GroupChat parity, and protocol compatibility. Final independent helper-security review reports no findings. The combined QML/helper candidate passes a clean integrated `make test` plus a separate `python3 tests/qml_plaintext_test.py` run. Package construction, release evidence, and the source updater remain outside this branch. No visible native Wayland validation is claimed.
 
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-Machine1 and machine2 run the same 68-file Protocol-14 product payload and helper hash. The unreleased QML privacy candidate has not been synchronized to either machine. No private identity, Ratchet, group registry, or history data was synchronized between machines.
+Machine1 and machine2 run the same 68-file Protocol-14 product payload and helper hash. Neither unreleased security candidate has been synchronized to either machine. No private identity, Ratchet, group registry, or history data was synchronized between machines.
 
 The illustrated guide uses 35 cropped original views from Machine2 QML components. The outdated sound-picker capture was removed and its revised choices are documented textually until a fresh neutral capture is available. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
 
@@ -114,7 +127,7 @@ The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclu
 
 ## Next order
 
-1. Prepare separate QML and helper commit proposals and obtain explicit approval before either commit.
+1. Prepare a sequential two-commit integration branch that preserves the reviewed QML/helper split and this tested conflict resolution; obtain explicit approval before creating its conflict-resolved helper commit.
 2. Keep push, pull request, merge, live synchronization, and AUR publication as separately approved delivery phases.
 3. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
 4. Investigate the remaining Panel QML toolchain failure.
