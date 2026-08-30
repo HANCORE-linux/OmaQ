@@ -22,7 +22,8 @@ mkdir -p -- "$RULE_DIR" || exit 1
 chmod 700 -- "$RULE_DIR" 2>/dev/null || exit 1
 
 LUA=0
-if hyprctl eval 'return true' >/dev/null 2>&1; then
+if [[ "$MODE" != "observe-title" && "$MODE" != "list-geometry" ]] &&
+   hyprctl eval 'return true' >/dev/null 2>&1; then
   LUA=1
 fi
 INSTANCE_KEY=$(printf '%s' "${HYPRLAND_INSTANCE_SIGNATURE:-unknown}" | sha256sum | cut -d' ' -f1)
@@ -125,14 +126,60 @@ if [[ "$MODE" == "list-geometry" ]]; then
         ((.at // []) | length) == 2 and ((.size // []) | length) == 2) |
       . as $client |
       {title: .title, x: .at[0], y: .at[1], width: .size[0], height: .size[1],
+       floating: ((.floating // false) == true),
        monitor: (($monitors[] | select(.id == $client.monitor) | .name) // "")}]
   ' || exit 3
   exit 0
 fi
 
-install_rules || exit 1
-[[ "$MODE" == "install-rules" ]] && exit 0
+if [[ "$MODE" == "install-rules" ]]; then
+  install_rules || exit 1
+  exit 0
+fi
+if [[ "$MODE" != "observe-title" ]]; then
+  install_rules || exit 1
+fi
 command -v jq >/dev/null 2>&1 || exit 3
+
+resolve_title_address() {
+  local clients address
+  clients=$(hyprctl -j clients 2>/dev/null) || return 1
+  (( ${#clients} <= 1048576 )) || return 1
+  address=$(jq -r --arg title "$TARGET_TITLE" '
+    [.[] | select((.title // "") == $title)] |
+    if length == 1 and (.[0].floating // false) == true and
+       ((.[0].address // "") | test("^0x[0-9a-fA-F]+$"))
+    then .[0].address else empty end' <<<"$clients") || return 1
+  [[ "$address" =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+  printf '%s\n' "$address"
+}
+
+observe_address_geometry() {
+  local address="$1" clients monitors placement
+  clients=$(hyprctl -j clients 2>/dev/null) || return 1
+  monitors=$(hyprctl -j monitors 2>/dev/null) || return 1
+  (( ${#clients} <= 1048576 && ${#monitors} <= 262144 )) || return 1
+  placement=$(jq -cn --arg title "$TARGET_TITLE" --arg address "$address" \
+    --argjson clients "$clients" --argjson monitors "$monitors" '
+    [$clients[] | select((.title // "") == $title and (.address // "") == $address)] as $matches |
+    if ($matches | length) == 1 and ($matches[0].floating // false) == true and
+       (($matches[0].at // []) | length) == 2 and
+       (($matches[0].size // []) | length) == 2
+    then $matches[0] as $client |
+      {title: $title, x: $client.at[0], y: $client.at[1],
+       width: $client.size[0], height: $client.size[1], floating: true,
+       monitor: (($monitors[] | select(.id == $client.monitor) | .name) // "")}
+    else empty end') || return 1
+  (( ${#placement} > 0 && ${#placement} <= 2048 )) || return 1
+  printf '%s\n' "$placement"
+}
+
+if [[ "$MODE" == "observe-title" ]]; then
+  [[ -n "$TARGET_TITLE" ]] || exit 2
+  client=$(resolve_title_address) || exit 3
+  observe_address_geometry "$client" || exit 3
+  exit 0
+fi
 
 if [[ "$MODE" == "place-title" ]]; then
   [[ -n "$TARGET_TITLE" && "$TARGET_X" =~ ^-?[0-9]+$ &&
@@ -142,17 +189,47 @@ if [[ "$MODE" == "place-title" ]]; then
      TARGET_Y >= -32768 && TARGET_Y <= 32768 &&
      TARGET_WIDTH >= 360 && TARGET_WIDTH <= 4096 &&
      TARGET_HEIGHT >= 420 && TARGET_HEIGHT <= 4096 )) || exit 2
-  client=$(hyprctl -j clients 2>/dev/null | jq -r --arg title "$TARGET_TITLE" '
-    [.[] | select((.title // "") == $title)] |
-    if length == 1 and (.[0].floating // false) == true and
-       ((.[0].address // "") | test("^0x[0-9a-fA-F]+$"))
-    then .[0].address else empty end')
+  client=""
+  for (( attempt = 0; attempt < 20; attempt++ )); do
+    client=$(resolve_title_address 2>/dev/null || true)
+    [[ -n "$client" ]] && break
+    sleep 0.05
+  done
   [[ "$client" =~ ^0x[0-9a-fA-F]+$ ]] || exit 3
-  hyprctl dispatch "resizewindowpixel" \
-    "exact ${TARGET_WIDTH} ${TARGET_HEIGHT},address:${client}" >/dev/null || exit 4
-  hyprctl dispatch "movewindowpixel" \
-    "exact ${TARGET_X} ${TARGET_Y},address:${client}" >/dev/null || exit 4
-  exit 0
+  if (( LUA )); then
+    hyprctl dispatch \
+      "hl.dsp.window.resize({ x = ${TARGET_WIDTH}, y = ${TARGET_HEIGHT}, relative = false, window = \"address:${client}\" })" \
+      >/dev/null || exit 4
+    hyprctl dispatch \
+      "hl.dsp.window.move({ x = ${TARGET_X}, y = ${TARGET_Y}, relative = false, window = \"address:${client}\" })" \
+      >/dev/null || exit 4
+  else
+    hyprctl dispatch "resizewindowpixel" \
+      "exact ${TARGET_WIDTH} ${TARGET_HEIGHT},address:${client}" >/dev/null || exit 4
+    hyprctl dispatch "movewindowpixel" \
+      "exact ${TARGET_X} ${TARGET_Y},address:${client}" >/dev/null || exit 4
+  fi
+
+  stable=0
+  for (( attempt = 0; attempt < 40; attempt++ )); do
+    placement=$(observe_address_geometry "$client" 2>/dev/null || true)
+    if [[ -n "$placement" ]] && jq -e \
+      --argjson x "$TARGET_X" --argjson y "$TARGET_Y" \
+      --argjson width "$TARGET_WIDTH" --argjson height "$TARGET_HEIGHT" '
+        .floating == true and (.monitor | type == "string" and length > 0) and
+        .x == $x and .y == $y and .width == $width and .height == $height
+      ' <<<"$placement" >/dev/null; then
+      stable=$((stable + 1))
+      if (( stable >= 2 )); then
+        printf '%s\n' "$placement"
+        exit 0
+      fi
+    else
+      stable=0
+    fi
+    sleep 0.05
+  done
+  exit 5
 fi
 
 [[ "$MODE" == "focus-title" && -n "$TARGET_TITLE" ]] || exit 2

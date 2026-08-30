@@ -4,10 +4,11 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d /tmp/omaq-chat-geometry-XXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-python3 - "$root/ChatSurface.qml" <<'PY'
+python3 - "$root/ChatSurface.qml" "$root/PlacementController.qml" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
+controller = Path(sys.argv[2]).read_text()
 required = (
     "ListModel {\n    id: openCardModel",
     "openCardModel.remove(index)",
@@ -28,7 +29,8 @@ required = (
     "function cardMonitorCollides(cardMonitor, targetMonitor)",
     "function surfaceRectanglesOverlap(x, y, width, height, card)",
     "function initialGeometry(monitor, preferredWidth, preferredHeight)",
-    'placeWindow.command = [root.floatScriptPath, "place-title", pinWin.title,',
+    "PlacementController {",
+    "scriptPath: root.floatScriptPath",
     'command: [root.floatScriptPath, "list-geometry"]',
     'function applyGeometrySnapshot(raw)',
     "property int geometryGeneration: 0",
@@ -36,7 +38,7 @@ required = (
     "root.geometrySnapshotGeneration !== root.geometryGeneration",
     "root.geometrySnapshotGeneration = root.geometryGeneration",
     "root.geometryGeneration++",
-    "(pinWindow.localResizePending || pinWindow.placementStarted)",
+    "(pinWindow.localResizePending || pinWindow.placementBusy)",
     "property int desiredWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
     "property int pendingWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
     "property bool localResizePending: false",
@@ -47,10 +49,16 @@ required = (
     "onSurfaceWidthChanged: pinWin.syncDesiredWidth()",
     "onWidthChanged: pinWin.captureActualWidth()",
     "onHeightChanged: pinWin.captureActualHeight()",
-    "id: placementSettle",
+    "readonly property bool placementBusy: placement.busy",
     "pinWin.pendingWidth,",
     "pinWin.localResizePending = false",
-    "if (pinWin.placementAttempts < 12)",
+    "property bool compositorFloating: false",
+    "enabled: placement.settled && !pinWin.placeOnMap",
+    "if (!pinWin.startSystemMove())",
+    'root.floatScriptPath, "observe-title", pinWin.geometryObservationTitle',
+    "property bool geometryObservationForClose: false",
+    "pinWin.requestCurrentGeometry(true)",
+    "(!pinWin.compositorFloating && !closeAfter)",
     'service.setSurface(String(current.conversation || ""),',
     "pinned: keepExplicitlyOpen ? true : !!saved.pinned",
     "explicitOpen: true",
@@ -60,13 +68,169 @@ required = (
 for value in required:
     if value not in text:
         raise SystemExit(f"chat-surface-geometry: missing keyed geometry guard: {value}")
-for forbidden in ("openCards = next", "openCards = filtered", "root.openCards = []"):
+for forbidden in ("openCards = next", "openCards = filtered", "root.openCards = []",
+                  "id: placementRetry", "id: placementRecovery",
+                  "id: placementSettle", "placementAttempts"):
     if forbidden in text:
-        raise SystemExit(f"chat-surface-geometry: array model reset returned: {forbidden}")
+        raise SystemExit(f"chat-surface-geometry: forbidden geometry state returned: {forbidden}")
+for value in ("readonly property bool settled", "function begin()",
+              "function finish(code)", "function cancel()",
+              "root.phase = root.settledPhase",
+              "signal placementFinished(bool success, var geometry)",
+              "signal placementCanceled()"):
+    if value not in controller:
+        raise SystemExit(f"chat-surface-geometry: production controller missing: {value}")
+if "Timer {" in controller:
+    raise SystemExit("chat-surface-geometry: placement controller reintroduced retry timers")
 remove = text[text.index("function dismissCard"):text.index("function pin(")]
 if remove.index("var removedKey") > remove.index("openCardModel.remove(index)"):
     raise SystemExit("chat-surface-geometry: geometry snapshot occurs after model removal")
 PY
+cp "$root/PlacementController.qml" "$tmp/PlacementController.qml"
+cat >"$tmp/fake-place.sh" <<'SH'
+#!/bin/sh
+set -eu
+printf '%s\n' "$2" >>"$OMAQ_PLACEMENT_LOG"
+case "$2" in
+  Success)
+    printf '%s\n' '{"title":"Success","monitor":"DP-1","x":100,"y":120,"width":700,"height":650,"floating":true}'
+    ;;
+  Invalid)
+    printf '%s\n' '{"title":"Invalid","monitor":"DP-1","x":1,"y":2,"width":3,"height":4,"floating":true}'
+    ;;
+  Failure)
+    exit 5
+    ;;
+  Slow)
+    sleep 0.6
+    touch "$OMAQ_PLACEMENT_SIDE_EFFECT"
+    printf '%s\n' '{"title":"Slow","monitor":"DP-1","x":100,"y":120,"width":700,"height":650,"floating":true}'
+    ;;
+esac
+SH
+chmod 755 "$tmp/fake-place.sh"
+cat >"$tmp/controller-shell.qml" <<QML
+import QtQuick
+import Quickshell
+
+ShellRoot {
+  property bool successDone: false
+  property bool invalidDone: false
+  property bool failureDone: false
+  property bool slowSignaled: false
+  property bool slowCanceled: false
+
+  PlacementController {
+    id: successController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Success"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      successDone = success && geometry && geometry.x === 100 &&
+        geometry.y === 120 && geometry.width === 700 && geometry.height === 650
+    }
+  }
+  PlacementController {
+    id: invalidController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Invalid"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      invalidDone = !success && geometry === null
+    }
+  }
+  PlacementController {
+    id: failureController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Failure"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      failureDone = !success && geometry === null
+    }
+  }
+  PlacementController {
+    id: slowController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Slow"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: slowSignaled = true
+    onPlacementCanceled: slowCanceled = true
+  }
+  Timer {
+    interval: 1
+    running: true
+    onTriggered: {
+      successController.begin()
+      successController.windowTitle = "Changed after begin"
+      invalidController.begin()
+      failureController.begin()
+      slowController.begin()
+    }
+  }
+  Timer {
+    interval: 50
+    running: true
+    onTriggered: slowController.cancel()
+  }
+  Timer {
+    interval: 300
+    running: true
+    onTriggered: {
+      var ok = successDone && invalidDone && failureDone && !slowSignaled &&
+        slowCanceled && successController.settled && invalidController.settled &&
+        failureController.settled && slowController.settled
+      console.log(ok ? "OMAQ_PLACEMENT_CONTROLLER_OK" :
+        "OMAQ_PLACEMENT_CONTROLLER_BAD")
+      Qt.quit()
+    }
+  }
+}
+QML
+controller_out="$tmp/controller.out"
+: >"$tmp/placement.log"
+if ! OMAQ_PLACEMENT_LOG="$tmp/placement.log" \
+    OMAQ_PLACEMENT_SIDE_EFFECT="$tmp/slow-side-effect" QT_QPA_PLATFORM=offscreen \
+    timeout 5 quickshell -p "$tmp/controller-shell.qml" >"$controller_out" 2>&1; then
+  cat "$controller_out" >&2
+  echo "chat-surface-geometry: production placement controller failed" >&2
+  exit 1
+fi
+if ! grep -q 'OMAQ_PLACEMENT_CONTROLLER_OK' "$controller_out"; then
+  cat "$controller_out" >&2
+  echo "chat-surface-geometry: production placement controller did not settle" >&2
+  exit 1
+fi
+sleep 0.7
+[ ! -e "$tmp/slow-side-effect" ] || {
+  echo "chat-surface-geometry: canceled placement produced a late side effect" >&2
+  exit 1
+}
+for title in Success Invalid Failure Slow; do
+  [ "$(grep -c "^$title$" "$tmp/placement.log")" -eq 1 ] || {
+    echo "chat-surface-geometry: controller repeated $title placement" >&2
+    exit 1
+  }
+done
 cat >"$tmp/shell.qml" <<'QML'
 import QtQuick
 import Quickshell
@@ -98,7 +262,7 @@ ShellRoot {
     if (generation !== geometryGeneration)
       return false
     var targetWindow = resizeWindows.objectAt(target)
-    if (targetWindow.localResizePending || targetWindow.placementStarted)
+    if (targetWindow.localResizePending || targetWindow.placementBusy)
       return false
     resizeCards.setProperty(target, "surfaceWidth", width)
     resizeCards.setProperty(target, "surfaceHeight", height)
@@ -202,7 +366,7 @@ ShellRoot {
       property int pendingWidth: surfaceWidth
       property int pendingHeight: surfaceHeight
       property bool localResizePending: false
-      property bool placementStarted: false
+      property bool placementBusy: false
 
       function syncDesiredWidth() {
         if (localResizePending && surfaceWidth !== pendingWidth)
@@ -295,10 +459,10 @@ ShellRoot {
         groupResize.desiredHeight === 680 && groupResize.pendingWidth === 540 &&
         groupResize.pendingHeight === 680 && pendingSnapshotRejected &&
         !applyDelayedSnapshot(staleSnapshotGeneration, 0, 420, 420)
-      directResize.placementStarted = true
+      directResize.placementBusy = true
       baseGeometryOk = baseGeometryOk &&
         !applyDelayedSnapshot(geometryGeneration, 0, 420, 420)
-      directResize.placementStarted = false
+      directResize.placementBusy = false
       // An idle helper/compositor snapshot remains authoritative.
       resizeCards.setProperty(0, "surfaceWidth", 640)
       resizeCards.setProperty(0, "surfaceHeight", 720)

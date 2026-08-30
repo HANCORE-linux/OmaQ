@@ -1,6 +1,7 @@
 module OmaQ
 Panel 1.0 Panel.qml
 ChatSurface 1.0 ChatSurface.qml
+PlacementController 1.0 PlacementController.qml
 Service 1.0 Service.qml
 singleton CallTone 1.0 CallTone.qml
 singleton SurfaceCoordinator 1.0 SurfaceCoordinator.qml
