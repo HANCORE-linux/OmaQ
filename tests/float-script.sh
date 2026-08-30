@@ -7,13 +7,21 @@ focus_hooks=$(grep -c 'function onFocusRequestTickChanged()' "$root/ChatSurface.
   echo "float-script: expected exactly one existing-chat focus hook" >&2
   exit 1
 }
+grep -Fq 'bash_path + b" (deleted)"' "$root/scripts/float-omaq.sh" || {
+  echo "float-script: deleted Bash upgrade identity is not retained" >&2
+  exit 1
+}
 tmp=$(mktemp -d /tmp/omaq-float-test-XXXXXX)
 socket_pid=""
 first_watcher=""
 second_watcher=""
+other_watcher=""
+decoy=""
 cleanup() {
   [ -n "$first_watcher" ] && kill "$first_watcher" 2>/dev/null || true
   [ -n "$second_watcher" ] && kill "$second_watcher" 2>/dev/null || true
+  [ -n "$other_watcher" ] && kill "$other_watcher" 2>/dev/null || true
+  [ -n "$decoy" ] && kill "$decoy" 2>/dev/null || true
   [ -n "$socket_pid" ] && kill "$socket_pid" 2>/dev/null || true
   rm -rf "$tmp"
 }
@@ -95,6 +103,32 @@ export XDG_RUNTIME_DIR="$tmp/runtime"
 export HYPRLAND_INSTANCE_SIGNATURE="test-instance"
 export OMAQ_FLOAT_TEST_LOG="$tmp/hypr.log"
 
+mkdir -p "$tmp/runtime-unset" "$tmp/runtime-one" "$tmp/runtime-200"
+env -u HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR="$tmp/runtime-unset" \
+  "$root/scripts/float-omaq.sh" install-rules
+HYPRLAND_INSTANCE_SIGNATURE=a XDG_RUNTIME_DIR="$tmp/runtime-one" \
+  "$root/scripts/float-omaq.sh" install-rules
+signature_200=$(printf '%0200d' 0 | tr '0' 'a')
+HYPRLAND_INSTANCE_SIGNATURE="$signature_200" XDG_RUNTIME_DIR="$tmp/runtime-200" \
+  "$root/scripts/float-omaq.sh" install-rules
+calls_before_invalid=$(wc -l <"$OMAQ_FLOAT_TEST_LOG")
+set +e
+HYPRLAND_INSTANCE_SIGNATURE='' "$root/scripts/float-omaq.sh" install-rules
+empty_instance_status=$?
+signature_201="${signature_200}a"
+HYPRLAND_INSTANCE_SIGNATURE="$signature_201" "$root/scripts/float-omaq.sh" install-rules
+long_instance_status=$?
+HYPRLAND_INSTANCE_SIGNATURE='é' "$root/scripts/float-omaq.sh" install-rules
+unicode_instance_status=$?
+set -e
+[ "$empty_instance_status" -eq 1 ] && [ "$long_instance_status" -eq 1 ] &&
+  [ "$unicode_instance_status" -eq 1 ] &&
+  [ "$(wc -l <"$OMAQ_FLOAT_TEST_LOG")" -eq "$calls_before_invalid" ] || {
+  echo "float-script: instance validation boundary failed" >&2
+  exit 1
+}
+: >"$OMAQ_FLOAT_TEST_LOG"
+
 "$root/scripts/float-omaq.sh" &
 first_pid=$!
 "$root/scripts/float-omaq.sh" &
@@ -120,6 +154,16 @@ export HYPRLAND_INSTANCE_SIGNATURE="test-instance"
   echo "float-script: instance-scoped rule marker failed" >&2
   exit 1
 }
+grep -q '^keyword windowrulev2 = unset, title:\^(OmaQ chat\.\*)\$$' \
+  "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: previous classic chat rules were not cleared" >&2
+  exit 1
+}
+if grep -q '^keyword windowrulev2 = noanim, title:\^(OmaQ chat' \
+    "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: classic chat animation remains disabled" >&2
+  exit 1
+fi
 : >"$OMAQ_FLOAT_TEST_LOG"
 "$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
 if grep -q '^dispatch movetoworkspace ' "$OMAQ_FLOAT_TEST_LOG"; then
@@ -258,6 +302,59 @@ kill "$second_watcher"
 wait "$second_watcher" 2>/dev/null || true
 first_watcher=""
 second_watcher=""
+: >"$OMAQ_FLOAT_SOCAT_LOG"
+"$root/scripts/float-omaq.sh" watch-rules &
+first_watcher=$!
+i=0
+while [ "$i" -lt 40 ] && [ "$(wc -l <"$OMAQ_FLOAT_SOCAT_LOG")" -lt 1 ]; do
+  i=$((i + 1))
+  sleep 0.05
+done
+"$root/scripts/float-omaq.sh" watch-rules &
+second_watcher=$!
+other_socket_dir="$XDG_RUNTIME_DIR/hypr/other-instance"
+mkdir -p "$other_socket_dir"
+ln -s "$socket_dir/.socket2.sock" "$other_socket_dir/.socket2.sock"
+: >"$tmp/other-socat.log"
+HYPRLAND_INSTANCE_SIGNATURE=other-instance \
+  OMAQ_FLOAT_SOCAT_LOG="$tmp/other-socat.log" \
+  "$root/scripts/float-omaq.sh" watch-rules &
+other_watcher=$!
+i=0
+while [ "$i" -lt 40 ] && [ "$(wc -l <"$tmp/other-socat.log")" -lt 1 ]; do
+  i=$((i + 1))
+  sleep 0.05
+done
+/bin/bash -c 'sleep 30 & wait' "$root/scripts/float-omaq.sh" watch-rules &
+decoy=$!
+sleep 0.05
+[ "$(readlink -f "/proc/$decoy/exe")" = "$(readlink -f /bin/bash)" ] || {
+  echo "float-script: argv near-neighbor is not resident in Bash" >&2
+  exit 1
+}
+"$root/scripts/float-omaq.sh" install-rules
+wait "$first_watcher" 2>/dev/null || true
+wait "$second_watcher" 2>/dev/null || true
+if kill -0 "$first_watcher" 2>/dev/null || kill -0 "$second_watcher" 2>/dev/null; then
+  echo "float-script: version takeover left a competing watcher" >&2
+  exit 1
+fi
+kill -0 "$other_watcher" 2>/dev/null || {
+  echo "float-script: watcher takeover crossed Hyprland instances" >&2
+  exit 1
+}
+kill -0 "$decoy" 2>/dev/null || {
+  echo "float-script: watcher takeover signaled an argv near-neighbor" >&2
+  exit 1
+}
+kill "$other_watcher"
+wait "$other_watcher" 2>/dev/null || true
+other_watcher=""
+kill "$decoy"
+wait "$decoy" 2>/dev/null || true
+decoy=""
+first_watcher=""
+second_watcher=""
 unset OMAQ_FLOAT_WATCH_BLOCK
 : >"$OMAQ_FLOAT_TEST_LOG"
 rm -rf "$XDG_RUNTIME_DIR/omaq-hypr"
@@ -310,18 +407,27 @@ if grep -q 'dispatch hl.dsp$' "$OMAQ_FLOAT_TEST_LOG"; then
   echo "float-script: invalid Lua capability probe returned" >&2
   exit 1
 fi
-grep -q 'omaq_window_rules.chat_v5 = hl.window_rule' "$OMAQ_FLOAT_TEST_LOG" || {
+grep -q 'omaq_window_rules.chat_v6 = hl.window_rule' "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: Lua rule handle is not retained" >&2
+  exit 1
+}
+grep -q 'omaq_window_rules.chat_v5:set_enabled(false)' "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: previous Lua no-animation rule remains enabled" >&2
   exit 1
 }
 grep -Fq 'match = { initial_title = "^OmaQ chat.*$" }' "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: static Lua rule does not match the initial title" >&2
   exit 1
 }
-grep -q 'no_anim = true' "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: OmaQ window animations remain enabled" >&2
+grep -q 'omaq_window_rules.demo_v4.*no_anim = true' "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: demo window animation unexpectedly changed" >&2
   exit 1
 }
+chat_rule=$(grep 'omaq_window_rules.chat_v6 = hl.window_rule' "$OMAQ_FLOAT_TEST_LOG")
+if printf '%s\n' "$chat_rule" | grep -q 'no_anim'; then
+  echo "float-script: Lua chat animation remains disabled" >&2
+  exit 1
+fi
 if grep -q 'hl.dsp.window.move({ workspace = "7"' "$OMAQ_FLOAT_TEST_LOG"; then
   echo "float-script: same-workspace Lua focus changed geometry" >&2
   exit 1
