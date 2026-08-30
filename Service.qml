@@ -377,6 +377,66 @@ Item {
     return root.directBindingMatches(conversation, String(ev.key || ""))
   }
 
+  function applySurfaceEvent(event) {
+    var ev = event || ({})
+    var conversation = String(ev.conversation || "")
+    var direct = /^(0|[1-9][0-9]*)$/.test(conversation)
+    var group = /^g:[0-9a-f]{64}$/.test(conversation)
+    if ((!direct && !group) || (direct && !root.directEventBindingValid(ev)))
+      return false
+    var key = direct ? String(ev.key || "") : ""
+    var monitor = String(ev.monitor || "")
+    var x = Number(ev.x)
+    var y = Number(ev.y)
+    if ((direct && !/^[0-9a-f]{64}$/.test(key)) || monitor.length > 63 ||
+        /[\u0000-\u001f\u007f]/.test(monitor) || typeof ev.pinned !== "boolean" ||
+        !Number.isInteger(x) || !Number.isInteger(y) ||
+        x < -2147483648 || x > 2147483647 ||
+        y < -2147483648 || y > 2147483647)
+      return false
+    var current = root.surfaces || []
+    var previous = null
+    var i
+    for (i = 0; i < current.length; i++) {
+      var candidate = current[i] || ({})
+      if (String(candidate.conversation || "") === conversation &&
+          (!direct || String(candidate.key || "") === key)) {
+        previous = candidate
+        break
+      }
+    }
+    var width = ev.width === undefined
+      ? Number(previous && previous.width !== undefined ? previous.width : 420)
+      : Number(ev.width)
+    var height = ev.height === undefined
+      ? Number(previous && previous.height !== undefined ? previous.height : 420)
+      : Number(ev.height)
+    if (!Number.isInteger(width) || !Number.isInteger(height) ||
+        width < 200 || width > 4096 || height < 160 || height > 4096)
+      return false
+    var canonical = { conversation: conversation, key: key, monitor: monitor,
+      x: x, y: y, width: width, height: height, pinned: ev.pinned }
+    var next = []
+    var inserted = false
+    for (i = 0; i < current.length; i++) {
+      var item = current[i] || ({})
+      var same = String(item.conversation || "") === conversation ||
+        (direct && String(item.key || "") === key)
+      if (same) {
+        if (!inserted) {
+          next.push(canonical)
+          inserted = true
+        }
+      } else {
+        next.push(item)
+      }
+    }
+    if (!inserted)
+      next.push(canonical)
+    root.surfaces = next
+    return true
+  }
+
   function clearPendingGroupProjection() {
     root.pendingGroupGeneration = ""
     root.pendingGroupRequest = ""
@@ -1313,8 +1373,10 @@ Item {
       }
       root.typingTick = root.typingTick + 1
     }
-    if (ev.event === "surface")
+    if (ev.event === "surface") {
       root.lastSurface = ev
+      root.applySurfaceEvent(ev)
+    }
     if (ev.event === "surfaces") {
       root.surfaces = ev.items || []
       root.surfacesTick = root.surfacesTick + 1
