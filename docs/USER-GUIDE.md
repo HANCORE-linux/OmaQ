@@ -71,7 +71,7 @@ Panel preferences use the active OmaQ and Omarchy visual system. Message scaling
 <tbody><tr>
 <td><a href="images/guide/07-panel-message-size.png"><img src="images/guide/07-panel-message-size.png" alt="Chat message size options" width="220"></a><br>Choose 90%, 100%, 110%, 120%, or 140% and review the live preview. The same step scales message bodies and text typed in the composer.</td>
 <td><a href="images/guide/08-panel-themes.png"><img src="images/guide/08-panel-themes.png" alt="OmaQ chat themes" width="220"></a><br>Select the system palette or a bundled chat palette. The panel itself continues to follow Omarchy.</td>
-<td><a href="images/guide/09-panel-sounds.png"><img src="images/guide/09-panel-sounds.png" alt="OmaQ notification sounds" width="220"></a><br>Preview a notification sound, choose Off, or import a bounded PCM WAV file. Removing a custom entry deletes only OmaQ's managed copy; the source file and bundled sounds remain unchanged.</td>
+<td><strong>UHOH · PING · MSN · Aurora · Glow · Click · Knock</strong><br>Preview a bundled sound, choose Off, or import a bounded PCM WAV file. Removing a custom entry deletes only OmaQ's managed copy; the source file and bundled sounds remain unchanged.</td>
 <td><a href="images/guide/35-demo-window.png"><img src="images/guide/35-demo-window.png" alt="OmaQ Demo chat window" width="220"></a><br>Test messages, formatting, wrapping, and the composer locally. Demo sends nothing.</td>
 </tr></tbody>
 </table>
