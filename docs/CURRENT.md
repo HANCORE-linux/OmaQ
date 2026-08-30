@@ -5,11 +5,11 @@ This is the current product snapshot. It intentionally contains no historical ph
 ## Snapshot
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
-- **Branch:** temporary integration candidate combining approved commits `aaf2f1d` and `381e4dc` from exact base `b560fd0`
+- **Branch:** `main`
 - **Manifest version:** `0.8.1-beta.1`, Protocol 14
-- **Source:** current product source plus unreleased QML privacy and helper-security candidates, independent from the paused package-release work
-- **Live plugins:** matching 68-file Protocol-14 product payloads on machine1 and machine2; neither security candidate is deployed
-- **Live helper:** SHA-256 `942fbfc0344b3bbb3318f53b5bd72ec1fd9b3f98299b431006005989249a736f` on both machines
+- **Source:** repository `main` after security-hardening PR #5, independent from the paused package-release work
+- **Live plugins:** the deployed 68-file Protocol-14 payload remains unchanged; the merged security hardening is not deployed
+- **Live helper:** deployed SHA-256 `942fbfc0344b3bbb3318f53b5bd72ec1fd9b3f98299b431006005989249a736f`
 - **AUR:** paused; no registration or upload
 - **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 35 retained neutral QML captures; the revised sound picker is documented textually until a fresh neutral capture is available
 
@@ -87,7 +87,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 
 ### Protocol-14 product follow-up
 
-The source candidate implements the seven requested changes independently from the paused package-release work:
+The merged source implements the seven requested changes independently from the paused package-release work:
 
 - Chat windows use a keyed model, so opening or closing one conversation no longer recreates the other native delegates. Saved width/height and non-overlapping first placement belong to the exact conversation.
 - The five fixed message-size steps now scale rendered message bodies and composer input text, not the composer frame, controls, receipts, or member labels.
@@ -97,7 +97,7 @@ The source candidate implements the seven requested changes independently from t
 - DirectChat and GroupChat message text uses pointer/keyboard selection. A compact Copy action appears only for a non-empty selection and copies that exact selection.
 
 
-### Unreleased helper-security candidate
+### Merged helper security hardening — not deployed
 
 - Concurrent native invite callbacks use one first-writer pending claim, so a later request cannot overwrite the public key or request key belonging to the invitation shown to the user.
 - `HAVE_TOX` without `HAVE_SIGNAL` is rejected at compile time, including the native group-admin test helper.
@@ -113,21 +113,22 @@ The source candidate implements the seven requested changes independently from t
 
 ## Latest validation
 
-The isolated QML privacy candidate passes clean `verify-0`, including Qt-parser canonicalization, the exact reviewed QML source-set gate, adversarial inherited-control and imperative-mutation fixtures, the actual OmaQ message renderer with hostile tags, and HTTP controls for raw RichText, inherited GroupBox text, compound assignment, and TextEdit insertion. Escaped OmaQ message and reply markup performs no HTTP resource request. Final independent QML and application-security review reports no findings.
+Merged security-hardening PR #5 passes clean integrated `make test` and `verify-0` runs plus a separate `python3 tests/qml_plaintext_test.py` run. QML coverage includes Qt-parser canonicalization, the exact reviewed source-set gate, adversarial inherited-control and imperative-mutation fixtures, the actual OmaQ message renderer with hostile tags, and HTTP controls for raw RichText, inherited GroupBox text, compound assignment, and TextEdit insertion. Escaped OmaQ message and reply markup performs no HTTP resource request.
 
-The isolated helper-security candidate passes `verify-0`, the calibrated two-home `verify-1-tox`, `verify-2`, native group-admin `verify-3`, and Ratchet `verify-8`, including sanitizer-backed policy/store tests, the Signal prekey restart test, file special-path rejection, IPC regression, GroupChat parity, and protocol compatibility. Final independent helper-security review reports no findings. The combined QML/helper candidate passes a clean integrated `make test` plus a separate `python3 tests/qml_plaintext_test.py` run. Package construction, release evidence, and the source updater remain outside this branch. No visible native Wayland validation is claimed.
+The helper changes additionally pass the calibrated two-home `verify-1-tox`, `verify-2`, native group-admin `verify-3`, and Ratchet `verify-8`, including sanitizer-backed policy/store tests, the Signal prekey restart test, file special-path rejection, IPC regression, GroupChat parity, and protocol compatibility. Final independent QML/AppSec, helper-security, and combined integration reviews report no findings. Package construction, release evidence, and the source updater remain outside this security change. No visible native Wayland validation is claimed.
 
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-Machine1 and machine2 run the same 68-file Protocol-14 product payload and helper hash. Neither unreleased security candidate has been synchronized to either machine. No private identity, Ratchet, group registry, or history data was synchronized between machines.
+The deployed runtime remains on the prior 68-file Protocol-14 payload and helper hash. The merged security hardening has not been synchronized. No private identity, Ratchet, group registry, or history data was synchronized.
 
-The illustrated guide uses 35 cropped original views from Machine2 QML components. The outdated sound-picker capture was removed and its revised choices are documented textually until a fresh neutral capture is available. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
+The illustrated guide uses 35 cropped original QML component views. The outdated sound-picker capture was removed and its revised choices are documented textually until a fresh neutral capture is available. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
 
 The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclusive because both endpoints did not remain connected to relays. Native three-peer packet injection, mixed group-file results, acknowledgement loss, file-history write failures, and transfer-ID-store crash injection remain open. Native separate-network, theme, multi-monitor, and floating-versus-tiling acceptance also remain open; `qmllint Panel.qml` still exits 255 without diagnostics.
 
 ## Next order
 
-1. Prepare a sequential two-commit integration branch that preserves the reviewed QML/helper split and this tested conflict resolution; obtain explicit approval before creating its conflict-resolved helper commit.
-2. Keep push, pull request, merge, live synchronization, and AUR publication as separately approved delivery phases.
-3. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
-4. Investigate the remaining Panel QML toolchain failure.
+1. Deploy and validate the QML-only payload only after separate approval.
+2. Deploy the helper separately only after authoritative group-free confirmation, correlated safe shutdown, atomic replacement, and separate approval.
+3. Keep AUR publication and branch/worktree cleanup as separately approved phases.
+4. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
+5. Investigate the remaining Panel QML toolchain failure.
