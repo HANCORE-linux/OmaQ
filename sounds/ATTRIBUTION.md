@@ -13,15 +13,9 @@
 - Transformation: decoded, metadata removed, and encoded as 48 kHz stereo Ogg Vorbis
 - Retrieved: August 25, 2026
 
-## UHOH notification
-
-`uhoh.wav` is an original, project-generated two-tone notification distributed under OmaQ's MIT license. It contains a 180 ms E5 sine tone, a 55 ms pause, and a 270 ms A4 sine tone at 48 kHz stereo PCM, with 12 ms fades and 24% peak amplitude.
-
-- OmaQ `uhoh.wav` SHA-256: `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`
-
 ## Notification presets
 
-The notification presets below are unmodified audio files from KDE's Ocean Sound Theme. The `MSN style` label describes an OmaQ preset only; it is not an audio asset from, endorsed by, or affiliated with that product or its owner. The `qq.oga` compatibility filename is presented as `PING` in OmaQ.
+The notification presets below are unmodified audio files from KDE's Ocean Sound Theme. The `qq.oga` and `msn.oga` compatibility filenames are presented as `PING` and `MAIL` in OmaQ.
 
 - Source: https://github.com/KDE/ocean-sound-theme
 - Source commit: `13ad78d18e844d0b0458ca1d71aa692ea093c845`

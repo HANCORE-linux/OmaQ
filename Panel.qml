@@ -107,7 +107,7 @@ BarWidget {
     { id: "off", label: "Off", custom: false, path: "" },
     { id: "icq-message", label: "UHOH" },
     { id: "qq", label: "PING" },
-    { id: "msn", label: "MSN" },
+    { id: "msn", label: "MAIL" },
     { id: "aurora", label: "Aurora" },
     { id: "glow", label: "Glow" },
     { id: "click", label: "Click" },

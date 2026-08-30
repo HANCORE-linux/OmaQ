@@ -42,7 +42,7 @@ preset_block = panel[panel.index("readonly property var bundledNotificationSound
 presets = re.findall(r'\{ id: "([^"]+)", label: "([^"]+)"', preset_block)
 expected_presets = [
     ("off", "Off"), ("icq-message", "UHOH"), ("qq", "PING"),
-    ("msn", "MSN"), ("aurora", "Aurora"), ("glow", "Glow"),
+    ("msn", "MAIL"), ("aurora", "Aurora"), ("glow", "Glow"),
     ("click", "Click"), ("knock", "Knock")]
 if presets != expected_presets:
     raise SystemExit(f"custom-sound: unexpected bundled presets: {presets!r}")
@@ -57,9 +57,10 @@ if "CC-BY-4.0" in manifest["license"]:
     raise SystemExit("custom-sound: removed preset license remains in manifest")
 if 'return ["off", "icq-message", "qq", "msn", "aurora", "glow", "click",' not in chat or \
         '"knock", "custom"].indexOf(value) >= 0 ? value : "icq-message"' not in chat or \
-        '["qq", "msn", "aurora", "glow"].indexOf(selectedSound)' not in chat:
+        '["qq", "msn", "aurora", "glow"].indexOf(selectedSound)' not in chat or \
+        'Qt.resolvedUrl("sounds/icq-message.mp3")' not in chat:
     raise SystemExit("custom-sound: playback allowlist or fallback changed")
-expected_audio = {"uhoh.wav", "qq.oga", "msn.oga", "aurora.oga",
+expected_audio = {"icq-message.mp3", "qq.oga", "msn.oga", "aurora.oga",
                   "glow.oga", "click.wav", "knock.wav", "phone.oga"}
 actual_audio = {path.name for path in sounds.iterdir()
                 if path.suffix in {".mp3", ".oga", ".wav"}}
@@ -182,7 +183,7 @@ grep '"request":"custom-sound-remove"' "$tmp/output" | grep -q '"items":\[\]' ||
   echo "custom-sound: remove touched the source or retained the managed copy" >&2
   exit 1
 }
-[ -f "$root/sounds/uhoh.wav" ] || {
+[ -f "$root/sounds/icq-message.mp3" ] || {
   echo "custom-sound: bundled sound changed" >&2
   exit 1
 }
