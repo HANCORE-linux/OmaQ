@@ -3,6 +3,7 @@
 #include "message.h"
 #include "json_io.h"
 #include "store.h"
+#include "text.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -11,6 +12,18 @@
 #include <sys/random.h>
 #include <time.h>
 
+
+int omaq_message_text_bytes_ok(const uint8_t *text, size_t length)
+{
+	if (!text || length == 0 || length > OMAQ_MESSAGE_TEXT_MAX ||
+	    !omaq_utf8_bytes_ok(text, length, 0))
+		return 0;
+	for (size_t i = 0; i < length; i++)
+		if (text[i] < 0x20 && text[i] != '\n' && text[i] != '\r' &&
+		    text[i] != '\t')
+			return 0;
+	return 1;
+}
 
 int omaq_message_id_ok(const char *id)
 {

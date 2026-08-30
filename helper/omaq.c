@@ -1,5 +1,9 @@
 #define _DEFAULT_SOURCE
 
+#if defined(HAVE_TOX) && !defined(HAVE_SIGNAL)
+#error "OmaQ Tox transport requires Signal Ratchet support"
+#endif
+
 #include "av.h"
 #include "auto_open.h"
 #include "avatar.h"
@@ -172,6 +176,7 @@ typedef struct {
 	char group[OMAQ_GROUP_ID_MAX];
 	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
 	char sender_key[65];
+	char sender_actor[65];
 	char sender_name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
 	char name[OMAQ_FILE_NAME_MAX + 1];
 	char kind[6];
@@ -199,12 +204,11 @@ static struct {
 	int64_t retry_after;
 } g_ratchet_recovery[OMAQ_DIRECT_STATE_FRIEND_MAX];
 #endif
-static uint8_t g_pending_pk[32];
-static int g_have_pending;
+static omaq_pending_invite g_pending_invite;
 static int g_pending_announced;
 #ifdef HAVE_SIGNAL
-static char g_pending_rk[OMAQ_RK_HEX + 1];
-static int g_have_pending_rk;
+_Static_assert(OMAQ_INVITE_RATCHET_KEY_HEX == OMAQ_RK_HEX,
+	       "pending invite Ratchet key size mismatch");
 #endif
 static char g_issued_id[OMAQ_INVITE_ID_MAX + 1];
 static char g_issued_url[OMAQ_URL_MAX];
@@ -307,6 +311,7 @@ static struct {
 } g_group_leave_notice_suppress[GROUP_FRIEND_BINDING_MAX];
 static omaq_control_rate g_group_control_rate;
 static omaq_control_rate g_group_typing_rate;
+static omaq_group_file_offer_rate g_group_file_offer_rate;
 static int g_av_reset_requested;
 static int64_t g_av_reset_next;
 static int g_av_reset_reported;
@@ -316,6 +321,8 @@ static int g_stdin_identity_ready = 1;
 static omaq_rate g_rate;
 static omaq_rate g_reaction_rate;
 static omaq_rate g_reaction_out_rate;
+static omaq_message_rate g_message_rate;
+static omaq_control_rate g_direct_control_rate;
 static omaq_unread_state g_unread;
 
 static int g_lockfd = -1;
@@ -2037,7 +2044,6 @@ static void emit_locked_status(void)
 
 static int note_unread(const char *conversation)
 {
-	omaq_unread_state next;
 	const char *state_id = conversation;
 	int saved;
 #ifdef HAVE_TOX
@@ -2048,17 +2054,15 @@ static int note_unread(const char *conversation)
 	if (g_tox)
 		state_id = stored;
 #endif
-	if (omaq_unread_clone(&next, &g_unread) != 0 ||
-	    omaq_unread_increment(&next, state_id) != 0) {
-		omaq_unread_destroy(&next);
+	/* Admission is globally bounded before this durable snapshot. Updating the
+	 * authoritative map directly avoids cloning every conversation per message. */
+	if (omaq_unread_increment(&g_unread, state_id) != 0) {
 		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
 			 "unread_persist_failed");
 		emit_unread_failed(conversation, g_unread_error_code);
 		return -1;
 	}
-	saved = omaq_store_unread_save(&next, state_dir());
-	omaq_unread_destroy(&g_unread);
-	g_unread = next;
+	saved = omaq_store_unread_save(&g_unread, state_dir());
 	emit_unread(state_id);
 	if (saved != 0) {
 		snprintf(g_unread_error_code, sizeof(g_unread_error_code),
@@ -3534,12 +3538,8 @@ static void clear_invite(void)
 	g_issued_exp = 0;
 	g_issued_is_group = 0;
 	g_issued_group[0] = '\0';
-	g_have_pending = 0;
+	omaq_pending_invite_clear(&g_pending_invite);
 	g_pending_announced = 0;
-#ifdef HAVE_SIGNAL
-	g_pending_rk[0] = '\0';
-	g_have_pending_rk = 0;
-#endif
 }
 
 static void clear_invite_and_emit(void)
@@ -3550,7 +3550,7 @@ static void clear_invite_and_emit(void)
 
 static void announce_pending_direct(void)
 {
-	if (!g_have_pending || g_pending_announced)
+	if (!g_pending_invite.used || g_pending_announced)
 		return;
 	g_pending_announced = 1;
 	emit("{\"event\":\"request\",\"kind\":\"direct\"}");
@@ -3578,6 +3578,7 @@ static void expire_group_auth_reservation(void)
 
 static void reset_identity_runtime_state(void)
 {
+	omaq_store_message_index_reset();
 	clear_invite();
 	clear_group_auth();
 	g_have_gpending = 0;
@@ -3614,7 +3615,7 @@ static void reset_identity_runtime_state(void)
 	g_group_binding_restore_pending = 0;
 	memset(&g_group_leave_notice_suppress, 0,
 	       sizeof(g_group_leave_notice_suppress));
-	memset(g_pending_pk, 0, sizeof(g_pending_pk));
+	omaq_pending_invite_clear(&g_pending_invite);
 	memset(g_file_requests, 0, sizeof(g_file_requests));
 	g_file_request_sequence = 0;
 	g_avatar_temps_cleaned = 0;
@@ -3624,6 +3625,8 @@ static void reset_identity_runtime_state(void)
 #endif
 	omaq_control_rate_init(&g_group_control_rate);
 	omaq_control_rate_init(&g_group_typing_rate);
+	omaq_control_rate_init(&g_direct_control_rate);
+	omaq_message_rate_init(&g_message_rate);
 	g_av_reset_requested = 0;
 	g_av_reset_next = 0;
 	g_av_reset_reported = 0;
@@ -3657,7 +3660,7 @@ static int fsync_directory(const char *path)
 {
 	int fd, rc;
 
-	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 	if (fd < 0)
 		return -1;
 	rc = fsync(fd);
@@ -5162,27 +5165,40 @@ static void emit_self_avatar(void)
 
 static int avatar_hash_file(const char *path, uint8_t out[32])
 {
-	unsigned char *buf;
-	FILE *f;
-	size_t n;
-	int rc;
+	unsigned char *buffer;
+	struct stat status;
+	size_t offset = 0;
+	int fd, rc;
 
-	buf = malloc(OMAQ_AVATAR_MAX);
-	if (!buf)
-		return -1;
-	f = fopen(path, "rb");
-	if (!f) {
-		free(buf);
-		return -1;
-	}
-	n = fread(buf, 1, OMAQ_AVATAR_MAX, f);
-	fclose(f);
-	if (!n) {
-		free(buf);
+	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0 || fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+	    status.st_size <= 0 || (uint64_t)status.st_size > OMAQ_AVATAR_MAX) {
+		if (fd >= 0)
+			close(fd);
 		return -1;
 	}
-	rc = omaq_tox_hash(buf, n, out);
-	free(buf);
+	buffer = malloc((size_t)status.st_size);
+	if (!buffer) {
+		close(fd);
+		return -1;
+	}
+	while (offset < (size_t)status.st_size) {
+		ssize_t got = read(fd, buffer + offset, (size_t)status.st_size - offset);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got <= 0) {
+			free(buffer);
+			close(fd);
+			return -1;
+		}
+		offset += (size_t)got;
+	}
+	if (close(fd) != 0) {
+		free(buffer);
+		return -1;
+	}
+	rc = omaq_tox_hash(buffer, offset, out);
+	free(buffer);
 	return rc;
 }
 
@@ -5240,6 +5256,7 @@ static void hook_typing(void *ud, uint32_t friend, int typing)
 static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 {
 	char key[65];
+	const char *ratchet_key = NULL;
 	const char *sep;
 	int64_t now = (int64_t)time(NULL);
 
@@ -5256,8 +5273,7 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 		    strncmp(msg, g_issued_id, (size_t)(sep - msg)) != 0 ||
 		    strlen(sep + 4) != OMAQ_RK_HEX || !omaq_rk_ok(sep + 4))
 			return;
-		snprintf(g_pending_rk, sizeof(g_pending_rk), "%s", sep + 4);
-		g_have_pending_rk = 1;
+		ratchet_key = sep + 4;
 #else
 		return;
 #endif
@@ -5270,12 +5286,10 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 			return;
 #endif
 	}
-	if (g_issued_exp && now >= g_issued_exp)
+	if ((g_issued_exp && now >= g_issued_exp) || g_pending_invite.used)
 		return;
-	if (g_have_pending)
+	if (omaq_pending_invite_claim(&g_pending_invite, pk32, ratchet_key) != 1)
 		return;
-	memcpy(g_pending_pk, pk32, 32);
-	g_have_pending = 1;
 	g_pending_announced = 0;
 	if (g_issued_is_group) {
 		g_pending_announced = 1;
@@ -5562,14 +5576,16 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 			return;
 		}
 	}
+	if (omaq_message_rate_allow(&g_message_rate, gid, sender,
+				    (int64_t)time(NULL)) != 0)
+		return;
 	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
 				     wire_text, sizeof(wire_text)) == 0) {
 		if (omaq_message_id_reserved(wire_id))
 			return;
 		display = wire_text;
 		has_wire_id = 1;
-		if (omaq_store_message_id_used(home_dir(), gid, wire_id) != 0 ||
-		    omaq_message_append_id_reply(home_dir(), gid, peer_from, display, "in",
+		if (omaq_message_append_id_reply(home_dir(), gid, peer_from, display, "in",
 					 wire_id, wire_reply) != 0)
 			return;
 		snprintf(mid, sizeof(mid), "%s", wire_id);
@@ -5766,7 +5782,8 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	const char *display = text;
 	int has_wire_id = 0;
 #ifdef HAVE_SIGNAL
-	char plain[1400];
+	char plain[OMAQ_MESSAGE_TEXT_MAX + 1];
+	size_t plain_length = 0;
 #endif
 	(void)ud;
 	snprintf(conv, sizeof(conv), "%u", friend);
@@ -5804,7 +5821,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		return;
 	{
 		int decrypt_result = omaq_ratchet_decrypt(g_ratchet, state_conv, text,
-						   plain, sizeof(plain));
+						   plain, sizeof(plain), &plain_length);
 		if (decrypt_result != 0) {
 			if (decrypt_result == OMAQ_RATCHET_DECRYPT_RECOVER &&
 			    ratchet_recovery_allowed(state_conv) &&
@@ -5813,6 +5830,8 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 			return;
 		}
 	}
+	if (!omaq_message_text_bytes_ok((const uint8_t *)plain, plain_length))
+		return;
 	text = plain;
 #endif
 	if (text && strncmp(text, "OQX1|gmbd|", 10) == 0) {
@@ -5897,7 +5916,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		    friend_for_addr(invite.tox_addr, &mapped_friend) != 0 ||
 		    mapped_friend != friend)
 			return;
-		if (g_have_pending || g_have_gauth || g_have_gpending ||
+		if (g_pending_invite.used || g_have_gauth || g_have_gpending ||
 		    g_group_bind_proof.used) {
 			char group_id[OMAQ_GROUP_ID_MAX];
 			snprintf(group_id, sizeof(group_id), "g:%s", invite.group);
@@ -5971,6 +5990,8 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	if (text && strncmp(text, "OQE1|", 5) == 0) {
 		char action_id[80], action_text[1400];
 		if (omaq_message_edit_wire_unpack(text, action_id, sizeof(action_id), action_text, sizeof(action_text)) == 0 &&
+		    omaq_control_rate_allow(&g_direct_control_rate, 'e', friend, state_conv,
+					    (int64_t)time(NULL)) == 0 &&
 		    omaq_message_apply_edit(home_dir(), state_conv, action_id, action_text) == 0) {
 			emit_message_update(conv, action_id, action_text, 0);
 			return;
@@ -5980,6 +6001,8 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	if (text && strncmp(text, "OQD1|", 5) == 0) {
 		char action_id[80];
 		if (omaq_message_delete_wire_unpack(text, action_id, sizeof(action_id)) == 0 &&
+		    omaq_control_rate_allow(&g_direct_control_rate, 'd', friend, state_conv,
+					    (int64_t)time(NULL)) == 0 &&
 		    omaq_message_apply_delete(home_dir(), state_conv, action_id) == 0) {
 			emit_message_update(conv, action_id, "", 1);
 			return;
@@ -5988,8 +6011,11 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	}
 	if (omaq_receipt_wire_unpack(text, receipt_id, sizeof(receipt_id),
 				     receipt_state, sizeof(receipt_state)) == 0) {
-		int receipt_rc = omaq_store_update_receipt_changed(home_dir(), state_conv,
-							     receipt_id, receipt_state);
+		int receipt_rc = -1;
+		if (omaq_control_rate_allow(&g_direct_control_rate, 'r', friend, state_conv,
+					    (int64_t)time(NULL)) == 0)
+			receipt_rc = omaq_store_update_receipt_changed(home_dir(), state_conv,
+								      receipt_id, receipt_state);
 		if (receipt_rc == 1)
 			emit_receipt_event(conv, receipt_id, receipt_state);
 #ifdef HAVE_SIGNAL
@@ -6002,6 +6028,9 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 #endif
 		return;
 	}
+	if (omaq_message_rate_allow(&g_message_rate, state_conv, state_conv,
+				    (int64_t)time(NULL)) != 0)
+		return;
 	wire_reply[0] = '\0';
 	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
 				     wire_text, sizeof(wire_text)) == 0) {
@@ -6009,8 +6038,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		has_wire_id = 1;
 	}
 	if (has_wire_id) {
-		if (omaq_store_message_id_used(home_dir(), state_conv, wire_id) != 0 ||
-		    omaq_message_append_id_reply(home_dir(), state_conv, "peer", display, "in",
+		if (omaq_message_append_id_reply(home_dir(), state_conv, "peer", display, "in",
 					 wire_id, wire_reply) != 0)
 			return;
 		snprintf(mid, sizeof(mid), "%s", wire_id);
@@ -6964,20 +6992,40 @@ static void group_file_receive_offer(uint32_t group_number, uint32_t peer,
 {
 	omaq_group_file_offer offer;
 	group_file_incoming *incoming;
-	char group[OMAQ_GROUP_ID_MAX], key[65], name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
+	char group[OMAQ_GROUP_ID_MAX], key[65], actor[65];
+	char name[OMAQ_GROUP_MEMBER_NAME_MAX + 1];
 	char event_id[3 + OMAQ_GROUP_FILE_ID_HEX + 1];
+	const char *bound_actor;
 	int self = 0, slot = -1;
 
-	if (omaq_group_file_offer_unpack(data, length, &offer) != 0 ||
-	    omaq_group_id_format(group_number, group, sizeof(group)) != 0 ||
+	if (omaq_group_id_format(group_number, group, sizeof(group)) != 0 ||
 	    group_file_peer_identity(group_number, peer, key, name, sizeof(name),
-				     &self) != 0 || self ||
-	    group_file_event_id(offer.id, event_id, sizeof(event_id)) != 0 ||
-	    omaq_store_message_id_used(home_dir(), group, event_id) != 0)
+				     &self) != 0 || self)
+		return;
+	bound_actor = group_binding_friend(group, key);
+	if (snprintf(actor, sizeof(actor), "%s", bound_actor[0] ? bound_actor : key) >=
+	    (int)sizeof(actor))
+		return;
+	/* A sender already holding an unaccepted slot cannot spend process-wide
+	 * OFFER budget with duplicate or malformed packets in another bound group. */
+	for (int i = 0; i < GROUP_FILE_IN_MAX; i++)
+		if (g_group_file_in[i].used && !g_group_file_in[i].accepted &&
+		    strcmp(g_group_file_in[i].sender_actor, actor) == 0)
+			return;
+	if (omaq_group_file_offer_rate_allow(&g_group_file_offer_rate, group, actor,
+					    (int64_t)time(NULL)) != 0 ||
+	    omaq_group_file_offer_unpack(data, length, &offer) != 0 ||
+	    group_file_event_id(offer.id, event_id, sizeof(event_id)) != 0)
 		return;
 	if (group_file_in_find(group_number, offer.id) >= 0)
 		return;
 	for (int i = 0; i < GROUP_FILE_IN_MAX; i++) {
+		if (g_group_file_in[i].used && !g_group_file_in[i].accepted &&
+		    strcmp(g_group_file_in[i].sender_actor, actor) == 0) {
+			(void)group_file_send_control(group_number, peer,
+					      OMAQ_GROUP_FILE_CANCEL, offer.id);
+			return;
+		}
 		if (g_group_file_in[i].used &&
 		    strcmp(g_group_file_in[i].group, group) == 0) {
 			(void)group_file_send_control(group_number, peer,
@@ -6987,8 +7035,7 @@ static void group_file_receive_offer(uint32_t group_number, uint32_t peer,
 		if (!g_group_file_in[i].used && slot < 0)
 			slot = i;
 	}
-	if (slot < 0 ||
-	    omaq_group_file_id_reserve(state_dir(), offer.id) != 0) {
+	if (slot < 0) {
 		(void)group_file_send_control(group_number, peer, OMAQ_GROUP_FILE_CANCEL,
 					      offer.id);
 		return;
@@ -7006,6 +7053,7 @@ static void group_file_receive_offer(uint32_t group_number, uint32_t peer,
 	snprintf(incoming->group, sizeof(incoming->group), "%s", group);
 	snprintf(incoming->event_id, sizeof(incoming->event_id), "%s", event_id);
 	snprintf(incoming->sender_key, sizeof(incoming->sender_key), "%s", key);
+	snprintf(incoming->sender_actor, sizeof(incoming->sender_actor), "%s", actor);
 	snprintf(incoming->sender_name, sizeof(incoming->sender_name), "%s", name);
 	snprintf(incoming->name, sizeof(incoming->name), "%s", offer.name);
 	snprintf(incoming->kind, sizeof(incoming->kind), "%s", offer.kind);
@@ -7030,6 +7078,13 @@ static int group_file_accept(const char *group, const char *event_id,
 				     key, NULL, 0, NULL) != 0 ||
 	    strcmp(key, g_group_file_in[index].sender_key) != 0)
 		return -1;
+	if (omaq_store_message_id_used(home_dir(), group, event_id) != 0 ||
+	    omaq_group_file_id_reserve(state_dir(), id) != 0) {
+		(void)group_file_send_control(group_number,
+			g_group_file_in[index].sender_peer, OMAQ_GROUP_FILE_CANCEL, id);
+		group_file_in_drop(index, 0);
+		return -1;
+	}
 	fd = omaq_file_download_create(g_group_file_in[index].name, destination,
 				       g_group_file_in[index].path,
 				       sizeof(g_group_file_in[index].path));
@@ -7718,6 +7773,7 @@ static int group_file_member_active(const char *group, const char *member_key)
 
 static void group_file_reset(void)
 {
+	omaq_group_file_offer_rate_init(&g_group_file_offer_rate);
 	for (int i = 0; i < GROUP_FILE_IN_MAX; i++)
 		if (g_group_file_in[i].used)
 			group_file_in_drop(i, !g_group_file_in[i].completed);
@@ -10312,7 +10368,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			if (g_tox) {
 				uint32_t fn = UINT32_MAX;
 				int add_rc, added_friend = 0;
-				if (g_have_pending || g_have_gauth || g_have_gpending ||
+				if (g_pending_invite.used || g_have_gauth || g_have_gpending ||
 				    g_group_bind_proof.used) {
 					emit_identity_error("busy", op->id);
 					return 0;
@@ -10652,20 +10708,20 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}
-		if (g_tox && g_have_pending) {
+		if (g_tox && g_pending_invite.used) {
 			if (op->has_accept && op->accept) {
 				uint32_t fn;
 				int accept_rc, add_journal = 0;
 #ifdef HAVE_SIGNAL
 				char pending_key[65];
 				if (!g_issued_is_group) {
-					if (!g_have_pending_rk) {
+					if (!g_pending_invite.has_ratchet_key) {
 						emit_error("no_ratchet");
 						return 0;
 					}
-					pk_hex(g_pending_pk, pending_key);
+					pk_hex(g_pending_invite.public_key, pending_key);
 					if (omaq_direct_state_add_begin(home_dir(), pending_key,
-								g_pending_rk) != 0) {
+								g_pending_invite.ratchet_key) != 0) {
 						emit_error("direct_state_migration_failed");
 						return 0;
 					}
@@ -10678,7 +10734,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					emit_error("forbidden");
 					return 0;
 				}
-				accept_rc = omaq_tox_friend_accept(g_tox, g_pending_pk);
+				accept_rc = omaq_tox_friend_accept(g_tox, g_pending_invite.public_key);
 				if (accept_rc != 0) {
 					if (add_journal && accept_rc == OMAQ_TOX_ADD_STATE_FAILED)
 						fail_direct_state_backend();
@@ -10687,11 +10743,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					emit_error("forbidden");
 					return 0;
 				}
-				fn = omaq_tox_friend_by_pk(g_tox, g_pending_pk);
+				fn = omaq_tox_friend_by_pk(g_tox, g_pending_invite.public_key);
 #ifdef HAVE_SIGNAL
 				if (!g_issued_is_group) {
 					if (fn == UINT32_MAX ||
-					    set_friend_ratchet_pin(fn, g_pending_rk) != 0) {
+					    set_friend_ratchet_pin(fn, g_pending_invite.ratchet_key) != 0) {
 						if (fn == UINT32_MAX || omaq_tox_friend_delete(g_tox, fn) != 0 ||
 						    migrate_direct_state() != 0)
 							fail_direct_state_backend();
@@ -10734,7 +10790,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				}
 				return 0;
 			}
-			g_have_pending = 0;
+			omaq_pending_invite_clear(&g_pending_invite);
 			g_pending_announced = 0;
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
@@ -12828,6 +12884,8 @@ int main(int argc, char **argv)
 	omaq_rate_init(&g_rate);
 	omaq_rate_init(&g_reaction_rate);
 	omaq_rate_init(&g_reaction_out_rate);
+	omaq_message_rate_init(&g_message_rate);
+	omaq_control_rate_init(&g_direct_control_rate);
 	omaq_line_reader_init(&g_stdin_reader);
 	if (ensure_private_directory(home_dir(), "OMAQ_HOME") != 0 ||
 	    ensure_state_dir() != 0)

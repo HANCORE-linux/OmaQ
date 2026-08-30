@@ -31,7 +31,8 @@ int omaq_ratchet_reset_session(struct omaq_ratchet *r, const char *peer);
 int omaq_ratchet_encrypt(struct omaq_ratchet *r, const char *peer,
 			 const char *plain, char *out, size_t n);
 int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
-			 const char *wire, char *out, size_t n);
+			 const char *wire, char *out, size_t n,
+			 size_t *out_length);
 #endif
 
 #endif

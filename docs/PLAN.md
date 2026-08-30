@@ -54,7 +54,7 @@ External review of PLAN + `OmaQ.md` vs the live Quattro shell. Verdicts:
 | 3d | `group.c` must not duplicate toxcore | **Use.** Headers first, implement only the gap. |
 | 3e | Group invite roles | **Member-only.** Promote a joined member with a separate stable-key `setRole` operation. |
 | — | Manifest `version`; SPDX `GPL-3.0-or-later`; verify-0 is a C driver; do not invent RSS | **Use.** |
-| — | Helper death; rate limit; import must not clobber | **Use.** |
+| — | Helper death; sender and global rate limits; import must not clobber | **Use.** Ordinary incoming messages are bounded before replay lookup, history, unread persistence, and event fan-out. |
 | — | NGC API details as facts | **Discard until headers.** Marked suspicion only. |
 
 Second review (hexagonal / seams):
@@ -240,6 +240,7 @@ Direct storage IDs are `d:<64-hex-tox-public-key>`; group storage IDs are the st
 - Directory and file `0700` / `0600`.
 - `history` with `limit:50` = last 50 lines from the tail. Do not load the file into QML.
 - Rotate when the file exceeds 2 MiB: rename to `messages.jsonl.1`, start a new file. Keep one rotated file. Older lines drop.
+- Incoming replay checks use a bounded, process-keyed Bloom index for the complete retained history plus an exact recent-ID cache. A negative lookup avoids disk scanning; a possible match still uses the exact on-disk decision. Rotation and conversation clearing invalidate the index before mutation.
 - **`message.c` talks only `store.h`.** `store.c` is the only file that opens history paths. A later at-rest wrap (libsodium already linked via toxcore) is a new `store` file, not a rewrite of `message.c`. Phase 1: 0600 only, no extra cipher.
 - Phase 5 search: scan jsonl on disk for the **open** conversation. Still not the whole archive in QML.
 - Tests use a fixture file under the temp `OMAQ_HOME`. Never the user’s real history.

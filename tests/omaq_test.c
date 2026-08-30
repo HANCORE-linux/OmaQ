@@ -110,10 +110,47 @@ static void test_invite_file(const char *path)
 	fail(path);
 }
 
+static void test_pending_invite_claim(void)
+{
+	omaq_pending_invite pending;
+	uint8_t first[OMAQ_INVITE_PUBLIC_KEY_BYTES];
+	uint8_t second[OMAQ_INVITE_PUBLIC_KEY_BYTES];
+	char first_rk[OMAQ_INVITE_RATCHET_KEY_HEX + 1];
+	char second_rk[OMAQ_INVITE_RATCHET_KEY_HEX + 1];
+
+	memset(first, 0x11, sizeof(first));
+	memset(second, 0x22, sizeof(second));
+	memset(first_rk, 'a', sizeof(first_rk) - 1);
+	memset(second_rk, 'b', sizeof(second_rk) - 1);
+	first_rk[sizeof(first_rk) - 1] = '\0';
+	second_rk[sizeof(second_rk) - 1] = '\0';
+	omaq_pending_invite_clear(&pending);
+	if (omaq_pending_invite_claim(&pending, first, first_rk) != 1 ||
+	    !pending.used || !pending.has_ratchet_key ||
+	    memcmp(pending.public_key, first, sizeof(first)) != 0 ||
+	    strcmp(pending.ratchet_key, first_rk) != 0)
+		fail("pending invite first writer");
+	if (omaq_pending_invite_claim(&pending, second, second_rk) != 0 ||
+	    memcmp(pending.public_key, first, sizeof(first)) != 0 ||
+	    strcmp(pending.ratchet_key, first_rk) != 0)
+		fail("pending invite second writer changed claim");
+	omaq_pending_invite_clear(&pending);
+	if (pending.used || pending.has_ratchet_key || pending.ratchet_key[0] ||
+	    omaq_pending_invite_claim(&pending, second, NULL) != 1 ||
+	    !pending.used || pending.has_ratchet_key || pending.ratchet_key[0] ||
+	    memcmp(pending.public_key, second, sizeof(second)) != 0)
+		fail("pending group invite claim");
+	omaq_pending_invite_clear(&pending);
+	if (omaq_pending_invite_claim(&pending, first, "bad") != -1 || pending.used)
+		fail("pending invite malformed pin");
+}
+
 static void test_invites(void)
 {
 	DIR *d = opendir("tests/gold/invite");
 	struct dirent *e;
+
+	test_pending_invite_claim();
 	if (!d) {
 		fail("open tests/gold/invite");
 		return;
@@ -164,6 +201,11 @@ static void test_roles(void)
 			fail(path);
 	}
 	closedir(d);
+	if (omaq_role_valid((omaq_role)-1) || omaq_role_valid((omaq_role)3) ||
+	    omaq_role_may((omaq_role)-1, ACT_READ, ROLE_MEMBER) ||
+	    omaq_role_may(ROLE_OWNER, (omaq_action)99, ROLE_MEMBER) ||
+	    omaq_role_may(ROLE_OWNER, ACT_KICK, (omaq_role)3))
+		fail("role domain validation");
 }
 
 static void test_json(void)
@@ -288,6 +330,11 @@ static void test_json(void)
 		fail("json limit overflow");
 	if (omaq_json_parse_op("{\"op\":\"sta\rtus\"}", &op) == 0)
 		fail("json embedded carriage return");
+	if (omaq_json_parse_op("{\"op\":\"status\",\"text\":\"\xc0\x80\"}",
+			       &op) == 0 ||
+	    omaq_json_parse_op("{\"op\":\"status\",\"text\":\"\xed\xa0\x80\"}",
+			       &op) == 0)
+		fail("json operation utf8 validation");
 	if (omaq_json_validate("{\"id\":\"ok\",\"items\":[true,null,-1.5e2]}") != 0 ||
 	    omaq_json_validate("{bad}") == 0 ||
 	    omaq_json_validate("{\"id\":01}") == 0 ||
@@ -378,6 +425,30 @@ static void test_store(void)
 	}
 	if (omaq_store_append(dir, "c2", "{\"keep\":true}") != 0)
 		fail("store second conversation");
+	{
+		char index_path[640] = {0}, archived_path[680] = {0};
+		if (omaq_message_append_id(dir, "index-test", "peer", "indexed", "in",
+					   "indexed-message-1") != 0 ||
+		    omaq_store_message_id_used(dir, "index-test", "missing-message") != 0 ||
+		    omaq_store_message_id_used(dir, "index-test", "indexed-message-1") != 1 ||
+		    snprintf(index_path, sizeof(index_path), "%s/history/index-test", dir) >=
+			(int)sizeof(index_path) ||
+		    snprintf(archived_path, sizeof(archived_path), "%s.archived", index_path) >=
+			(int)sizeof(archived_path) || rename(index_path, archived_path) != 0 ||
+		    mkdir(index_path, 0700) != 0)
+			fail("bounded message id index fixture");
+		else {
+			omaq_store_message_index_reset();
+			if (omaq_store_message_id_used(dir, "index-test", "indexed-message-1") != 0)
+				fail("message id index identity reset");
+		}
+		if (index_path[0])
+			rmdir(index_path);
+		if (archived_path[0] && index_path[0])
+			rename(archived_path, index_path);
+		if (omaq_store_clear(dir, "index-test") != 0)
+			fail("bounded message id index coherence");
+	}
 	if (omaq_store_tail(dir, "c1", 2, &out, &n) != 0)
 		fail("store tail");
 	else if (!out || !strstr(out, "\"n\":3") || !strstr(out, "\"n\":4") || strstr(out, "\"n\":2"))
@@ -1178,6 +1249,110 @@ static void test_control_rate(void)
 		fail("group typing exhausted receipt budget");
 }
 
+static void test_group_file_offer_rate(void)
+{
+	omaq_group_file_offer_rate rate;
+	char actor[65];
+
+	memset(actor, 'a', 64);
+	actor[64] = '\0';
+	omaq_group_file_offer_rate_init(&rate);
+	for (int i = 0; i < OMAQ_GROUP_FILE_OFFER_RATE_PER_KEY; i++)
+		if (omaq_group_file_offer_rate_allow(&rate,
+			"g:0000000000000000000000000000000000000000000000000000000000000000",
+			actor, 7000) != 0)
+			fail("group file offer actor allowance");
+	if (omaq_group_file_offer_rate_allow(&rate,
+		"g:0000000000000000000000000000000000000000000000000000000000000000",
+		actor, 7000) == 0)
+		fail("group file offer actor limit");
+	if (omaq_group_file_offer_rate_allow(&rate,
+		"g:1000000000000000000000000000000000000000000000000000000000000000",
+		actor, 7000) != 0)
+		fail("group file offer group isolation");
+	for (unsigned int group_index = 2; group_index <= 5; group_index++) {
+		char group[67];
+		snprintf(group, sizeof(group), "g:%064x", group_index);
+		if (omaq_group_file_offer_rate_allow(&rate, group, actor, 7000) != 0)
+			fail("group file offer cross-group actor allowance");
+	}
+	if (omaq_group_file_offer_rate_allow(&rate,
+		"g:6000000000000000000000000000000000000000000000000000000000000000",
+		actor, 7000) == 0)
+		fail("group file offer cross-group actor limit");
+	if (omaq_group_file_offer_rate_allow(&rate,
+		"g:0000000000000000000000000000000000000000000000000000000000000000",
+		actor, 7060) != 0)
+		fail("group file offer window reset");
+
+	omaq_group_file_offer_rate_init(&rate);
+	for (int i = 0; i < OMAQ_GROUP_FILE_OFFER_RATE_GLOBAL; i++) {
+		snprintf(actor, sizeof(actor), "%064x", (unsigned int)(i + 1));
+		if (omaq_group_file_offer_rate_allow(&rate,
+			"g:0000000000000000000000000000000000000000000000000000000000000000",
+			actor, 8000) != 0)
+			fail("group file offer global allowance");
+	}
+	memset(actor, 'f', 64);
+	actor[64] = '\0';
+	if (omaq_group_file_offer_rate_allow(&rate,
+		"g:1000000000000000000000000000000000000000000000000000000000000000",
+		actor, 8000) == 0)
+		fail("group file offer global limit");
+}
+
+static void test_message_rate(void)
+{
+	omaq_message_rate rate;
+	char actor[65];
+
+	memset(actor, 'a', 64);
+	actor[64] = '\0';
+	omaq_message_rate_init(&rate);
+	for (int i = 0; i < OMAQ_MESSAGE_RATE_BURST_PER_KEY; i++)
+		if (omaq_message_rate_allow(&rate,
+			"g:0000000000000000000000000000000000000000000000000000000000000000",
+			actor, 9000) != 0)
+			fail("message rate burst allowance");
+	if (omaq_message_rate_allow(&rate,
+		"g:0000000000000000000000000000000000000000000000000000000000000000",
+		actor, 9000) == 0)
+		fail("message rate burst limit");
+	if (omaq_message_rate_allow(&rate,
+		"g:1000000000000000000000000000000000000000000000000000000000000000",
+		actor, 9000) != 0)
+		fail("message rate conversation isolation");
+	for (int window = 1; window < 3; window++)
+		for (int i = 0; i < OMAQ_MESSAGE_RATE_BURST_PER_KEY; i++)
+			if (omaq_message_rate_allow(&rate,
+				"g:0000000000000000000000000000000000000000000000000000000000000000",
+				actor, 9000 + window * OMAQ_MESSAGE_RATE_BURST_SECONDS) != 0)
+				fail("message rate sustained allowance");
+	if (omaq_message_rate_allow(&rate,
+		"g:0000000000000000000000000000000000000000000000000000000000000000",
+		actor, 9030) == 0)
+		fail("message rate minute limit");
+	if (omaq_message_rate_allow(&rate,
+		"g:0000000000000000000000000000000000000000000000000000000000000000",
+		actor, 9060) != 0)
+		fail("message rate minute reset");
+
+	omaq_message_rate_init(&rate);
+	for (int i = 0; i < OMAQ_MESSAGE_RATE_GLOBAL_BURST; i++) {
+		snprintf(actor, sizeof(actor), "%064x", (unsigned int)(i + 1));
+		if (omaq_message_rate_allow(&rate,
+			"g:0000000000000000000000000000000000000000000000000000000000000000",
+			actor, 10000) != 0)
+			fail("message rate global burst allowance");
+	}
+	memset(actor, 'f', 64);
+	actor[64] = '\0';
+	if (omaq_message_rate_allow(&rate,
+		"g:1000000000000000000000000000000000000000000000000000000000000000",
+		actor, 10000) == 0)
+		fail("message rate global burst limit");
+}
+
 static void test_safety(void)
 {
 	char body[512];
@@ -1325,9 +1500,12 @@ static void test_group_file_wire(void)
 		if (!mkdtemp(state) ||
 		    snprintf(store, sizeof(store), "%s/group-file-ids.bin", state) >=
 			(int)sizeof(store) ||
+		    omaq_group_file_id_seen(state, id) != 0 ||
 		    omaq_group_file_id_reserve(state, id) != 0 ||
 		    omaq_group_file_id_reserve(state, id) != 1 ||
-		    omaq_group_file_id_reserve(state, second) != 0)
+		    omaq_group_file_id_seen(state, id) != 1 ||
+		    omaq_group_file_id_reserve(state, second) != 0 ||
+		    omaq_group_file_id_seen(state, second) != 1)
 			fail("group file durable id reservation");
 		if (chmod(store, 0644) != 0 ||
 		    omaq_group_file_id_reserve(state, offer.id) != -1 ||
@@ -1339,8 +1517,69 @@ static void test_group_file_wire(void)
 			fail("group file malformed id store");
 		unlink(store);
 		if (symlink("/dev/null", store) != 0 ||
+		    omaq_group_file_id_seen(state, offer.id) != -1 ||
 		    omaq_group_file_id_reserve(state, offer.id) != -1)
 			fail("group file id store symlink");
+		unlink(store);
+		{
+			static const uint8_t v1_header[8] = {
+				'O', 'Q', 'G', 'F', 'I', 'D', 'S', '1'
+			};
+			static const uint8_t v2_header[8] = {
+				'O', 'Q', 'G', 'F', 'I', 'D', 'S', '2'
+			};
+			uint8_t record[OMAQ_GROUP_FILE_ID_BYTES];
+			uint8_t oldest[OMAQ_GROUP_FILE_ID_BYTES] = {0};
+			uint8_t dropped[OMAQ_GROUP_FILE_ID_BYTES] = {0};
+			uint8_t retained[OMAQ_GROUP_FILE_ID_BYTES] = {0};
+			uint8_t newest[OMAQ_GROUP_FILE_ID_BYTES];
+			struct stat status;
+			uint8_t header[8];
+
+			memset(newest, 0xee, sizeof(newest));
+			dropped[1] = 1;
+			retained[0] = 0xff;
+			retained[1] = 0xff;
+			file = fopen(store, "wb");
+			if (!file || chmod(store, 0600) != 0 ||
+			    fwrite(v1_header, 1, sizeof(v1_header), file) != sizeof(v1_header)) {
+				fail("group file v1 store create");
+			} else {
+				for (unsigned int i = 0; i < 65536u; i++) {
+					memset(record, 0, sizeof(record));
+					record[0] = (uint8_t)(i >> 8);
+					record[1] = (uint8_t)i;
+					if (fwrite(record, 1, sizeof(record), file) != sizeof(record)) {
+						fail("group file v1 store write");
+						break;
+					}
+				}
+			}
+			if (file && fclose(file) != 0)
+				fail("group file v1 store close");
+			file = NULL;
+			if (omaq_group_file_id_reserve(state, oldest) != 1 ||
+			    omaq_group_file_id_reserve(state, oldest) != 1 ||
+			    stat(store, &status) != 0 ||
+			    (size_t)status.st_size != sizeof(v2_header) +
+				OMAQ_GROUP_FILE_ID_STORE_LIMIT * OMAQ_GROUP_FILE_ID_BYTES)
+				fail("group file duplicate-triggered v1 migration");
+			if (omaq_group_file_id_reserve(state, newest) != 0 ||
+			    omaq_group_file_id_seen(state, oldest) != 1 ||
+			    omaq_group_file_id_seen(state, dropped) != 0 ||
+			    omaq_group_file_id_seen(state, retained) != 1 ||
+			    omaq_group_file_id_seen(state, newest) != 1 ||
+			    stat(store, &status) != 0 ||
+			    (size_t)status.st_size != sizeof(v2_header) +
+				OMAQ_GROUP_FILE_ID_STORE_LIMIT * OMAQ_GROUP_FILE_ID_BYTES)
+				fail("group file v1 migration and compaction");
+			file = fopen(store, "rb");
+			if (!file || fread(header, 1, sizeof(header), file) != sizeof(header) ||
+			    memcmp(header, v2_header, sizeof(header)) != 0)
+				fail("group file v2 store header");
+			if (file && fclose(file) != 0)
+				fail("group file v2 store close");
+		}
 		unlink(store);
 		rmdir(state);
 	}
@@ -1959,6 +2198,12 @@ static void test_group_id(void)
 	group_message[10] = 'a';
 	if (omaq_group_message_bytes_ok(group_message, 1399))
 		fail("group message utf8 validation");
+	if (omaq_message_text_bytes_ok((const uint8_t *)embedded_nul,
+				       sizeof(embedded_nul)) ||
+	    omaq_message_text_bytes_ok((const uint8_t *)"bad\xc0\x80", 5) ||
+	    omaq_message_text_bytes_ok((const uint8_t *)"bad\x01", 4) ||
+	    !omaq_message_text_bytes_ok((const uint8_t *)"line one\nline two", 17))
+		fail("direct message text validation");
 	if (!omaq_group_title_ok("Test room") || !omaq_group_title_ok("Grüppe 🎉") ||
 	    !omaq_group_title_ok(title48) || omaq_group_title_ok(title49) ||
 	    omaq_group_title_ok("") || omaq_group_title_ok("bad\nroom") ||
@@ -1973,6 +2218,9 @@ static void test_group_id(void)
 	    omaq_group_member_name_bytes_ok("bad\xc2\x85", 5) ||
 	    omaq_group_member_name_bytes_ok(embedded_nul, sizeof(embedded_nul)))
 		fail("group title validation");
+	omaq_group_reset();
+	if (omaq_group_note_member(0, 7, "", "Member", (omaq_role)3, 1, 0) == 0)
+		fail("group member role domain validation");
 	omaq_group_reset();
 	if (omaq_group_set_chat_id(0, chat_a) != 0 ||
 	    omaq_group_id_format(0, id, sizeof(id)) != 0 || strcmp(id, stable_a) != 0)
@@ -2886,6 +3134,8 @@ int main(void)
 	test_rate_hour();
 	test_rate_key_only();
 	test_control_rate();
+	test_group_file_offer_rate();
+	test_message_rate();
 	test_safety();
 	test_group_file_wire();
 	test_group_invite();

@@ -16,6 +16,39 @@ static int is_id_char(char c)
 	       (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
 
+void omaq_pending_invite_clear(omaq_pending_invite *pending)
+{
+	if (pending)
+		memset(pending, 0, sizeof(*pending));
+}
+
+int omaq_pending_invite_claim(omaq_pending_invite *pending,
+			      const uint8_t public_key[OMAQ_INVITE_PUBLIC_KEY_BYTES],
+			      const char *ratchet_key)
+{
+	size_t i;
+
+	if (!pending || !public_key)
+		return -1;
+	if (ratchet_key) {
+		if (strlen(ratchet_key) != OMAQ_INVITE_RATCHET_KEY_HEX)
+			return -1;
+		for (i = 0; i < OMAQ_INVITE_RATCHET_KEY_HEX; i++)
+			if (!is_hex(ratchet_key[i]))
+				return -1;
+	}
+	if (pending->used)
+		return 0;
+	memcpy(pending->public_key, public_key, sizeof(pending->public_key));
+	if (ratchet_key) {
+		memcpy(pending->ratchet_key, ratchet_key,
+		       OMAQ_INVITE_RATCHET_KEY_HEX + 1);
+		pending->has_ratchet_key = 1;
+	}
+	pending->used = 1;
+	return 1;
+}
+
 static void lower_copy(char *dst, const char *src, size_t n)
 {
 	size_t i;

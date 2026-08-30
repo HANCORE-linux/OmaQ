@@ -132,6 +132,164 @@ int omaq_control_rate_allow(omaq_control_rate *r, char kind, uint32_t group,
 	return 0;
 }
 
+void omaq_group_file_offer_rate_init(omaq_group_file_offer_rate *r)
+{
+	if (r)
+		memset(r, 0, sizeof(*r));
+}
+
+int omaq_group_file_offer_rate_allow(omaq_group_file_offer_rate *r,
+				     const char *group, const char *actor,
+				     int64_t now)
+{
+	char key[OMAQ_GROUP_FILE_OFFER_RATE_KEY_LEN];
+	int slot = -1, free_slot = -1, oldest = -1;
+	int actor_slot = -1, actor_free = -1, actor_oldest = -1;
+
+	if (!r || !group || !group[0] || !actor || !actor[0] || now < 0 ||
+	    snprintf(key, sizeof(key), "%s:%s", group, actor) >= (int)sizeof(key))
+		return -1;
+	if (now < r->global_window || now - r->global_window >= 60) {
+		r->global_window = now;
+		r->global_count = 0;
+	}
+	if (r->global_count >= OMAQ_GROUP_FILE_OFFER_RATE_GLOBAL)
+		return -1;
+	for (int i = 0; i < OMAQ_GROUP_FILE_OFFER_RATE_SLOTS; i++) {
+		if (r->entries[i].key[0] == '\0') {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(r->entries[i].key, key) == 0) {
+			slot = i;
+			break;
+		}
+		if (oldest < 0 || r->entries[i].window < r->entries[oldest].window)
+			oldest = i;
+	}
+	if (slot < 0) {
+		slot = free_slot >= 0 ? free_slot : oldest;
+		if (slot < 0)
+			return -1;
+		memset(&r->entries[slot], 0, sizeof(r->entries[slot]));
+		snprintf(r->entries[slot].key, sizeof(r->entries[slot].key), "%s", key);
+		r->entries[slot].window = now;
+	} else if (now < r->entries[slot].window ||
+		   now - r->entries[slot].window >= 60) {
+		r->entries[slot].window = now;
+		r->entries[slot].count = 0;
+	}
+	if (r->entries[slot].count >= OMAQ_GROUP_FILE_OFFER_RATE_PER_KEY)
+		return -1;
+	for (int i = 0; i < OMAQ_GROUP_FILE_OFFER_RATE_SLOTS; i++) {
+		if (r->actors[i].key[0] == '\0') {
+			if (actor_free < 0)
+				actor_free = i;
+			continue;
+		}
+		if (strcmp(r->actors[i].key, actor) == 0) {
+			actor_slot = i;
+			break;
+		}
+		if (actor_oldest < 0 ||
+		    r->actors[i].window < r->actors[actor_oldest].window)
+			actor_oldest = i;
+	}
+	if (actor_slot < 0) {
+		actor_slot = actor_free >= 0 ? actor_free : actor_oldest;
+		if (actor_slot < 0 || snprintf(r->actors[actor_slot].key,
+						 sizeof(r->actors[actor_slot].key), "%s",
+						 actor) >=
+					(int)sizeof(r->actors[actor_slot].key))
+			return -1;
+		r->actors[actor_slot].window = now;
+		r->actors[actor_slot].count = 0;
+	} else if (now < r->actors[actor_slot].window ||
+		   now - r->actors[actor_slot].window >= 60) {
+		r->actors[actor_slot].window = now;
+		r->actors[actor_slot].count = 0;
+	}
+	if (r->actors[actor_slot].count >= OMAQ_GROUP_FILE_OFFER_RATE_PER_ACTOR)
+		return -1;
+	r->entries[slot].count++;
+	r->actors[actor_slot].count++;
+	r->global_count++;
+	return 0;
+}
+
+void omaq_message_rate_init(omaq_message_rate *r)
+{
+	if (r)
+		memset(r, 0, sizeof(*r));
+}
+
+int omaq_message_rate_allow(omaq_message_rate *r, const char *conversation,
+			    const char *actor, int64_t now)
+{
+	char key[OMAQ_MESSAGE_RATE_KEY_LEN];
+	int slot = -1, free_slot = -1, oldest = -1;
+
+	if (!r || !conversation || !conversation[0] || !actor || !actor[0] ||
+	    now < 0 || snprintf(key, sizeof(key), "%s:%s", conversation, actor) >=
+		(int)sizeof(key))
+		return -1;
+	if (now < r->global_burst_window ||
+	    now - r->global_burst_window >= OMAQ_MESSAGE_RATE_BURST_SECONDS) {
+		r->global_burst_window = now;
+		r->global_burst_count = 0;
+	}
+	if (now < r->global_minute_window || now - r->global_minute_window >= 60) {
+		r->global_minute_window = now;
+		r->global_minute_count = 0;
+	}
+	if (r->global_burst_count >= OMAQ_MESSAGE_RATE_GLOBAL_BURST ||
+	    r->global_minute_count >= OMAQ_MESSAGE_RATE_GLOBAL_MINUTE)
+		return -1;
+	for (int i = 0; i < OMAQ_MESSAGE_RATE_SLOTS; i++) {
+		if (r->entries[i].key[0] == '\0') {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(r->entries[i].key, key) == 0) {
+			slot = i;
+			break;
+		}
+		if (oldest < 0 ||
+		    r->entries[i].minute_window < r->entries[oldest].minute_window)
+			oldest = i;
+	}
+	if (slot < 0) {
+		slot = free_slot >= 0 ? free_slot : oldest;
+		if (slot < 0)
+			return -1;
+		memset(&r->entries[slot], 0, sizeof(r->entries[slot]));
+		snprintf(r->entries[slot].key, sizeof(r->entries[slot].key), "%s", key);
+		r->entries[slot].burst_window = now;
+		r->entries[slot].minute_window = now;
+	} else {
+		if (now < r->entries[slot].burst_window ||
+		    now - r->entries[slot].burst_window >= OMAQ_MESSAGE_RATE_BURST_SECONDS) {
+			r->entries[slot].burst_window = now;
+			r->entries[slot].burst_count = 0;
+		}
+		if (now < r->entries[slot].minute_window ||
+		    now - r->entries[slot].minute_window >= 60) {
+			r->entries[slot].minute_window = now;
+			r->entries[slot].minute_count = 0;
+		}
+	}
+	if (r->entries[slot].burst_count >= OMAQ_MESSAGE_RATE_BURST_PER_KEY ||
+	    r->entries[slot].minute_count >= OMAQ_MESSAGE_RATE_PER_MINUTE)
+		return -1;
+	r->entries[slot].burst_count++;
+	r->entries[slot].minute_count++;
+	r->global_burst_count++;
+	r->global_minute_count++;
+	return 0;
+}
+
 int omaq_rate_allow(omaq_rate *r, const char *key, int64_t now)
 {
 	if (!r || !key || !key[0] || now < 0)

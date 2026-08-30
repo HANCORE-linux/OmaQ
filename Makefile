@@ -41,7 +41,7 @@ ifeq ($(PULSE_OK),yes)
 endif
 
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
-	helper/group_file.c helper/json_io.c helper/line_reader.c helper/stdout_spool.c helper/state_archive.c helper/store.c helper/message.c \
+	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/stdout_spool.c helper/state_archive.c helper/store.c helper/message.c \
 	helper/identity.c helper/identity_guard.c helper/tox_adapt.c helper/rate.c \
 	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/file.c helper/avatar.c helper/av.c \
@@ -49,7 +49,7 @@ LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c helper/auto_open
 	helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
 HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
-	helper/group_file.c helper/json_io.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
+	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
 	helper/identity_guard.c \
 	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/state_archive.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c \
@@ -121,7 +121,7 @@ $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
 		$(AVATAR_LIBS)
 
-$(BIN_GROUP_ADMIN_TEST_HELPER): $(HELPER_SRC)
+$(BIN_GROUP_ADMIN_TEST_HELPER): check-signal $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) \
 		-DOMAQ_IPC_TEST -DOMAQ_TOX_TEST -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
@@ -161,6 +161,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/surface-owner.sh
 	sh tests/chat-surface-geometry.sh
 	sh tests/chat-message-actions.sh
+	python3 tests/qml_plaintext_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/stable-direct-state.sh

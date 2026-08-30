@@ -10,6 +10,7 @@ page = (root / "pages/ChatPage.qml").read_text()
 service = (root / "Service.qml").read_text()
 panel = (root / "Panel.qml").read_text()
 helper = (root / "helper/omaq.c").read_text()
+group_file_store = (root / "helper/group_file_store.c").read_text()
 tox = (root / "helper/tox_adapt.c").read_text()
 
 presence = (
@@ -71,6 +72,40 @@ if not all(value in helper for value in wire):
 if "omaq_message_id_reserved(wire_id)" not in helper or \
         "omaq_group_file_id_reserve(state_dir()" not in helper:
     raise SystemExit("group-chat-parity: group-file message namespace is not durably reserved")
+group_message_start = helper.index("static void hook_gmsg(")
+group_message_end = helper.index("static void persist_forced_group_removal", group_message_start)
+group_message = helper[group_message_start:group_message_end]
+direct_message_start = helper.index("static void hook_msg(")
+direct_message_end = helper.index("\n}\n#endif\n", direct_message_start) + 2
+direct_message = helper[direct_message_start:direct_message_end]
+for name, callback in (("group", group_message), ("direct", direct_message)):
+    if "omaq_message_rate_allow" not in callback or \
+            callback.index("omaq_message_rate_allow") > callback.index("omaq_message_wire_unpack") or \
+            "omaq_store_message_id_used" in callback:
+        raise SystemExit(f"group-chat-parity: {name} message admission is not bounded before one indexed append")
+if "omaq_message_text_bytes_ok" not in direct_message or \
+        direct_message.index("omaq_message_text_bytes_ok") > direct_message.index("OQX1|gmbd|"):
+    raise SystemExit("group-chat-parity: decrypted direct text is not validated before control parsing")
+receive_start = helper.index("static void group_file_receive_offer(")
+receive_end = helper.index("static int group_file_accept(", receive_start)
+receive_offer = helper[receive_start:receive_end]
+if "omaq_group_file_id_reserve" in receive_offer or \
+        "omaq_store_message_id_used" in receive_offer:
+    raise SystemExit("group-chat-parity: unaccepted offers still mutate or scan durable state")
+if receive_offer.index("omaq_group_file_offer_rate_allow") > \
+        receive_offer.index("omaq_group_file_offer_unpack") or \
+        "!g_group_file_in[i].accepted" not in receive_offer:
+    raise SystemExit("group-chat-parity: offer admission is not early or sender-fair")
+accept_start = receive_end
+accept_end = helper.index("static int group_file_cancel(", accept_start)
+accept = helper[accept_start:accept_end]
+if "omaq_group_file_id_reserve(state_dir(), id)" not in accept or \
+        accept.index("omaq_group_file_id_reserve(state_dir(), id)") > \
+        accept.index("omaq_file_download_create"):
+    raise SystemExit("group-chat-parity: incoming id is not reserved before acceptance")
+if "id_store_v2_header" not in group_file_store or \
+        "OMAQ_GROUP_FILE_ID_STORE_LIMIT - 1" not in group_file_store:
+    raise SystemExit("group-chat-parity: id-store migration/compaction is missing")
 if '"accept_failed"' not in helper or \
         'group_file_in_fail(index, "failed", "local_history_failed", 1)' not in helper:
     raise SystemExit("group-chat-parity: failed GroupChat acceptance/history is not terminally projected")

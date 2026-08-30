@@ -8,6 +8,7 @@
 #define OMAQ_GROUP_FILE_ID_HEX 32
 #define OMAQ_GROUP_FILE_PACKET_MAX 1373
 #define OMAQ_GROUP_FILE_DATA_MAX 1343
+#define OMAQ_GROUP_FILE_ID_STORE_LIMIT 4096u
 
 #define OMAQ_GROUP_FILE_OFFER 1
 #define OMAQ_GROUP_FILE_ACCEPT 2
@@ -45,7 +46,10 @@ int omaq_group_file_data_unpack(const uint8_t *packet, size_t length,
 				uint8_t id[OMAQ_GROUP_FILE_ID_BYTES],
 				uint64_t *offset, const uint8_t **data,
 				size_t *data_length);
-/* Returns 0 for a new durable reservation, 1 for an existing id, -1 on error. */
+/* Return 1 for a retained id, 0 when absent, and -1 for invalid storage. */
+int omaq_group_file_id_seen(const char *state,
+			    const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES]);
+/* Return 0 for a new durable reservation, 1 for an existing id, -1 on error. */
 int omaq_group_file_id_reserve(const char *state,
 			       const uint8_t id[OMAQ_GROUP_FILE_ID_BYTES]);
 

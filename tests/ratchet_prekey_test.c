@@ -149,6 +149,7 @@ int main(void)
 	const char *peer_c = "d:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 	const char *peer_d = "d:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 	struct omaq_ratchet *a = NULL, *b = NULL, *c = NULL;
+	size_t plain_length = 0;
 
 	if (!mkdtemp(root) ||
 	    snprintf(home_a, sizeof(home_a), "%s/a", root) >= (int)sizeof(home_a) ||
@@ -232,7 +233,7 @@ int main(void)
 	if (omaq_ratchet_accept_bundle(c, peer_a, bundle_b, rk_a) != 0 ||
 	    omaq_ratchet_encrypt(c, peer_a, "wrong-peer", wire_attack,
 				 sizeof(wire_attack)) != 0 ||
-	    omaq_ratchet_decrypt(a, peer_c, wire_attack, plain, sizeof(plain)) == 0 ||
+	    omaq_ratchet_decrypt(a, peer_c, wire_attack, plain, sizeof(plain), &plain_length) == 0 ||
 	    regular_entries(pre_dir) != 2)
 		fail("peer-bound prekey reservation");
 
@@ -250,8 +251,9 @@ int main(void)
 	    omaq_ratchet_encrypt(b, peer_a, "from-b-2", wire_b2, sizeof(wire_b2)) != 0 ||
 	    omaq_ratchet_encrypt(c, peer_a, "from-c", wire_c, sizeof(wire_c)) != 0)
 		fail("build remote sessions");
-	if (omaq_ratchet_decrypt(a, peer_b, wire_b, plain, sizeof(plain)) != 0 ||
-	    strcmp(plain, "from-b") != 0 || regular_entries(pre_dir) != 2 ||
+	if (omaq_ratchet_decrypt(a, peer_b, wire_b, plain, sizeof(plain), &plain_length) != 0 ||
+	    plain_length != strlen("from-b") || strcmp(plain, "from-b") != 0 ||
+	    regular_entries(pre_dir) != 2 ||
 	    suffix_entries(pre_dir, ".used") != 1)
 		fail("consume first persisted prekey");
 
@@ -260,10 +262,11 @@ int main(void)
 	if (!a || regular_entries(pre_dir) != 2 ||
 	    omaq_ratchet_response_bundle(a, peer_b, reply_b, replay, sizeof(replay)) != 1 ||
 	    strcmp(replay, bundle_b) != 0 || suffix_entries(pre_dir, ".used") != 1 ||
-	    omaq_ratchet_decrypt(a, peer_b, wire_b2, plain, sizeof(plain)) != 0 ||
-	    strcmp(plain, "from-b-2") != 0 ||
-	    omaq_ratchet_decrypt(a, peer_c, wire_c, plain, sizeof(plain)) != 0 ||
-	    strcmp(plain, "from-c") != 0 || regular_entries(pre_dir) != 2 ||
+	    omaq_ratchet_decrypt(a, peer_b, wire_b2, plain, sizeof(plain), &plain_length) != 0 ||
+	    plain_length != strlen("from-b-2") || strcmp(plain, "from-b-2") != 0 ||
+	    omaq_ratchet_decrypt(a, peer_c, wire_c, plain, sizeof(plain), &plain_length) != 0 ||
+	    plain_length != strlen("from-c") || strcmp(plain, "from-c") != 0 ||
+	    regular_entries(pre_dir) != 2 ||
 	    suffix_entries(pre_dir, ".used") != 2)
 		fail("consume second prekey after restart");
 
@@ -286,7 +289,7 @@ int main(void)
 	if (!a || omaq_ratchet_accept_bundle(b, peer_a, recovery_bundle, rk_a) != 0 ||
 	    omaq_ratchet_encrypt(b, peer_a, "recover-needed", recovery_wire,
 				 sizeof(recovery_wire)) != 0 ||
-	    omaq_ratchet_decrypt(a, peer_b, recovery_wire, plain, sizeof(plain)) !=
+	    omaq_ratchet_decrypt(a, peer_b, recovery_wire, plain, sizeof(plain), &plain_length) !=
 		OMAQ_RATCHET_DECRYPT_RECOVER)
 		fail("lost prekey recovery signal");
 	{
