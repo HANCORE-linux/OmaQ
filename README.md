@@ -22,7 +22,7 @@ Toxcore transports packets between devices. Direct messages receive an additiona
 
 ## How to chat
 
-Create a one-time invite in the bar panel and send the link or QR out of band. The other person redeems it, you Accept, then open the chat window and type. Message text can be selected with pointer or keyboard input; inline Reply starts the existing reply flow, and selection Copy copies only the selected text. The fixed message-size setting also applies to text typed in the composer.
+Create a one-time invite in the bar panel and send the link or QR out of band. The other person redeems it, you Accept, then open the chat window and type. While a DirectChat or GroupChat window is floating, drag the handle in its top toolbar to move it with the pointer; buttons and selectable message text remain independent from that handle. Message text can be selected with pointer or keyboard input; inline Reply starts the existing reply flow, and selection Copy copies only the selected text. The fixed message-size setting also applies to text typed in the composer.
 
 ## Install
 

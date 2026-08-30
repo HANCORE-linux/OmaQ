@@ -4,10 +4,11 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d /tmp/omaq-chat-geometry-XXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-python3 - "$root/ChatSurface.qml" <<'PY'
+python3 - "$root/ChatSurface.qml" "$root/PlacementController.qml" <<'PY'
 from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text()
+controller = Path(sys.argv[2]).read_text()
 required = (
     "ListModel {\n    id: openCardModel",
     "openCardModel.remove(index)",
@@ -28,7 +29,8 @@ required = (
     "function cardMonitorCollides(cardMonitor, targetMonitor)",
     "function surfaceRectanglesOverlap(x, y, width, height, card)",
     "function initialGeometry(monitor, preferredWidth, preferredHeight)",
-    'root.floatScriptPath, "place-title", pinWin.title,',
+    "PlacementController {",
+    "scriptPath: root.floatScriptPath",
     'command: [root.floatScriptPath, "list-geometry"]',
     'function applyGeometrySnapshot(raw)',
     "property int geometryGeneration: 0",
@@ -36,7 +38,7 @@ required = (
     "root.geometrySnapshotGeneration !== root.geometryGeneration",
     "root.geometrySnapshotGeneration = root.geometryGeneration",
     "root.geometryGeneration++",
-    "(pinWindow.localResizePending || pinWindow.placementStarted)",
+    "(pinWindow.localResizePending || pinWindow.placementBusy)",
     "property int desiredWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
     "property int pendingWidth: pinWin.boundedWidth(pinWin.surfaceWidth)",
     "property bool localResizePending: false",
@@ -47,32 +49,19 @@ required = (
     "onSurfaceWidthChanged: pinWin.syncDesiredWidth()",
     "onWidthChanged: pinWin.captureActualWidth()",
     "onHeightChanged: pinWin.captureActualHeight()",
-    "id: placementSettle",
+    "readonly property bool placementBusy: placement.busy",
     "pinWin.pendingWidth,",
     "pinWin.localResizePending = false",
-    "if (pinWin.placementAttempts < 12)",
-    "property var placementObservedGeometry: null",
-    "property bool placementRecoveryPending: false",
-    "function recordPlacementGeometry(raw)",
-    "function requestPlacementRecovery()",
-    "function finishInitialPlacement(placementFailed)",
-    '"/usr/bin/timeout", "--kill-after=1s", "3s"',
-    'root.floatScriptPath, "observe-title", pinWin.title',
-    "property bool placementProcessStarted: false",
-    "property bool placementProcessHandled: false",
-    "property int placementRecoveryAttempts: 0",
-    "pinWin.placementRecoveryAttempts >= 8",
-    "pinWin.placementRecoveryAttempts < 8",
-    "function handlePlacementExit(code)",
-    "function handlePlacementRecoveryExit(code)",
-    "function requestClose()",
-    "pinWin.placementStarted || placeWindow.running",
-    "onClicked: pinWin.requestClose()",
-    "pinWin.visible = true",
-    "stdout: SplitParser {",
-    "root.updateCard(index, values)",
-    "pinWin.finishInitialPlacement(true)",
-    "pinWin.finishInitialPlacement(false)",
+    "property bool compositorFloating: false",
+    "enabled: placement.settled && !pinWin.placeOnMap",
+    "if (!pinWin.startSystemMove())",
+    'root.floatScriptPath, "observe-title", pinWin.geometryObservationTitle',
+    "property bool geometryObservationForClose: false",
+    "pinWin.requestCurrentGeometry(true)",
+    "Qt.callLater(function() { pinWin.requestCurrentGeometry(false) })",
+    "dragObservationTimer.attempts >= 20",
+    "onReleased: pinWin.requestCurrentGeometry(false)",
+    "(!pinWin.compositorFloating && !closeAfter)",
     'service.setSurface(String(current.conversation || ""),',
     "pinned: keepExplicitlyOpen ? true : !!saved.pinned",
     "explicitOpen: true",
@@ -83,53 +72,168 @@ for value in required:
     if value not in text:
         raise SystemExit(f"chat-surface-geometry: missing keyed geometry guard: {value}")
 for forbidden in ("openCards = next", "openCards = filtered", "root.openCards = []",
-                  "placeWindow.signal(", "placementRecovery.signal("):
+                  "id: placementRetry", "id: placementRecovery",
+                  "id: placementSettle", "placementAttempts"):
     if forbidden in text:
-        raise SystemExit(f"chat-surface-geometry: array model reset returned: {forbidden}")
+        raise SystemExit(f"chat-surface-geometry: forbidden geometry state returned: {forbidden}")
+for value in ("readonly property bool settled", "function begin()",
+              "function finish(code)", "function cancel()",
+              "root.phase = root.settledPhase",
+              "signal placementFinished(bool success, var geometry)",
+              "signal placementCanceled()"):
+    if value not in controller:
+        raise SystemExit(f"chat-surface-geometry: production controller missing: {value}")
+if "Timer {" in controller:
+    raise SystemExit("chat-surface-geometry: placement controller reintroduced retry timers")
 remove = text[text.index("function dismissCard"):text.index("function pin(")]
 if remove.index("var removedKey") > remove.index("openCardModel.remove(index)"):
     raise SystemExit("chat-surface-geometry: geometry snapshot occurs after model removal")
-finish = text[text.index("function finishInitialPlacement(placementFailed)"):
-              text.index("function applyRequestedFocus()")]
-for value in ("values.surfaceX = observed.x", "values.surfaceY = observed.y",
-              "service.setSurface(pinWin.conversation, observed.monitor"):
-    if value not in finish:
-        raise SystemExit(f"chat-surface-geometry: failed placement loses actual geometry: {value}")
-handler = text[text.index("function handlePlacementExit(code)"):
-               text.index("function performClose()")]
-for value in ("if (pinWin.closeAfterPlacement)",
-              "pinWin.requestPlacementRecovery()"):
-    if value not in handler:
-        raise SystemExit(f"chat-surface-geometry: failed placement strands close: {value}")
-recovery = text[text.index("function handlePlacementRecoveryExit(code)"):
-                text.index("function applyRequestedFocus()")]
-if recovery.count("pinWin.performClose()") != 1:
-    raise SystemExit("chat-surface-geometry: exhausted close recovery remains stuck")
-settle = text[text.index("id: placementSettle"):
-              text.index("id: geometrySave")]
-if "pinWin.performClose()" not in settle:
-    raise SystemExit("chat-surface-geometry: settlement strands deferred close")
-close = text[text.index("function performClose()"):
-             text.index("function requestClose()")]
-for value in ("pinWin.surfaceWidth", "pinWin.surfaceHeight"):
-    if value not in close:
-        raise SystemExit(f"chat-surface-geometry: deferred close loses observed size: {value}")
-request_close = text[text.index("function requestClose()"):
-                     text.index("function handlePlacementRecoveryExit(code)")]
-request_exhausted = request_close.index("pinWin.placementRecoveryAttempts >= 8")
-if (request_exhausted > request_close.index("pinWin.closeAfterPlacement = true") or
-        "pinWin.closeAfterPlacement = false" not in request_close[request_exhausted:] or
-        "pinWin.performClose()" not in request_close[request_exhausted:]):
-    raise SystemExit("chat-surface-geometry: explicit exhausted close starts recovery")
-visible_start = text.index("onVisibleChanged: {", text.index("id: geometrySave"))
-visible_close = text[visible_start:text.index("FocusScope {", visible_start)]
-visible_exhausted = visible_close.index("pinWin.placementRecoveryAttempts >= 8")
-if (visible_exhausted > visible_close.index("pinWin.closeAfterPlacement = true") or
-        visible_exhausted > visible_close.index("pinWin.visible = true") or
-        "pinWin.closeAfterPlacement = false" not in visible_close[visible_exhausted:] or
-        "pinWin.performClose()" not in visible_close[visible_exhausted:]):
-    raise SystemExit("chat-surface-geometry: compositor exhausted close remaps window")
 PY
+cp "$root/PlacementController.qml" "$tmp/PlacementController.qml"
+cat >"$tmp/fake-place.sh" <<'SH'
+#!/bin/sh
+set -eu
+printf '%s\n' "$2" >>"$OMAQ_PLACEMENT_LOG"
+case "$2" in
+  Success)
+    printf '%s\n' '{"title":"Success","monitor":"DP-1","x":100,"y":120,"width":700,"height":650,"floating":true}'
+    ;;
+  Invalid)
+    printf '%s\n' '{"title":"Invalid","monitor":"DP-1","x":1,"y":2,"width":3,"height":4,"floating":true}'
+    ;;
+  Failure)
+    exit 5
+    ;;
+  Slow)
+    sleep 0.6
+    touch "$OMAQ_PLACEMENT_SIDE_EFFECT"
+    printf '%s\n' '{"title":"Slow","monitor":"DP-1","x":100,"y":120,"width":700,"height":650,"floating":true}'
+    ;;
+esac
+SH
+chmod 755 "$tmp/fake-place.sh"
+cat >"$tmp/controller-shell.qml" <<QML
+import QtQuick
+import Quickshell
+
+ShellRoot {
+  property bool successDone: false
+  property bool invalidDone: false
+  property bool failureDone: false
+  property bool slowSignaled: false
+  property bool slowCanceled: false
+
+  PlacementController {
+    id: successController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Success"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      successDone = success && geometry && geometry.x === 100 &&
+        geometry.y === 120 && geometry.width === 700 && geometry.height === 650
+    }
+  }
+  PlacementController {
+    id: invalidController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Invalid"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      invalidDone = !success && geometry === null
+    }
+  }
+  PlacementController {
+    id: failureController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Failure"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: function(success, geometry) {
+      failureDone = !success && geometry === null
+    }
+  }
+  PlacementController {
+    id: slowController
+    scriptPath: "$tmp/fake-place.sh"
+    windowTitle: "Slow"
+    placementRequested: true
+    windowReady: true
+    requestedX: 100
+    requestedY: 120
+    requestedWidth: 700
+    requestedHeight: 650
+    onPlacementFinished: slowSignaled = true
+    onPlacementCanceled: slowCanceled = true
+  }
+  Timer {
+    interval: 1
+    running: true
+    onTriggered: {
+      successController.begin()
+      successController.windowTitle = "Changed after begin"
+      invalidController.begin()
+      failureController.begin()
+      slowController.begin()
+    }
+  }
+  Timer {
+    interval: 50
+    running: true
+    onTriggered: slowController.cancel()
+  }
+  Timer {
+    interval: 300
+    running: true
+    onTriggered: {
+      var ok = successDone && invalidDone && failureDone && !slowSignaled &&
+        slowCanceled && successController.settled && invalidController.settled &&
+        failureController.settled && slowController.settled
+      console.log(ok ? "OMAQ_PLACEMENT_CONTROLLER_OK" :
+        "OMAQ_PLACEMENT_CONTROLLER_BAD")
+      Qt.quit()
+    }
+  }
+}
+QML
+controller_out="$tmp/controller.out"
+: >"$tmp/placement.log"
+if ! OMAQ_PLACEMENT_LOG="$tmp/placement.log" \
+    OMAQ_PLACEMENT_SIDE_EFFECT="$tmp/slow-side-effect" QT_QPA_PLATFORM=offscreen \
+    timeout 5 quickshell -p "$tmp/controller-shell.qml" >"$controller_out" 2>&1; then
+  cat "$controller_out" >&2
+  echo "chat-surface-geometry: production placement controller failed" >&2
+  exit 1
+fi
+if ! grep -q 'OMAQ_PLACEMENT_CONTROLLER_OK' "$controller_out"; then
+  cat "$controller_out" >&2
+  echo "chat-surface-geometry: production placement controller did not settle" >&2
+  exit 1
+fi
+sleep 0.7
+[ ! -e "$tmp/slow-side-effect" ] || {
+  echo "chat-surface-geometry: canceled placement produced a late side effect" >&2
+  exit 1
+}
+for title in Success Invalid Failure Slow; do
+  [ "$(grep -c "^$title$" "$tmp/placement.log")" -eq 1 ] || {
+    echo "chat-surface-geometry: controller repeated $title placement" >&2
+    exit 1
+  }
+done
 cat >"$tmp/shell.qml" <<'QML'
 import QtQuick
 import Quickshell
@@ -142,23 +246,11 @@ ShellRoot {
   }
   ListModel {
     id: resizeCards
-    ListElement {
-      conversation: "7"
-      monitor: "DP-1"
-      surfaceX: 40
-      surfaceY: 80
-      surfaceWidth: 420
-      surfaceHeight: 420
-      placeOnMap: false
-    }
+    ListElement { conversation: "7"; surfaceWidth: 420; surfaceHeight: 420 }
     ListElement {
       conversation: "g:0000000000000000000000000000000000000000000000000000000000000000"
-      monitor: "DP-1"
-      surfaceX: 488
-      surfaceY: 80
       surfaceWidth: 420
       surfaceHeight: 420
-      placeOnMap: false
     }
   }
   property var survivor: null
@@ -168,14 +260,12 @@ ShellRoot {
   property int geometryGeneration: 0
   property int staleSnapshotGeneration: -1
   property bool pendingSnapshotRejected: false
-  property var persistedRecovery: null
-  property bool closedAfterRecovery: false
 
   function applyDelayedSnapshot(generation, target, width, height) {
     if (generation !== geometryGeneration)
       return false
     var targetWindow = resizeWindows.objectAt(target)
-    if (targetWindow.localResizePending || targetWindow.placementStarted)
+    if (targetWindow.localResizePending || targetWindow.placementBusy)
       return false
     resizeCards.setProperty(target, "surfaceWidth", width)
     resizeCards.setProperty(target, "surfaceHeight", height)
@@ -272,23 +362,14 @@ ShellRoot {
       id: resizeDelegate
       required property int index
       required property string conversation
-      required property string monitor
-      required property real surfaceX
-      required property real surfaceY
       required property real surfaceWidth
       required property real surfaceHeight
-      required property bool placeOnMap
       property int desiredWidth: surfaceWidth
       property int desiredHeight: surfaceHeight
       property int pendingWidth: surfaceWidth
       property int pendingHeight: surfaceHeight
       property bool localResizePending: false
-      property bool placementStarted: false
-      property bool closeAfterPlacement: false
-      property bool placementRecoveryPending: false
-      property int placementRecoveryAttempts: 0
-      property var placementObservedGeometry: null
-      readonly property string title: conversation.charAt(0) === "g" ? "Group" : "Direct"
+      property bool placementBusy: false
 
       function syncDesiredWidth() {
         if (localResizePending && surfaceWidth !== pendingWidth)
@@ -314,71 +395,6 @@ ShellRoot {
         resizeCards.setProperty(index, "surfaceWidth", actualWidth)
         resizeCards.setProperty(index, "surfaceHeight", actualHeight)
         geometrySave.restart()
-      }
-      function recordPlacementGeometry(raw) {
-        var value
-        try { value = JSON.parse(String(raw || "")) } catch (error) { return }
-        if (String(value.title || "") !== title ||
-            !Number.isInteger(value.x) || !Number.isInteger(value.y) ||
-            !Number.isInteger(value.width) || !Number.isInteger(value.height))
-          return
-        placementObservedGeometry = value
-      }
-      function finishInitialPlacement(restored) {
-        placementStarted = false
-        var observed = restored ? null : placementObservedGeometry
-        if (!restored && !observed) {
-          placementRecoveryPending = true
-          return
-        }
-        resizeCards.setProperty(index, "placeOnMap", false)
-        if (observed) {
-          resizeCards.setProperty(index, "monitor", observed.monitor)
-          resizeCards.setProperty(index, "surfaceX", observed.x)
-          resizeCards.setProperty(index, "surfaceY", observed.y)
-          resizeCards.setProperty(index, "surfaceWidth", observed.width)
-          resizeCards.setProperty(index, "surfaceHeight", observed.height)
-          desiredWidth = observed.width
-          desiredHeight = observed.height
-          pendingWidth = observed.width
-          pendingHeight = observed.height
-          localResizePending = false
-          persistedRecovery = { monitor: observed.monitor,
-            x: observed.x, y: observed.y, width: observed.width,
-            height: observed.height }
-        }
-        placementObservedGeometry = null
-        placementRecoveryPending = false
-        if (closeAfterPlacement) {
-          closeAfterPlacement = false
-          closedAfterRecovery = true
-        }
-      }
-      function requestClose() {
-        if (placeOnMap || placementStarted || placementRecoveryPending) {
-          if (placementRecoveryAttempts >= 8 && !placementRecoveryPending &&
-              !placementStarted) {
-            closeAfterPlacement = false
-            closedAfterRecovery = true
-            return
-          }
-          closeAfterPlacement = true
-          return
-        }
-        closedAfterRecovery = true
-      }
-      function compositorClose() {
-        if (placeOnMap || placementStarted || placementRecoveryPending) {
-          if (placementRecoveryAttempts >= 8 && !placementRecoveryPending &&
-              !placementStarted) {
-            closeAfterPlacement = false
-            closedAfterRecovery = true
-            return
-          }
-          closeAfterPlacement = true
-          return
-        }
-        closedAfterRecovery = true
       }
       onSurfaceWidthChanged: syncDesiredWidth()
       onSurfaceHeightChanged: syncDesiredHeight()
@@ -446,25 +462,13 @@ ShellRoot {
         groupResize.desiredHeight === 680 && groupResize.pendingWidth === 540 &&
         groupResize.pendingHeight === 680 && pendingSnapshotRejected &&
         !applyDelayedSnapshot(staleSnapshotGeneration, 0, 420, 420)
-      directResize.placementStarted = true
+      directResize.placementBusy = true
       baseGeometryOk = baseGeometryOk &&
         !applyDelayedSnapshot(geometryGeneration, 0, 420, 420)
-      directResize.placementStarted = false
+      directResize.placementBusy = false
       // An idle helper/compositor snapshot remains authoritative.
       resizeCards.setProperty(0, "surfaceWidth", 640)
       resizeCards.setProperty(0, "surfaceHeight", 720)
-      // Exhausted placement must release the card and retain actual geometry.
-      resizeCards.setProperty(1, "placeOnMap", true)
-      groupResize.placementStarted = true
-      groupResize.requestClose()
-      groupResize.recordPlacementGeometry("{malformed")
-      groupResize.finishInitialPlacement(false)
-      baseGeometryOk = baseGeometryOk && groupResize.placeOnMap &&
-        groupResize.placementRecoveryPending && groupResize.closeAfterPlacement &&
-        !closedAfterRecovery && persistedRecovery === null
-      groupResize.recordPlacementGeometry(JSON.stringify({ title: "Group",
-        monitor: "HDMI-A-1", x: 700, y: 350, width: 555, height: 695 }))
-      groupResize.finishInitialPlacement(false)
     }
   }
   Timer {
@@ -473,29 +477,9 @@ ShellRoot {
     onTriggered: {
       var externalSync = directResize.desiredWidth === 640 &&
         directResize.desiredHeight === 720 && directResize.pendingWidth === 640 &&
-        directResize.pendingHeight === 720 && !groupResize.placeOnMap &&
-        !groupResize.placementStarted && !groupResize.localResizePending &&
-        groupResize.monitor === "HDMI-A-1" && groupResize.surfaceX === 700 &&
-        groupResize.surfaceY === 350 && groupResize.desiredWidth === 555 &&
-        groupResize.desiredHeight === 695 && groupResize.pendingWidth === 555 &&
-        groupResize.pendingHeight === 695 && persistedRecovery !== null &&
-        persistedRecovery.monitor === "HDMI-A-1" && persistedRecovery.x === 700 &&
-        persistedRecovery.y === 350 && persistedRecovery.width === 555 &&
-        persistedRecovery.height === 695 && closedAfterRecovery &&
-        !groupResize.closeAfterPlacement
-      var recoveredClose = closedAfterRecovery
-      closedAfterRecovery = false
-      resizeCards.setProperty(1, "placeOnMap", true)
-      groupResize.placementRecoveryAttempts = 8
-      groupResize.requestClose()
-      var exhaustedExplicitClose = closedAfterRecovery
-      closedAfterRecovery = false
-      resizeCards.setProperty(0, "placeOnMap", true)
-      directResize.placementRecoveryAttempts = 8
-      directResize.compositorClose()
-      var exhaustedCompositorClose = closedAfterRecovery
-      console.log(baseGeometryOk && externalSync && recoveredClose &&
-        exhaustedExplicitClose && exhaustedCompositorClose
+        directResize.pendingHeight === 720 &&
+        groupResize.desiredWidth === 540 && groupResize.desiredHeight === 680
+      console.log(baseGeometryOk && externalSync
         ? "OMAQ_GEOMETRY_OK" : "OMAQ_GEOMETRY_BAD")
       Qt.quit()
     }

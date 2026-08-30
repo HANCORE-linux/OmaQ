@@ -82,14 +82,14 @@ Omarchy plugin settings also control badges, right-side notifications, desktop n
 
 ## Send DirectChat messages
 
-DirectChat binds its window, history, unread state, files, Ratchet state, and preferences to the contact's stable public key. A reused temporary Tox friend number cannot redirect an existing chat surface or operation.
+DirectChat binds its window, history, unread state, files, Ratchet state, and preferences to the contact's stable public key. A reused temporary Tox friend number cannot redirect an existing chat surface or operation. Newly opened floating DirectChat and GroupChat windows use the same compositor-native opening animation as ordinary application windows. When a DirectChat or GroupChat window is floating, drag the handle in its top toolbar to move it with the pointer. The handle is disabled during initial placement and while the window is tiled, and it does not overlap message selection or toolbar buttons.
 
 <table>
 <thead><tr><th>DirectChat</th><th>Formatting tools</th><th>Emoji picker</th><th>Clear chat</th></tr></thead>
 <tbody><tr>
 <td><a href="images/guide/15-direct-chat-overview.png"><img src="images/guide/15-direct-chat-overview.png" alt="DirectChat messages and receipts" width="220"></a><br>The header keeps the contact name beside online, offline, reconnecting, or typing state. The history shows incoming and outgoing bubbles, receipts, reactions, and unread separation.</td>
 <td><a href="images/guide/16-direct-formatting.png"><img src="images/guide/16-direct-formatting.png" alt="DirectChat formatting toolbar" width="220"></a><br>Toggle Heading, Bold, Italic, Quote, Code, Link, unordered list, numbered list, and task list tools.</td>
-<td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation.</td>
+<td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation. A message's React action shows the five most-used reactions in the loaded conversation at the same size as this picker.</td>
 <td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Clear requires confirmation and removes only the current local conversation history.</td>
 </tr></tbody>
 </table>
