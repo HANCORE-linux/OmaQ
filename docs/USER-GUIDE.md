@@ -82,7 +82,7 @@ Omarchy plugin settings also control badges, right-side notifications, desktop n
 
 ## Send DirectChat messages
 
-DirectChat binds its window, history, unread state, files, Ratchet state, and preferences to the contact's stable public key. A reused temporary Tox friend number cannot redirect an existing chat surface or operation. When a DirectChat or GroupChat window is floating, drag the handle in its top toolbar to move it with the pointer. The handle is disabled during initial placement and while the window is tiled, and it does not overlap message selection or toolbar buttons.
+DirectChat binds its window, history, unread state, files, Ratchet state, and preferences to the contact's stable public key. A reused temporary Tox friend number cannot redirect an existing chat surface or operation. A newly opened floating chat reveals its content with a short fade only after placement reaches a terminal state, hiding the compositor's initial mapping jump without delaying manual geometry after a failure. When a DirectChat or GroupChat window is floating, drag the handle in its top toolbar to move it with the pointer. The handle is disabled during initial placement and while the window is tiled, and it does not overlap message selection or toolbar buttons.
 
 <table>
 <thead><tr><th>DirectChat</th><th>Formatting tools</th><th>Emoji picker</th><th>Clear chat</th></tr></thead>

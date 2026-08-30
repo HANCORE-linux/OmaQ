@@ -1422,7 +1422,11 @@ Item {
       implicitWidth: pinWin.desiredWidth
       implicitHeight: pinWin.desiredHeight
       minimumSize: Qt.size(360, 420)
-      color: root.theme().bg || Color.background
+      color: "transparent"
+      mask: Region {
+        width: pinWin.contentRevealed ? Math.ceil(pinWin.width) : 0
+        height: pinWin.contentRevealed ? Math.ceil(pinWin.height) : 0
+      }
       property bool everShown: false
       property bool closing: false
       property bool closePending: false
@@ -1433,6 +1437,11 @@ Item {
       property bool geometryProcessStarted: false
       property bool geometryProcessHandled: false
       readonly property bool placementBusy: placement.busy
+      readonly property bool contentRevealed: placement.settled && !pinWin.placeOnMap
+      property real revealOpacity: pinWin.contentRevealed ? 1.0 : 0.0
+      Behavior on revealOpacity {
+        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+      }
 
       function boundedWidth(value) {
         return Math.max(360, Math.min(4096,
@@ -1769,6 +1778,14 @@ Item {
       FocusScope {
         id: pinFocus
         anchors.fill: parent
+        enabled: pinWin.contentRevealed
+        opacity: pinWin.revealOpacity
+
+        Rectangle {
+          anchors.fill: parent
+          color: root.theme().bg || Color.background
+        }
+
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Escape && pinPage.handleEscape()) {
             event.accepted = true
