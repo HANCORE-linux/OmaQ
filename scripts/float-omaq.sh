@@ -233,19 +233,41 @@ if [[ "$MODE" == "place-title" ]]; then
 fi
 
 [[ "$MODE" == "focus-title" && -n "$TARGET_TITLE" ]] || exit 2
-address=$(hyprctl -j clients 2>/dev/null |
-  jq -r --arg title "$TARGET_TITLE" '.[] | select((.title // "") == $title) | .address' |
-  head -n 1)
+clients=$(hyprctl -j clients 2>/dev/null) || exit 3
+active=$(hyprctl -j activeworkspace 2>/dev/null) || exit 3
+(( ${#clients} <= 1048576 && ${#active} <= 65536 )) || exit 3
+focus_target=$(jq -cn --arg title "$TARGET_TITLE" --argjson clients "$clients" '
+  def workspace_key:
+    if ((.name // "") | startswith("special:")) then .name
+    elif ((.id // null) | type) == "number" then (.id | tostring)
+    else "" end;
+  [$clients[] | select((.title // "") == $title)] as $matches |
+  if ($matches | length) == 1 and
+     (($matches[0].address // "") | test("^0x[0-9a-fA-F]+$"))
+  then {address: $matches[0].address,
+        workspace: (($matches[0].workspace // {}) | workspace_key)}
+  else empty end') || exit 3
+address=$(jq -r '.address // empty' <<<"$focus_target")
+window_workspace=$(jq -r '.workspace // empty' <<<"$focus_target")
+active_workspace=$(jq -r '
+  if ((.name // "") | startswith("special:")) then .name
+  elif ((.id // null) | type) == "number" then (.id | tostring)
+  else empty end' <<<"$active")
 [[ "$address" =~ ^0x[0-9a-fA-F]+$ ]] || exit 3
+[[ "$window_workspace" =~ ^-?[0-9]+$ ||
+   "$window_workspace" =~ ^special:[A-Za-z0-9._-]+$ ]] || exit 4
+[[ "$active_workspace" =~ ^-?[0-9]+$ ||
+   "$active_workspace" =~ ^special:[A-Za-z0-9._-]+$ ]] || exit 4
 
 if (( LUA )); then
-  workspace=$(hyprctl -j activeworkspace 2>/dev/null | jq -r \
-    'if ((.name // "") | startswith("special:")) then .name else (.id // empty | tostring) end')
-  [[ "$workspace" =~ ^-?[0-9]+$ || "$workspace" =~ ^special:[A-Za-z0-9._-]+$ ]] || exit 4
-  hyprctl dispatch "hl.dsp.window.move({ workspace = \"${workspace}\", window = \"address:${address}\", follow = true })" >/dev/null || exit 4
+  if [[ "$window_workspace" != "$active_workspace" ]]; then
+    hyprctl dispatch "hl.dsp.window.move({ workspace = \"${active_workspace}\", window = \"address:${address}\", follow = true })" >/dev/null || exit 4
+  fi
   hyprctl dispatch "hl.dsp.window.bring_to_top({ window = \"address:${address}\" })" >/dev/null || exit 4
 else
-  hyprctl dispatch "movetoworkspace" "current,address:${address}" >/dev/null || exit 4
+  if [[ "$window_workspace" != "$active_workspace" ]]; then
+    hyprctl dispatch "movetoworkspace" "current,address:${address}" >/dev/null || exit 4
+  fi
   hyprctl dispatch "focuswindow" "address:${address}" >/dev/null || exit 4
 fi
 exit 0

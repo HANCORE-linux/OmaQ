@@ -187,10 +187,24 @@ ShellRoot {
         console.log("OMAQ_REPLY_BAD", JSON.stringify(groupReplyCopy),
           JSON.stringify(directReplyCopy), groupReplyWidth, directReplyWidth)
 
+      page.appendLine({ id: "reaction-rank-1", dir: "in", text: "one", ack: -1,
+        reactionMe: "👍", reactionPeer: "😂",
+        groupReactions: [{ actor: "a", emoji: "👍" },
+          { actor: "b", emoji: "❤️" }] })
+      page.appendLine({ id: "reaction-rank-2", dir: "in", text: "two", ack: -1,
+        reactionMe: "👍", reactionPeer: "😂",
+        groupReactions: [{ actor: "c", emoji: "👍" },
+          { actor: "d", emoji: "🎉" }] })
+      var rankedReactions = page.mostUsedReactionSet(5)
+      var selectedReactions = page.reactionChoicesFor("💯", 5)
+      var reactionRanking = rankedReactions.length === 5 &&
+        rankedReactions.join(" ") === "👍 😂 ❤️ 🎉 😀" &&
+        selectedReactions.length === 5 && selectedReactions[4] === "💯" &&
+        selectedReactions.indexOf("😀") < 0
       var preview = page.pendingImagePath === "/tmp/canonical.png" &&
         page.pendingImageStageRequest === "stage-1" && page.isSmileOnly("🥳") &&
         !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection &&
-        replyParity
+        replyParity && reactionRanking
       var sent = page.sendPendingImage() && fake.sent === 1 &&
         page.pendingImageSendRequest === "image-request-1" &&
         page.pendingImagePath === "/tmp/canonical.png"

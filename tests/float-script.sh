@@ -43,6 +43,7 @@ if [ "$1" = "-j" ] && [ "${2:-}" = "clients" ]; then
   if [ "${OMAQ_FLOAT_NO_CLIENTS:-0}" = "1" ]; then
     printf '%s\n' '[]'
   else
+    alice_workspace="${OMAQ_FLOAT_ALICE_WORKSPACE:-7}"
     bob_title='OmaQ chat — Bob · 1'
     bob_at='512,144'
     bob_size='460,520'
@@ -63,7 +64,7 @@ if [ "$1" = "-j" ] && [ "${2:-}" = "clients" ]; then
         bob_size='700,650'
       fi
     fi
-    printf '[{"title":"OmaQ chat — Alice · 0","address":"0xabc","floating":true,"monitor":1,"at":[40,80],"size":[420,420]},{"title":"%s","address":"0xdef","floating":true,"monitor":2,"at":[%s],"size":[%s]}]\n' "$bob_title" "$bob_at" "$bob_size"
+    printf '[{"title":"OmaQ chat — Alice · 0","address":"0xabc","floating":true,"monitor":1,"workspace":{"id":%s,"name":"%s"},"at":[40,80],"size":[420,420]},{"title":"%s","address":"0xdef","floating":true,"monitor":2,"workspace":{"id":4,"name":"4"},"at":[%s],"size":[%s]}]\n' "$alice_workspace" "$alice_workspace" "$bob_title" "$bob_at" "$bob_size"
   fi
 elif [ "$1" = "-j" ] && [ "${2:-}" = "monitors" ]; then
   printf '%s\n' '[{"id":1,"name":"DP-1"},{"id":2,"name":"HDMI-A-1"}]'
@@ -119,13 +120,21 @@ export HYPRLAND_INSTANCE_SIGNATURE="test-instance"
   echo "float-script: instance-scoped rule marker failed" >&2
   exit 1
 }
+: >"$OMAQ_FLOAT_TEST_LOG"
 "$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
-grep -q '^dispatch movetoworkspace current,address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: current-workspace move missing" >&2
+if grep -q '^dispatch movetoworkspace ' "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: same-workspace focus changed geometry" >&2
+  exit 1
+fi
+grep -q '^dispatch focuswindow address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: same-workspace address focus missing" >&2
   exit 1
 }
-grep -q '^dispatch focuswindow address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: address focus missing" >&2
+export OMAQ_FLOAT_ALICE_WORKSPACE=6
+"$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
+unset OMAQ_FLOAT_ALICE_WORKSPACE
+grep -q '^dispatch movetoworkspace current,address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: cross-workspace move missing" >&2
   exit 1
 }
 export OMAQ_FLOAT_DISPATCHED="$tmp/dispatched"
@@ -313,11 +322,10 @@ grep -q 'no_anim = true' "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: OmaQ window animations remain enabled" >&2
   exit 1
 }
-grep -q 'hl.dsp.window.move({ workspace = "7", window = "address:0xabc", follow = true })' \
-  "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: Lua current-workspace move missing" >&2
+if grep -q 'hl.dsp.window.move({ workspace = "7"' "$OMAQ_FLOAT_TEST_LOG"; then
+  echo "float-script: same-workspace Lua focus changed geometry" >&2
   exit 1
-}
+fi
 grep -q 'hl.dsp.window.bring_to_top({ window = "address:0xabc" })' \
   "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: Lua focus missing" >&2
@@ -327,6 +335,14 @@ if grep -Eq 'window\.float|setfloating|fullscreenstate' "$OMAQ_FLOAT_TEST_LOG"; 
   echo "float-script: focusing an existing chat changed its tiling state" >&2
   exit 1
 fi
+export OMAQ_FLOAT_ALICE_WORKSPACE=6
+"$root/scripts/float-omaq.sh" focus-title "OmaQ chat — Alice · 0"
+unset OMAQ_FLOAT_ALICE_WORKSPACE
+grep -q 'hl.dsp.window.move({ workspace = "7", window = "address:0xabc", follow = true })' \
+  "$OMAQ_FLOAT_TEST_LOG" || {
+  echo "float-script: cross-workspace Lua move missing" >&2
+  exit 1
+}
 export OMAQ_FLOAT_DISPATCHED="$tmp/lua-dispatched"
 export OMAQ_FLOAT_OBSERVATIONS="$tmp/lua-observations"
 lua_placement=$("$root/scripts/float-omaq.sh" place-title \

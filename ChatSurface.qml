@@ -1534,6 +1534,8 @@ Item {
           ? String(pinWin.modelData.conversation) : ""
         if (!moved)
           console.warn("OmaQ: could not move chat to the current workspace")
+        else if (placement.settled && pinWin.compositorFloating)
+          Qt.callLater(function() { pinWin.requestCurrentGeometry(false) })
         var win = pinPage.QsWindow.window
         if (win && typeof win.requestActivate === "function")
           win.requestActivate()
@@ -1734,7 +1736,7 @@ Item {
         onTriggered: {
           dragObservationTimer.attempts++
           pinWin.requestCurrentGeometry(false)
-          if (dragObservationTimer.attempts >= 8)
+          if (dragObservationTimer.attempts >= 20)
             dragObservationTimer.stop()
         }
       }
@@ -1816,6 +1818,8 @@ Item {
                 dragObservationTimer.attempts = 0
                 dragObservationTimer.restart()
               }
+              onReleased: pinWin.requestCurrentGeometry(false)
+              onCanceled: pinWin.requestCurrentGeometry(false)
             }
           }
           SurfaceBtn {

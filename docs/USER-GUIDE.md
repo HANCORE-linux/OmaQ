@@ -89,7 +89,7 @@ DirectChat binds its window, history, unread state, files, Ratchet state, and pr
 <tbody><tr>
 <td><a href="images/guide/15-direct-chat-overview.png"><img src="images/guide/15-direct-chat-overview.png" alt="DirectChat messages and receipts" width="220"></a><br>The header keeps the contact name beside online, offline, reconnecting, or typing state. The history shows incoming and outgoing bubbles, receipts, reactions, and unread separation.</td>
 <td><a href="images/guide/16-direct-formatting.png"><img src="images/guide/16-direct-formatting.png" alt="DirectChat formatting toolbar" width="220"></a><br>Toggle Heading, Bold, Italic, Quote, Code, Link, unordered list, numbered list, and task list tools.</td>
-<td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation.</td>
+<td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation. A message's React action shows the five most-used reactions in the loaded conversation at the same size as this picker.</td>
 <td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Clear requires confirmation and removes only the current local conversation history.</td>
 </tr></tbody>
 </table>

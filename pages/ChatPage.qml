@@ -232,6 +232,51 @@ FocusScope {
     "😡", "🤔", "👀", "✅", "👋", "💯"
   ]
 
+  function mostUsedReactionSet(limit) {
+    var maximum = Math.max(1, Math.min(Number(limit) || 5, root.emojiSet.length))
+    var counts = ({})
+    var order = ({})
+    var i
+    for (i = 0; i < root.emojiSet.length; i++) {
+      var known = String(root.emojiSet[i] || "")
+      counts[known] = 0
+      order[known] = i
+    }
+    function countReaction(value) {
+      var emoji = String(value || "")
+      if (Object.prototype.hasOwnProperty.call(counts, emoji))
+        counts[emoji]++
+    }
+    for (i = 0; i < lines.count; i++) {
+      var message = lines.get(i)
+      countReaction(message.reactionMe)
+      countReaction(message.reactionPeer)
+      var reactions = message.groupReactions || []
+      var reactionCount = root.modelCount(reactions)
+      for (var reactionIndex = 0; reactionIndex < reactionCount; reactionIndex++) {
+        var reaction = root.modelEntry(reactions, reactionIndex)
+        if (reaction)
+          countReaction(reaction.emoji)
+      }
+    }
+    var ranked = root.emojiSet.slice(0)
+    ranked.sort(function(left, right) {
+      var countDifference = counts[String(right)] - counts[String(left)]
+      return countDifference !== 0
+        ? countDifference : order[String(left)] - order[String(right)]
+    })
+    return ranked.slice(0, maximum)
+  }
+
+  function reactionChoicesFor(currentEmoji, limit) {
+    var choices = root.mostUsedReactionSet(limit)
+    var selected = String(currentEmoji || "")
+    if (selected !== "" && root.emojiSet.indexOf(selected) >= 0 &&
+        choices.indexOf(selected) < 0 && choices.length > 0)
+      choices[choices.length - 1] = selected
+    return choices
+  }
+
   ListModel {
     id: lines
   }
@@ -3609,6 +3654,7 @@ FocusScope {
             (line.reactionMe !== "" || line.reactionPeer !== "" ||
              line.groupReactionEmojis.length > 0)
           property bool reactionPickerOpen: false
+          property var reactionChoices: root.reactionChoicesFor(line.reactionMe, 5)
           readonly property bool actionControlsVisible: line.failed ||
             line.hasTextSelection ||
             (line.replyable && (lineHover.hovered || line.keyboardSelected ||
@@ -4185,7 +4231,7 @@ FocusScope {
 
           Controls.Popup {
             id: reactionPicker
-            width: Style.space(160)
+            width: reactionPickerGrid.implicitWidth + padding * 2
             height: reactionPickerGrid.implicitHeight + padding * 2
             padding: Style.space(4)
             margins: Style.space(3)
@@ -4193,6 +4239,7 @@ FocusScope {
             closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
             onOpened: {
               line.reactionPickerOpen = true
+              line.reactionChoices = root.reactionChoicesFor(line.reactionMe, 5)
               var point = moreReactionAction.mapToItem(line, 0, moreReactionAction.height + Style.space(3))
               x = Math.max(Style.space(3), Math.min(point.x, line.width - width - Style.space(3)))
               var below = moreReactionAction.mapToItem(list, 0,
@@ -4224,21 +4271,21 @@ FocusScope {
 
             contentItem: Grid {
               id: reactionPickerGrid
-              columns: 8
-              spacing: 0
+              columns: 5
+              spacing: Style.space(3)
 
               Repeater {
                 id: reactionPickerRepeater
-                model: root.emojiSet
-                delegate: ReactionAction {
+                model: line.reactionChoices
+                delegate: EmojiPickerBtn {
                   required property int index
-                  readonly property string emojiValue: String(root.emojiSet[index] || "")
-                  compact: true
-                  emoji: emojiValue
-                  selected: line.reactionMe === emojiValue
-                  tooltipText: "React with " + emojiValue
+                  readonly property string reactionEmoji: String(
+                    line.reactionChoices[index] || "")
+                  emojiValue: reactionEmoji
+                  selected: line.reactionMe === reactionEmoji
+                  helpText: "React with " + reactionEmoji
                   onClicked: {
-                    root.reactToMessage(line.contextId, line.reactionMe, emojiValue)
+                    root.reactToMessage(line.contextId, line.reactionMe, reactionEmoji)
                     reactionPicker.close()
                   }
                 }
