@@ -1422,16 +1422,8 @@ Item {
       color: root.theme().bg || Color.background
       property bool everShown: false
       property bool closing: false
-      property bool closeAfterPlacement: false
       property bool placementStarted: false
-      property bool placementProcessStarted: false
-      property bool placementProcessHandled: false
-      property bool placementRecoveryPending: false
-      property bool placementRecoveryStarted: false
-      property bool placementRecoveryHandled: false
       property int placementAttempts: 0
-      property int placementRecoveryAttempts: 0
-      property var placementObservedGeometry: null
 
       function boundedWidth(value) {
         return Math.max(360, Math.min(4096,
@@ -1493,184 +1485,16 @@ Item {
 
       function requestInitialPlacement() {
         if (!pinWin.placeOnMap || pinWin.placementStarted ||
-            pinWin.closeAfterPlacement ||
             !pinWin.backingWindowVisible || pinWin.title === "OmaQ chat")
           return
         pinWin.placementStarted = true
-        pinWin.placementProcessStarted = false
-        pinWin.placementProcessHandled = false
         pinWin.placementAttempts++
-        pinWin.placementObservedGeometry = null
         root.geometryGeneration++
-        placeWindow.command = ["/usr/bin/timeout", "--kill-after=1s", "3s",
-          root.floatScriptPath, "place-title", pinWin.title,
+        placeWindow.command = [root.floatScriptPath, "place-title", pinWin.title,
           String(Math.round(pinWin.surfaceX)), String(Math.round(pinWin.surfaceY)),
           String(Math.max(360, Math.round(pinWin.surfaceWidth))),
           String(Math.max(420, Math.round(pinWin.surfaceHeight)))]
         placeWindow.running = true
-      }
-
-      function recordPlacementGeometry(raw) {
-        var text = String(raw || "")
-        var value
-        if (text.length === 0 || text.length > 2048)
-          return
-        try { value = JSON.parse(text) } catch (error) { return }
-        var monitorName = String(value.monitor || "")
-        if (String(value.title || "") !== pinWin.title || monitorName.length > 63 ||
-            /[\u0000-\u001f\u007f]/.test(monitorName) ||
-            !Number.isInteger(value.x) || !Number.isInteger(value.y) ||
-            !Number.isInteger(value.width) || !Number.isInteger(value.height) ||
-            value.x < -32768 || value.x > 32768 ||
-            value.y < -32768 || value.y > 32768 ||
-            value.width < 360 || value.width > 4096 ||
-            value.height < 420 || value.height > 4096)
-          return
-        pinWin.placementObservedGeometry = { monitor: monitorName,
-          x: value.x, y: value.y, width: value.width, height: value.height }
-      }
-
-      function requestPlacementRecovery() {
-        if (!pinWin.placeOnMap || pinWin.closing || !pinWin.visible ||
-            pinWin.placementStarted || placeWindow.running ||
-            placementRecovery.running || pinWin.placementRecoveryAttempts >= 8)
-          return
-        pinWin.placementStarted = false
-        pinWin.placementRecoveryPending = true
-        pinWin.placementRecoveryStarted = false
-        pinWin.placementRecoveryHandled = false
-        pinWin.placementRecoveryAttempts++
-        pinWin.placementObservedGeometry = null
-        placementRecovery.command = ["/usr/bin/timeout", "--kill-after=1s", "3s",
-          root.floatScriptPath, "observe-title", pinWin.title]
-        placementRecovery.running = true
-      }
-
-      function finishInitialPlacement(placementFailed) {
-        var observed = pinWin.placementObservedGeometry
-        if (!observed) {
-          if (!pinWin.placementRecoveryPending)
-            pinWin.placementRecoveryAttempts = 0
-          pinWin.requestPlacementRecovery()
-          return
-        }
-        root.geometryGeneration++
-        var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
-        var values = { placeOnMap: false }
-        if (observed) {
-          values.monitor = observed.monitor
-          values.surfaceX = observed.x
-          values.surfaceY = observed.y
-          values.surfaceWidth = observed.width
-          values.surfaceHeight = observed.height
-          pinWin.desiredWidth = observed.width
-          pinWin.desiredHeight = observed.height
-          pinWin.pendingWidth = observed.width
-          pinWin.pendingHeight = observed.height
-          pinWin.localResizePending = false
-        }
-        if (index >= 0)
-          root.updateCard(index, values)
-        if (observed)
-          service.setSurface(pinWin.conversation, observed.monitor,
-            observed.x, observed.y, true, pinWin.directKey,
-            observed.width, observed.height)
-        pinWin.placementObservedGeometry = null
-        pinWin.placementRecoveryPending = false
-        placementRecoveryRetry.stop()
-        if (pinWin.closeAfterPlacement) {
-          pinWin.closeAfterPlacement = false
-          Qt.callLater(pinWin.performClose)
-        } else {
-          placementSettle.restart()
-        }
-        if (placementFailed)
-          console.warn("OmaQ: could not restore independent chat geometry; keeping current geometry")
-      }
-
-      function handlePlacementExit(code) {
-        if (!pinWin.placementStarted)
-          return
-        if (pinWin.closeAfterPlacement) {
-          pinWin.placementStarted = false
-          placementRetry.stop()
-          if (pinWin.placementObservedGeometry) {
-            pinWin.finishInitialPlacement(code !== 0)
-          } else {
-            pinWin.placementRecoveryAttempts = 0
-            pinWin.requestPlacementRecovery()
-          }
-          return
-        }
-        if (code === 0) {
-          pinWin.finishInitialPlacement(false)
-          return
-        }
-        pinWin.placementStarted = false
-        if (pinWin.placementAttempts < 12)
-          placementRetry.restart()
-        else
-          pinWin.finishInitialPlacement(true)
-      }
-
-      function performClose() {
-        if (pinWin.closing || !pinWin.modelData)
-          return
-        var conversation = String(pinWin.modelData.conversation || "")
-        var key = String(pinWin.modelData.directKey || "")
-        if (!conversation)
-          return
-        if (pinPage.inCall || pinPage.incoming)
-          pinPage.hangUp()
-        pinWin.closing = true
-        pinWin.visible = false
-        root.dismissCard(conversation, key, pinWin.surfaceWidth,
-          pinWin.surfaceHeight)
-      }
-
-      function requestClose() {
-        if (pinWin.placeOnMap || pinWin.placementStarted ||
-            pinWin.placementRecoveryPending) {
-          if (pinWin.placementRecoveryAttempts >= 8 &&
-              !pinWin.placementRecoveryPending && !pinWin.placementStarted &&
-              !placeWindow.running) {
-            pinWin.closeAfterPlacement = false
-            pinWin.performClose()
-            return
-          }
-          pinWin.closeAfterPlacement = true
-          placementRetry.stop()
-          if (!placeWindow.running && !pinWin.placementStarted) {
-            if (pinWin.placementObservedGeometry) {
-              pinWin.finishInitialPlacement(true)
-            } else {
-              pinWin.requestPlacementRecovery()
-            }
-          }
-          return
-        }
-        pinWin.performClose()
-      }
-
-      function handlePlacementRecoveryExit(code) {
-        if (!pinWin.placementRecoveryPending)
-          return
-        if (code === 0 && pinWin.placementObservedGeometry) {
-          pinWin.finishInitialPlacement(true)
-          return
-        }
-        if (pinWin.placementRecoveryAttempts < 8) {
-          placementRecoveryRetry.interval = Math.min(8000,
-            500 * Math.pow(2, pinWin.placementRecoveryAttempts - 1))
-          placementRecoveryRetry.restart()
-        } else {
-          pinWin.placementRecoveryPending = false
-          console.warn("OmaQ: could not read current chat geometry; geometry remains unchanged")
-          if (pinWin.closeAfterPlacement) {
-            pinWin.closeAfterPlacement = false
-            pinWin.performClose()
-          }
-        }
       }
 
       function applyRequestedFocus() {
@@ -1716,48 +1540,21 @@ Item {
       Process {
         id: placeWindow
         running: false
-        stdout: SplitParser {
-          onRead: function(line) { pinWin.recordPlacementGeometry(line) }
-        }
-        onStarted: pinWin.placementProcessStarted = true
         onExited: function(code) {
-          pinWin.placementProcessHandled = true
-          pinWin.handlePlacementExit(code)
-        }
-        onRunningChanged: {
-          if (!running && pinWin.placementStarted &&
-              !pinWin.placementProcessHandled && !pinWin.placementProcessStarted) {
-            pinWin.placementProcessHandled = true
-            pinWin.handlePlacementExit(127)
+          if (code === 0) {
+            root.geometryGeneration++
+            var index = root.cardIndex(pinWin.conversation, pinWin.directKey)
+            if (index >= 0)
+              root.updateCard(index, { placeOnMap: false })
+            placementSettle.restart()
+            return
           }
+          pinWin.placementStarted = false
+          if (pinWin.placementAttempts < 12)
+            placementRetry.restart()
+          else
+            console.warn("OmaQ: could not restore independent chat geometry")
         }
-      }
-
-      Process {
-        id: placementRecovery
-        running: false
-        stdout: SplitParser {
-          onRead: function(line) { pinWin.recordPlacementGeometry(line) }
-        }
-        onStarted: pinWin.placementRecoveryStarted = true
-        onExited: function(code) {
-          pinWin.placementRecoveryHandled = true
-          pinWin.handlePlacementRecoveryExit(code)
-        }
-        onRunningChanged: {
-          if (!running && pinWin.placementRecoveryPending &&
-              !pinWin.placementRecoveryHandled && !pinWin.placementRecoveryStarted) {
-            pinWin.placementRecoveryHandled = true
-            pinWin.handlePlacementRecoveryExit(127)
-          }
-        }
-      }
-
-      Timer {
-        id: placementRecoveryRetry
-        interval: 500
-        repeat: false
-        onTriggered: pinWin.requestPlacementRecovery()
       }
 
       Timer {
@@ -1774,11 +1571,6 @@ Item {
         onTriggered: {
           root.geometryGeneration++
           pinWin.placementStarted = false
-          if (pinWin.closeAfterPlacement) {
-            pinWin.closeAfterPlacement = false
-            pinWin.performClose()
-            return
-          }
           if (pinWin.boundedWidth(pinWin.width) !== pinWin.pendingWidth)
             pinWin.captureActualWidth()
           if (pinWin.boundedHeight(pinWin.height) !== pinWin.pendingHeight)
@@ -1808,27 +1600,10 @@ Item {
         if (root.isSurfaceOwner && !root.ownershipTeardown &&
             !pinWin.closing && pinWin.everShown && pinWin.modelData &&
             pinWin.modelData.conversation) {
-          if (pinWin.placeOnMap || pinWin.placementStarted ||
-              pinWin.placementRecoveryPending) {
-            if (pinWin.placementRecoveryAttempts >= 8 &&
-                !pinWin.placementRecoveryPending && !pinWin.placementStarted &&
-                !placeWindow.running) {
-              pinWin.closeAfterPlacement = false
-              pinWin.performClose()
-              return
-            }
-            pinWin.closeAfterPlacement = true
-            placementRetry.stop()
-            pinWin.visible = true
-            if (!placeWindow.running && !pinWin.placementStarted) {
-              if (pinWin.placementObservedGeometry)
-                pinWin.finishInitialPlacement(true)
-              else
-                Qt.callLater(pinWin.requestPlacementRecovery)
-            }
-            return
-          }
-          pinWin.performClose()
+          if (pinPage.inCall || pinPage.incoming)
+            pinPage.hangUp()
+          root.dismissCard(pinWin.modelData.conversation,
+            pinWin.modelData.directKey || "", pinWin.width, pinWin.height)
         }
       }
 
@@ -1870,7 +1645,15 @@ Item {
           SurfaceBtn {
             text: "Close"
             helpText: "Close chat"
-            onClicked: pinWin.requestClose()
+            onClicked: {
+              var conv = String(pinWin.modelData.conversation)
+              if (pinPage.inCall || pinPage.incoming)
+                pinPage.hangUp()
+              pinWin.closing = true
+              pinWin.visible = false
+              root.dismissCard(conv, pinWin.modelData.directKey || "",
+                pinWin.width, pinWin.height)
+            }
           }
         }
 

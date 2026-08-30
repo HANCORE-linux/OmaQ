@@ -33,18 +33,8 @@ if [ "$1" = "eval" ]; then
   [ "${OMAQ_FLOAT_LUA:-0}" = "1" ] && exit 0
   exit 1
 fi
-if [ "$1" = "dispatch" ] && [ -n "${OMAQ_FLOAT_BREAK_AFTER_DISPATCH:-}" ]; then
-  : >"$OMAQ_FLOAT_BREAK_AFTER_DISPATCH"
-fi
-if [ "$1" = "dispatch" ] && [ "${OMAQ_FLOAT_FAIL_DISPATCH:-0}" = "1" ]; then
-  exit 1
-fi
 if [ "$1" = "-j" ] && [ "${2:-}" = "clients" ]; then
-  if [ "${OMAQ_FLOAT_BAD_CLIENTS:-0}" = "1" ] ||
-     { [ -n "${OMAQ_FLOAT_BREAK_AFTER_DISPATCH:-}" ] &&
-       [ -e "$OMAQ_FLOAT_BREAK_AFTER_DISPATCH" ]; }; then
-    printf '%s\n' '{'
-  elif [ "${OMAQ_FLOAT_NO_CLIENTS:-0}" = "1" ]; then
+  if [ "${OMAQ_FLOAT_NO_CLIENTS:-0}" = "1" ]; then
     printf '%s\n' '[]'
   else
     printf '%s\n' '[{"title":"OmaQ chat — Alice · 0","address":"0xabc","floating":true,"monitor":1,"at":[40,80],"size":[420,420]},{"title":"OmaQ chat — Bob · 1","address":"0xdef","floating":true,"monitor":2,"at":[512,144],"size":[460,520]}]'
@@ -112,21 +102,13 @@ grep -q '^dispatch focuswindow address:0xabc$' "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: address focus missing" >&2
   exit 1
 }
-classic_placement=$("$root/scripts/float-omaq.sh" place-title \
-  "OmaQ chat — Bob · 1" 900 400 700 650)
-printf '%s' "$classic_placement" | jq -e '
-  .title == "OmaQ chat — Bob · 1" and .monitor == "HDMI-A-1" and
-  .x == 512 and .y == 144 and .width == 460 and .height == 520 and
-  has("address") == false' >/dev/null || {
-  echo "float-script: classic placement observation missing" >&2
-  exit 1
-}
-grep -q '^dispatch resizewindowpixel exact 700 650,address:0xdef$' \
+"$root/scripts/float-omaq.sh" place-title "OmaQ chat — Bob · 1" 512 144 460 520
+grep -q '^dispatch resizewindowpixel exact 460 520,address:0xdef$' \
   "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: per-chat resize missing" >&2
   exit 1
 }
-grep -q '^dispatch movewindowpixel exact 900 400,address:0xdef$' \
+grep -q '^dispatch movewindowpixel exact 512 144,address:0xdef$' \
   "$OMAQ_FLOAT_TEST_LOG" || {
   echo "float-script: per-chat placement missing" >&2
   exit 1
@@ -135,41 +117,7 @@ if grep -E 'windowpixel .*address:0xabc' "$OMAQ_FLOAT_TEST_LOG"; then
   echo "float-script: placing one chat changed another chat" >&2
   exit 1
 fi
-export OMAQ_FLOAT_FAIL_DISPATCH=1
-set +e
-failed_placement=$("$root/scripts/float-omaq.sh" place-title \
-  "OmaQ chat — Bob · 1" 900 400 700 650)
-failed_status=$?
-set -e
-unset OMAQ_FLOAT_FAIL_DISPATCH
-if [ "$failed_status" -ne 4 ] || ! printf '%s' "$failed_placement" | jq -e '
-  .x == 512 and .y == 144 and .width == 460 and .height == 520' >/dev/null; then
-  echo "float-script: failed dispatch did not return actual geometry" >&2
-  exit 1
-fi
-export OMAQ_FLOAT_BAD_CLIENTS=1
-set +e
-malformed_placement=$("$root/scripts/float-omaq.sh" place-title \
-  "OmaQ chat — Bob · 1" 900 400 700 650 2>/dev/null)
-malformed_status=$?
-set -e
-unset OMAQ_FLOAT_BAD_CLIENTS
-if [ "$malformed_status" -ne 3 ] || [ -n "$malformed_placement" ]; then
-  echo "float-script: malformed compositor snapshot did not fail closed" >&2
-  exit 1
-fi
-export OMAQ_FLOAT_BREAK_AFTER_DISPATCH="$tmp/break-after-dispatch"
-set +e
-missing_final=$("$root/scripts/float-omaq.sh" place-title \
-  "OmaQ chat — Bob · 1" 900 400 700 650 2>/dev/null)
-missing_final_status=$?
-set -e
-unset OMAQ_FLOAT_BREAK_AFTER_DISPATCH
-if [ "$missing_final_status" -ne 3 ] || [ -n "$missing_final" ]; then
-  echo "float-script: missing final observation reported placement success" >&2
-  exit 1
-fi
-geometry=$("$root/scripts/float-omaq.sh" list-geometry)
+geometry=$($root/scripts/float-omaq.sh list-geometry)
 printf '%s' "$geometry" | jq -e '
   length == 2 and .[0].title == "OmaQ chat — Alice · 0" and
   .[0].x == 40 and .[0].width == 420 and .[0].monitor == "DP-1" and
@@ -299,29 +247,6 @@ grep -q 'hl.dsp.window.bring_to_top({ window = "address:0xabc" })' \
   echo "float-script: Lua focus missing" >&2
   exit 1
 }
-lua_placement=$("$root/scripts/float-omaq.sh" place-title \
-  "OmaQ chat — Bob · 1" 900 400 700 650)
-printf '%s' "$lua_placement" | jq -e '
-  .title == "OmaQ chat — Bob · 1" and .monitor == "HDMI-A-1" and
-  .x == 512 and .y == 144 and .width == 460 and .height == 520 and
-  has("address") == false' >/dev/null || {
-  echo "float-script: Lua placement observation missing" >&2
-  exit 1
-}
-grep -Fq 'hl.dsp.window.resize({ x = 700, y = 650, relative = false, window = "address:0xdef" })' \
-  "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: Lua per-chat resize missing" >&2
-  exit 1
-}
-grep -Fq 'hl.dsp.window.move({ x = 900, y = 400, relative = false, window = "address:0xdef" })' \
-  "$OMAQ_FLOAT_TEST_LOG" || {
-  echo "float-script: Lua per-chat placement missing" >&2
-  exit 1
-}
-if grep -Eq 'resizewindowpixel|movewindowpixel' "$OMAQ_FLOAT_TEST_LOG"; then
-  echo "float-script: legacy placement used despite Lua support" >&2
-  exit 1
-fi
 if grep -Eq 'window\.float|setfloating|fullscreenstate' "$OMAQ_FLOAT_TEST_LOG"; then
   echo "float-script: focusing an existing chat changed its tiling state" >&2
   exit 1

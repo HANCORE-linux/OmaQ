@@ -134,39 +134,6 @@ install_rules || exit 1
 [[ "$MODE" == "install-rules" ]] && exit 0
 command -v jq >/dev/null 2>&1 || exit 3
 
-observe_title_geometry() {
-  local clients monitors placement
-  clients=$(hyprctl -j clients 2>/dev/null) || return 1
-  monitors=$(hyprctl -j monitors 2>/dev/null) || return 1
-  (( ${#clients} <= 1048576 && ${#monitors} <= 262144 )) || return 1
-  placement=$(jq -cn --arg title "$TARGET_TITLE" --argjson clients "$clients" \
-    --argjson monitors "$monitors" '
-    [$clients[] | select((.title // "") == $title)] as $matches |
-    if ($matches | length) == 1 and ($matches[0].floating // false) == true and
-       (($matches[0].address // "") | test("^0x[0-9a-fA-F]+$")) and
-       (($matches[0].at // []) | length) == 2 and
-       (($matches[0].size // []) | length) == 2
-    then $matches[0] as $client |
-      {title: $title, address: $client.address, x: $client.at[0], y: $client.at[1],
-       width: $client.size[0], height: $client.size[1],
-       monitor: (($monitors[] | select(.id == $client.monitor) | .name) // "")}
-    else empty end') || return 1
-  (( ${#placement} > 0 && ${#placement} <= 2048 )) || return 1
-  printf '%s\n' "$placement"
-}
-
-emit_title_geometry() {
-  local placement
-  placement=$(observe_title_geometry) || return 1
-  jq -c 'del(.address)' <<<"$placement" || return 1
-}
-
-if [[ "$MODE" == "observe-title" ]]; then
-  [[ -n "$TARGET_TITLE" ]] || exit 2
-  emit_title_geometry || exit 3
-  exit 0
-fi
-
 if [[ "$MODE" == "place-title" ]]; then
   [[ -n "$TARGET_TITLE" && "$TARGET_X" =~ ^-?[0-9]+$ &&
      "$TARGET_Y" =~ ^-?[0-9]+$ && "$TARGET_WIDTH" =~ ^[0-9]+$ &&
@@ -175,35 +142,16 @@ if [[ "$MODE" == "place-title" ]]; then
      TARGET_Y >= -32768 && TARGET_Y <= 32768 &&
      TARGET_WIDTH >= 360 && TARGET_WIDTH <= 4096 &&
      TARGET_HEIGHT >= 420 && TARGET_HEIGHT <= 4096 )) || exit 2
-  placement=$(observe_title_geometry) || exit 3
-  client=$(jq -r '.address // empty' <<<"$placement")
+  client=$(hyprctl -j clients 2>/dev/null | jq -r --arg title "$TARGET_TITLE" '
+    [.[] | select((.title // "") == $title)] |
+    if length == 1 and (.[0].floating // false) == true and
+       ((.[0].address // "") | test("^0x[0-9a-fA-F]+$"))
+    then .[0].address else empty end')
   [[ "$client" =~ ^0x[0-9a-fA-F]+$ ]] || exit 3
-  if (( LUA )); then
-    if ! hyprctl dispatch \
-      "hl.dsp.window.resize({ x = ${TARGET_WIDTH}, y = ${TARGET_HEIGHT}, relative = false, window = \"address:${client}\" })" \
-      >/dev/null; then
-      emit_title_geometry || true
-      exit 4
-    fi
-    if ! hyprctl dispatch \
-      "hl.dsp.window.move({ x = ${TARGET_X}, y = ${TARGET_Y}, relative = false, window = \"address:${client}\" })" \
-      >/dev/null; then
-      emit_title_geometry || true
-      exit 4
-    fi
-  else
-    if ! hyprctl dispatch "resizewindowpixel" \
-      "exact ${TARGET_WIDTH} ${TARGET_HEIGHT},address:${client}" >/dev/null; then
-      emit_title_geometry || true
-      exit 4
-    fi
-    if ! hyprctl dispatch "movewindowpixel" \
-      "exact ${TARGET_X} ${TARGET_Y},address:${client}" >/dev/null; then
-      emit_title_geometry || true
-      exit 4
-    fi
-  fi
-  emit_title_geometry || exit 3
+  hyprctl dispatch "resizewindowpixel" \
+    "exact ${TARGET_WIDTH} ${TARGET_HEIGHT},address:${client}" >/dev/null || exit 4
+  hyprctl dispatch "movewindowpixel" \
+    "exact ${TARGET_X} ${TARGET_Y},address:${client}" >/dev/null || exit 4
   exit 0
 fi
 
