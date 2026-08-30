@@ -105,20 +105,12 @@ BarWidget {
   property string systemThemeName: "System"
   readonly property var bundledNotificationSounds: [
     { id: "off", label: "Off", custom: false, path: "" },
-    { id: "icq-message", label: "ICQ" },
-    { id: "qq", label: "QQ" },
-    { id: "wechat", label: "WeChat" },
-    { id: "skype", label: "Skype" },
-    { id: "msn", label: "MSN" },
+    { id: "icq-message", label: "UHOH" },
+    { id: "qq", label: "PING" },
+    { id: "msn", label: "MAIL" },
     { id: "aurora", label: "Aurora" },
-    { id: "crystal", label: "Crystal" },
-    { id: "ripple", label: "Ripple" },
     { id: "glow", label: "Glow" },
-    { id: "halo", label: "Halo" },
     { id: "click", label: "Click" },
-    { id: "pop", label: "Pop" },
-    { id: "bell", label: "Bell" },
-    { id: "soft", label: "Soft" },
     { id: "knock", label: "Knock", custom: false, path: "" }
   ]
   readonly property var notificationSounds: {
@@ -1608,8 +1600,13 @@ BarWidget {
   }
 
   readonly property string notificationSound: {
-    var value = root.settings && root.settings.sound
-    return value ? String(value) : "icq-message"
+    var value = String(root.settings && root.settings.sound || "icq-message")
+    if (value === "custom")
+      return value
+    for (var i = 0; i < root.bundledNotificationSounds.length; i++)
+      if (String(root.bundledNotificationSounds[i].id || "") === value)
+        return value
+    return "icq-message"
   }
   readonly property string notificationSoundPath:
     String(root.settings && root.settings.soundCustomPath || "")

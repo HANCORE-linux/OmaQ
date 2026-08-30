@@ -7,12 +7,17 @@ printf '%s\n' 'source retained' 'managed removed' 'bundled immutable' | \
   echo "custom-sound: managed-copy gold contract changed" >&2
   exit 1
 }
-python3 - "$root/Panel.qml" "$root/Service.qml" "$root/ChatSurface.qml" <<'PY'
+python3 - "$root/Panel.qml" "$root/Service.qml" "$root/ChatSurface.qml" \
+  "$root/manifest.json" "$root/sounds" <<'PY'
+import json
 from pathlib import Path
+import re
 import sys
 panel = Path(sys.argv[1]).read_text()
 service = Path(sys.argv[2]).read_text()
 chat = Path(sys.argv[3]).read_text()
+manifest = json.loads(Path(sys.argv[4]).read_text())
+sounds = Path(sys.argv[5])
 timer = panel[panel.index("id: soundActionTimer"):panel.index("id: identityActionTimer")]
 if 'soundActionRequest = ""' in timer or 'soundAction = ""' in timer:
     raise SystemExit("custom-sound: timeout drops request correlation")
@@ -32,6 +37,37 @@ if "root.customSounds = []" not in service or \
         "onActiveHelperProtocolChanged:" not in service or \
         'root.helperCompatibility !== "compatible" || !root.supportsCustomSounds' not in service:
     raise SystemExit("custom-sound: stale helper projection survives replacement")
+preset_block = panel[panel.index("readonly property var bundledNotificationSounds:"):
+                     panel.index("readonly property var notificationSounds:")]
+presets = re.findall(r'\{ id: "([^"]+)", label: "([^"]+)"', preset_block)
+expected_presets = [
+    ("off", "Off"), ("icq-message", "UHOH"), ("qq", "PING"),
+    ("msn", "MAIL"), ("aurora", "Aurora"), ("glow", "Glow"),
+    ("click", "Click"), ("knock", "Knock")]
+if presets != expected_presets:
+    raise SystemExit(f"custom-sound: unexpected bundled presets: {presets!r}")
+sound_schema = next(item for item in manifest["barWidget"]["schema"]
+                    if item["key"] == "sound")
+expected_options = ["off", "icq-message", "qq", "msn", "aurora", "glow",
+                    "click", "knock", "custom"]
+if sound_schema["options"] != expected_options or \
+        sound_schema["defaultValue"] != "icq-message":
+    raise SystemExit("custom-sound: manifest presets differ from the panel")
+if "CC-BY-4.0" in manifest["license"]:
+    raise SystemExit("custom-sound: removed preset license remains in manifest")
+if 'return ["off", "icq-message", "qq", "msn", "aurora", "glow", "click",' not in chat or \
+        '"knock", "custom"].indexOf(value) >= 0 ? value : "icq-message"' not in chat or \
+        '["qq", "msn", "aurora", "glow"].indexOf(selectedSound)' not in chat or \
+        'Qt.resolvedUrl("sounds/icq-message.mp3")' not in chat:
+    raise SystemExit("custom-sound: playback allowlist or fallback changed")
+expected_audio = {"icq-message.mp3", "qq.oga", "msn.oga", "aurora.oga",
+                  "glow.oga", "click.wav", "knock.wav", "phone.oga"}
+actual_audio = {path.name for path in sounds.iterdir()
+                if path.suffix in {".mp3", ".oga", ".wav"}}
+if actual_audio != expected_audio:
+    raise SystemExit(f"custom-sound: unexpected bundled audio: {actual_audio!r}")
+if (sounds / "LICENSES" / "CC-BY-4.0.txt").exists():
+    raise SystemExit("custom-sound: removed CC BY preset license remains")
 PY
 tmp=$(mktemp -d /tmp/omaq-custom-sound-XXXXXX)
 pid=""
@@ -73,6 +109,7 @@ while [ "$i" -lt 50 ] && ! grep -q '"request":"custom-sound-import"' "$tmp/outpu
   sleep 0.05
 done
 [ "$i" -lt 50 ] || { echo "custom-sound: import result missing" >&2; exit 1; }
+# shellcheck disable=SC2046 # Split the helper's exact id/path pair into positional fields.
 set -- $(python3 - "$tmp/output" <<'PY'
 import json, sys
 for line in open(sys.argv[1], encoding="utf-8"):

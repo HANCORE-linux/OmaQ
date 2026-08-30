@@ -12,7 +12,7 @@
 - `Panel.qml`: only the visible card is in the Wayland input mask; Escape, the OmaQ bar action, or click-away closes it without a redundant header Close action or a desktop-sized pointer catcher
 - `pages/ChatPage.qml` shared by card, pin, and right dock
 - Themes: System, Paper, Ink, Moss, Dusk, Ember
-- Sounds: off, click, pop, bell, soft, knock, custom (`paplay`); desktop notify via `notify-send`
+- Sounds: off, UHOH, PING, MAIL, Aurora, Glow, Click, Knock, and custom; desktop notify via `notify-send`
 - Unread motion is a border pulse on the open card
 - OmaQ does not bind `SUPER+T` or `SUPER+SHIFT+arrows`
 - `make verify-4`; `.phase` is 4

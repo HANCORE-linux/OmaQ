@@ -9,8 +9,8 @@
 | PulseAudio client library (`libpulse`, provided by Arch `libpulse`) | bounded microphone capture and speaker playback in `helper/av.c` | LGPL-2.1-or-later | direct voice calls; PipeWire-Pulse provides the desktop audio server |
 | Material Symbols Variable (`ttf-material-symbols-variable`) | UI action glyphs | Apache-2.0 | installed as a system font; not bundled |
 | Simple Icons Ko-fi glyph (`cdn.simpleicons.org/kofi`) | Derived monochrome `assets/kofi-mono.svg` support link | CC0-1.0; Ko-fi name and logo remain Ko-fi trademarks | panel support link; adapted only for monochrome theme rendering |
-| KDE Ocean Sound Theme, commit `13ad78d18e844d0b0458ca1d71aa692ea093c845` | Nine unmodified `.oga` notification presets under `sounds/` | CC BY-SA 4.0 | notification sound settings; see `sounds/ATTRIBUTION.md` |
-| Wikimedia Commons source recordings | Five derived short `.wav` notification presets under `sounds/` | CC0 1.0 / CC BY 4.0 | notification sound settings; sources, authors, processing, and hashes in `sounds/ATTRIBUTION.md` |
+| KDE Ocean Sound Theme, commit `13ad78d18e844d0b0458ca1d71aa692ea093c845` | Four unmodified `.oga` notification presets under `sounds/` | CC BY-SA 4.0 | notification sound settings; see `sounds/ATTRIBUTION.md` |
+| Wikimedia Commons source recordings | Two derived short `.wav` notification presets under `sounds/` | CC0 1.0 | notification sound settings; sources, authors, processing, and hashes in `sounds/ATTRIBUTION.md` |
 | Pixabay asset 223780 by `u_bfmec9l9lj` | Derived `sounds/phone.oga` ringing tone | Pixabay Content License | incoming/outgoing ringing only; source, transformation, hashes, and license links in `sounds/ATTRIBUTION.md` |
 
 Helper is GPL-3.0-or-later once linked against toxcore. QML/plugin stays MIT.
