@@ -2902,17 +2902,17 @@ Item {
     return sendImmediateOp({ op: "attachment.stage.create", id: requestId })
   }
   function commitAttachmentStage(path, request) {
-    var filePath = String(path || "")
+    var attachmentPath = String(path || "")
     var requestId = String(request || "")
-    if (!filePath || !requestId || !root.supportsAttachments ||
+    if (!attachmentPath || !requestId || !root.supportsAttachments ||
         root.helperCompatibility === "incompatible")
       return false
-    return sendImmediateOp({ op: "attachment.stage.commit", path: filePath,
+    return sendImmediateOp({ op: "attachment.stage.commit", path: attachmentPath,
       id: requestId })
   }
   function rememberAttachmentCleanup(path, request) {
     var requestId = String(request || "")
-    var filePath = String(path || "")
+    var attachmentPath = String(path || "")
     if (!requestId)
       return
     var next = []
@@ -2920,14 +2920,14 @@ Item {
     for (var i = 0; i < root.attachmentCleanupDebts.length; i++) {
       var debt = root.attachmentCleanupDebts[i]
       if (String(debt.request || "") === requestId) {
-        next.push({ request: requestId, path: filePath || String(debt.path || "") })
+        next.push({ request: requestId, path: attachmentPath || String(debt.path || "") })
         found = true
       } else {
         next.push(debt)
       }
     }
     if (!found)
-      next.push({ request: requestId, path: filePath })
+      next.push({ request: requestId, path: attachmentPath })
     root.attachmentCleanupDebts = next
   }
   function retryAttachmentCleanupDebts() {
@@ -2941,33 +2941,33 @@ Item {
     }
   }
   function discardAttachmentStage(path, request) {
-    var filePath = String(path || "")
+    var attachmentPath = String(path || "")
     var requestId = String(request || "")
     if (!requestId)
       return false
-    root.rememberAttachmentCleanup(filePath, requestId)
+    root.rememberAttachmentCleanup(attachmentPath, requestId)
     if (!root.supportsAttachments || root.helperCompatibility === "incompatible")
       return false
-    return sendImmediateOp({ op: "attachment.stage.discard", path: filePath,
+    return sendImmediateOp({ op: "attachment.stage.discard", path: attachmentPath,
       id: requestId })
   }
   function inspectAttachment(path, request) {
-    var filePath = String(path || "")
+    var attachmentPath = String(path || "")
     var requestId = String(request || "")
-    if (!filePath || !requestId || !root.supportsAttachments ||
+    if (!attachmentPath || !requestId || !root.supportsAttachments ||
         root.helperCompatibility === "incompatible")
       return false
-    return sendImmediateOp({ op: "attachment.inspect", path: filePath,
+    return sendImmediateOp({ op: "attachment.inspect", path: attachmentPath,
       id: requestId })
   }
   function sendFile(path, conv, attachmentKind, expectedKey) {
     var c = String(conv || root.lastConversation || "")
-    var filePath = String(path || "")
+    var attachmentPath = String(path || "")
     var kind = String(attachmentKind || "file")
     var bindingKey = String(expectedKey || "")
     var group = /^g:[0-9a-f]{64}$/.test(c)
     var failure = ""
-    if (!c || !filePath || (c.charAt(0) === "g" && !group) ||
+    if (!c || !attachmentPath || (c.charAt(0) === "g" && !group) ||
         (kind !== "file" && kind !== "image"))
       failure = "invalid_request"
     else if (!group && !root.directBindingMatches(c, bindingKey))
@@ -2994,11 +2994,11 @@ Item {
     root.lastFileState = "sending"
     root.lastFileDir = "out"
     root.lastFileError = ""
-    root.lastFilePath = filePath
-    root.setOutgoingFile(c, { id: "", path: filePath, request: requestId,
+    root.lastFilePath = attachmentPath
+    root.setOutgoingFile(c, { id: "", path: attachmentPath, request: requestId,
       key: bindingKey, pending: true, cancelRequested: false })
     root.lastFileTick = root.lastFileTick + 1
-    var operation = { op: "file.send", conversation: c, path: filePath,
+    var operation = { op: "file.send", conversation: c, path: attachmentPath,
       kind: kind, id: requestId }
     var accepted = root.sendConversationOp(operation, bindingKey, kind === "image")
     if (!accepted) {

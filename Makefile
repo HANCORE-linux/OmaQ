@@ -161,6 +161,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/surface-owner.sh
 	sh tests/chat-surface-geometry.sh
 	sh tests/chat-message-actions.sh
+	python3 tests/qml_plaintext_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/stable-direct-state.sh

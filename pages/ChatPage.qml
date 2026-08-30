@@ -307,6 +307,7 @@ FocusScope {
     }
 
     contentItem: Text {
+      textFormat: Text.PlainText
       text: omaqTooltip.text
       color: Color.tooltip.text
       font.family: root.fontFamily
@@ -323,7 +324,7 @@ FocusScope {
     id: chatButton
     property string helpText: ""
     property bool suppressHelp: false
-    tooltipText: suppressHelp ? "" : helpText
+    tooltipText: ""
     Accessible.role: Accessible.Button
     Accessible.name: chatButton.helpText !== "" ? chatButton.helpText : chatButton.text
     Accessible.onPressAction: chatButton.clicked()
@@ -338,11 +339,12 @@ FocusScope {
     focusable: true
 
     OmaqTooltip {
-      visible: chatButton.tooltipText !== "" && !chatButton.hot &&
-        chatButton.activeFocus &&
-        (chatButton.activeFocusReason === Qt.TabFocusReason ||
-         chatButton.activeFocusReason === Qt.BacktabFocusReason)
-      text: chatButton.tooltipText
+      visible: !chatButton.suppressHelp && chatButton.helpText !== "" &&
+        (chatButton.hot ||
+         (chatButton.activeFocus &&
+          (chatButton.activeFocusReason === Qt.TabFocusReason ||
+           chatButton.activeFocusReason === Qt.BacktabFocusReason)))
+      text: chatButton.helpText
     }
   }
 
@@ -374,6 +376,7 @@ FocusScope {
       spacing: Style.space(8)
 
       Text {
+        textFormat: Text.PlainText
         Layout.preferredWidth: Style.font.icon
         horizontalAlignment: Text.AlignHCenter
         text: contextItem.materialIcon
@@ -389,6 +392,7 @@ FocusScope {
       }
 
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         text: contextItem.text
         color: contextItem.informational ? root.fg :
@@ -400,6 +404,7 @@ FocusScope {
       }
 
       Text {
+        textFormat: Text.PlainText
         visible: !!contextItem.subMenu
         text: "chevron_right"
         color: contextItem.highlighted ? root.accent : Qt.darker(root.fg, 1.35)
@@ -431,6 +436,7 @@ FocusScope {
     Keys.onSpacePressed: reactionAction.clicked()
 
     Text {
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: reactionAction.emoji !== "" ? reactionAction.emoji : reactionAction.materialIcon
       color: reactionAction.materialIcon !== ""
@@ -493,6 +499,7 @@ FocusScope {
     Accessible.name: label
 
     Text {
+      textFormat: Text.PlainText
       id: receiptText
       anchors.centerIn: parent
       text: receiptMark.failed ? "error" : (receiptMark.uncertain ? "help" :
@@ -530,6 +537,7 @@ FocusScope {
     implicitHeight: Style.space(30)
 
     Text {
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: formatButton.materialIcon
       color: formatButton.hot || formatButton.selected ? formatButton.accent : formatButton.foreground
@@ -567,6 +575,7 @@ FocusScope {
     }
 
     Text {
+      textFormat: Text.PlainText
       anchors.fill: parent
       visible: emojiPickerImage.status === Image.Error ||
         emojiPickerImage.status === Image.Null
@@ -2861,6 +2870,7 @@ FocusScope {
       radius: Style.cornerRadius
 
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         text: "Drop image or file"
         color: root.accent
@@ -2933,6 +2943,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             visible: root.peerAvatar === "" || root.peerAvatarFailed
             text: root.groupConversation ? "group" : "person"
@@ -2946,6 +2957,7 @@ FocusScope {
         }
 
         Text {
+          objectName: "chatHeaderText"
           Layout.fillWidth: true
           text: {
             var name = root.escapeMarkup(root.demo ? "DEMO" : (root.peerName || root.conversation || "chat"))
@@ -3005,6 +3017,7 @@ FocusScope {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.clearConfirm
           text: "Clear this chat?"
           color: root.accent
@@ -3049,6 +3062,7 @@ FocusScope {
         spacing: Style.space(3)
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: root.groupInviteFeedback !== "" ? root.groupInviteFeedback :
             (root.groupInviteCandidates.length > 0
@@ -3108,6 +3122,7 @@ FocusScope {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(4)
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: "person_add"
                     color: String(inviteFriend.modelData && inviteFriend.modelData.id || "") ===
@@ -3117,6 +3132,7 @@ FocusScope {
                     font.variableAxes: ({ "FILL": 0, "wght": 500 })
                   }
                   Text {
+                    textFormat: Text.PlainText
                     id: inviteFriendName
                     anchors.verticalCenter: parent.verticalCenter
                     text: String(inviteFriend.modelData && inviteFriend.modelData.name ||
@@ -3142,7 +3158,7 @@ FocusScope {
           visible: root.groupInviteFriendId !== ""
           width: parent.width
           text: root.groupInviteFriendId !== ""
-            ? "Invite " + root.selectedGroupInviteName()
+            ? "Invite selected contact"
             : "Select a contact"
           enabled: root.groupInviteFeedback !== "Sending group invite…" &&
             root.service && root.service.groupInviteCandidateMatches(
@@ -3208,6 +3224,7 @@ FocusScope {
                   spacing: Style.space(4)
 
                   Text {
+                    textFormat: Text.PlainText
                     visible: memberButton.index > 0
                     anchors.verticalCenter: parent.verticalCenter
                     text: "·"
@@ -3227,6 +3244,7 @@ FocusScope {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: memberButton.modelData.role === "owner" ? "crown" :
                       (memberButton.modelData.role === "admin" ? "shield_person" : "person")
@@ -3240,6 +3258,7 @@ FocusScope {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: memberButton.modelData.self ? "You"
                       : String(memberButton.modelData.name || "Member")
@@ -3318,6 +3337,7 @@ FocusScope {
         spacing: Style.space(4)
 
         Text {
+          textFormat: Text.PlainText
           id: groupActionText
           width: parent.width - cancelGroupAction.width - confirmGroupAction.width - parent.spacing * 2
           text: root.groupActionConfirm === "remove"
@@ -3352,6 +3372,7 @@ FocusScope {
         spacing: Style.space(4)
 
         Text {
+          textFormat: Text.PlainText
           id: groupLeaveText
           width: parent.width - cancelGroupLeave.width - confirmGroupLeaveButton.width -
             parent.spacing * 2
@@ -3481,6 +3502,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: !root.demo && root.fileForThis && service && service.fileNameFor(root.conversation) !== ""
             width: parent.width
             text: service ? service.fileNameFor(root.conversation) : ""
@@ -3510,6 +3532,7 @@ FocusScope {
             }
 
             Text {
+              textFormat: Text.PlainText
               id: filePathText
               anchors.left: parent.left
               anchors.right: parent.right
@@ -3716,6 +3739,7 @@ FocusScope {
             visible: model.dir !== "sys" && !model.newMarker
 
             Text {
+              textFormat: Text.PlainText
               id: groupSenderLabel
               visible: line.showGroupSender
               anchors.left: parent.left
@@ -3784,6 +3808,7 @@ FocusScope {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: genericFileIcon
                 visible: !line.audioMessage
                 text: "draft"
@@ -3803,6 +3828,7 @@ FocusScope {
                 implicitHeight: fileMessageText.implicitHeight
 
                 Text {
+                  textFormat: Text.PlainText
                   id: fileMessageText
                   anchors.fill: parent
                   text: root.fileDisplayName(line.contextText)
@@ -3867,6 +3893,7 @@ FocusScope {
               }
 
               Text {
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 visible: inlineImageContent.status === Image.Error ||
                   inlineImageContent.status === Image.Null
@@ -4001,7 +4028,8 @@ FocusScope {
               id: messageMenu
               width: Style.space(220)
               padding: Style.space(4)
-              delegate: ContextMenuItem {}
+              delegate: ContextMenuItem {
+              }
 
               background: Rectangle {
                 radius: Style.cornerRadius
@@ -4100,6 +4128,7 @@ FocusScope {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.fill: parent
                     visible: smileImage.status === Image.Error || smileImage.status === Image.Null
                     text: smileDelegate.glyph
@@ -4116,6 +4145,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             id: groupReceiptStatus
             visible: line.hasGroupReceipt && model.dir !== "sys" && !model.newMarker
             anchors.top: bubble.bottom
@@ -4157,6 +4187,7 @@ FocusScope {
                 })
 
                 Text {
+                  textFormat: Text.PlainText
                   required property int index
                   text: String(reactionBadgeRepeater.model[index] || "")
                   color: root.fg
@@ -4309,6 +4340,7 @@ FocusScope {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: "New messages"
               color: root.accent
               font.family: root.fontFamily
@@ -4325,6 +4357,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             id: sysLine
             visible: model.dir === "sys" && !model.newMarker
             width: parent.width
@@ -4349,6 +4382,7 @@ FocusScope {
           spacing: Style.space(4)
 
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: "File transfer"
             color: root.fg
@@ -4415,6 +4449,7 @@ FocusScope {
           spacing: Style.space(2)
 
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             text: root.reactionStatus !== "" ? root.reactionStatus : root.fileStatus
             color: root.fileStatus === "Sending…" && root.reactionStatus === ""
@@ -4425,6 +4460,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             id: statusPathText
             visible: root.reactionStatus === "" && root.fileStatusPath !== ""
             Layout.fillWidth: true
@@ -4486,6 +4522,7 @@ FocusScope {
           height: visible ? Math.max(replyPreview.implicitHeight, clearReplyBtn.implicitHeight) : 0
 
           Text {
+            textFormat: Text.PlainText
             id: replyPreview
             width: parent.width - clearReplyBtn.implicitWidth - confirmDeleteBtn.width - parent.spacing * 2
             text: root.deleteConfirmId !== "" ? "Delete this message?" :
@@ -4555,6 +4592,7 @@ FocusScope {
           }
 
           Text {
+            textFormat: Text.PlainText
             anchors.left: pendingImage.right
             anchors.right: clearPendingImageButton.left
             anchors.leftMargin: Style.space(6)
@@ -4794,6 +4832,7 @@ FocusScope {
               Layout.preferredHeight: Math.min(Style.space(84), Math.max(Style.space(30), input.contentHeight + Style.space(12)))
 
               Controls.TextArea {
+                textFormat: TextEdit.PlainText
                 id: input
                 anchors.fill: parent
                 color: root.fg

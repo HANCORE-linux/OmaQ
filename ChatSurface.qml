@@ -655,7 +655,7 @@ Item {
   component SurfaceBtn: Button {
     id: surfaceButton
     property string helpText: ""
-    tooltipText: helpText
+    tooltipText: ""
     Accessible.name: helpText !== "" ? helpText : text
     foreground: root.theme().fg || Color.foreground
     accent: root.theme().accent || Color.accent
@@ -669,11 +669,12 @@ Item {
 
     Controls.ToolTip {
       id: surfaceFocusTooltip
-      visible: surfaceButton.tooltipText !== "" && !surfaceButton.hot &&
-        surfaceButton.activeFocus &&
-        (surfaceButton.activeFocusReason === Qt.TabFocusReason ||
-         surfaceButton.activeFocusReason === Qt.BacktabFocusReason)
-      text: surfaceButton.tooltipText
+      visible: surfaceButton.helpText !== "" &&
+        (surfaceButton.hot ||
+         (surfaceButton.activeFocus &&
+          (surfaceButton.activeFocusReason === Qt.TabFocusReason ||
+           surfaceButton.activeFocusReason === Qt.BacktabFocusReason)))
+      text: surfaceButton.helpText
       delay: 400
       padding: 0
       readonly property var tokenBorderSpec: Border.localOrSurfaceSpec(
@@ -685,6 +686,7 @@ Item {
         radius: 0
       }
       contentItem: Text {
+        textFormat: Text.PlainText
         text: surfaceFocusTooltip.text
         color: Color.tooltip.text
         font.family: Style.font.family
@@ -738,6 +740,7 @@ Item {
       onClicked: toolbar.page.hangUp()
     }
     Text {
+      textFormat: Text.PlainText
       visible: toolbar.page && toolbar.page.callActive
       anchors.verticalCenter: parent.verticalCenter
       text: toolbar.page ? toolbar.page.callDurationText : "0:00"
@@ -1800,6 +1803,7 @@ Item {
               pinWin.compositorFloating && !pinWin.closing
 
             Text {
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               text: "drag_indicator"
               color: chatDragHandle.enabled ? root.theme().fg : "transparent"

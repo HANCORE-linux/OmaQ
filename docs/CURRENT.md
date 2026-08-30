@@ -1,17 +1,15 @@
-# Current status: 2026-08-28
+# Current status: 2026-08-30
 
 This is the current product snapshot. It intentionally contains no historical phase notes or discarded ideas.
 
 ## Snapshot
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
-- **Branch:** `main`
-- **Manifest version:** `0.8.1-beta.1` Protocol-14 candidate in source; Machine2 remains on `0.8.0`
-- **Source:** repository `main` candidate, prepared independently from the paused package-release work
-- **Live plugins:** current OmaQ runtime on machine and machine2
-- **Runtime baseline:** the local machine runs the equivalent Protocol-14 product payload; Machine2 remains on Protocol 13
-- **Live machine:** Protocol 14 helper SHA-256 `5c0649730d94d2e88bf09a8682f8c8506d3b4dfb0fef96544a6aaa557d2bfaa4`
-- **Live machine2:** the 75-file Protocol-13 runtime with helper SHA-256 `bc694afb9b9b8bacb79834e448fade49242d082aed211f3dba63479d0423bdff`
+- **Branch:** isolated `security-qml-plaintext` candidate based on current `origin/main`
+- **Manifest version:** `0.8.1-beta.1`, Protocol 14
+- **Source:** current product source plus an unreleased QML privacy candidate, independent from the paused package-release work
+- **Live plugins:** matching 68-file Protocol-14 product payloads on machine1 and machine2; this QML privacy candidate is not deployed
+- **Live helper:** SHA-256 `942fbfc0344b3bbb3318f53b5bd72ec1fd9b3f98299b431006005989249a736f` on both machines
 - **AUR:** paused; no registration or upload
 - **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 35 retained neutral QML captures; the revised sound picker is documented textually until a fresh neutral capture is available
 
@@ -33,6 +31,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The passphrase protects only the local Tox identity data in `tox.save`; Ratchet state, group metadata, avatars, receipts, and JSONL chat history rely on private filesystem permissions instead.
 - Private identities, the private-group registry, ratchet state, and local history must never be synchronized unintentionally.
 - Helper IPC accepts one exact 29-key vocabulary and rejects unknown or duplicate object keys before dispatch. Instance-bound probe and shutdown operations accept only `op`, `id`, and `request`; Protocol-14 surface geometry retains the allowlisted `width` and `height` fields. Uninstall uses only an atomic group-free shutdown request and aborts without signaling when native or registered groups, uncertain cleanup state, overlapping startup, incomplete runtime identity, or an unverifiable acknowledgement make removal unsafe.
+- QML renders names, filenames, system rows, search results, tooltips, and other non-message strings as explicit plain text. Only the escaped chat header and escaped Markdown message body may use rich text; remote values never reach an external shell label, icon, or tooltip that can auto-promote markup. The source gate pins the exact reviewed QML source set, uses Qt's parser output to check object-level properties and inherited controls, forbids AutoText, dynamic QML, indirect/reflective/computed text writes, compound assignments, and unreviewed text mutation methods, executes the actual message renderer against hostile tags, and uses Qt HTTP fixtures to prove both the raw RichText hazard and that escaped OmaQ output performs no resource request.
 - Direct call audio uses bounded in-memory PCM rings and the local PulseAudio client API; no audio is persisted.
 
 ## Open points
@@ -103,11 +102,11 @@ The source candidate implements the seven requested changes independently from t
 
 ## Latest validation
 
-The independent Protocol-14 source candidate passes `make clean && make test`, the native three-helper admin regression, phases 2 and 8, no-Signal and hardened helper builds, architecture checks, core QML lint, plugin validation, and the focused geometry, message-action, emoji-layout, composer, custom-sound, and protocol-compatibility regressions. The isolated IPC hardening follow-up additionally passes a 29-key parser matrix, duplicate String/Integer/Boolean rejection at the public socket decision, exact control-operation schemas, valid Protocol-14 surface geometry, and group-free uninstall regressions. Refusal coverage proves registered and native-only groups, locked identities, failed durable saves, uncertain cleanup, active startup locks, incomplete runtime state, missing or replaced executables, unavailable sockets, malformed replies, timeouts, acknowledgement-write failures, and unsupported safe shutdown cannot unsafely stop the helper or reach plugin removal. Separate cases prove that the removal lock excludes a marker-unaware legacy startup and that owner-PID reuse or stale foreign runtime evidence is cleaned without signaling the foreign process. Iterative independent QML and application-security review findings were corrected. Package construction, release evidence, and the source updater are deliberately outside this branch. The host still runs Quickshell 0.3.0 rather than the planned 0.3.1, and no visible native Wayland geometry test is claimed.
+The isolated QML privacy candidate passes clean `verify-0`, including Qt-parser canonicalization, the exact reviewed QML source-set gate, adversarial inherited-control and imperative-mutation fixtures, the actual OmaQ message renderer with hostile tags, and HTTP controls for raw RichText, inherited GroupBox text, compound assignment, and TextEdit insertion. Escaped OmaQ message and reply markup performs no HTTP resource request. Final independent QML and application-security review reports no findings. Package construction, release evidence, and the source updater remain outside this branch. No visible native Wayland validation is claimed.
 
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-The local live plugin runs one Protocol-14 helper after a confirmed group-free transition; Machine2 remains on its 75-file Protocol-13 runtime. Their latest authoritative projections contained zero groups and zero members. Machine2 separately reports `direct_state_reinvite_required`; its identity and Tox contacts remain present.
+Machine1 and machine2 run the same 68-file Protocol-14 product payload and helper hash. The unreleased QML privacy candidate has not been synchronized to either machine. No private identity, Ratchet, group registry, or history data was synchronized between machines.
 
 The illustrated guide uses 35 cropped original views from Machine2 QML components. The outdated sound-picker capture was removed and its revised choices are documented textually until a fresh neutral capture is available. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every committed screenshot was visually checked for private data and unrelated desktop content.
 
@@ -115,8 +114,7 @@ The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclu
 
 ## Next order
 
-1. Review and land the isolated group-free shutdown follow-up before the next live helper synchronization, without importing the paused package-release pipeline.
-2. After the planned Omarchy and Quickshell 0.3.1 update, rerun the exact host evidence.
+1. Prepare separate QML and helper commit proposals and obtain explicit approval before either commit.
+2. Keep push, pull request, merge, live synchronization, and AUR publication as separately approved delivery phases.
 3. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
-4. Keep commit, push, live synchronization, and AUR publication as separately approved delivery phases.
-5. Investigate the remaining Panel QML toolchain failure.
+4. Investigate the remaining Panel QML toolchain failure.
