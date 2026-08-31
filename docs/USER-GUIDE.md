@@ -232,15 +232,29 @@ omarchy plugin add \
 make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
-Update the source, rebuild the helper, and restart the shell:
+Update the source, back up and rebuild the helper, request group-safe activation, and restart the shell:
 
 ```bash
 omarchy plugin update hancore.omaq --yes &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate &&
 omarchy restart shell
 ```
 
-The final command visibly restarts the shell. The helper is detached, so rebuilding it and restarting the shell does not replace an already running process. Protocol-14 features remain disabled until the matching helper starts through a separately controlled lifecycle or a later group-free login. This source branch has no supported in-place helper updater; never terminate a helper while it owns an active private group.
+The final command visibly restarts the shell. This update path requires an already running Protocol-9-or-newer helper; use the first-install command above when no helper has been installed or started. The updater saves the verified running image as `helper/omaq.prev`, uses the normal `make helper` target, and reports the running and available hashes. If that build or any synchronous post-build validation fails after changing the available path, the wrapper restores the path from `.prev`, leaves the running process untouched, and exits with an error. Explicit `--activate` asks the current helper to stop only after `helper.shutdown_if_no_groups` confirms durable group-free state. A probe-capable older helper without this operation remains running and reports `update-pending` with `activation_unsupported`; no legacy stop is attempted. Active groups, uncertain cleanup, or unsupported group-safe activation leave the old helper running; retry supported activation after leaving groups, or let a later full user-session restart use the available binary. After a successful stop, Service starts the current `helper/omaq` automatically and the updater requires a matching hash, protocol marker, and correlated probe. Do not run another build or plugin replacement concurrently: the private lock serializes updater commands, not unrelated writes. Service intentionally opens the configured path, so an out-of-band replacement during shutdown/restart is detected as degraded rather than prevented by a hot-swap transaction. A failed post-check retains `.prev` for locked `--rollback` recovery. The optional stop creates a short offline window: in-flight messages become `delivery_unknown`, and active transfers, calls, or invitations fail visibly. The updater never sends a signal to the helper.
+
+Inspect the state at any time without rebuilding or stopping anything:
+
+```bash
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
+```
+
+If activation reports a degraded restart, use the same locked, descriptor-validated boundary to restore `.prev` and request group-safe activation. A running helper with active groups remains unchanged and reports `update-pending`; retry after leaving those groups. Then restart the shell and inspect the result:
+
+```bash
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --rollback
+omarchy restart shell
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
+```
 
 Identity, contacts, Ratchet state, history, and preferences live outside the plugin source directory and must never be copied as runtime source files.
 

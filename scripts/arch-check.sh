@@ -3,7 +3,7 @@
 # Missing files are not failures (phase 0 has no helper sources yet).
 
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 fail=0
 
@@ -68,7 +68,8 @@ if find . -name '*.qml' | grep -q .; then
 	fi
 fi
 
-for runtime_script in scripts/float-omaq.sh scripts/uninstall-omaq.sh scripts/paste-image.sh; do
+for runtime_script in scripts/float-omaq.sh scripts/uninstall-omaq.sh scripts/paste-image.sh \
+	scripts/update-helper.sh scripts/helper-runtime.py; do
 	if [ ! -f "$runtime_script" ] || [ ! -x "$runtime_script" ]; then
 		die "missing executable runtime script: $runtime_script"
 	fi
