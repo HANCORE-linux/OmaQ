@@ -3130,7 +3130,7 @@ BarWidget {
               onClicked: root.openRailAdvanced("groups")
             }
             RailIcon {
-              materialIcon: "verified_user"
+              materialIcon: "shield"
               label: "Safety code"
               selected: root.moreOpen && root.moreSection === "chat"
               onClicked: root.openRailAdvanced("chat")
@@ -4436,7 +4436,7 @@ BarWidget {
 
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "verified_user"
+                  iconText: "shield"
                   iconFontFamily: "Material Symbols Rounded"
                   text: "Safety code"
                   selected: root.moreSection === "chat"
