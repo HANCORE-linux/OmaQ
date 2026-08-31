@@ -7,6 +7,7 @@ tests/identity_guard_test
 tests/omaq_ipc_test_helper
 tests/omaq_group_admin_test_helper
 helper/omaq
+helper/omaq.prev
 *.o
 __pycache__/
 *.py[cod]
