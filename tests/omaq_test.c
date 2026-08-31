@@ -459,6 +459,34 @@ static void test_store(void)
 	if (omaq_message_append(dir, "c1", "me", "say \"hi\" \\ok", "out") != 0)
 		fail("message escape append");
 	{
+		char generated_timestamp_id[64];
+		char *timestamp_history = NULL;
+		size_t timestamp_history_len = 0;
+		if (omaq_message_append_id_reply_at(dir, "timestamp-test", "me", "exact",
+			"out", "timestamp-message", "", 1700000000) != 0 ||
+		    omaq_message_append_with_id_at(dir, "timestamp-test", "system",
+			"generated", "sys", generated_timestamp_id,
+			sizeof(generated_timestamp_id), 1700000001) != 0 ||
+		    omaq_message_append_attachment_id_at(dir, "timestamp-test", "peer",
+			"/tmp/exact-timestamp.png", "in", "image",
+			"timestamp-attachment", 1700000002) != 0 ||
+		    omaq_message_append_id_reply_at(dir, "timestamp-test", "me", "invalid",
+			"out", "invalid-timestamp-message", "", 0) == 0 ||
+		    omaq_message_append_attachment_id_at(dir, "timestamp-test", "peer",
+			"/tmp/invalid-timestamp.png", "in", "image",
+			"invalid-timestamp-attachment", -1) == 0 ||
+		    omaq_message_history(dir, "timestamp-test", 20, &timestamp_history,
+					 &timestamp_history_len) != 0 ||
+		    !timestamp_history ||
+		    !strstr(timestamp_history, "\"id\":\"timestamp-message\",\"ts\":1700000000") ||
+		    !strstr(timestamp_history, "\"ts\":1700000001,\"from\":\"system\",\"text\":\"generated\"") ||
+		    !strstr(timestamp_history, "\"id\":\"timestamp-attachment\",\"ts\":1700000002") ||
+		    strstr(timestamp_history, "invalid-timestamp-message") ||
+		    strstr(timestamp_history, "invalid-timestamp-attachment"))
+			fail("exact message timestamp persistence");
+		free(timestamp_history);
+	}
+	{
 		char id[64], actor[65], escaped_text[1400], *updated = NULL;
 		size_t updated_n = 0;
 		if (omaq_message_append_with_id(dir, "c1", "me", "editable", "out", id, sizeof(id)) != 0 ||

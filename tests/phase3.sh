@@ -296,6 +296,27 @@ persisted_join_notice_count=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.j
 	echo "phase3: initial member join did not persist exactly one notice" >&2
 	exit 1
 }
+python3 - "$fa" "$ha/history/$gid/messages.jsonl" <<'PY'
+import json
+import sys
+
+def records(path):
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                pass
+
+event = next((item for item in reversed(list(records(sys.argv[1])))
+              if item.get("event") == "message" and item.get("dir") == "sys" and
+              "joined the group." in item.get("text", "")), None)
+stored = next((item for item in reversed(list(records(sys.argv[2])))
+               if event and item.get("id") == event.get("id")), None)
+if not event or not stored or not isinstance(event.get("ts"), int) or \
+        event["ts"] <= 0 or event["ts"] != stored.get("ts"):
+    raise SystemExit("phase3: membership event/history timestamp mismatch")
+PY
 grep -a '"event":"group.invite.sent"' "$fa" |
 	grep -a -q '"request":"gi-phase3-first-1"' || {
 	echo "phase3: first invite success was not request-correlated" >&2
@@ -471,6 +492,32 @@ grep -a '"event":"message"' "$fb" | grep -a '"id":"'"$group_file_id"'"' |
 	echo "phase3: group file history projection missing" >&2
 	exit 1
 }
+python3 - "$fa" "$fb" "$ha/history/$gid/messages.jsonl" \
+	"$hb/history/$gid/messages.jsonl" "$group_file_id" <<'PY'
+import json
+import sys
+
+def records(path):
+    result = []
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return result
+
+for event_path, history_path, direction in ((sys.argv[1], sys.argv[3], "out"),
+                                             (sys.argv[2], sys.argv[4], "in")):
+    event = next((item for item in reversed(records(event_path))
+                  if item.get("event") == "message" and item.get("id") == sys.argv[5] and
+                  item.get("dir") == direction), None)
+    stored = next((item for item in reversed(records(history_path))
+                   if item.get("id") == sys.argv[5]), None)
+    if not event or not stored or not isinstance(event.get("ts"), int) or \
+            event["ts"] <= 0 or event["ts"] != stored.get("ts"):
+        raise SystemExit("phase3: group attachment event/history timestamp mismatch")
+PY
 
 group_image_source="$root/assets/mark.png"
 printf '{"op":"file.send","conversation":"%s","path":"%s","kind":"image","id":"phase3-group-image-send"}\n' \
@@ -628,13 +675,14 @@ while [ "$i" -lt 60 ]; do
 	i=$((i + 1))
 done
 [ "$ok" -eq 1 ] || { echo "phase3: no group message" >&2; exit 1; }
-grep -a '"event":"message"' "$fa" | grep -a -q '"request":"phase3-group-hi-' || {
-	echo "phase3: group message request correlation missing" >&2
+grep -a '"event":"message"' "$fa" | grep -a '"request":"phase3-group-hi-' |
+	grep -E -a -q '"ts":[1-9][0-9]*' || {
+	echo "phase3: group message request timestamp missing" >&2
 	exit 1
 }
 grep -a '"event":"message"' "$fb" | grep -a '"text":"hi"' |
-	grep -E -a -q '"sender":"[0-9a-f]{64}"' || {
-	echo "phase3: stable group sender identity missing" >&2
+	grep -E -a -q '"sender":"[0-9a-f]{64}".*"ts":[1-9][0-9]*' || {
+	echo "phase3: stable group sender identity or timestamp missing" >&2
 	exit 1
 }
 message_id=$(grep -a '"event":"message"' "$fa" | grep -a '"request":"phase3-group-hi-' |
@@ -644,6 +692,48 @@ recipient_gid=$(grep -a '"event":"message"' "$fb" | grep -a '"text":"hi"' | tail
 [ -n "$message_id" ] || { echo "phase3: group message id missing" >&2; exit 1; }
 [ -n "$recipient_gid" ] || { echo "phase3: recipient local group id missing" >&2; exit 1; }
 [ "$recipient_gid" = "$gid" ] || { echo "phase3: stable group id differs across peers" >&2; exit 1; }
+printf '{"op":"search","conversation":"%s","text":"hi","id":"phase3-group-search-a"}\n' "$gid" >&3
+printf '{"op":"search","conversation":"%s","text":"hi","id":"phase3-group-search-b"}\n' "$recipient_gid" >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"search"' "$fa" | grep -a -q '"request":"phase3-group-search-a"' &&
+	   grep -a '"event":"search"' "$fb" | grep -a -q '"request":"phase3-group-search-b"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase3: group search timestamp fixtures missing" >&2; exit 1; }
+python3 - "$fa" "$fb" "$message_id" <<'PY'
+import json
+import sys
+
+def events(path):
+    result = []
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return result
+
+def timestamp_pair(path, message_id, request, direction):
+    records = events(path)
+    message = next((item for item in reversed(records)
+                    if item.get("event") == "message" and
+                    item.get("id") == message_id and item.get("dir") == direction), None)
+    search = next((item for item in reversed(records)
+                   if item.get("event") == "search" and item.get("request") == request), None)
+    hit = next((item for item in (search or {}).get("items", [])
+                if item.get("id") == message_id), None)
+    if not message or not hit or not isinstance(message.get("ts"), int) or \
+            message["ts"] <= 0 or message["ts"] != hit.get("ts"):
+        raise SystemExit("phase3: group event/history timestamp mismatch")
+
+timestamp_pair(sys.argv[1], sys.argv[3], "phase3-group-search-a", "out")
+timestamp_pair(sys.argv[2], sys.argv[3], "phase3-group-search-b", "in")
+PY
 printf '{"op":"message.react","conversation":"%s","id":"%s","text":"👍"}\n' "$recipient_gid" "$message_id" >&4
 i=0
 while [ "$i" -lt 40 ]; do

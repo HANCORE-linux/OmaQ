@@ -71,7 +71,7 @@ tmp=$(mktemp -d /tmp/omaq-panel-request-XXXXXX)
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$tmp/omaq"
-for path in Panel.qml Service.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
+for path in Panel.qml Service.qml SafeText.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
   ChatSurface.qml PlacementController.qml SurfaceCoordinator.qml qmldir assets pages \
   sounds themes scripts helper manifest.json; do
   cp -a "$root/$path" "$tmp/omaq/"
@@ -235,6 +235,23 @@ ShellRoot {
         testRoot.check(panel.testSelfAvatar.visible, "self avatar did not return")
         testRoot.check(panel.testSelfContent.visible, "self content did not return")
         testRoot.check(!panel.testRequestContent.visible, "request content did not clear")
+        panel.testService.selectedDirectId = "7"
+        panel.testService.searchConversation = "7"
+        panel.testService.friends = [{ id: "7", name: "Alice",
+          key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]
+        testRoot.check(panel.searchMetaText({ from: "peer", dir: "in",
+          ts: 1700000000 }).indexOf("Alice · 2023-") === 0,
+          "Direct search metadata missing")
+        var groupId = "g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        panel.testService.searchConversation = groupId
+        panel.testService.groups = [{ id: groupId, members: [{ name: "Bob",
+          key: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }] }]
+        testRoot.check(panel.searchMetaText({ from:
+          "member:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          dir: "in", ts: 1700000000 }).indexOf("Bob · 2023-") === 0,
+          "Group search metadata missing")
+        testRoot.check(panel.searchMetaText({ from: "peer", dir: "in",
+          ts: "broken" }) === "Member", "invalid search timestamp was invented")
         console.log(testRoot.failed ? "PANEL_REQUEST_RESULT fail" : "PANEL_REQUEST_RESULT ok")
         Qt.quit()
       }

@@ -43,6 +43,13 @@ FocusScope {
   property string groupActionMemberKey: ""
   property string groupActionName: ""
   property bool groupLeaveConfirm: false
+  property bool searchOpen: false
+  property bool searchPending: false
+  property bool searchCompleted: false
+  property string searchRequest: ""
+  property string searchFeedback: ""
+  property var searchItems: []
+  property int searchRequestSequence: 0
   signal autoOpenToggled()
   property bool terminalLook: false
   property bool pulseUnread: false
@@ -306,8 +313,7 @@ FocusScope {
       radius: Style.cornerRadius
     }
 
-    contentItem: Text {
-      textFormat: Text.PlainText
+    contentItem: OmaQ.SafeText {
       text: omaqTooltip.text
       color: Color.tooltip.text
       font.family: root.fontFamily
@@ -375,8 +381,7 @@ FocusScope {
     contentItem: RowLayout {
       spacing: Style.space(8)
 
-      Text {
-        textFormat: Text.PlainText
+      OmaQ.SafeText {
         Layout.preferredWidth: Style.font.icon
         horizontalAlignment: Text.AlignHCenter
         text: contextItem.materialIcon
@@ -391,8 +396,7 @@ FocusScope {
         renderType: Text.QtRendering
       }
 
-      Text {
-        textFormat: Text.PlainText
+      OmaQ.SafeText {
         Layout.fillWidth: true
         text: contextItem.text
         color: contextItem.informational ? root.fg :
@@ -403,8 +407,7 @@ FocusScope {
         elide: Text.ElideRight
       }
 
-      Text {
-        textFormat: Text.PlainText
+      OmaQ.SafeText {
         visible: !!contextItem.subMenu
         text: "chevron_right"
         color: contextItem.highlighted ? root.accent : Qt.darker(root.fg, 1.35)
@@ -435,8 +438,7 @@ FocusScope {
     Keys.onEnterPressed: reactionAction.clicked()
     Keys.onSpacePressed: reactionAction.clicked()
 
-    Text {
-      textFormat: Text.PlainText
+    OmaQ.SafeText {
       anchors.centerIn: parent
       text: reactionAction.emoji !== "" ? reactionAction.emoji : reactionAction.materialIcon
       color: reactionAction.materialIcon !== ""
@@ -498,8 +500,7 @@ FocusScope {
     Accessible.role: Accessible.StaticText
     Accessible.name: label
 
-    Text {
-      textFormat: Text.PlainText
+    OmaQ.SafeText {
       id: receiptText
       anchors.centerIn: parent
       text: receiptMark.failed ? "error" : (receiptMark.uncertain ? "help" :
@@ -536,8 +537,7 @@ FocusScope {
     implicitWidth: Style.space(30)
     implicitHeight: Style.space(30)
 
-    Text {
-      textFormat: Text.PlainText
+    OmaQ.SafeText {
       anchors.centerIn: parent
       text: formatButton.materialIcon
       color: formatButton.hot || formatButton.selected ? formatButton.accent : formatButton.foreground
@@ -574,8 +574,7 @@ FocusScope {
       cache: true
     }
 
-    Text {
-      textFormat: Text.PlainText
+    OmaQ.SafeText {
       anchors.fill: parent
       visible: emojiPickerImage.status === Image.Error ||
         emojiPickerImage.status === Image.Null
@@ -1034,6 +1033,7 @@ FocusScope {
       entry.failureCode = ""
     if (entry.clientKey === undefined || entry.clientKey === "")
       entry.clientKey = entry.local ? root.newLocalMessageKey() : ""
+    entry.ts = root.lineTimestamp(entry)
     lines.append(entry)
   }
 
@@ -1386,9 +1386,126 @@ FocusScope {
     root.markRead()
   }
 
+  function normalizedTimestamp(value) {
+    var seconds = Number(value)
+    if (!Number.isFinite(seconds) || !Number.isInteger(seconds) ||
+        seconds <= 0 || seconds > 253402300799)
+      return 0
+    return seconds
+  }
+
+  function lineTimestamp(item) {
+    var entry = item || ({})
+    var timestamp = root.normalizedTimestamp(entry.ts)
+    if (timestamp)
+      return timestamp
+    return entry.local ? Math.floor(Date.now() / 1000) : 0
+  }
+
+  function twoDigits(value) {
+    var number = Math.max(0, Math.floor(Number(value || 0)))
+    return number < 10 ? "0" + number.toString() : number.toString()
+  }
+
+  function clockTimeText(date) {
+    return root.twoDigits(date.getHours()) + ":" + root.twoDigits(date.getMinutes())
+  }
+
+  function messageTimeText(value) {
+    var seconds = root.normalizedTimestamp(value)
+    if (!seconds)
+      return ""
+    var date = new Date(seconds * 1000)
+    var now = new Date()
+    var time = root.clockTimeText(date)
+    if (date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() && date.getDate() === now.getDate())
+      return time
+    return date.getFullYear().toString() + "-" + root.twoDigits(date.getMonth() + 1) +
+      "-" + root.twoDigits(date.getDate()) + " · " + time
+  }
+
+  function searchTimeText(value) {
+    var seconds = root.normalizedTimestamp(value)
+    if (!seconds)
+      return ""
+    var date = new Date(seconds * 1000)
+    return date.getFullYear().toString() + "-" + root.twoDigits(date.getMonth() + 1) +
+      "-" + root.twoDigits(date.getDate()) + " · " + root.clockTimeText(date)
+  }
+
+  function searchSender(item) {
+    var entry = item || ({})
+    if (String(entry.dir || "") === "out" || String(entry.from || "") === "me")
+      return "You"
+    if (String(entry.dir || "") === "sys" || String(entry.from || "") === "system")
+      return "System"
+    var sender = String(entry.from || "")
+    if (root.groupConversation && sender !== "")
+      return root.groupMemberName(sender)
+    return root.peerName || "Contact"
+  }
+
+  function searchMetaText(item) {
+    var sender = root.searchSender(item)
+    var time = root.searchTimeText(item && item.ts)
+    return time === "" ? sender : sender + " · " + time
+  }
+
+  function resetSearchResults() {
+    searchTimeout.stop()
+    root.searchPending = false
+    root.searchCompleted = false
+    root.searchRequest = ""
+    root.searchFeedback = ""
+    root.searchItems = []
+  }
+
+  function openSearch() {
+    if (root.demo)
+      return
+    root.searchOpen = true
+    Qt.callLater(function() { chatSearchField.forceActiveFocus() })
+  }
+
+  function closeSearch() {
+    root.searchOpen = false
+    root.resetSearchResults()
+    chatSearchField.text = ""
+  }
+
+  function runSearch() {
+    var query = String(chatSearchField.text || "").trim()
+    root.resetSearchResults()
+    if (query === "")
+      return
+    if (!root.service || !root.conversation || !root.directBindingValid) {
+      root.searchFeedback = "Search unavailable"
+      root.searchCompleted = true
+      return
+    }
+    root.searchRequestSequence++
+    root.searchRequest = Date.now().toString(36) + "-chat-search-" +
+      root.searchRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    root.searchPending = root.service.requestChatSearch(query, root.conversation,
+      root.groupConversation ? "" : root.peerKey, root.searchRequest)
+    if (root.searchPending)
+      searchTimeout.restart()
+    else {
+      root.searchRequest = ""
+      root.searchFeedback = "Search unavailable"
+      root.searchCompleted = true
+    }
+  }
+
   function handleEscape() {
     if (composerMenu.opened) {
       composerMenu.close()
+      return true
+    }
+    if (root.searchOpen) {
+      root.closeSearch()
       return true
     }
     if (root.clipboardStageRequest !== "" || clipboardTypeProbe.running ||
@@ -1577,7 +1694,7 @@ FocusScope {
     for (i = 0; i < lines.count; i++) {
       var existing = lines.get(i)
       if (!cleared && existing && (existing.local || existing.pending || existing.failed))
-        keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], groupReceipts: existing.groupReceipts || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
+        keep.push({ id: existing.id || "", reply: existing.reply || "", sender: existing.sender || "", dir: existing.dir, text: existing.text, kind: existing.kind || "", ts: existing.ts || 0, reactionMe: existing.reactionMe || "", reactionPeer: existing.reactionPeer || "", groupReactions: existing.groupReactions || [], groupReceipts: existing.groupReceipts || [], needsReadReceipt: !!existing.needsReadReceipt, deleted: !!existing.deleted, edited: !!existing.edited, local: !!existing.local, live: !!existing.live, pending: !!existing.pending, failed: !!existing.failed, failureCode: existing.failureCode || "", clientKey: existing.clientKey || "", ack: existing.ack !== undefined ? existing.ack : -1 })
     }
     lines.clear()
     if (service && String(service.lastHistoryUnreadConv || "") === String(root.conversation || ""))
@@ -1607,7 +1724,7 @@ FocusScope {
       if (dir === "out")
         historyAck = root.groupConversation ? 1 :
           (it.receipt === "read" ? 3 : (it.receipt === "delivered" ? 2 : 1))
-      root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), groupReceipts: root.historyGroupReceipts(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
+      root.appendLine({ id: it.id || "", reply: it.reply || "", sender: it.from || "", dir: dir, text: it.deleted ? "Message deleted" : it.text, kind: it.kind || "", ts: it.ts || 0, reactionMe: it.reaction_me || "", reactionPeer: it.reaction_peer || "", groupReactions: root.historyGroupReactions(it), groupReceipts: root.historyGroupReceipts(it), needsReadReceipt: dir === "in" && !!unreadIndexes[i], deleted: !!it.deleted, edited: !!it.edited, local: false, pending: false, ack: historyAck })
     }
     for (i = 0; i < keep.length; i++) {
       found = false
@@ -1712,13 +1829,15 @@ FocusScope {
         if (service.lastChatId)
           lines.setProperty(i, "id", service.lastChatId)
         lines.setProperty(i, "reply", service.lastChatReply || "")
+        var confirmedTimestamp = root.normalizedTimestamp(service.lastChatTimestamp)
+        lines.setProperty(i, "ts", confirmedTimestamp)
         lines.setProperty(i, "ack", 1)
         return
       }
     }
     if (dir === "in" && !hasNewMarker)
       root.appendLine({ dir: "sys", text: "New messages", newMarker: true, ack: -1 })
-    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", sender: service.lastChatSender || "", dir: dir, text: t, kind: service.lastChatKind || "", needsReadReceipt: dir === "in", deleted: false, edited: false, local: false, live: true, pending: false, failed: false, failureCode: "", clientKey: dir === "out" ? request : "", ack: dir === "out" ? 1 : -1 })
+    root.appendLine({ id: service.lastChatId || "", reply: service.lastChatReply || "", sender: service.lastChatSender || "", dir: dir, text: t, kind: service.lastChatKind || "", ts: service.lastChatTimestamp || 0, needsReadReceipt: dir === "in", deleted: false, edited: false, local: false, live: true, pending: false, failed: false, failureCode: "", clientKey: dir === "out" ? request : "", ack: dir === "out" ? 1 : -1 })
     if (root.readActive && dir === "in" && service.lastChatId)
       root.markRead()
     if (followLatest)
@@ -1857,7 +1976,7 @@ FocusScope {
       var replyId = root.replyToId
       root.clearReply()
       var clientKey = root.newLocalMessageKey()
-      root.appendLine({ id: "", reply: replyId, dir: "out", text: t, deleted: false, edited: false, local: true, pending: !root.demo, failed: false, failureCode: "", clientKey: clientKey, ack: root.demo ? 1 : 0 })
+      root.appendLine({ id: "", reply: replyId, dir: "out", text: t, ts: Math.floor(Date.now() / 1000), deleted: false, edited: false, local: true, pending: !root.demo, failed: false, failureCode: "", clientKey: clientKey, ack: root.demo ? 1 : 0 })
       root.restoreLatestPosition()
       if (root.demo) {
         demoReply.restart()
@@ -2302,6 +2421,21 @@ FocusScope {
   }
 
   Timer {
+    id: searchTimeout
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (!root.searchPending)
+        return
+      root.searchPending = false
+      root.searchCompleted = true
+      root.searchRequest = ""
+      root.searchFeedback = "Search timed out"
+      root.searchItems = []
+    }
+  }
+
+  Timer {
     id: readRetry
     interval: 2500
     repeat: false
@@ -2393,7 +2527,7 @@ FocusScope {
     interval: 650
     onTriggered: {
       var pool = [
-        "Still demo — that line never left this machine.",
+        "Still demo — that line stayed local.",
         "The composer should stay a single row.",
         "Hang up only appears during a call.",
         "Long incoming reply to check wrap and scroll: the list should pin to the latest line without covering the composer."
@@ -2467,6 +2601,19 @@ FocusScope {
     target: root.service
     enabled: !root.demo && root.service !== null
     function onMessageTickChanged() { root.pushLive() }
+    function onChatSearchResult(conversation, key, request, items) {
+      if (!root.searchOpen || !root.searchPending ||
+          String(conversation || "") !== String(root.conversation || "") ||
+          String(request || "") !== root.searchRequest ||
+          (!root.groupConversation && String(key || "") !== String(root.peerKey || "")) ||
+          !root.directBindingValid)
+        return
+      searchTimeout.stop()
+      root.searchPending = false
+      root.searchCompleted = true
+      root.searchFeedback = ""
+      root.searchItems = items || []
+    }
     function onAttachmentStageTickChanged() {
       if (!root.service || root.clipboardStageRequest === "" ||
           String(root.service.lastAttachmentStageRequest || "") !==
@@ -2613,6 +2760,14 @@ FocusScope {
       }
     }
     function onHelperInstanceGenerationChanged() {
+      if (root.searchPending) {
+        searchTimeout.stop()
+        root.searchPending = false
+        root.searchCompleted = true
+        root.searchRequest = ""
+        root.searchFeedback = "Search interrupted"
+        root.searchItems = []
+      }
       if ((root.clipboardStageRequest !== "" ||
            root.attachmentInspectionRequest !== "") && root.service) {
         clipboardTypeProbe.running = false
@@ -2786,6 +2941,10 @@ FocusScope {
 
   onConversationChanged: {
     root.stopTyping()
+    root.searchOpen = false
+    root.resetSearchResults()
+    if (chatSearchField)
+      chatSearchField.text = ""
     fileStatusTimer.stop()
     root.followLatest = true
     root.clearConfirm = false
@@ -2822,6 +2981,10 @@ FocusScope {
   }
 
   onPeerKeyChanged: {
+    root.searchOpen = false
+    root.resetSearchResults()
+    if (chatSearchField)
+      chatSearchField.text = ""
     lines.clear()
     if (!root.demo && root.service && root.conversation && root.directBindingValid)
       root.service.requestHistory(root.conversation, root.peerKey)
@@ -2830,6 +2993,10 @@ FocusScope {
   onDirectBindingValidChanged: {
     if (!root.directBindingValid) {
       root.stopTyping()
+      root.searchOpen = false
+      root.resetSearchResults()
+      if (chatSearchField)
+        chatSearchField.text = ""
       lines.clear()
     } else if (!root.demo && root.service && root.conversation) {
       root.service.requestHistory(root.conversation, root.peerKey)
@@ -2869,8 +3036,7 @@ FocusScope {
       border.width: 1
       radius: Style.cornerRadius
 
-      Text {
-        textFormat: Text.PlainText
+      OmaQ.SafeText {
         anchors.centerIn: parent
         text: "Drop image or file"
         color: root.accent
@@ -2883,6 +3049,11 @@ FocusScope {
   Keys.onPressed: function(event) {
     root.markRead()
     if (event.key === Qt.Key_Escape && root.handleEscape()) {
+      event.accepted = true
+      return
+    }
+    if (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier)) {
+      root.openSearch()
       event.accepted = true
       return
     }
@@ -2942,8 +3113,7 @@ FocusScope {
               root.peerAvatarFailed = true
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             anchors.centerIn: parent
             visible: root.peerAvatar === "" || root.peerAvatarFailed
             text: root.groupConversation ? "group" : "person"
@@ -2974,6 +3144,19 @@ FocusScope {
           font.pixelSize: Style.font.caption
           font.letterSpacing: 1.2
           elide: Text.ElideRight
+        }
+
+        FormatBtn {
+          visible: !root.demo && !root.clearConfirm && !root.groupLeaveConfirm
+          materialIcon: "search"
+          helpText: root.searchOpen ? "Close search" : "Search this chat"
+          selected: root.searchOpen
+          onClicked: {
+            if (root.searchOpen)
+              root.closeSearch()
+            else
+              root.openSearch()
+          }
         }
 
         FormatBtn {
@@ -3016,8 +3199,7 @@ FocusScope {
           }
         }
 
-        Text {
-          textFormat: Text.PlainText
+        OmaQ.SafeText {
           visible: root.clearConfirm
           text: "Clear this chat?"
           color: root.accent
@@ -3053,6 +3235,108 @@ FocusScope {
         }
       }
 
+      ColumnLayout {
+        id: chatSearchPanel
+        visible: !root.demo && root.searchOpen
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? implicitHeight : 0
+        Layout.minimumHeight: visible ? implicitHeight : 0
+        spacing: Style.space(4)
+
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(4)
+
+          TextField {
+            id: chatSearchField
+            Layout.fillWidth: true
+            activeFocusOnTab: true
+            foreground: root.fg
+            accent: root.accent
+            placeholderText: "Search this chat"
+            maximumLength: 256
+            onTextChanged: root.resetSearchResults()
+            onAccepted: root.runSearch()
+          }
+
+          ChatBtn {
+            text: "Search"
+            bordered: true
+            enabled: String(chatSearchField.text || "").trim() !== "" &&
+              !root.searchPending
+            onClicked: root.runSearch()
+          }
+        }
+
+        OmaQ.SafeText {
+          visible: root.searchPending || root.searchCompleted ||
+            root.searchFeedback !== ""
+          Layout.fillWidth: true
+          text: root.searchPending ? "Searching…" :
+            (root.searchFeedback !== "" ? root.searchFeedback :
+              (root.searchCompleted && root.searchItems.length === 0
+                ? "No results" : ""))
+          color: root.searchFeedback !== "" ? (root.theme.unread || root.accent) :
+            Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.68)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        ListView {
+          id: chatSearchResults
+          visible: root.searchItems.length > 0
+          Layout.fillWidth: true
+          Layout.preferredHeight: visible
+            ? Math.min(contentHeight, Style.space(140)) : 0
+          clip: true
+          spacing: Style.space(3)
+          boundsBehavior: Flickable.StopAtBounds
+          model: root.searchItems
+          delegate: Rectangle {
+            id: chatSearchResult
+            required property var modelData
+            width: chatSearchResults.width
+            height: searchResultContent.implicitHeight + Style.space(8)
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.055)
+            border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.12)
+            border.width: 1
+
+            Column {
+              id: searchResultContent
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(6)
+              anchors.rightMargin: Style.space(6)
+              spacing: Style.space(1)
+
+              OmaQ.SafeText {
+                width: parent.width
+                text: root.searchMetaText(chatSearchResult.modelData)
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              OmaQ.SafeText {
+                width: parent.width
+                text: String(chatSearchResult.modelData &&
+                  chatSearchResult.modelData.text || "")
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                maximumLineCount: 2
+                wrapMode: Text.Wrap
+                elide: Text.ElideRight
+              }
+            }
+          }
+        }
+      }
+
       Column {
         id: groupInvitePanel
         visible: root.groupConversation && root.groupSelfRole() !== "member" &&
@@ -3061,8 +3345,7 @@ FocusScope {
         Layout.preferredHeight: visible ? implicitHeight : 0
         spacing: Style.space(3)
 
-        Text {
-          textFormat: Text.PlainText
+        OmaQ.SafeText {
           width: parent.width
           text: root.groupInviteFeedback !== "" ? root.groupInviteFeedback :
             (root.groupInviteCandidates.length > 0
@@ -3121,8 +3404,7 @@ FocusScope {
                   id: inviteFriendContent
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(4)
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "person_add"
                     color: String(inviteFriend.modelData && inviteFriend.modelData.id || "") ===
@@ -3131,8 +3413,7 @@ FocusScope {
                     font.pixelSize: Style.font.iconSmall
                     font.variableAxes: ({ "FILL": 0, "wght": 500 })
                   }
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     id: inviteFriendName
                     anchors.verticalCenter: parent.verticalCenter
                     text: String(inviteFriend.modelData && inviteFriend.modelData.name ||
@@ -3223,8 +3504,7 @@ FocusScope {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(4)
 
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     visible: memberButton.index > 0
                     anchors.verticalCenter: parent.verticalCenter
                     text: "·"
@@ -3243,8 +3523,7 @@ FocusScope {
                       : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.36)
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     anchors.verticalCenter: parent.verticalCenter
                     text: memberButton.modelData.role === "owner" ? "crown" :
                       (memberButton.modelData.role === "admin" ? "shield_person" : "person")
@@ -3257,8 +3536,7 @@ FocusScope {
                     font.hintingPreference: Font.PreferNoHinting
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     anchors.verticalCenter: parent.verticalCenter
                     text: memberButton.modelData.self ? "You"
                       : String(memberButton.modelData.name || "Member")
@@ -3336,8 +3614,7 @@ FocusScope {
           cancelGroupAction.implicitHeight) : 0
         spacing: Style.space(4)
 
-        Text {
-          textFormat: Text.PlainText
+        OmaQ.SafeText {
           id: groupActionText
           width: parent.width - cancelGroupAction.width - confirmGroupAction.width - parent.spacing * 2
           text: root.groupActionConfirm === "remove"
@@ -3371,8 +3648,7 @@ FocusScope {
           cancelGroupLeave.implicitHeight) : 0
         spacing: Style.space(4)
 
-        Text {
-          textFormat: Text.PlainText
+        OmaQ.SafeText {
           id: groupLeaveText
           width: parent.width - cancelGroupLeave.width - confirmGroupLeaveButton.width -
             parent.spacing * 2
@@ -3501,8 +3777,7 @@ FocusScope {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             visible: !root.demo && root.fileForThis && service && service.fileNameFor(root.conversation) !== ""
             width: parent.width
             text: service ? service.fileNameFor(root.conversation) : ""
@@ -3531,8 +3806,7 @@ FocusScope {
               border.width: filePathLink.activeFocus ? 1 : 0
             }
 
-            Text {
-              textFormat: Text.PlainText
+            OmaQ.SafeText {
               id: filePathText
               anchors.left: parent.left
               anchors.right: parent.right
@@ -3618,7 +3892,8 @@ FocusScope {
           width: list.messageLaneWidth
           height: model.newMarker ? newDivider.implicitHeight :
             Math.max(bubble.implicitHeight +
-              (line.hasReaction || line.hasGroupReceipt ? Style.space(14) : 0),
+              (line.hasReaction || line.hasGroupReceipt || line.timestampText !== ""
+                ? Style.space(14) : 0),
               sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
@@ -3650,6 +3925,8 @@ FocusScope {
           readonly property bool edited: !!model.edited
           readonly property bool failed: !!model.failed
           readonly property string failureCode: String(model.failureCode || "")
+          readonly property string timestampText: model.dir === "sys"
+            ? "" : root.messageTimeText(model.ts)
           readonly property string senderPeer: String(model.sender || "")
           readonly property bool showGroupSender: root.groupConversation && model.dir === "in" &&
             line.senderPeer !== ""
@@ -3738,8 +4015,7 @@ FocusScope {
             border.width: line.failed || line.uncertain || line.keyboardSelected ? 1 : 0
             visible: model.dir !== "sys" && !model.newMarker
 
-            Text {
-              textFormat: Text.PlainText
+            OmaQ.SafeText {
               id: groupSenderLabel
               visible: line.showGroupSender
               anchors.left: parent.left
@@ -3807,8 +4083,7 @@ FocusScope {
                 onClicked: root.toggleAudio(line.contextText)
               }
 
-              Text {
-                textFormat: Text.PlainText
+              OmaQ.SafeText {
                 id: genericFileIcon
                 visible: !line.audioMessage
                 text: "draft"
@@ -3827,8 +4102,7 @@ FocusScope {
                 Layout.maximumWidth: fileMessageRow.width
                 implicitHeight: fileMessageText.implicitHeight
 
-                Text {
-                  textFormat: Text.PlainText
+                OmaQ.SafeText {
                   id: fileMessageText
                   anchors.fill: parent
                   text: root.fileDisplayName(line.contextText)
@@ -3892,8 +4166,7 @@ FocusScope {
                 cache: false
               }
 
-              Text {
-                textFormat: Text.PlainText
+              OmaQ.SafeText {
                 anchors.centerIn: parent
                 visible: inlineImageContent.status === Image.Error ||
                   inlineImageContent.status === Image.Null
@@ -4127,8 +4400,7 @@ FocusScope {
                     cache: true
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  OmaQ.SafeText {
                     anchors.fill: parent
                     visible: smileImage.status === Image.Error || smileImage.status === Image.Null
                     text: smileDelegate.glyph
@@ -4144,12 +4416,26 @@ FocusScope {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
+            id: messageTimestamp
+            visible: line.timestampText !== "" && model.dir !== "sys" && !model.newMarker
+            anchors.top: bubble.bottom
+            anchors.right: bubble.right
+            anchors.topMargin: Style.space(1)
+            text: line.timestampText
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.52)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            renderType: Text.QtRendering
+            z: 4
+          }
+
+          OmaQ.SafeText {
             id: groupReceiptStatus
             visible: line.hasGroupReceipt && model.dir !== "sys" && !model.newMarker
             anchors.top: bubble.bottom
-            anchors.right: bubble.right
+            anchors.right: messageTimestamp.visible ? messageTimestamp.left : bubble.right
+            anchors.rightMargin: messageTimestamp.visible ? Style.space(5) : 0
             anchors.topMargin: Style.space(1)
             text: line.groupReceiptText
             color: root.receiptDeliveredColor
@@ -4186,8 +4472,7 @@ FocusScope {
                   return value !== "" && values.indexOf(value) === index
                 })
 
-                Text {
-                  textFormat: Text.PlainText
+                OmaQ.SafeText {
                   required property int index
                   text: String(reactionBadgeRepeater.model[index] || "")
                   color: root.fg
@@ -4339,8 +4624,7 @@ FocusScope {
               color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55)
             }
 
-            Text {
-              textFormat: Text.PlainText
+            OmaQ.SafeText {
               text: "New messages"
               color: root.accent
               font.family: root.fontFamily
@@ -4356,8 +4640,7 @@ FocusScope {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             id: sysLine
             visible: model.dir === "sys" && !model.newMarker
             width: parent.width
@@ -4381,8 +4664,7 @@ FocusScope {
           Layout.fillWidth: true
           spacing: Style.space(4)
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             Layout.fillWidth: true
             text: "File transfer"
             color: root.fg
@@ -4448,8 +4730,7 @@ FocusScope {
           Layout.fillWidth: true
           spacing: Style.space(2)
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             Layout.fillWidth: true
             text: root.reactionStatus !== "" ? root.reactionStatus : root.fileStatus
             color: root.fileStatus === "Sending…" && root.reactionStatus === ""
@@ -4459,8 +4740,7 @@ FocusScope {
             wrapMode: Text.Wrap
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             id: statusPathText
             visible: root.reactionStatus === "" && root.fileStatusPath !== ""
             Layout.fillWidth: true
@@ -4521,8 +4801,7 @@ FocusScope {
           spacing: Style.space(6)
           height: visible ? Math.max(replyPreview.implicitHeight, clearReplyBtn.implicitHeight) : 0
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             id: replyPreview
             width: parent.width - clearReplyBtn.implicitWidth - confirmDeleteBtn.width - parent.spacing * 2
             text: root.deleteConfirmId !== "" ? "Delete this message?" :
@@ -4591,8 +4870,7 @@ FocusScope {
             HoverHandler { cursorShape: Qt.PointingHandCursor }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          OmaQ.SafeText {
             anchors.left: pendingImage.right
             anchors.right: clearPendingImageButton.left
             anchors.leftMargin: Style.space(6)

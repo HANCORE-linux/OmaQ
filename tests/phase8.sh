@@ -133,6 +133,47 @@ done
 
 message_id=$(grep -a '"event":"message"' "$fb" | grep -a '"dir":"in"' | grep -a 'secret-ratchet-ping' | tail -1 | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$message_id" ] || { echo "phase8: no message id" >&2; exit 1; }
+printf '{"op":"search","conversation":"0","key":"%s","text":"secret-ratchet-ping","id":"phase8-direct-search-b"}\n' \
+	"$friend_key_b" >&4
+i=0
+while [ "$i" -lt 30 ]; do
+	if grep -a '"event":"search"' "$fb" | grep -a -q '"request":"phase8-direct-search-b"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 30 ] || { echo "phase8: recipient Direct search result missing" >&2; exit 1; }
+python3 - "$fa" "$fb" "$message_id" <<'PY'
+import json
+import sys
+
+def events(path):
+    result = []
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return result
+
+def timestamp_pair(path, message_id, request, direction):
+    records = events(path)
+    message = next((item for item in reversed(records)
+                    if item.get("event") == "message" and
+                    item.get("id") == message_id and item.get("dir") == direction), None)
+    search = next((item for item in reversed(records)
+                   if item.get("event") == "search" and item.get("request") == request), None)
+    hit = next((item for item in (search or {}).get("items", [])
+                if item.get("id") == message_id), None)
+    if not message or not hit or not isinstance(message.get("ts"), int) or \
+            message["ts"] <= 0 or message["ts"] != hit.get("ts"):
+        raise SystemExit("phase8: Direct event/history timestamp mismatch")
+
+timestamp_pair(sys.argv[1], sys.argv[3], "phase8-direct-search", "out")
+timestamp_pair(sys.argv[2], sys.argv[3], "phase8-direct-search-b", "in")
+PY
 printf '{"op":"conversation.read","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
 i=0
 while [ "$i" -lt 60 ]; do
@@ -325,6 +366,16 @@ while [ "$i" -lt 30 ]; do
 done
 chmod 600 "$history_file"
 [ "$i" -lt 30 ] || { echo "phase8: post-delivery history failure semantics missing" >&2; exit 1; }
+grep -a '"event":"message"' "$fa" | grep -a '"request":"phase8-store-fail"' |
+	grep -a -q '"ts":0' || {
+	echo "phase8: non-persisted sender timestamp was presented as authoritative" >&2
+	exit 1
+}
+grep -a '"event":"message"' "$fb" | grep -a 'delivered-history-failure' |
+	grep -E -a -q '"ts":[1-9][0-9]*' || {
+	echo "phase8: recipient persisted timestamp missing after sender history failure" >&2
+	exit 1
+}
 
 sent2=0
 i=0

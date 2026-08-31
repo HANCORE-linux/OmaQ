@@ -30,7 +30,20 @@ import Quickshell
 import "."
 
 ShellRoot {
+  property string searchSignalConversation: ""
+  property string searchSignalKey: ""
+  property string searchSignalRequest: ""
+  property var searchSignalItems: []
   Service { id: service }
+  Connections {
+    target: service
+    function onChatSearchResult(conversation, key, request, items) {
+      searchSignalConversation = String(conversation || "")
+      searchSignalKey = String(key || "")
+      searchSignalRequest = String(request || "")
+      searchSignalItems = items || []
+    }
+  }
   Timer {
     interval: 50
     repeat: true
@@ -71,7 +84,8 @@ ShellRoot {
         var callDeferred = service.lastCallConv === ""
         var messageTickBefore = service.messageTick
         service.handleLine(JSON.stringify({ event: "message", conversation: "0",
-          key: directKey, id: "buffered-message", text: "buffered", dir: "in" }))
+          key: directKey, id: "buffered-message", text: "buffered", dir: "in",
+          ts: 1700000000 }))
         var bufferedUntilFriends = service.messageTick === messageTickBefore &&
           service.pendingDirectEvents.length === 1
         service.handleLine(JSON.stringify({ event: "friend.list.begin", generation: "ready-1" }))
@@ -80,7 +94,14 @@ ShellRoot {
         service.handleLine(JSON.stringify({ event: "friend.list.end", generation: "ready-1" }))
         var replayedAfterFriends = service.friendsReady &&
           service.pendingDirectEvents.length === 0 && service.lastChatId === "buffered-message" &&
+          service.lastChatTimestamp === 1700000000 &&
           callDeferred && service.lastCallConv === "0" && service.lastCallKey === directKey
+        service.handleLine(JSON.stringify({ event: "search", conversation: "0",
+          key: directKey, request: "chat-search", items: [{ text: "found",
+            ts: 1700000000 }] }))
+        var chatSearchSignaled = searchSignalConversation === "0" &&
+          searchSignalKey === directKey && searchSignalRequest === "chat-search" &&
+          searchSignalItems.length === 1 && searchSignalItems[0].text === "found"
         service.searchConversation = "0"
         service.searchRequest = "old-search"
         service.searchItems = [{ text: "old" }]
@@ -231,8 +252,8 @@ ShellRoot {
             modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
             correlatedGroups && groupTypingProjected && wrongGroupRequestIgnored &&
             incompleteGroupsPreserved && reusePurged &&
-            bufferedUntilFriends && replayedAfterFriends && reboundContentPurged &&
-            delayedSearchRejected &&
+            bufferedUntilFriends && replayedAfterFriends && chatSearchSignaled &&
+            reboundContentPurged && delayedSearchRejected &&
             service.redeem("legacy-invite") === "legacy") {
           console.log("OMAQ_PROTOCOL_COMPAT_OK")
         } else {

@@ -685,8 +685,7 @@ Item {
         borderSpec: surfaceFocusTooltip.tokenBorderSpec
         radius: 0
       }
-      contentItem: Text {
-        textFormat: Text.PlainText
+      contentItem: SafeText {
         text: surfaceFocusTooltip.text
         color: Color.tooltip.text
         font.family: Style.font.family
@@ -739,8 +738,7 @@ Item {
       selected: true
       onClicked: toolbar.page.hangUp()
     }
-    Text {
-      textFormat: Text.PlainText
+    SafeText {
       visible: toolbar.page && toolbar.page.callActive
       anchors.verticalCenter: parent.verticalCenter
       text: toolbar.page ? toolbar.page.callDurationText : "0:00"
@@ -1802,8 +1800,7 @@ Item {
             enabled: placement.settled && !pinWin.placeOnMap &&
               pinWin.compositorFloating && !pinWin.closing
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               anchors.centerIn: parent
               text: "drag_indicator"
               color: chatDragHandle.enabled ? root.theme().fg : "transparent"

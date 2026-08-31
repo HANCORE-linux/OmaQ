@@ -51,7 +51,8 @@ if "omaq.answerCall(omaq.lastCallConv, omaq.lastCallKey)" not in panel or \
     raise SystemExit("stable-direct-state: Panel call actions lost their key binding")
 
 if "property string peerKey" not in page or "root.directBindingValid" not in page or \
-        "onPeerKeyChanged: {\n    lines.clear()" not in page or \
+        "onPeerKeyChanged: {" not in page or \
+        "root.service.requestHistory(root.conversation, root.peerKey)" not in page or \
         "service.sendConversationOp({ op: \"msg.send\"" not in page:
     raise SystemExit("stable-direct-state: ChatPage direct actions are not key-bound")
 

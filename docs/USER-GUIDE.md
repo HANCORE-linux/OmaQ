@@ -10,7 +10,7 @@ OmaQ has no accounts, central chat server, or project-operated infrastructure. T
 
 Direct messages add the Signal Double Ratchet to Tox transport and never fall back to plaintext. OmaQ disables direct User Datagram Protocol (UDP) discovery and hole punching, so contacts do not receive each other's IP addresses. Tox relay operators can still observe ordinary connection metadata.
 
-Your identity, contacts, Ratchet state, preferences, and history remain on your machine. Use OmaQ only for lawful private communication with people you trust.
+Your identity, contacts, Ratchet state, preferences, and history remain in local storage. Use OmaQ only for lawful private communication with people you trust.
 
 ## Open the panel and respond to requests
 
@@ -97,6 +97,10 @@ DirectChat binds its window, history, unread state, files, Ratchet state, and pr
 Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` for a line break. Text paste remains available while the helper reconnects or lacks image capability.
 
 Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. Message text supports pointer and keyboard selection; the selection Copy action appears only for a non-empty selection and copies exactly that text. A failed pre-delivery message stays visible with a safe Resend action. A message that may already have reached transport reports an unknown result and does not offer automatic resend.
+
+Select the chat-header search action or press `Ctrl+F` to search only that conversation. Each open chat owns its query, request correlation, and results, so a delayed result from another DirectChat or GroupChat is ignored. Results show the sender, complete local date and time, and a two-line plain-text excerpt. `Escape` closes the search. The panel's **Search and safety** section remains available as an alternate entry point and keeps identity verification beside its selected conversation.
+
+Every non-system message with an authoritative history timestamp shows its helper-persisted local time. Messages from the current day use `HH:mm`; older messages include `YYYY-MM-DD`. This is the time at which local history accepted the message, not a timestamp claimed by a remote sender. Optimistic outgoing rows use the local enqueue time until the correlated helper event confirms the persisted value; a confirmed row with no valid timestamp displays no invented time.
 
 Direct receipt markers remain monotonic:
 

@@ -4,6 +4,7 @@ import Quickshell.Io
 
 Item {
   id: root
+  signal chatSearchResult(string conversation, string key, string request, var items)
   property var settings: ({})
   property bool muted: false
   property int unreadCount: 0
@@ -145,6 +146,7 @@ Item {
   property string lastChatDir: ""
   property string lastChatKind: ""
   property string lastChatSender: ""
+  property double lastChatTimestamp: 0
   property string lastChatRequest: ""
   property string lastChatKey: ""
   property string lastMessageFailedConv: ""
@@ -613,6 +615,7 @@ Item {
       root.lastChatDir = ""
       root.lastChatKind = ""
       root.lastChatSender = ""
+      root.lastChatTimestamp = 0
       root.lastChatRequest = ""
       root.lastChatKey = ""
       root.lastChatConv = ""
@@ -1158,6 +1161,7 @@ Item {
       root.lastChatDir = ev.dir === "out" ? "out" : (ev.dir === "sys" ? "sys" : "in")
       root.lastChatKind = String(ev.kind || "")
       root.lastChatSender = String(ev.sender || "")
+      root.lastChatTimestamp = Number(ev.ts || 0)
       root.lastChatRequest = String(ev.request || "")
       root.lastChatKey = messageKey
       if (root.lastChatDir === "in" &&
@@ -1186,12 +1190,18 @@ Item {
     if (ev.event === "search") {
       if (!root.directEventBindingValid(ev))
         return
-      if (!ev.conversation || !ev.request ||
-          String(ev.conversation) !== root.searchConversation ||
-          String(ev.request) !== root.searchRequest)
+      var searchConversation = String(ev.conversation || "")
+      var searchRequest = String(ev.request || "")
+      var searchKey = String(ev.key || "")
+      if (!searchConversation || !searchRequest)
         return
-      root.searchItems = ev.items || []
-      root.searchTick = root.searchTick + 1
+      root.chatSearchResult(searchConversation, searchKey, searchRequest,
+        ev.items || [])
+      if (searchConversation === root.searchConversation &&
+          searchRequest === root.searchRequest) {
+        root.searchItems = ev.items || []
+        root.searchTick = root.searchTick + 1
+      }
     }
     if (ev.event === "message.updated") {
       if (!root.directEventBindingValid(ev))
@@ -2864,6 +2874,15 @@ Item {
       o.passphrase = String(passphrase)
     return sendImmediateOp(o)
   }
+  function requestChatSearch(q, conversation, expectedKey, request) {
+    var target = String(conversation || "")
+    var requestId = String(request || "")
+    if (target === "" || requestId === "")
+      return false
+    return root.sendConversationOp({ op: "search", conversation: target,
+      text: String(q || ""), limit: 20, id: requestId },
+      String(expectedKey || ""), false)
+  }
   function searchChat(q, selectedConversation) {
     var conversation = String(selectedConversation || root.selectedConversation || "")
     root.searchItems = []
@@ -2875,8 +2894,7 @@ Item {
     if (conversation === "")
       return false
     var expectedKey = conversation.charAt(0) === "g" ? "" : root.selectedDirectKey
-    return root.sendConversationOp({ op: "search", conversation: conversation,
-      text: q, limit: 20, id: root.searchRequest }, expectedKey, false)
+    return root.requestChatSearch(q, conversation, expectedKey, root.searchRequest)
   }
   function unlockIdentity(pass, request) {
     return sendImmediateOp({ op: "identity.unlock", passphrase: pass,
@@ -3167,6 +3185,7 @@ Item {
     root.lastChatDir = ""
     root.lastChatKind = ""
     root.lastChatSender = ""
+    root.lastChatTimestamp = 0
     root.lastChatRequest = ""
     root.lastChatKey = ""
     root.lastChatConv = ""
