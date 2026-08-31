@@ -8,10 +8,10 @@ This is the current product snapshot. It intentionally contains no historical ph
 - **Branch:** `main`
 - **Manifest version:** `0.8.1-beta.1`, Protocol 14
 - **Source:** this tree extends the merged security-hardening, per-chat search, message timestamp, and SafeText source with a slim manual helper runtime doctor/updater, independently from the paused package-release work
-- **Live plugins:** the 69-file Protocol-14 QML payload with privacy hardening, per-chat search, timestamps, and SafeText defaults is deployed
+- **Live plugins:** both installations are clean Git-managed `main` checkouts at `8bc5dfa3d1f0a551d77d048276805e081627bc03`; the Protocol-14 QML payload remains unchanged
 - **Live helper:** Protocol 14, deployed SHA-256 `d34aa87903260e6f2a6625ffed931dea1fec249ae47ce6c9ab51ca29de0ba1a1`
 - **AUR:** paused; no registration or upload
-- **User guide:** [`Illustrated user guide`](USER-GUIDE.md), with 34 retained neutral QML captures; the obsolete panel-search capture was removed, and the current sound picker is documented textually
+- **User documentation:** the task-based [`Documentation index`](README.md) links the illustrated guide, security model, and installation lifecycle guide; 34 neutral QML captures remain, and the current sound picker is documented textually
 
 ## Working functionality
 
@@ -31,6 +31,7 @@ This is the current product snapshot. It intentionally contains no historical ph
 - The passphrase protects only the local Tox identity data in `tox.save`; Ratchet state, group metadata, avatars, receipts, and JSONL chat history rely on private filesystem permissions instead.
 - Private identities, the private-group registry, ratchet state, and local history must never be synchronized unintentionally.
 - Helper IPC accepts one exact 29-key vocabulary and rejects unknown or duplicate object keys before dispatch. Instance-bound probe and shutdown operations accept only `op`, `id`, and `request`; Protocol-14 surface geometry retains the allowlisted `width` and `height` fields. Uninstall uses only an atomic group-free shutdown request and aborts without signaling when native or registered groups, uncertain cleanup state, overlapping startup, incomplete runtime identity, or an unverifiable acknowledgement make removal unsafe.
+- The supported update order is source update, complete shell restart, then helper activation. The restart clears cross-plugin hot-reload state before an activation failure can interrupt the command sequence.
 - The manual helper updater requires an already running Protocol-9-or-newer helper, backs up its descriptor-bound image from `/proc/<pid>/exe`, uses only the normal Makefile build, and reports running versus available hashes. A private updater lock, descriptor-bound root/tool/Makefile handles, and repeated root/helper inode checks serialize cooperative phases, while the exact post-build hash is bound into optional activation. A build or synchronous validation failure restores the available path from `.prev` without touching the running process. Activation reuses `helper.shutdown_if_no_groups` and Service's existing detached restart. It leaves active, uncertain, or operation-unsupported activation on the old runtime with an explicit pending reason, never signals the helper, and requires the restarted executable inode, hash, protocol marker, and correlated probe before reporting success. A later failed post-check is a visible degraded state with retained `.prev`, not a crash-journal rollback.
 - QML renders names, filenames, system rows, search results, timestamps, tooltips, and other non-message strings through the local PlainText-default `SafeText` type or another explicitly plain sink. Only the escaped chat header and escaped Markdown message body may use rich text; remote values never reach an external shell label, icon, or tooltip that can auto-promote markup. The source gate pins the exact reviewed QML source set, validates the `SafeText` default and rejects RichText overrides, uses Qt's parser output to check object-level properties and inherited controls, forbids AutoText, dynamic QML, indirect/reflective/computed text writes, compound assignments, and unreviewed text mutation methods, executes the actual message renderer against hostile tags, and uses Qt HTTP fixtures to prove both the raw RichText hazard and that escaped OmaQ output performs no resource request.
 - Direct call audio uses bounded in-memory PCM rings and the local PulseAudio client API; no audio is persisted.
@@ -130,7 +131,7 @@ The helper changes additionally pass the calibrated two-home `verify-1-tox`, `ve
 
 The Protocol-13 runtime passes `make clean && make test`, full, hardened, and no-Signal helper builds, architecture and plugin validation, ShellCheck, core QML lint, phases 2 through 6 and 8, EncryptSave, Ratchet restart, two-home messaging, detached-helper reconnect, cross-client attachment ownership, clipboard-image staging, text-paste compatibility, Unicode emoji grammar and render-state checks, and Protocol-7 capability compatibility. Repeated adversarial QML and application-security reviews ended with zero findings after the final attachment ownership and Unicode joiner fixes.
 
-The deployed 69-file Protocol-14 payload has manifest SHA-256 `61c1d1f71eec98f7962cc8c01176b53081b91cb41089357669c9cf50b60a26d6` and includes the merged privacy hardening, per-chat search, timestamps, and SafeText defaults. The separately deployed helper has SHA-256 `d34aa87903260e6f2a6625ffed931dea1fec249ae47ce6c9ab51ca29de0ba1a1`; both endpoints passed exact process/socket/probe post-checks. A live reciprocal-contact check sent one labelled message in each direction and verified four matching live/search/history timestamp records. No private identity, Ratchet, group registry, or history data was synchronized.
+Both live plugins are clean Git-managed checkouts of merge commit `8bc5dfa3d1f0a551d77d048276805e081627bc03`; the earlier custom manifests remain archived as deployment backups. The helper remains at SHA-256 `d34aa87903260e6f2a6625ffed931dea1fec249ae47ce6c9ab51ca29de0ba1a1`, and both installations passed exact process/socket/probe and shell-restart post-checks. A live reciprocal-contact check sent one labelled message in each direction and verified four matching live/search/history timestamp records. No private identity, Ratchet, group registry, or history data was synchronized.
 
 The illustrated guide uses 34 cropped original QML component views. The obsolete panel-search capture was removed, and the current sound picker is documented textually until a fresh neutral capture is available. An isolated fixture supplied neutral contacts, groups, messages, files, and recovery states without reading or changing live OmaQ identity, contact, Ratchet, history, invitation, or group data. Every referenced screenshot was visually checked for private data and unrelated desktop content.
 
@@ -138,8 +139,7 @@ The historical Protocol-10 to Protocol-7 encrypted-message test remains inconclu
 
 ## Next order
 
-1. Finish and review the slim manual helper runtime updater without changing the live plugin.
-2. Keep updater commit, push, pull request, merge, and any live smoke test as separately approved phases.
-3. Keep AUR publication and branch/worktree cleanup as separately approved phases.
-4. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
-5. Investigate the remaining Panel QML toolchain failure.
+1. Run native separate-network, image, multi-monitor, and floating-versus-tiling acceptance without changing the live plugin silently.
+2. Investigate the remaining Panel QML toolchain failure.
+3. Capture a fresh neutral image of the reduced sound picker.
+4. Keep AUR publication and branch/worktree cleanup as separately approved phases.
