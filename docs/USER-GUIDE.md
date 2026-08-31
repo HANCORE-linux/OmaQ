@@ -195,7 +195,7 @@ Select **Identity** in the action rail. Enter a passphrase before **Protect** or
 
 Use at least 8 Unicode characters and no more than 128 UTF-8 bytes for a new passphrase. **Validate bundle** inspects without activating. **Import identity** is a separate destructive boundary and requires **Import identity now**.
 
-Export bundles include Tox savedata and private group mappings. They deliberately exclude Ratchet sessions, local history, avatars, receipts, and files. Transfer a bundle securely and delete extra copies.
+Export bundles include Tox savedata, the private group registry, and group friend-binding mappings. They deliberately exclude Ratchet sessions, local history, avatars, receipts, and files. Transfer a bundle securely and delete extra copies.
 
 After importing an identity with existing contacts, remove affected contacts on both devices and exchange fresh invitations before messaging. Restoring stale Double Ratchet sessions could reuse old message state, so OmaQ does not include them in identity bundles.
 
@@ -219,62 +219,8 @@ A degraded recovery warning means the committed primary identity remains active,
 
 Do not delete recovery markers manually. Review the exact warning, complete the requested verification or fresh-invite workflow, then use the correlated confirmation action.
 
-## Install and update OmaQ
+## Maintain OmaQ
 
-Arch User Repository (AUR) packaging remains paused. Install the required packages, add the plugin, and build the local helper:
+Installation, source updates, helper status, rollback, removal, retained data, and optional package cleanup have a dedicated [installation lifecycle guide](INSTALLATION.md).
 
-```bash
-omarchy pkg add \
-  toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode &&
-omarchy plugin add \
-  https://github.com/HANCORE-linux/OmaQ.git --enable &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper
-```
-
-Update the source, back up and rebuild the helper, request group-safe activation, and restart the shell:
-
-```bash
-omarchy plugin update hancore.omaq --yes &&
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate &&
-omarchy restart shell
-```
-
-The final command visibly restarts the shell. This update path requires an already running Protocol-9-or-newer helper; use the first-install command above when no helper has been installed or started. The updater saves the verified running image as `helper/omaq.prev`, uses the normal `make helper` target, and reports the running and available hashes. If that build or any synchronous post-build validation fails after changing the available path, the wrapper restores the path from `.prev`, leaves the running process untouched, and exits with an error. Explicit `--activate` asks the current helper to stop only after `helper.shutdown_if_no_groups` confirms durable group-free state. A probe-capable older helper without this operation remains running and reports `update-pending` with `activation_unsupported`; no legacy stop is attempted. Active groups, uncertain cleanup, or unsupported group-safe activation leave the old helper running; retry supported activation after leaving groups, or let a later full user-session restart use the available binary. After a successful stop, Service starts the current `helper/omaq` automatically and the updater requires a matching hash, protocol marker, and correlated probe. Do not run another build or plugin replacement concurrently: the private lock serializes updater commands, not unrelated writes. Service intentionally opens the configured path, so an out-of-band replacement during shutdown/restart is detected as degraded rather than prevented by a hot-swap transaction. A failed post-check retains `.prev` for locked `--rollback` recovery. The optional stop creates a short offline window: in-flight messages become `delivery_unknown`, and active transfers, calls, or invitations fail visibly. The updater never sends a signal to the helper.
-
-Inspect the state at any time without rebuilding or stopping anything:
-
-```bash
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
-```
-
-If activation reports a degraded restart, use the same locked, descriptor-validated boundary to restore `.prev` and request group-safe activation. A running helper with active groups remains unchanged and reports `update-pending`; retry after leaving those groups. Then restart the shell and inspect the result:
-
-```bash
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --rollback
-omarchy restart shell
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
-```
-
-Identity, contacts, Ratchet state, history, and preferences live outside the plugin source directory and must never be copied as runtime source files.
-
-## Uninstall and retained data
-
-Run the verified wrapper:
-
-```bash
-~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
-```
-
-The wrapper serializes removal against helper startup, prevents respawn, verifies PID, process start time, UID, exact executable inode, socket, and instance, then requests an atomic group-free shutdown. It keeps the private state lock for the complete plugin-removal command. It refuses removal while the helper owns an active private group, native and registered group state disagree, cleanup or identity loading is pending, durable state cannot be saved, the safe operation is unsupported, or its correlated acknowledgement cannot be delivered. It never uses a signal as a fallback.
-
-Uninstall retains these locations intentionally:
-
-- `~/.local/share/omaq/`: identity, contacts, groups, avatars, history, and Ratchet state
-- `~/.local/state/omaq/`: identity guard, recovery copy, preferences, unread state, receipts, surfaces, and journals
-- `~/Downloads/omaq/`: received files
-- `~/.local/state/omaq-deploy-backups/`: optional deployment backups
-- the exact Omarchy plugin backup path printed by the wrapper, when present
-- required dependency packages and the optional `zbar` verification package
-
-Retaining them supports reinstall and recovery. Deleting `~/.local/share/omaq/` permanently destroys the local identity and chat data. Deleting `~/Downloads/omaq/` removes received files. Inspect every exact path printed by the wrapper before any manual deletion.
+Restart the complete Omarchy shell immediately after each source update and before helper activation. This order clears plugin hot-reload state before the helper build or group-safe restart begins.
