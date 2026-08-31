@@ -102,19 +102,14 @@ ShellRoot {
         var chatSearchSignaled = searchSignalConversation === "0" &&
           searchSignalKey === directKey && searchSignalRequest === "chat-search" &&
           searchSignalItems.length === 1 && searchSignalItems[0].text === "found"
-        service.searchConversation = "0"
-        service.searchRequest = "old-search"
-        service.searchItems = [{ text: "old" }]
         service.applyFriendSnapshot([{ id: "0", key: replacementKey }])
         var reboundContentPurged = service.lastChatText === "" &&
-          service.lastChatKey === "" && service.lastChatConv === "" &&
-          service.searchConversation === "" && service.searchItems.length === 0
-        var searchTickBefore = service.searchTick
-        service.searchConversation = "0"
-        service.searchRequest = "delayed-search"
+          service.lastChatKey === "" && service.lastChatConv === ""
+        var searchSignalBefore = searchSignalRequest
         service.handleLine(JSON.stringify({ event: "search", conversation: "0",
           key: directKey, request: "delayed-search", items: [{ text: "stale" }] }))
-        var delayedSearchRejected = service.searchTick === searchTickBefore
+        var delayedSearchRejected = searchSignalRequest === searchSignalBefore &&
+          searchSignalItems.length === 1 && searchSignalItems[0].text === "found"
         var groupId = "g:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         service.groups = [{ id: groupId, memberCount: 1, limit: 10, members: [] }]
         service.friends = [{ id: "0", key: directKey, name: "Invitee" }]

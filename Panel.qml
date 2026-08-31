@@ -994,6 +994,14 @@ BarWidget {
     safetyCopiedTimer.restart()
   }
 
+  function selectSafetyContact(id) {
+    if (!omaq.selectDirect(String(id || "")))
+      return false
+    root.safetyCopied = false
+    root.safetyCodeVisible = false
+    return true
+  }
+
   function showSafetyCode() {
     root.safetyCopied = false
     root.safetyCodeVisible = true
@@ -1460,45 +1468,6 @@ BarWidget {
       if (String(friends[i].id || "") === key)
         return String(friends[i].name || ("Friend " + key))
     return key ? "Friend " + key : ""
-  }
-
-  function searchTimeText(value) {
-    var seconds = Number(value)
-    if (!Number.isFinite(seconds) || !Number.isInteger(seconds) ||
-        seconds <= 0 || seconds > 253402300799)
-      return ""
-    var date = new Date(seconds * 1000)
-    function twoDigits(number) {
-      return number < 10 ? "0" + number.toString() : number.toString()
-    }
-    return date.getFullYear().toString() + "-" + twoDigits(date.getMonth() + 1) +
-      "-" + twoDigits(date.getDate()) + " · " + twoDigits(date.getHours()) +
-      ":" + twoDigits(date.getMinutes())
-  }
-
-  function searchSender(item) {
-    var entry = item || ({})
-    if (String(entry.dir || "") === "out" || String(entry.from || "") === "me")
-      return "You"
-    if (String(entry.dir || "") === "sys" || String(entry.from || "") === "system")
-      return "System"
-    var conversation = String(omaq.searchConversation || omaq.selectedConversation || "")
-    if (conversation.charAt(0) === "g") {
-      var sender = String(entry.from || "").replace(/^(peer:|member:)/, "")
-      var members = omaq.groupMembers(conversation)
-      for (var i = 0; i < members.length; i++)
-        if (String(members[i].peer || "") === sender ||
-            String(members[i].key || "") === sender)
-          return String(members[i].name || "Member")
-      return "Member"
-    }
-    return root.friendName(omaq.selectedDirectId) || "Contact"
-  }
-
-  function searchMetaText(item) {
-    var sender = root.searchSender(item)
-    var time = root.searchTimeText(item && item.ts)
-    return time === "" ? sender : sender + " · " + time
   }
 
   function openFriend(id, name) {
@@ -3161,8 +3130,8 @@ BarWidget {
               onClicked: root.openRailAdvanced("groups")
             }
             RailIcon {
-              materialIcon: "search"
-              label: "Search and safety"
+              materialIcon: "verified_user"
+              label: "Safety code"
               selected: root.moreOpen && root.moreSection === "chat"
               onClicked: root.openRailAdvanced("chat")
             }
@@ -4467,8 +4436,9 @@ BarWidget {
 
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "󰍉"
-                  text: "Search"
+                  iconText: "verified_user"
+                  iconFontFamily: "Material Symbols Rounded"
+                  text: "Safety code"
                   selected: root.moreSection === "chat"
                   onClicked: root.toggleMoreSection("chat")
                 }
@@ -4499,79 +4469,45 @@ BarWidget {
 
               PanelSectionHeader {
                 visible: root.moreSection === "chat"
-                text: "CHAT"
+                text: "SAFETY CODE"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              Column {
-                visible: root.moreSection === "chat"
+              SafeText {
+                id: safetyContactEmpty
+                visible: root.moreSection === "chat" && (!omaq.friends || omaq.friends.length === 0)
                 width: parent.width
-                spacing: root.btnGap
-                TokenTextField {
-                  id: searchField
-                  width: parent.width
-                  foreground: root.controlForeground
-                  placeholderText: "Search this chat"
-                  onAccepted: omaq.searchChat(
-                    searchField.text, omaq.selectedConversation)
-                  onTextChanged: if (!text) {
-                    omaq.searchItems = []
-                    omaq.searchConversation = ""
-                    omaq.searchRequest = ""
-                  }
-                }
-                ActionButton {
-                  id: searchBtn
-                  width: parent.width
-                  height: root.actionButtonHeight
-                  iconText: "󰍉"
-                  text: "Search"
-                  onClicked: omaq.searchChat(
-                    searchField.text, omaq.selectedConversation)
-                }
+                text: "Add a direct contact before comparing safety codes."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
               }
 
-              Column {
-                visible: root.moreSection === "chat" &&
-                  String(omaq.searchConversation || "") === String(omaq.selectedConversation || "") &&
-                  omaq.searchItems && omaq.searchItems.length > 0
+              Flow {
+                id: safetyContactChoices
+                visible: root.moreSection === "chat" && omaq.friends && omaq.friends.length > 0
                 width: parent.width
                 spacing: Style.space(4)
 
                 Repeater {
-                  model: omaq.searchItems
-                  delegate: Column {
-                    id: panelSearchResult
+                  model: omaq.friends || []
+                  delegate: TokenButton {
                     required property var modelData
-                    width: parent ? parent.width : 0
-                    spacing: Style.space(1)
-
-                    SafeText {
-                      width: parent.width
-                      text: root.searchMetaText(panelSearchResult.modelData)
-                      color: root.accent
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                    }
-
-                    SafeText {
-                      width: parent.width
-                      text: panelSearchResult.modelData && panelSearchResult.modelData.text
-                        ? String(panelSearchResult.modelData.text) : ""
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                      maximumLineCount: 2
-                      wrapMode: Text.Wrap
-                    }
+                    width: Math.min(implicitWidth, safetyContactChoices.width)
+                    text: String(modelData.name || ("Friend " + modelData.id))
+                    selected: String(modelData.id || "") === String(omaq.selectedDirectId || "")
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: root.selectSafetyContact(modelData.id)
                   }
                 }
               }
 
               ActionButton {
+                id: safetyShowButton
                 visible: root.moreSection === "chat" && omaq.selectedDirectId !== "" &&
                   (!root.safetyCodeVisible || root.currentSafetyCode === "")
                 width: parent.width

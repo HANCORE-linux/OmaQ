@@ -267,11 +267,6 @@ Item {
   property int friendsTick: 0
   property string pendingFriendGeneration: ""
   property var pendingFriendBuild: []
-  property var searchItems: []
-  property string searchConversation: ""
-  property string searchRequest: ""
-  property int searchRequestSequence: 0
-  property int searchTick: 0
   property string selfAvatar: ""
   property int avatarTick: 0
   property string selfNickname: ""
@@ -602,12 +597,6 @@ Item {
       root.historyRequestByConversation, id)
     root.historyKeyByConversation = root.withoutConversation(
       root.historyKeyByConversation, id)
-    if (String(root.searchConversation || "") === id) {
-      root.searchItems = []
-      root.searchConversation = ""
-      root.searchRequest = ""
-      root.searchTick = root.searchTick + 1
-    }
     if (String(root.lastChatConv || "") === id) {
       root.lastChatText = ""
       root.lastChatId = ""
@@ -1197,11 +1186,6 @@ Item {
         return
       root.chatSearchResult(searchConversation, searchKey, searchRequest,
         ev.items || [])
-      if (searchConversation === root.searchConversation &&
-          searchRequest === root.searchRequest) {
-        root.searchItems = ev.items || []
-        root.searchTick = root.searchTick + 1
-      }
     }
     if (ev.event === "message.updated") {
       if (!root.directEventBindingValid(ev))
@@ -2883,19 +2867,6 @@ Item {
       text: String(q || ""), limit: 20, id: requestId },
       String(expectedKey || ""), false)
   }
-  function searchChat(q, selectedConversation) {
-    var conversation = String(selectedConversation || root.selectedConversation || "")
-    root.searchItems = []
-    root.searchConversation = conversation
-    root.searchRequestSequence++
-    root.searchRequest = Date.now().toString(36) + "-search-" +
-      root.searchRequestSequence.toString(36) + "-" +
-      Math.floor(Math.random() * 0x100000000).toString(36)
-    if (conversation === "")
-      return false
-    var expectedKey = conversation.charAt(0) === "g" ? "" : root.selectedDirectKey
-    return root.requestChatSearch(q, conversation, expectedKey, root.searchRequest)
-  }
   function unlockIdentity(pass, request) {
     return sendImmediateOp({ op: "identity.unlock", passphrase: pass,
       id: String(request || "") })
@@ -3175,9 +3146,6 @@ Item {
     root.lastHistoryFailedCode = ""
     root.lastHistoryUnreadConv = ""
     root.lastHistoryUnreadCount = 0
-    root.searchItems = []
-    root.searchConversation = ""
-    root.searchRequest = ""
     root.lastNicknameRequest = ""
     root.lastChatText = ""
     root.lastChatId = ""

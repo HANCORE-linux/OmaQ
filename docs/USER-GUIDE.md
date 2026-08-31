@@ -19,7 +19,7 @@ The fixed panel header normally shows your avatar, nickname, and connection stat
 Hover or keyboard-focus an action-rail icon to display its label. Use the rail to open these functions:
 
 - **Invite**, **Add contact**, and **Open chat** for direct connections
-- **Groups** and **Search and safety** for existing conversations
+- **Groups** for private group management and **Safety code** for direct-contact identity verification
 - **Chat message size**, **Theme**, and **Sounds** for presentation
 - **Demo** to test the composer without sending
 - **Mute** or **Unmute** to control notification sound
@@ -44,11 +44,11 @@ Friend names show online, away, and offline state. An unread friend receives a `
 A direct connection starts with a one-use `omaq://` invitation shared through a trusted channel. The person who created the invitation must explicitly accept the incoming friend request.
 
 <table>
-<thead><tr><th>Create an invitation</th><th>Redeem an invitation</th><th>Search and verify</th><th>Incoming call</th></tr></thead>
+<thead><tr><th>Create an invitation</th><th>Redeem an invitation</th><th>Verify identity</th><th>Incoming call</th></tr></thead>
 <tbody><tr>
 <td><a href="images/guide/04-panel-active-invite.png"><img src="images/guide/04-panel-active-invite.png" alt="Active OmaQ invitation" width="220"></a><br>The Invite view shows a QR code, shortened link, exact lifetime, Copy link, New link, and Revoke.</td>
 <td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly.</td>
-<td><a href="images/guide/10-panel-search-safety.png"><img src="images/guide/10-panel-search-safety.png" alt="Chat search and safety code" width="220"></a><br>Search one selected DirectChat or display its safety code. Compare the code with that contact through another trusted channel.</td>
+<td><strong>Safety code</strong><br>Select a direct contact, display its safety code, and compare it with that contact through another trusted channel. Message search stays inside the matching chat window.</td>
 <td><a href="images/guide/27-panel-incoming-call.png"><img src="images/guide/27-panel-incoming-call.png" alt="Incoming direct voice call" width="220"></a><br>An incoming DirectCall offers Answer and Decline. Opening the caller's chat never answers automatically.</td>
 </tr></tbody>
 </table>
@@ -58,7 +58,7 @@ Connect two people in this order:
 1. Select **Invite** and share the complete link or QR code through a trusted channel.
 2. On the other device, select **Add contact**, paste the invitation, and select **Join chat**.
 3. On the first device, verify the requester and select **Accept**.
-4. Select **Search and safety**, choose that contact, and compare **Show safety code** through another trusted channel.
+4. Select **Safety code**, choose that contact, and compare **Show safety code** through another trusted channel.
 
 A new link expires 24 hours after the helper issues it. **New link** first revokes the previous link, then creates its replacement. **Revoke** invalidates an unused link but cannot undo an accepted contact.
 
@@ -98,7 +98,7 @@ Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+En
 
 Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. Message text supports pointer and keyboard selection; the selection Copy action appears only for a non-empty selection and copies exactly that text. A failed pre-delivery message stays visible with a safe Resend action. A message that may already have reached transport reports an unknown result and does not offer automatic resend.
 
-Select the chat-header search action or press `Ctrl+F` to search only that conversation. Each open chat owns its query, request correlation, and results, so a delayed result from another DirectChat or GroupChat is ignored. Results show the sender, complete local date and time, and a two-line plain-text excerpt. `Escape` closes the search. The panel's **Search and safety** section remains available as an alternate entry point and keeps identity verification beside its selected conversation.
+Select the chat-header search action or press `Ctrl+F` to search only that conversation. Each open chat owns its query, request correlation, and results, so a delayed result from another DirectChat or GroupChat is ignored. Results show the sender, complete local date and time, and a two-line plain-text excerpt. `Escape` closes the search. The panel does not search messages; its separate **Safety code** section only verifies the selected direct contact's identity.
 
 Every non-system message with an authoritative history timestamp shows its helper-persisted local time. Messages from the current day use `HH:mm`; older messages include `YYYY-MM-DD`. This is the time at which local history accepted the message, not a timestamp claimed by a remote sender. Optimistic outgoing rows use the local enqueue time until the correlated helper event confirms the persisted value; a confirmed row with no valid timestamp displays no invented time.
 
