@@ -10,6 +10,7 @@ ln -s "$root/CallTone.qml" "$tmp/CallTone.qml"
 ln -s "$root/Emoji.js" "$tmp/Emoji.js"
 ln -s "$root/MessageLayout.js" "$tmp/MessageLayout.js"
 ln -s "$root/SurfaceCoordinator.qml" "$tmp/SurfaceCoordinator.qml"
+ln -s "$root/SafeText.qml" "$tmp/SafeText.qml"
 ln -s "$root/qmldir" "$tmp/qmldir"
 ln -s /usr/share/omarchy/shell/Ui "$tmp/Ui"
 ln -s /usr/share/omarchy/shell/Commons "$tmp/Commons"
@@ -38,7 +39,18 @@ ShellRoot {
     property int typingTick: 0
     property int helperInstanceGeneration: 1
     property string lastError: ""
+    property string lastChatConv: ""
+    property string lastConversation: ""
+    property string lastChatText: ""
+    property string lastChatDir: ""
+    property string lastChatRequest: ""
+    property string lastChatId: ""
+    property string lastChatReply: ""
+    property string lastChatKind: ""
+    property string lastChatSender: ""
+    property double lastChatTimestamp: 0
     property int sent: 0
+    signal chatSearchResult(string conversation, string key, string request, var items)
     property string lastSentText: ""
     function filePathFor(conv) { return "" }
     function groupMembers(conv) { return [] }
@@ -61,6 +73,7 @@ ShellRoot {
       return true
     }
     function discardAttachmentStage(path, request) { return true }
+    function requestChatSearch(query, conversation, key, request) { return true }
   }
   Item {
     TextEdit {
@@ -77,6 +90,17 @@ ShellRoot {
       demo: false
       conversation: "g:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       peerName: "Group"
+      theme: ({ bg: "#111111", fg: "#eeeeee", accent: "#77cc66", unread: "#cc7777" })
+    }
+    Pages.ChatPage {
+      id: otherSearchPage
+      visible: false
+      width: 420
+      height: 520
+      service: fake
+      demo: false
+      conversation: "g:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      peerName: "Other group"
       theme: ({ bg: "#111111", fg: "#eeeeee", accent: "#77cc66", unread: "#cc7777" })
     }
     Pages.ChatPage {
@@ -195,6 +219,53 @@ ShellRoot {
         reactionMe: "👍", reactionPeer: "😂",
         groupReactions: [{ actor: "c", emoji: "👍" },
           { actor: "d", emoji: "🎉" }] })
+      page.appendLine({ id: "", dir: "out", text: "legacy confirmation",
+        ts: 1700000000, local: true, pending: true,
+        clientKey: "legacy-confirmation", ack: 0 })
+      fake.lastChatConv = page.conversation
+      fake.lastConversation = page.conversation
+      fake.lastChatText = "legacy confirmation"
+      fake.lastChatDir = "out"
+      fake.lastChatRequest = "legacy-confirmation"
+      fake.lastChatId = "confirmed-legacy"
+      fake.lastChatTimestamp = 0
+      page.pushLive()
+      var missingTimestampCleared = false
+      for (var messageIndex = 0; messageIndex < 100; messageIndex++) {
+        var confirmedMessage = page.messageAt(messageIndex)
+        if (confirmedMessage && confirmedMessage.clientKey === "legacy-confirmation") {
+          missingTimestampCleared = !confirmedMessage.local &&
+            confirmedMessage.ts === 0 && page.messageTimeText(confirmedMessage.ts) === ""
+          break
+        }
+      }
+
+      page.searchOpen = true
+      page.searchPending = true
+      page.searchRequest = "search-a"
+      otherSearchPage.searchOpen = true
+      otherSearchPage.searchPending = true
+      otherSearchPage.searchRequest = "search-b"
+      fake.chatSearchResult(otherSearchPage.conversation, "", "wrong-request",
+        [{ text: "wrong" }])
+      fake.chatSearchResult(page.conversation, "", "search-a",
+        [{ from: "me", dir: "out", text: "found", ts: 1700000000 }])
+      var searchIsolation = !page.searchPending && page.searchCompleted &&
+        page.searchItems.length === 1 && page.searchItems[0].text === "found" &&
+        otherSearchPage.searchPending && otherSearchPage.searchItems.length === 0
+      var timestampFormatting = /^(?:\d\d:\d\d|\d{4}-\d\d-\d\d · \d\d:\d\d)$/.test(
+        page.messageTimeText(1700000000)) &&
+        /^\d{4}-\d\d-\d\d · \d\d:\d\d$/.test(page.searchTimeText(1700000000)) &&
+        page.normalizedTimestamp(0) === 0 &&
+        page.normalizedTimestamp(-1) === 0 &&
+        page.normalizedTimestamp("broken") === 0 &&
+        page.normalizedTimestamp(253402300800) === 0 &&
+        page.lineTimestamp({ dir: "in" }) === 0 &&
+        page.lineTimestamp({ dir: "in", ts: -1 }) === 0 &&
+        page.lineTimestamp({ dir: "in", ts: "broken" }) === 0 &&
+        page.lineTimestamp({ dir: "in", ts: 253402300800 }) === 0 &&
+        page.lineTimestamp({ dir: "out", local: true }) > 0
+
       var rankedReactions = page.mostUsedReactionSet(5)
       var selectedReactions = page.reactionChoicesFor("💯", 5)
       var reactionRanking = rankedReactions.length === 5 &&
@@ -204,7 +275,8 @@ ShellRoot {
       var preview = page.pendingImagePath === "/tmp/canonical.png" &&
         page.pendingImageStageRequest === "stage-1" && page.isSmileOnly("🥳") &&
         !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection &&
-        replyParity && reactionRanking
+        replyParity && reactionRanking && searchIsolation && timestampFormatting &&
+        missingTimestampCleared
       var sent = page.sendPendingImage() && fake.sent === 1 &&
         page.pendingImageSendRequest === "image-request-1" &&
         page.pendingImagePath === "/tmp/canonical.png"

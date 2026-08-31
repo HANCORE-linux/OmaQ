@@ -10,17 +10,33 @@ int omaq_message_text_bytes_ok(const uint8_t *text, size_t length);
 int omaq_message_id_new(char *out, size_t outn);
 int omaq_message_id_ok(const char *id);
 int omaq_message_id_reserved(const char *id);
+int omaq_message_append_id_reply_at(const char *home, const char *conv_id,
+				     const char *from, const char *text, const char *dir,
+				     const char *message_id, const char *reply_id,
+				     int64_t timestamp);
 int omaq_message_append_id_reply(const char *home, const char *conv_id, const char *from,
 				  const char *text, const char *dir, const char *message_id,
 				  const char *reply_id);
 int omaq_message_append_id(const char *home, const char *conv_id, const char *from,
 			   const char *text, const char *dir, const char *message_id);
+int omaq_message_append_with_id_at(const char *home, const char *conv_id,
+				   const char *from, const char *text, const char *dir,
+				   char *id_out, size_t id_outn, int64_t timestamp);
 int omaq_message_append_with_id(const char *home, const char *conv_id, const char *from,
 				const char *text, const char *dir, char *id_out, size_t id_outn);
+int omaq_message_append_attachment_id_at(const char *home, const char *conv_id,
+					 const char *from, const char *path,
+					 const char *dir, const char *kind,
+					 const char *message_id, int64_t timestamp);
 int omaq_message_append_attachment_id(const char *home, const char *conv_id,
 				      const char *from, const char *path,
 				      const char *dir, const char *kind,
 				      const char *message_id);
+int omaq_message_append_attachment_with_id_at(const char *home, const char *conv_id,
+					      const char *from, const char *path,
+					      const char *dir, const char *kind,
+					      char *id_out, size_t id_outn,
+					      int64_t timestamp);
 int omaq_message_append_attachment_with_id(const char *home, const char *conv_id,
 					   const char *from, const char *path,
 					   const char *dir, const char *kind,

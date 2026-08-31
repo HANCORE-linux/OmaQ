@@ -2,7 +2,7 @@
 
 **Authority:** This file is how we build. German product contract: [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). If they disagree, stop and fix both before writing code.
 
-**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Live plugin is **on this machine** (copy under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`). Snapshot: [`CURRENT.md`](CURRENT.md).
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. The live plugin is installed under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`. Snapshot: [`CURRENT.md`](CURRENT.md).
 **Tree:** `/home/hancore/Projects/omaq`  
 **Id:** `hancore.omaq`
 
@@ -26,7 +26,7 @@ QML (views)  →  Service (exec + socket)  →  helper ops  →  adapters (store
 1. New capability = new module + new `op`/`event` + gold test, **then** code. Do not fatten an existing module.
 2. Extend **sideways** (new helper module) or **up** (new view on the same snapshot). Never put domain rules in QML. Never let the helper import QML.
 3. Address chat only as a **conversation** (`direct` | `group`). No second chat stack for groups.
-4. **One helper process** per user session. Service always execs. Helper `flock`s. Exit `2` = already running → Service connects. No flock in QML.
+4. **One helper process** per user session. Service starts a detached candidate and attaches through the private socket. The helper `flock`s; a contending candidate exits `2` without replacing the owner. No flock or stdio transport lives in QML.
 5. **Helper is authoritative.** `Model.js` is UX precheck only. It never decides redeem, roles, or history.
 6. Pure policy has no IO: `roles.c`, `invite.c`, `conversation.c`. IO lives in focused helper modules: `store.c` owns history, `surface.c` owns `surfaces.jsonl`, `auto_open.c` owns active Auto-open preferences, `group_file.c` owns strict Protocol-12 attachment framing, and `state_archive.c` owns non-overwriting private state copies. `tox_adapt.c` owns (`tox.h` + `toxav.h` + `toxencryptsave.h` only). Signal/Olm headers live only in `ratchet_adapt.c`.
 7. `message.c` talks `store.h`, not paths. `group.c` talks `roles.c` + `tox_adapt`, not a second policy.
@@ -35,6 +35,17 @@ QML (views)  →  Service (exec + socket)  →  helper ops  →  adapters (store
 10. Do not invent RSS numbers. Do not invent crypto. Do not bind Omarchy window keys. Do not write the live plugin dir except one announced install.
 
 A later session does not re-decide this. Change a rule only by editing this section.
+
+### Structural follow-up
+
+The current iteration introduces `SafeText.qml` as the PlainText-default sink for ordinary QML text while retaining the exact-source trust-boundary gate. The remaining architecture work stays behavior-neutral and separate from product changes:
+
+1. Replace the monolithic `handle_op()` conditional with an explicit operation registry and extract message, group, identity, and storage operation families into focused translation units.
+2. Register every remotely influenced path with a default-deny admission policy class. Keep specialized message, control, reaction, and group-file fairness/reservation behavior instead of flattening them into one token bucket.
+3. Move related runtime globals into lifecycle-owned Invite, Group, I/O, Rate, and Identity contexts without creating one unbounded aggregate state object.
+4. Add an explicit socket-only launch mode that omits stdout spooling while retaining and testing the foreground stdio compatibility mode. Do not remove the spool until launch contracts select the transport explicitly.
+
+Each item requires its own regression-preserving change and review. Do not combine these refactors with a protocol or UI feature.
 
 ### Review disposition
 
@@ -81,7 +92,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 |---|---|
 | Transport | Tox (`toxcore`). Not SimpleX. Not LAN-only. |
 | Helper | **Exactly one** C11 process per user session. Not one per Panel, not one per monitor. |
-| Singleton | **Helper** takes `flock` on `$OMAQ_HOME/omaq.lock`. Service always `exec`s the helper. Lock owner binds `$OMAQ_STATE/omaq.sock`. Second starter exits `2` (`already_running`); Service then connects. No flock in QML (Quickshell.Io has Process, Socket, FileView — no lock). |
+| Singleton | **Helper** takes `flock` on `$OMAQ_HOME/omaq.lock`. Service uses `Process.startDetached()` and then attaches to `$OMAQ_STATE/omaq.sock`. The lock owner binds that socket; a second starter exits `2` (`already_running`) without replacing it. No flock in QML (Quickshell.Io has Process, Socket, FileView — no lock). |
 | License | QML/plugin **MIT**. Helper **GPL-3.0-or-later** (matches toxcore). |
 | Invite | Full grammar in §4. One use, 24 h, revocable, never auto-accept. |
 | QR | Always tokenised `omaq://invite/…`. The Tox address is inside because Tox cannot add a friend without it. The token is what dies on revoke. **Nospam rotation voids every open invite at once.** |
@@ -109,7 +120,8 @@ One reason per file. Tests per module. Invite and message are reused by 1:1 and 
 
 ```text
 Panel.qml  (one instance per monitor — host fact)
-        → Service.qml          # always exec helper; on exit 2, connect to socket
+SafeText.qml                   # PlainText-default ordinary QML text sink
+        → Service.qml          # start detached candidate, then attach/reconnect by socket
         → $OMAQ_STATE/omaq.sock
         → helper/omaq          # one process; flock lives here
               json_io.c        # closed scanner; sanitize-tested
@@ -119,7 +131,7 @@ Panel.qml  (one instance per monitor — host fact)
               message.c        # send/history use cases via store.h
               store.c          # only module that opens history files
               identity.c
-              roster.c
+              presence.c receipt.c
               group.c          # phase 3: orchestrates roles + tox_adapt
               file.c av.c      # phase 6
               ratchet.c        # phase 8: session use cases
@@ -154,27 +166,27 @@ A new **view** (pin, other monitor) is an upward extension of `ChatSurface` only
 
 The bar is built **per monitor**. `plugins/bar/Bar.qml` (line 468): a widget in the layout is live once per screen. After a crash relaunch, two bar instances can exist briefly.
 
-`Service {}` stays a child of `Panel`. It is dumb: always `exec` the helper, read the exit code, connect if needed.
+`Service {}` stays a child of `Panel`. It starts a detached helper candidate, waits briefly for socket setup, and communicates only through the private socket. A transient QML reload therefore does not own or terminate the established helper.
 
 ```text
 Service:
-  exec helper/omaq
-  if helper stays up: talk stdin/stdout (or the socket the owner bound)
-  if helper exits 2 (already_running): connect $OMAQ_STATE/omaq.sock
-  if helper exits otherwise / socket dies: emit helper_down; backoff 200ms → 1s → 5s, cap 30s; exec again
+  Process.startDetached(helper/omaq)
+  attach $OMAQ_STATE/omaq.sock after the bounded startup delay
+  request an instance/nonce-bound status handshake
+  if the socket dies: emit helper_down; back off to 30 s; start a candidate and attach again
 
 Helper (C):
   open $OMAQ_HOME/omaq.lock (0600)
   flock(LOCK_EX | LOCK_NB)
-  if acquired: unlink stale sock, bind, write pid, serve
-  else: exit 2
+  if acquired: unlink stale sock, bind, write pid/protocol markers, serve
+  else: exit 2 without disturbing the lock owner
 ```
 
 An in-flight `msg.send` has unknown delivery status if the helper dies before reporting its correlated outcome. The UI must not offer automatic Resend because transport may already have succeeded. Restart reloads `tox.save`, history JSONL, persisted ratchet pins/identities/sessions; no second identity.
 
 **Lock contention is `verify-1-offline`:** two helper processes, one temp home, no network, no toxcore. Exactly one stays up, the other exits 2. `verify-1-tox` still asserts one process when Tox is on.
 
-stdin/stdout stay the protocol on the socket (one JSON object per line). stderr: diagnostics, never keys or full tox ids.
+The socket carries one JSON object per line. Foreground stdin/stdout remains a separately tested compatibility transport inside the helper; detached QML does not consume it. stderr contains diagnostics, never keys or full Tox IDs.
 
 ```text
 $OMAQ_HOME          default ~/.local/share/omaq   0700
@@ -242,7 +254,8 @@ Direct storage IDs are `d:<64-hex-tox-public-key>`; group storage IDs are the st
 - Rotate when the file exceeds 2 MiB: rename to `messages.jsonl.1`, start a new file. Keep one rotated file. Older lines drop.
 - Incoming replay checks use a bounded, process-keyed Bloom index for the complete retained history plus an exact recent-ID cache. A negative lookup avoids disk scanning; a possible match still uses the exact on-disk decision. Rotation and conversation clearing invalidate the index before mutation.
 - **`message.c` talks only `store.h`.** `store.c` is the only file that opens history paths. A later at-rest wrap (libsodium already linked via toxcore) is a new `store` file, not a rewrite of `message.c`. Phase 1: 0600 only, no extra cipher.
-- Phase 5 search: scan jsonl on disk for the **open** conversation. Still not the whole archive in QML.
+- Phase 5 search: scan jsonl on disk for one explicitly requested conversation. Each ChatPage owns its request id and result state, and stale or cross-conversation results are ignored. Still not the whole archive in QML.
+- `ts` is the helper-authored local history-acceptance time. The same captured value is persisted and projected in a successful live `message` event. Older helpers may omit the additive live field; confirmed rows then remain without a displayed time until authoritative history supplies it. Only an optimistic local row uses its enqueue time as a temporary presentation value.
 - Tests use a fixture file under the temp `OMAQ_HOME`. Never the user’s real history.
 
 ---
@@ -270,7 +283,9 @@ Service → helper (unknown or not-yet-built `op` → `unsupported`):
 {"op":"message.react","conversation":"...","id":"...","text":"❤️"}
 {"op":"history","conversation":"...","limit":50}
 {"op":"nospam.rotate"}
-{"op":"search","conversation":"...","text":"...","limit":20}
+{"op":"search","conversation":"...","text":"...","limit":20,"id":"client-request-id"}
+{"event":"message","conversation":"...","id":"...","text":"...","dir":"in","ts":1700000000}
+{"event":"search","conversation":"...","request":"client-request-id","items":[{"id":"...","ts":1700000000,"from":"peer","text":"...","dir":"in"}]}
 {"op":"identity.export","path":"...","id":"client-request-id"}
 {"op":"identity.inspect","path":"...","id":"client-request-id"}
 {"op":"identity.import","path":"..."}
@@ -385,7 +400,7 @@ IPC: `open`, `close`, `toggle`, `invite`, `status`.
 
 QR tools: system `qrencode` / `zbarimg`.
 
-Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `messageScale` (`0.9`, `1.0`, `1.1`, `1.2`, or `1.4`), `animateUnread`. The compact panel uses a fixed mutually exclusive self/request header: a pending friend or group request replaces the complete self presentation until the request ends. It also uses a fixed support-link frame, a Friends/Groups frame, and a fixed action rail. The two compact upper frames share the former header height; the transparent GitHub and monochrome Ko-fi support glyphs remain borderless, use `color03` on hover/focus, and match the cell size, glyph scale, and column spacing of the rail below. Friends begin at the top of the lower-left frame and fill five vertical entries per left/center/right column before continuing in a vertically scrollable area with a fading scrollbar; the heading shows online/total counts, unread names are underlined, and hover/focus uses `color03`. Every rail selection and confirmation remains enclosed by the thin lower-left frame. Rail menus extend the panel only to their natural height while the header and right frames stay stationary; the lower-left area scrolls only when constrained by screen height. Group-name and Search inputs match the full-width Identity path field. Selecting a listed group opens its chat directly. The group-chat header can invite an existing contact or let any role leave after confirmation; member and invite entries remain unframed. Complete group sender names determine the minimum bubble width, and helper-persisted system rows identify member joins and leaves. Message scaling affects message bodies and text typed in the composer while the composer frame and controls retain their normal size. Settings provide a live preview. Custom sound import stores a bounded private helper-managed copy; only projected custom entries expose removal, and bundled sounds remain immutable.
+Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `messageScale` (`0.9`, `1.0`, `1.1`, `1.2`, or `1.4`), `animateUnread`. The compact panel uses a fixed mutually exclusive self/request header: a pending friend or group request replaces the complete self presentation until the request ends. It also uses a fixed support-link frame, a Friends/Groups frame, and a fixed action rail. The two compact upper frames share the former header height; the transparent GitHub and monochrome Ko-fi support glyphs remain borderless, use `color03` on hover/focus, and match the cell size, glyph scale, and column spacing of the rail below. Friends begin at the top of the lower-left frame and fill five vertical entries per left/center/right column before continuing in a vertically scrollable area with a fading scrollbar; the heading shows online/total counts, unread names are underlined, and hover/focus uses `color03`. Every rail selection and confirmation remains enclosed by the thin lower-left frame. Rail menus extend the panel only to their natural height while the header and right frames stay stationary; the lower-left area scrolls only when constrained by screen height. Group-name and Identity path inputs use the panel's full field width; message search belongs to each ChatPage. Selecting a listed group opens its chat directly. The group-chat header can invite an existing contact or let any role leave after confirmation; member and invite entries remain unframed. Complete group sender names determine the minimum bubble width, and helper-persisted system rows identify member joins and leaves. Message scaling affects message bodies and text typed in the composer while the composer frame and controls retain their normal size. Settings provide a live preview. Custom sound import stores a bounded private helper-managed copy; only projected custom entries expose removal, and bundled sounds remain immutable.
 
 DirectChat and GroupChat expose a compact Reply icon on every replyable message in the same hover/focus action group as reactions and editing. The icon starts the existing reply flow; the existing right-click context menu remains unchanged. Message text supports pointer and keyboard selection. A compact Copy icon appears only while a non-empty selection exists and copies exactly the selected text.
 

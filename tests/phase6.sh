@@ -200,6 +200,33 @@ done
 got=$(find "$hb/Downloads/omaq" -type f 2>/dev/null | head -1)
 [ -n "$got" ] || { echo "phase6: no dest file" >&2; exit 1; }
 grep -a -q 'omaq-file-probe' "$got" || { echo "phase6: dest mismatch" >&2; exit 1; }
+python3 - "$fa" "$fb" "$ha/history/d:$friend_key_a/messages.jsonl" \
+	"$hb/history/d:$friend_key_b/messages.jsonl" "$src" "$got" <<'PY'
+import json
+import sys
+
+def records(path):
+    result = []
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return result
+
+for event_path, history_path, message_path, direction in (
+        (sys.argv[1], sys.argv[3], sys.argv[5], "out"),
+        (sys.argv[2], sys.argv[4], sys.argv[6], "in")):
+    event = next((item for item in reversed(records(event_path))
+                  if item.get("event") == "message" and item.get("dir") == direction and
+                  item.get("kind") == "file" and item.get("text") == message_path), None)
+    stored = next((item for item in reversed(records(history_path))
+                   if event and item.get("id") == event.get("id")), None)
+    if not event or not stored or not isinstance(event.get("ts"), int) or \
+            event["ts"] <= 0 or event["ts"] != stored.get("ts"):
+        raise SystemExit("phase6: Direct attachment event/history timestamp mismatch")
+PY
 
 # A recipient decline must produce a visible terminal cancellation on both peers.
 offer_before=$(grep -a -c '"event":"file.offer"' "$fb" || true)

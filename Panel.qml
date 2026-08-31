@@ -321,8 +321,7 @@ BarWidget {
           av.failed = true
       }
 
-      Text {
-        textFormat: Text.PlainText
+      SafeText {
         anchors.centerIn: parent
         visible: av.failed || av.path === ""
         text: "person"
@@ -363,8 +362,7 @@ BarWidget {
       border.color: Color.popups.background
       border.width: 1
 
-      Text {
-        textFormat: Text.PlainText
+      SafeText {
         id: unreadText
         anchors.centerIn: parent
         text: av.unreadCount > 99 ? "99+" : String(av.unreadCount)
@@ -437,8 +435,7 @@ BarWidget {
                       Math.max(0, tokenButton.width - tokenButton.horizontalPadding * 2))
       spacing: tokenButton.contentSpacing
 
-      Text {
-        textFormat: Text.PlainText
+      SafeText {
         id: buttonIcon
         visible: tokenButton.iconText !== ""
         text: tokenButton.iconText
@@ -449,8 +446,7 @@ BarWidget {
         anchors.verticalCenter: parent.verticalCenter
       }
 
-      Text {
-        textFormat: Text.PlainText
+      SafeText {
         id: buttonLabel
         visible: tokenButton.text !== ""
         width: Math.max(0, row.width -
@@ -484,8 +480,7 @@ BarWidget {
                               root.foreground.b, 0.24)
         border.width: 1
       }
-      contentItem: Text {
-        textFormat: Text.PlainText
+      contentItem: SafeText {
         text: tokenTooltip.text
         color: root.foreground
         font.family: root.fontFamily
@@ -531,8 +526,7 @@ BarWidget {
     Keys.onEnterPressed: if (enabled) railIcon.clicked()
     Keys.onSpacePressed: if (enabled) railIcon.clicked()
 
-    Text {
-      textFormat: Text.PlainText
+    SafeText {
       anchors.centerIn: parent
       text: railIcon.materialIcon
       color: railIcon.selected || railHover.hovered || railIcon.activeFocus
@@ -560,8 +554,7 @@ BarWidget {
                               root.foreground.b, 0.24)
         border.width: 1
       }
-      contentItem: Text {
-        textFormat: Text.PlainText
+      contentItem: SafeText {
         text: railTooltip.text
         color: root.foreground
         font.family: root.fontFamily
@@ -999,6 +992,14 @@ BarWidget {
     ])
     root.safetyCopied = true
     safetyCopiedTimer.restart()
+  }
+
+  function selectSafetyContact(id) {
+    if (!omaq.selectDirect(String(id || "")))
+      return false
+    root.safetyCopied = false
+    root.safetyCodeVisible = false
+    return true
   }
 
   function showSafetyCode() {
@@ -2384,8 +2385,7 @@ BarWidget {
     anchors.horizontalCenterOffset: Style.space(7)
     z: 100
 
-    Text {
-      textFormat: Text.PlainText
+    SafeText {
       id: unreadBadgeText
       anchors.centerIn: parent
       text: root.visibleUnreadCount > 99 ? "99" : String(root.visibleUnreadCount)
@@ -2724,8 +2724,7 @@ BarWidget {
               anchors.verticalCenter: parent.verticalCenter
               spacing: 0
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: omaq.selfNickname !== "" && !root.nicknameEditOpen
                 width: parent.width
                 height: root.nicknameControlHeight
@@ -2779,8 +2778,7 @@ BarWidget {
                     text: root.nicknameFeedback
                     delay: 0
                     timeout: -1
-                    contentItem: Text {
-                      textFormat: Text.PlainText
+                    contentItem: SafeText {
                       text: nicknameFeedbackTooltip.text
                       color: root.nicknameFeedbackError ? root.urgent : root.foreground
                       font.family: root.fontFamily
@@ -2834,8 +2832,7 @@ BarWidget {
                 height: Style.space(16)
                 spacing: Style.space(3)
 
-                Text {
-                  textFormat: Text.PlainText
+                SafeText {
                   Layout.fillWidth: true
                   Layout.alignment: Qt.AlignVCenter
                   text: "YOU · " + root.connectionLabel().toUpperCase()
@@ -2849,8 +2846,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 id: nicknameFeedbackText
                 visible: root.nicknameFeedback !== "" &&
                   omaq.selfNickname !== "" && !root.nicknameEditOpen
@@ -2881,8 +2877,7 @@ BarWidget {
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 0
 
-                Text {
-                  textFormat: Text.PlainText
+                SafeText {
                   id: pendingRequestTitle
                   Layout.fillWidth: true
                   text: omaq.pendingGroup ? "Group invite" : "Friend request"
@@ -2893,8 +2888,7 @@ BarWidget {
                   elide: Text.ElideRight
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                SafeText {
                   id: pendingRequestContext
                   Layout.fillWidth: true
                   text: omaq.pendingGroup ? "Private group" : "New contact"
@@ -3136,8 +3130,8 @@ BarWidget {
               onClicked: root.openRailAdvanced("groups")
             }
             RailIcon {
-              materialIcon: "search"
-              label: "Search and safety"
+              materialIcon: "shield"
+              label: "Safety code"
               selected: root.moreOpen && root.moreSection === "chat"
               onClicked: root.openRailAdvanced("chat")
             }
@@ -3373,8 +3367,7 @@ BarWidget {
               fontFamily: root.fontFamily
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: !omaq.friends || omaq.friends.length === 0
               width: parent.width
               text: "No contacts yet. Use Invite or Join first."
@@ -3434,8 +3427,7 @@ BarWidget {
                 anchors.fill: parent
                 spacing: Style.space(4)
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: omaq.friends && omaq.friends.length > 0
               text: "FRIENDS · " + root.onlineFriendCount() + "/" +
                 (omaq.friends ? omaq.friends.length : 0)
@@ -3493,8 +3485,7 @@ BarWidget {
                     border.width: 0
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  SafeText {
                     id: friendName
                     anchors.left: friendStatusDot.right
                     anchors.leftMargin: Style.space(6)
@@ -3552,8 +3543,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: omaq.groups && omaq.groups.length > 0
               text: "GROUPS"
               color: root.dim
@@ -3586,8 +3576,7 @@ BarWidget {
                   Keys.onReturnPressed: root.openGroup(modelData ? modelData.id : "")
                   Keys.onEnterPressed: root.openGroup(modelData ? modelData.id : "")
 
-                  Text {
-                    textFormat: Text.PlainText
+                  SafeText {
                     id: activeGroupIcon
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
@@ -3599,8 +3588,7 @@ BarWidget {
                                           "wght": 500 })
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  SafeText {
                     id: activeGroupName
                     anchors.left: activeGroupIcon.right
                     anchors.leftMargin: Style.space(6)
@@ -3622,8 +3610,7 @@ BarWidget {
                     elide: Text.ElideRight
                   }
 
-                  Text {
-                    textFormat: Text.PlainText
+                  SafeText {
                     id: activeGroupCount
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -3692,8 +3679,7 @@ BarWidget {
               border.color: root.controlBorder
               border.width: 1
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 id: messageScalePreview
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -3708,8 +3694,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               width: parent.width
               text: "Changes message text and text typed in the composer."
               color: root.dim
@@ -3724,8 +3709,7 @@ BarWidget {
             width: parent.width
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               width: parent.width
               text: "Applies to chat and Demo windows; the panel follows the Omarchy palette."
               color: root.dim
@@ -3747,8 +3731,7 @@ BarWidget {
                   width: parent.width
                   spacing: Style.space(4)
 
-                  Text {
-                    textFormat: Text.PlainText
+                  SafeText {
                     width: parent.width
                     text: root.paletteLabel(pal.modelData)
                     color: root.chatTheme === pal.modelData ? Color.accent : root.foreground
@@ -3828,8 +3811,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: !omaq.supportsCustomSounds
               width: parent.width
               text: "Update the local OmaQ helper to import or remove custom sounds."
@@ -3859,8 +3841,7 @@ BarWidget {
               onClicked: root.requestSoundRemoval(root.selectedCustomSoundOption())
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: root.soundRemoveConfirm
               width: parent.width
               text: "Remove " + root.soundRemoveLabel +
@@ -3900,8 +3881,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: root.soundFeedback !== ""
               width: parent.width
               text: root.soundFeedback
@@ -3923,8 +3903,7 @@ BarWidget {
               fontFamily: root.fontFamily
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               width: parent.width
               text: "OmaQ could not confirm whether the latest identity, contact, or group change reached disk before restarting. Messaging and mutations are paused. Review your nickname and contacts first; group recovery stays paused and is reconciled only after confirmation."
               color: root.foreground
@@ -3957,8 +3936,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: root.identityPrimaryConfirm
               width: parent.width
               text: "Clear this warning? Confirm only after checking whether the intended identity and contact change is present."
@@ -4013,8 +3991,7 @@ BarWidget {
               fontFamily: root.fontFamily
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               width: parent.width
               text: "Your OmaQ identity and contact list are intact. Older direct-chat encryption state could not be safely assigned to current contacts and was archived. Remove affected contacts on both devices, exchange one fresh invite, and verify that the new chat works."
               color: root.foreground
@@ -4023,8 +4000,7 @@ BarWidget {
               wrapMode: Text.WordWrap
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: !omaq.supportsDirectRecovery
               width: parent.width
               text: "Update the local OmaQ helper before marking recovery complete. Existing contacts remain available."
@@ -4062,8 +4038,7 @@ BarWidget {
               }
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: root.directReinviteClearConfirm
               width: parent.width
               text: "Clear this recovery warning? Continue only after affected contacts were removed on both devices, re-invited, and the new direct chat was verified."
@@ -4107,8 +4082,7 @@ BarWidget {
             }
           }
 
-          Text {
-            textFormat: Text.PlainText
+          SafeText {
             visible: root.settingsPersistenceWarning !== "" ||
               omaq.unreadWarning !== "" ||
               (chatSurface && chatSurface.autoOpenWarning !== "") ||
@@ -4134,8 +4108,7 @@ BarWidget {
             width: parent.width
             spacing: Style.space(8)
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               width: parent.width
               text: "Identity is locked."
               color: root.foreground
@@ -4165,8 +4138,7 @@ BarWidget {
               onClicked: root.runIdentityAction("unlock", "", unlockField.text)
             }
 
-            Text {
-              textFormat: Text.PlainText
+            SafeText {
               visible: root.identityFeedback !== ""
               width: parent.width
               text: root.identityFeedback
@@ -4254,8 +4226,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 width: parent.width
                 text: root.shortInvite(omaq.inviteUrl)
                 color: root.dim
@@ -4264,8 +4235,7 @@ BarWidget {
                 wrapMode: Text.WrapAnywhere
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 width: parent.width
                 text: "Valid for " + root.inviteRemainingText()
                 color: root.inviteRemainingSeconds <= 300 ? root.urgent : root.dim
@@ -4302,8 +4272,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.inviteConfirmMode !== ""
                 width: parent.width
                 text: root.inviteConfirmMode === "replace"
@@ -4333,8 +4302,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.inviteFeedback !== ""
                 width: parent.width
                 text: root.inviteFeedback
@@ -4355,8 +4323,7 @@ BarWidget {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.inviteFeedback !== ""
                 width: parent.width
                 text: root.inviteFeedback
@@ -4429,8 +4396,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.redeemFeedback !== ""
                 width: parent.width
                 text: root.redeemFeedback
@@ -4470,8 +4436,9 @@ BarWidget {
 
                 ActionButton {
                   Layout.fillWidth: true
-                  iconText: "󰍉"
-                  text: "Search"
+                  iconText: "shield"
+                  iconFontFamily: "Material Symbols Rounded"
+                  text: "Safety code"
                   selected: root.moreSection === "chat"
                   onClicked: root.toggleMoreSection("chat")
                 }
@@ -4502,64 +4469,45 @@ BarWidget {
 
               PanelSectionHeader {
                 visible: root.moreSection === "chat"
-                text: "CHAT"
+                text: "SAFETY CODE"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              Column {
-                visible: root.moreSection === "chat"
+              SafeText {
+                id: safetyContactEmpty
+                visible: root.moreSection === "chat" && (!omaq.friends || omaq.friends.length === 0)
                 width: parent.width
-                spacing: root.btnGap
-                TokenTextField {
-                  id: searchField
-                  width: parent.width
-                  foreground: root.controlForeground
-                  placeholderText: "Search this chat"
-                  onAccepted: omaq.searchChat(
-                    searchField.text, omaq.selectedConversation)
-                  onTextChanged: if (!text) {
-                    omaq.searchItems = []
-                    omaq.searchConversation = ""
-                    omaq.searchRequest = ""
-                  }
-                }
-                ActionButton {
-                  id: searchBtn
-                  width: parent.width
-                  height: root.actionButtonHeight
-                  iconText: "󰍉"
-                  text: "Search"
-                  onClicked: omaq.searchChat(
-                    searchField.text, omaq.selectedConversation)
-                }
+                text: "Add a direct contact before comparing safety codes."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
               }
 
-              Column {
-                visible: root.moreSection === "chat" &&
-                  String(omaq.searchConversation || "") === String(omaq.selectedConversation || "") &&
-                  omaq.searchItems && omaq.searchItems.length > 0
+              Flow {
+                id: safetyContactChoices
+                visible: root.moreSection === "chat" && omaq.friends && omaq.friends.length > 0
                 width: parent.width
                 spacing: Style.space(4)
 
                 Repeater {
-                  model: omaq.searchItems
-                  delegate: Text {
-                    textFormat: Text.PlainText
+                  model: omaq.friends || []
+                  delegate: TokenButton {
                     required property var modelData
-                    width: parent ? parent.width : 0
-                    text: modelData && modelData.text ? String(modelData.text) : ""
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
-                    maximumLineCount: 2
-                    wrapMode: Text.Wrap
+                    width: Math.min(implicitWidth, safetyContactChoices.width)
+                    text: String(modelData.name || ("Friend " + modelData.id))
+                    selected: String(modelData.id || "") === String(omaq.selectedDirectId || "")
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: root.selectSafetyContact(modelData.id)
                   }
                 }
               }
 
               ActionButton {
+                id: safetyShowButton
                 visible: root.moreSection === "chat" && omaq.selectedDirectId !== "" &&
                   (!root.safetyCodeVisible || root.currentSafetyCode === "")
                 width: parent.width
@@ -4568,8 +4516,7 @@ BarWidget {
                 onClicked: root.showSafetyCode()
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "chat" && omaq.selectedDirectId !== "" &&
                   (!root.safetyCodeVisible || root.currentSafetyCode === "")
                 width: parent.width
@@ -4592,8 +4539,7 @@ BarWidget {
                   fontFamily: root.fontFamily
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                SafeText {
                   width: parent.width
                   text: root.currentSafetyCode
                   color: root.foreground
@@ -4661,8 +4607,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "groups" &&
                   (!omaq.groups || omaq.groups.length === 0)
                 width: parent.width
@@ -4777,8 +4722,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "groups" && root.groupInviteFeedback !== ""
                 width: parent.width
                 text: root.groupInviteFeedback
@@ -4790,8 +4734,7 @@ BarWidget {
                 wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "groups" && root.groupLeaveConfirm
                 width: parent.width
                 text: "Leave " + omaq.groupName(root.groupLeaveTarget) + "?"
@@ -4833,8 +4776,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "groups" && root.groupDissolveConfirm
                 width: parent.width
                 text: "Dissolve " + omaq.groupName(root.groupDissolveTarget) + " for every member?"
@@ -4890,8 +4832,7 @@ BarWidget {
                 fontFamily: root.fontFamily
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity"
                 width: parent.width
                 text: omaq.saveProtected ? "Identity file protected" : "Passphrase not set"
@@ -4902,8 +4843,7 @@ BarWidget {
                 font.bold: true
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity" && !omaq.supportsIdentityActions
                 width: parent.width
                 text: "Update the local OmaQ helper before changing identity settings. Existing identity and contacts remain available."
@@ -4928,8 +4868,7 @@ BarWidget {
                   root.clearIdentityFeedback()
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity" && !omaq.saveProtected
                 width: parent.width
                 text: "Use at least 8 characters and at most 128 bytes."
@@ -4939,8 +4878,7 @@ BarWidget {
                 wrapMode: Text.WordWrap
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity"
                 width: parent.width
                 text: "Validate bundle checks a bundle without changing this identity. Import identity activates it after confirmation."
@@ -5050,8 +4988,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity" && root.identityFeedback !== ""
                 width: parent.width
                 text: root.identityFeedback
@@ -5062,8 +4999,7 @@ BarWidget {
                 wrapMode: Text.WrapAnywhere
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "identity" && root.replaceIdentityConfirm
                 width: parent.width
                 text: "Import " + root.replaceIdentityPath + " as the active identity? Existing direct contacts will require a fresh invite."
@@ -5169,8 +5105,7 @@ BarWidget {
                 width: parent.width
                 spacing: Style.space(4)
 
-                Text {
-                  textFormat: Text.PlainText
+                SafeText {
                   width: parent.width
                   text: "Select the contact to remove"
                   color: root.foreground
@@ -5211,12 +5146,11 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "danger" && root.removeContactConfirm
                 width: parent.width
                 text: "Remove " + root.friendName(root.removeContactId) +
-                  "? Chat history stays on this machine."
+                  "? Chat history stays in local storage."
                 color: root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -5258,8 +5192,7 @@ BarWidget {
                 }
               }
 
-              Text {
-                textFormat: Text.PlainText
+              SafeText {
                 visible: root.moreSection === "danger" && root.nospamConfirm
                 width: parent.width
                 text: "Rotate your personal ID? This voids every open invite."

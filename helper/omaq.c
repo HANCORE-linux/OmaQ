@@ -2301,13 +2301,14 @@ static void emit_unread_failed(const char *conversation, const char *code)
 
 static void emit_message_event_kind(const char *conversation, const char *id,
 				     const char *reply, const char *text, const char *dir,
-				     const char *kind, const char *request)
+				     const char *kind, const char *request,
+				     int64_t timestamp)
 {
 	char esc_conv[128], esc_id[128], esc_reply[128], esc_request[512],
-		esc_text[2800], key_field[96], ev[3900];
-	int has_id, has_reply, has_request, is_attachment;
+		esc_text[2800], key_field[96], ev[5000];
+	int has_id, has_reply, has_request, is_attachment, written;
 
-	if (!conversation || !text || !dir ||
+	if (!conversation || !text || !dir || timestamp < 0 ||
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
 	    omaq_json_escape(text, esc_text, sizeof(esc_text)) != 0)
 		return;
@@ -2319,55 +2320,63 @@ static void emit_message_event_kind(const char *conversation, const char *id,
 		(strcmp(kind, "file") == 0 || strcmp(kind, "image") == 0);
 	direct_event_key_field(conversation, key_field, sizeof(key_field));
 	if (has_id && has_reply && has_request) {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, key_field, esc_id, esc_reply, esc_request, esc_text, dir);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_id, esc_reply, esc_request, esc_text, dir,
+			 (long long)timestamp);
 	} else if (has_id && has_request) {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, key_field, esc_id, esc_request, esc_text, dir);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"request\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_id, esc_request, esc_text, dir,
+			 (long long)timestamp);
 	} else if (has_id && has_reply) {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, key_field, esc_id, esc_reply, esc_text, dir);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"reply\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_id, esc_reply, esc_text, dir,
+			 (long long)timestamp);
 	} else if (has_id && is_attachment) {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\"}",
-			 esc_conv, key_field, esc_id, esc_text, dir, kind);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"kind\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_id, esc_text, dir, kind,
+			 (long long)timestamp);
 	} else if (has_id) {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, key_field, esc_id, esc_text, dir);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_id, esc_text, dir, (long long)timestamp);
 	} else {
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"text\":\"%s\",\"dir\":\"%s\"}",
-			 esc_conv, key_field, esc_text, dir);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\"%s,\"text\":\"%s\",\"dir\":\"%s\",\"ts\":%lld}",
+			 esc_conv, key_field, esc_text, dir, (long long)timestamp);
 	}
-	emit(ev);
+	if (written >= 0 && (size_t)written < sizeof(ev))
+		emit(ev);
 }
 
 static void emit_message_event(const char *conversation, const char *id,
-				const char *reply, const char *text, const char *dir)
+				const char *reply, const char *text, const char *dir,
+				int64_t timestamp)
 {
-	emit_message_event_kind(conversation, id, reply, text, dir, NULL, NULL);
+	emit_message_event_kind(conversation, id, reply, text, dir, NULL, NULL,
+				timestamp);
 }
 
 static void emit_message_event_request(const char *conversation, const char *id,
 				       const char *reply, const char *text,
-				       const char *request)
+				       const char *request, int64_t timestamp)
 {
-	emit_message_event_kind(conversation, id, reply, text, "out", NULL, request);
+	emit_message_event_kind(conversation, id, reply, text, "out", NULL, request,
+				timestamp);
 }
 
 static void emit_group_message_event(const char *conversation, const char *id,
 				     const char *reply, const char *text,
-				     const char *sender)
+				     const char *sender, int64_t timestamp)
 {
 	char esc_conv[128], esc_id[128], esc_reply[128], esc_sender[512],
-		esc_text[2800], ev[4000];
-	int has_reply;
+		esc_text[2800], ev[4200];
+	int has_reply, written;
 
-	if (!conversation || !id || !text || !sender ||
+	if (!conversation || !id || !text || !sender || timestamp <= 0 ||
 	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
 	    omaq_json_escape(id, esc_id, sizeof(esc_id)) != 0 ||
 	    omaq_json_escape(sender, esc_sender, sizeof(esc_sender)) != 0 ||
@@ -2376,32 +2385,35 @@ static void emit_group_message_event(const char *conversation, const char *id,
 	has_reply = reply && reply[0] &&
 		omaq_json_escape(reply, esc_reply, sizeof(esc_reply)) == 0;
 	if (has_reply)
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\"}",
-			 esc_conv, esc_id, esc_reply, esc_sender, esc_text);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"reply\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\",\"ts\":%lld}",
+			 esc_conv, esc_id, esc_reply, esc_sender, esc_text,
+			 (long long)timestamp);
 	else
-		snprintf(ev, sizeof(ev),
-			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\"}",
-			 esc_conv, esc_id, esc_sender, esc_text);
-	emit(ev);
+		written = snprintf(ev, sizeof(ev),
+			 "{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\",\"ts\":%lld}",
+			 esc_conv, esc_id, esc_sender, esc_text, (long long)timestamp);
+	if (written >= 0 && (size_t)written < sizeof(ev))
+		emit(ev);
 }
 
 static void emit_group_membership_message(const char *group, const char *name,
 					  int joined)
 {
 	char message[OMAQ_GROUP_MEMBER_NAME_MAX + 40], id[64];
+	int64_t timestamp = (int64_t)time(NULL);
 	const char *display_name = name && name[0] ? name : "A member";
 
-	if (!group ||
+	if (!group || timestamp <= 0 ||
 	    snprintf(message, sizeof(message), "%s %s the group.", display_name,
 		     joined ? "joined" : "left") >= (int)sizeof(message))
 		return;
-	if (omaq_message_append_with_id(home_dir(), group, "system", message, "sys",
-					id, sizeof(id)) != 0) {
+	if (omaq_message_append_with_id_at(home_dir(), group, "system", message, "sys",
+					   id, sizeof(id), timestamp) != 0) {
 		emit_error_conv("history_failed", group);
 		return;
 	}
-	emit_message_event(group, id, "", message, "sys");
+	emit_message_event(group, id, "", message, "sys", timestamp);
 }
 
 static void emit_message_failed(const char *conversation, const char *request,
@@ -5579,21 +5591,25 @@ static void hook_gmsg(void *ud, uint32_t gnum, uint32_t peer,
 	if (omaq_message_rate_allow(&g_message_rate, gid, sender,
 				    (int64_t)time(NULL)) != 0)
 		return;
+	int64_t timestamp = (int64_t)time(NULL);
+	if (timestamp <= 0)
+		return;
 	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
 				     wire_text, sizeof(wire_text)) == 0) {
 		if (omaq_message_id_reserved(wire_id))
 			return;
 		display = wire_text;
 		has_wire_id = 1;
-		if (omaq_message_append_id_reply(home_dir(), gid, peer_from, display, "in",
-					 wire_id, wire_reply) != 0)
+		if (omaq_message_append_id_reply_at(home_dir(), gid, peer_from, display, "in",
+					    wire_id, wire_reply, timestamp) != 0)
 			return;
 		snprintf(mid, sizeof(mid), "%s", wire_id);
-	} else if (omaq_message_append_with_id(home_dir(), gid, peer_from, display, "in", mid, sizeof(mid)) != 0) {
+	} else if (omaq_message_append_with_id_at(home_dir(), gid, peer_from, display,
+						  "in", mid, sizeof(mid), timestamp) != 0) {
 		return;
 	}
 	(void)note_unread(gid);
-	emit_group_message_event(gid, mid, wire_reply, display, sender);
+	emit_group_message_event(gid, mid, wire_reply, display, sender, timestamp);
 	if (has_wire_id) {
 		char receipt[180];
 		if (omaq_receipt_wire_pack(receipt, sizeof(receipt), wire_id, "delivered") == 0)
@@ -6031,6 +6047,9 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 	if (omaq_message_rate_allow(&g_message_rate, state_conv, state_conv,
 				    (int64_t)time(NULL)) != 0)
 		return;
+	int64_t timestamp = (int64_t)time(NULL);
+	if (timestamp <= 0)
+		return;
 	wire_reply[0] = '\0';
 	if (omaq_message_wire_unpack(text, wire_id, sizeof(wire_id), wire_reply, sizeof(wire_reply),
 				     wire_text, sizeof(wire_text)) == 0) {
@@ -6038,16 +6057,16 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		has_wire_id = 1;
 	}
 	if (has_wire_id) {
-		if (omaq_message_append_id_reply(home_dir(), state_conv, "peer", display, "in",
-					 wire_id, wire_reply) != 0)
+		if (omaq_message_append_id_reply_at(home_dir(), state_conv, "peer", display,
+					    "in", wire_id, wire_reply, timestamp) != 0)
 			return;
 		snprintf(mid, sizeof(mid), "%s", wire_id);
-	} else if (omaq_message_append_with_id(home_dir(), state_conv, "peer", display,
-					       "in", mid, sizeof(mid)) != 0) {
+	} else if (omaq_message_append_with_id_at(home_dir(), state_conv, "peer", display,
+						  "in", mid, sizeof(mid), timestamp) != 0) {
 		return;
 	}
 	(void)note_unread(conv);
-	emit_message_event(conv, mid, wire_reply, display, "in");
+	emit_message_event(conv, mid, wire_reply, display, "in", timestamp);
 #ifdef HAVE_SIGNAL
 	if (has_wire_id)
 		(void)send_receipt_wire(friend, conv, wire_id, "delivered");
@@ -6719,7 +6738,8 @@ static void emit_group_file(const char *state, const char *group,
 
 static void emit_group_attachment_message(const char *group, const char *id,
 					  const char *path, const char *dir,
-					  const char *kind, const char *sender)
+					  const char *kind, const char *sender,
+					  int64_t timestamp)
 {
 	char event[OMAQ_JSON_STR_MAX * 6 + 1500];
 	char escaped_group[128], escaped_id[256], escaped_path[OMAQ_JSON_STR_MAX * 6 + 1];
@@ -6727,7 +6747,7 @@ static void emit_group_attachment_message(const char *group, const char *id,
 	const char *safe_kind = kind && strcmp(kind, "image") == 0 ? "image" : "file";
 	int written;
 
-	if (!group || !id || !path || !dir ||
+	if (!group || !id || !path || !dir || timestamp <= 0 ||
 	    omaq_json_escape(group, escaped_group, sizeof(escaped_group)) != 0 ||
 	    omaq_json_escape(id, escaped_id, sizeof(escaped_id)) != 0 ||
 	    omaq_json_escape(path, escaped_path, sizeof(escaped_path)) != 0)
@@ -6737,12 +6757,14 @@ static void emit_group_attachment_message(const char *group, const char *id,
 					      sizeof(escaped_sender)) != 0)
 			return;
 		written = snprintf(event, sizeof(event),
-			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\",\"kind\":\"%s\"}",
-			escaped_group, escaped_id, escaped_sender, escaped_path, safe_kind);
+			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"sender\":\"%s\",\"text\":\"%s\",\"dir\":\"in\",\"kind\":\"%s\",\"ts\":%lld}",
+			escaped_group, escaped_id, escaped_sender, escaped_path, safe_kind,
+			(long long)timestamp);
 	} else {
 		written = snprintf(event, sizeof(event),
-			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"out\",\"kind\":\"%s\"}",
-			escaped_group, escaped_id, escaped_path, safe_kind);
+			"{\"event\":\"message\",\"conversation\":\"%s\",\"id\":\"%s\",\"text\":\"%s\",\"dir\":\"out\",\"kind\":\"%s\",\"ts\":%lld}",
+			escaped_group, escaped_id, escaped_path, safe_kind,
+			(long long)timestamp);
 	}
 	if (written >= 0 && (size_t)written < sizeof(event))
 		emit(event);
@@ -6867,20 +6889,21 @@ static void group_file_out_finish(int index, const char *state, const char *code
 	}
 	if (strcmp(state, "done") == 0) {
 		int attachment_ready = !outgoing->pending_attachment;
+		int64_t timestamp = (int64_t)time(NULL);
 		if (outgoing->pending_attachment &&
 		    attachment_pending_update(outgoing->path, 1) == 1) {
 			outgoing->pending_attachment = 0;
 			outgoing->managed_attachment = 1;
 			attachment_ready = 1;
 		}
-		if (source_current && attachment_ready &&
-		    omaq_message_append_attachment_id(home_dir(), outgoing->group, "me",
+		if (source_current && attachment_ready && timestamp > 0 &&
+		    omaq_message_append_attachment_id_at(home_dir(), outgoing->group, "me",
 			outgoing->path, "out", outgoing->kind,
-			outgoing->event_id) == 0) {
+			outgoing->event_id, timestamp) == 0) {
 			stored = 1;
 			outgoing->managed_attachment = 0;
 			emit_group_attachment_message(outgoing->group, outgoing->event_id,
-				outgoing->path, "out", outgoing->kind, NULL);
+				outgoing->path, "out", outgoing->kind, NULL, timestamp);
 		}
 		if (!stored && source_current)
 			terminal_code = "local_history_failed";
@@ -7338,6 +7361,7 @@ static void group_file_receive_done(uint32_t group_number, uint32_t peer,
 	uint8_t hash[32];
 	char key[65];
 	int index, stored;
+	int64_t timestamp;
 
 	index = group_file_in_find(group_number, id);
 	if (index < 0)
@@ -7372,16 +7396,18 @@ static void group_file_receive_done(uint32_t group_number, uint32_t peer,
 		group_file_in_fail(index, "failed", "invalid_image", 1);
 		return;
 	}
-	stored = omaq_message_append_attachment_id(home_dir(), incoming->group,
+	timestamp = (int64_t)time(NULL);
+	stored = timestamp > 0 &&
+		omaq_message_append_attachment_id_at(home_dir(), incoming->group,
 			incoming->sender_key, incoming->path, "in", incoming->kind,
-			incoming->event_id) == 0;
+			incoming->event_id, timestamp) == 0;
 	if (!stored) {
 		group_file_in_fail(index, "failed", "local_history_failed", 1);
 		return;
 	}
 	(void)note_unread(incoming->group);
 	emit_group_attachment_message(incoming->group, incoming->event_id,
-		incoming->path, "in", incoming->kind, incoming->sender_key);
+		incoming->path, "in", incoming->kind, incoming->sender_key, timestamp);
 	emit_group_file("done", incoming->group, incoming->event_id, NULL, 0,
 			incoming->path, "in", NULL, incoming->kind,
 			incoming->sender_key, NULL);
@@ -8051,20 +8077,22 @@ static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t po
 		char conv[16], state_conv[OMAQ_DIRECT_STATE_ID_MAX], path[512], mid[64];
 		const char *kind;
 		int stored = 0;
+		int64_t timestamp = (int64_t)time(NULL);
 
 		path[0] = '\0';
 		(void)file_request_path(friend, fnum, path, sizeof(path));
 		snprintf(conv, sizeof(conv), "%u", friend);
 		kind = file_request_kind(friend, fnum);
-		if (file_request_finish_pending(friend, fnum, 1) == 0 && path[0] &&
-		    direct_state_for_friend(friend, state_conv,
-						     sizeof(state_conv)) == 0 &&
-		    omaq_message_append_attachment_with_id(home_dir(), state_conv, "me",
-						   path, "out", kind, mid,
-						   sizeof(mid)) == 0) {
+		if (timestamp > 0 && file_request_finish_pending(friend, fnum, 1) == 0 &&
+		    path[0] && direct_state_for_friend(friend, state_conv,
+							 sizeof(state_conv)) == 0 &&
+		    omaq_message_append_attachment_with_id_at(home_dir(), state_conv, "me",
+						      path, "out", kind, mid,
+						      sizeof(mid), timestamp) == 0) {
 			stored = 1;
 			(void)file_request_mark_pending(friend, fnum, 0);
-			emit_message_event_kind(conv, mid, "", path, "out", kind, NULL);
+			emit_message_event_kind(conv, mid, "", path, "out", kind, NULL,
+						timestamp);
 		} else if (file_request_remove_managed(friend, fnum) == 1) {
 			path[0] = '\0';
 		}
@@ -8096,6 +8124,7 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 	if (rc == 1) {
 		char conv[16], state_conv[OMAQ_DIRECT_STATE_ID_MAX], mid[64];
 		int stored;
+		int64_t timestamp = (int64_t)time(NULL);
 		event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
 		snprintf(conv, sizeof(conv), "%u", friend);
 		if (event == OMAQ_FILE_EVENT_AVATAR) {
@@ -8114,12 +8143,14 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 		{
 			const char *kind = omaq_inline_image_canonicalize_file(dest) == 0
 				? "image" : "file";
-			stored = direct_state_for_friend(friend, state_conv, sizeof(state_conv)) == 0 &&
-				omaq_message_append_attachment_with_id(home_dir(), state_conv,
-					"peer", dest, "in", kind, mid, sizeof(mid)) == 0;
+			stored = timestamp > 0 &&
+				direct_state_for_friend(friend, state_conv, sizeof(state_conv)) == 0 &&
+				omaq_message_append_attachment_with_id_at(home_dir(), state_conv,
+					"peer", dest, "in", kind, mid, sizeof(mid), timestamp) == 0;
 			if (stored) {
 				(void)note_unread(conv);
-				emit_message_event_kind(conv, mid, "", dest, "in", kind, NULL);
+				emit_message_event_kind(conv, mid, "", dest, "in", kind, NULL,
+							timestamp);
 			}
 		}
 		emit_file("done", friend, fnum, NULL, 0, dest, "in", NULL);
@@ -11779,12 +11810,16 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 						group_rc == -2 ? "offline" : "forbidden", 0);
 					return 0;
 				}
-				if (omaq_message_append_id_reply(home_dir(), cid, "me", op->text, "out", mid, op->reply) != 0) {
-					emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+				int64_t timestamp = (int64_t)time(NULL);
+				if (timestamp <= 0 ||
+				    omaq_message_append_id_reply_at(home_dir(), cid, "me", op->text,
+					"out", mid, op->reply, timestamp) != 0) {
+					emit_message_event_request(cid, mid, op->reply, op->text, op->id, 0);
 					emit_message_failed(cid, op->id, "history_failed", 1);
 					return 0;
 				}
-				emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+				emit_message_event_request(cid, mid, op->reply, op->text, op->id,
+							   timestamp);
 				emit("{\"event\":\"snapshot\",\"unread\":0}");
 				return 0;
 			} else {
@@ -11836,13 +11871,18 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 						}
 					}
 					{
-						if (omaq_message_append_id_reply(home_dir(), state_cid, "me",
-									 op->text, "out", mid, op->reply) != 0) {
-							emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+						int64_t timestamp = (int64_t)time(NULL);
+						if (timestamp <= 0 ||
+						    omaq_message_append_id_reply_at(home_dir(), state_cid, "me",
+									    op->text, "out", mid, op->reply,
+									    timestamp) != 0) {
+							emit_message_event_request(cid, mid, op->reply, op->text,
+										   op->id, 0);
 							emit_message_failed(cid, op->id, "history_failed", 1);
 							return 0;
 						}
-						emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+						emit_message_event_request(cid, mid, op->reply, op->text, op->id,
+									   timestamp);
 					}
 					emit("{\"event\":\"snapshot\",\"unread\":0}");
 					return 0;
@@ -11855,11 +11895,15 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			}
 			{
 				char mid[64];
-				if (omaq_message_append_with_id(home_dir(), cid, "me", op->text, "out", mid, sizeof(mid)) != 0) {
+				int64_t timestamp = (int64_t)time(NULL);
+				if (timestamp <= 0 ||
+				    omaq_message_append_with_id_at(home_dir(), cid, "me", op->text,
+							   "out", mid, sizeof(mid), timestamp) != 0) {
 					emit_message_failed(cid, op->id, "history_failed", 0);
 					return 0;
 				}
-				emit_message_event_request(cid, mid, op->reply, op->text, op->id);
+				emit_message_event_request(cid, mid, op->reply, op->text, op->id,
+							   timestamp);
 			}
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;

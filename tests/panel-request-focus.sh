@@ -35,6 +35,13 @@ self_block = panel[self_start:pending_start]
 pending_block = panel[pending_start:support_start]
 if "id: panelCloseButton" in panel or 'tooltipText: "Close panel"' in panel:
     raise SystemExit("panel-request-focus: redundant panel Close action remains")
+for forbidden in ('placeholderText: "Search this chat"', 'text: "Search"',
+                  'label: "Search and safety"', "omaq.searchChat(",
+                  "omaq.searchItems", "root.searchMetaText("):
+    if forbidden in panel:
+        raise SystemExit(f"panel-request-focus: panel message search remains: {forbidden}")
+if 'label: "Safety code"' not in panel or 'text: "Show safety code"' not in panel:
+    raise SystemExit("panel-request-focus: safety-code path was removed with message search")
 if 'text: "YOU · " + root.connectionLabel().toUpperCase()' not in self_block:
     raise SystemExit("panel-request-focus: normal self status is missing")
 for forbidden in ("omaq.selfAvatar", "omaq.selfNickname", '"YOU · "'):
@@ -71,7 +78,7 @@ tmp=$(mktemp -d /tmp/omaq-panel-request-XXXXXX)
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$tmp/omaq"
-for path in Panel.qml Service.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
+for path in Panel.qml Service.qml SafeText.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
   ChatSurface.qml PlacementController.qml SurfaceCoordinator.qml qmldir assets pages \
   sounds themes scripts helper manifest.json; do
   cp -a "$root/$path" "$tmp/omaq/"
@@ -145,6 +152,9 @@ aliases = '''  property alias testService: omaq
   property alias testAcceptButton: pendingAcceptButton
   property alias testDeclineButton: pendingDeclineButton
   property alias testHeaderRow: heroHeaderRow
+  property alias testSafetyEmpty: safetyContactEmpty
+  property alias testSafetyChoices: safetyContactChoices
+  property alias testSafetyShowButton: safetyShowButton
 '''
 if panel.count(needle) != 1:
     raise SystemExit("panel-request-focus: test alias insertion point changed")
@@ -235,6 +245,36 @@ ShellRoot {
         testRoot.check(panel.testSelfAvatar.visible, "self avatar did not return")
         testRoot.check(panel.testSelfContent.visible, "self content did not return")
         testRoot.check(!panel.testRequestContent.visible, "request content did not clear")
+        panel.testService.friends = []
+        panel.openRailAdvanced("chat")
+      } else if (testRoot.step === 5) {
+        testRoot.check(panel.testSafetyEmpty.visible,
+          "safety menu has no empty-contact guidance")
+        panel.testService.friends = [{ id: "7",
+          name: "Alice with a deliberately overlong remote legacy contact name that must stay inside the panel frame",
+          key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]
+      } else if (testRoot.step === 6) {
+        var choicesFit = panel.testSafetyChoices.visible &&
+          panel.testSafetyChoices.width > 0 && panel.testSafetyChoices.children.length > 0
+        for (var childIndex = 0;
+             choicesFit && childIndex < panel.testSafetyChoices.children.length;
+             childIndex++)
+          choicesFit = panel.testSafetyChoices.children[childIndex].width <=
+            panel.testSafetyChoices.width + 0.5
+        testRoot.check(choicesFit, "long safety contact overflowed the panel frame")
+        testRoot.check(panel.selectSafetyContact("7"),
+          "safety contact could not be selected")
+        testRoot.check(panel.testService.selectedDirectId === "7" &&
+          panel.testService.selectedDirectKey ===
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safety contact binding is incomplete")
+        testRoot.check(!panel.testSafetyEmpty.visible &&
+          panel.testSafetyShowButton.visible,
+          "bound safety action did not replace the empty state")
+        panel.showSafetyCode()
+        testRoot.check(panel.testService.safetyConv === "7" &&
+          panel.testService.safetyRequest !== "",
+          "safety request is not bound to the selected contact")
         console.log(testRoot.failed ? "PANEL_REQUEST_RESULT fail" : "PANEL_REQUEST_RESULT ok")
         Qt.quit()
       }

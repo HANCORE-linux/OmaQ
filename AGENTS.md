@@ -11,7 +11,7 @@ OmaQ is a minimal, invite-only Omarchy chat plugin. Preserve these qualities:
 - helper authoritative for transport, protocol, persistence, permissions, and domain rules
 - Quickshell/QML responsible for presentation and interaction only
 - no accounts, telemetry, third-party backend, or unnecessary dependencies
-- private identities, Tox saves, Ratchet state, avatars, and local history never enter Git or machine-to-machine source synchronization
+- private identities, Tox saves, Ratchet state, avatars, and local history never enter Git or cross-system source synchronization
 
 ## Sources of truth
 
@@ -25,7 +25,7 @@ OmaQ is a minimal, invite-only Omarchy chat plugin. Preserve these qualities:
 - `docs/PLAN.md` and `docs/CURRENT.md`: living product and implementation contracts; update them when durable behavior changes
 - `manifest.json`: plugin metadata and static settings schema
 
-Do not manually edit generated binaries as source. Build `helper/omaq` with the repository Makefile. Do not copy `~/.local/share/omaq/tox.save`, `direct-friends.tsv`, `groups.tsv`, `group-friends.tsv`, `group-registry.pending`, `ratchet/`, Identity files, handshake journals, or local histories to another machine.
+Do not manually edit generated binaries as source. Build `helper/omaq` with the repository Makefile. Do not copy `~/.local/share/omaq/tox.save`, `direct-friends.tsv`, `groups.tsv`, `group-friends.tsv`, `group-registry.pending`, `ratchet/`, Identity files, handshake journals, or local histories to another system.
 
 ## Language and copy
 
@@ -59,10 +59,12 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - A friend with unread messages has a `color03` underline beneath the displayed name. Hovering or keyboard-focusing a friend name also uses `color03`. Do not show a numeric or pill-shaped unread badge beside a friend name.
 - Newly submitted self nicknames contain 1–18 valid Unicode characters. Remote legacy names may be longer, but every panel name remains single-line and right-elided inside its column. Nickname submissions are immediate-only and request-correlated so delayed results cannot complete a newer edit.
 - Identity actions use one aligned two-column grid for Protect/Remove lock, Export, Validate bundle, and Import identity. Validate bundle checks a selected bundle without changing the active identity; Import identity remains separately confirmed.
-- Group-name and Search inputs use the same full lower-left-frame width and standard text-field height as the Identity bundle-path input; their actions sit below them. Every notification-sound option uses the same width and height with enough horizontal room for its complete label.
+- Group-name and Identity bundle-path inputs use the full lower-left-frame width and standard text-field height; their actions sit below them. Message search belongs only to ChatPage. Every notification-sound option uses the same width and height with enough horizontal room for its complete label.
 - The chat settings section places one short identity-verification explanation directly below **Show safety code**.
 - The per-contact `Auto-open` action appears once in the floating chat title row. Do not duplicate it beside the Clear/Delete action in the page header.
 - The Clear chat action is a right-aligned `delete` icon. It requires an explicit confirmation and affects only the current conversation.
+- Every DirectChat and GroupChat header provides message search, with `Ctrl+F` as a shortcut. Query and result state belong to that exact ChatPage; require conversation, request, and stable Direct-key correlation before showing a result. Do not add message search to the panel; its safety-code entry remains a separate identity-verification path.
+- Non-system messages show the helper-persisted local history timestamp. Use `HH:mm` for the current date and include `YYYY-MM-DD` for older messages. Search results show sender plus complete local date/time. Timestamps are separate PlainText and are not part of copied message text.
 - Chat message scaling uses only the fixed `90%`, `100%`, `110%`, `120%`, and `140%` steps and changes message-body text plus text typed in the composer. The composer frame, controls, receipts, and group member labels retain normal sizing. Valid emoji-only Unicode sequences render at the fixed 56-pixel emoji size whether they came from the picker or paste; mixed text remains ordinary message text. The settings panel shows a live text preview.
 
 ## Composer and context-menu UX
@@ -94,7 +96,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - The hero action grid uses stable per-column widths. Changing a label such as `Mute` ↔ `Unmute` must not move or resize neighboring buttons.
 - Current functional state such as global Mute may remain selected after reopening; that is not a stale transient selection.
 - Every destructive or privacy-impacting action requires an explicit confirmation immediately before execution, including invite revocation/replacement, contact removal, personal-ID/nospam rotation, clearing chat history, and equivalent future actions.
-- Safety codes are opt-in display information for identity comparison, not setup secrets. Keep them hidden until requested, bind display/copy and helper requests to the explicitly selected direct contact's numeric ID plus stable public key, ignore delayed or mismatched responses, and show copy confirmation. Background activity must not change the selected Search/Safety context.
+- Safety codes are opt-in display information for identity comparison, not setup secrets. Keep them hidden until requested, bind display/copy and helper requests to the explicitly selected direct contact's numeric ID plus stable public key, ignore delayed or mismatched responses, and show copy confirmation. Background activity must not change the selected safety-code context.
 
 ## Auto-open and sound behavior
 
@@ -114,6 +116,7 @@ Reuse existing `qs.Ui`, `qs.Commons`, `Style`, `BorderSurface`, `Button`, `Panel
 - Incoming files are paused until acceptance and default to `~/Downloads/omaq/`; explicit destination overrides remain supported. Never use `$OMAQ_HOME` as the user-facing default download directory. A normal transfer cancellation emits `file.canceled` to both peers, and each chat keeps a dismissible cancellation status visible rather than silently clearing it or reporting a generic failure. Direct files use Tox friend transfers. Group files use the helper-owned Protocol-12 attachment envelope over bounded lossless NGC packets: broadcast metadata only, transfer bytes privately to each accepting online member, bind every packet to the exact group/member key/durably reserved transfer id, require application ACK/FAIL, verify size and SHA-256 before history projection, revalidate the sender source before local history, and retain the 8 MiB cap. Never emulate group transfer in QML or expose VoiceCall in a group.
 - Local history clear must remove only the requested conversation and its rotated history; never clear all conversations.
 - Escape all JSON fields and reject path traversal, invalid IDs, unsupported actions, and malformed payloads.
+- Use `SafeText` for ordinary QML text. It defaults to `Text.PlainText`; only the exact escaped header and message-body allowlist may override RichText, and the exact-source QML gate remains mandatory.
 - Helper event fan-out must not block Tox iteration on a stale or slow IPC client. Prefer non-blocking client sockets and drop clients that cannot accept an event; persisted history remains the recovery source. Quickshell starts the helper detached and communicates through the private socket so a shell config reload cannot terminate in-memory private NGC memberships. A detached-helper regression must prove a second Service attaches to the same PID and instance.
 - Tox friend numbers are ephemeral transport handles and may change after saved-state reload or be reused after deletion. Persist direct history, avatars, Ratchet pins, Signal identities, Signal sessions, unread state, receipt debt, chat surfaces, and Auto-open preferences only under canonical `d:<64-hex-tox-public-key>` storage IDs. A versioned, private `direct-friends.tsv` is the only proof allowed to migrate a legacy numeric namespace. Unbound numeric state is archived and requires a fresh invite; it must never be assigned from the current holder of that number. Reconciliation runs before Ratchet startup and after unlock, detects friend-list truncation, never overwrites stable state, rejects symlinks and malformed names through descriptor-relative no-follow traversal, and retains collisions under a non-matching `legacy-direct` archive prefix.
 - Never commit credentials, private keys, Tox saves, Ratchet state, local chat history, temporary screenshots, or downloaded audit data.
