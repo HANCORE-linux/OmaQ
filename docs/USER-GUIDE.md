@@ -232,15 +232,15 @@ omarchy plugin add \
 make -C ~/.config/omarchy/plugins/hancore.omaq helper
 ```
 
-Update the source, rebuild the helper, and rescan plugins:
+Update the source, rebuild the helper, and restart the shell:
 
 ```bash
 omarchy plugin update hancore.omaq --yes &&
 make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
-omarchy-shell shell rescanPlugins
+omarchy restart shell
 ```
 
-The helper is detached, so rebuilding it and rescanning QML does not replace an already running process. Protocol-14 features remain disabled until the matching helper starts through a separately controlled lifecycle or a later group-free login. This source branch has no supported in-place helper updater; never terminate a helper while it owns an active private group.
+The final command visibly restarts the shell. The helper is detached, so rebuilding it and restarting the shell does not replace an already running process. Protocol-14 features remain disabled until the matching helper starts through a separately controlled lifecycle or a later group-free login. This source branch has no supported in-place helper updater; never terminate a helper while it owns an active private group.
 
 Identity, contacts, Ratchet state, history, and preferences live outside the plugin source directory and must never be copied as runtime source files.
 
