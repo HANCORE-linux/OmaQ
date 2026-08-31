@@ -41,13 +41,13 @@ refused unless the Signal Ratchet helper is available.
 
 ## Update
 
-Update the plugin, rebuild its local helper, and reload the QML source:
+Update the plugin, rebuild its local helper, and restart the shell:
 
 ```bash
-omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper && omarchy-shell shell rescanPlugins
+omarchy plugin update hancore.omaq --yes && make -C ~/.config/omarchy/plugins/hancore.omaq helper && omarchy restart shell
 ```
 
-The helper is detached, so this source-only command does not replace an already running process. Protocol-14 features remain disabled until a matching helper starts through a separately controlled lifecycle or a later group-free login. This branch intentionally does not provide an in-place helper updater; never terminate a helper while it owns an active private group. The UI remains compatible with Protocol-7 and newer helpers, and existing contacts are not projected as an empty replacement identity. OmaQ keeps identity and contact data outside the plugin directory. A private identity-presence record and an encrypted-or-plain recovery copy matching committed `tox.save` state are maintained under `~/.local/state/omaq/`. If the secondary copy cannot be updated, OmaQ keeps the committed primary identity active, marks the older recovery copy as stale, and shows a degraded-recovery warning. A stale copy is never restored. If an established primary identity unexpectedly disappears, the helper restores only its current valid recovery copy or stops visibly without creating a new identity. A confirmed Import can repair that stopped state only when the bundle has the exact protected public fingerprint.
+The final command visibly restarts the shell. The helper is detached, so this source-only command does not replace an already running process. Protocol-14 features remain disabled until a matching helper starts through a separately controlled lifecycle or a later group-free login. This branch intentionally does not provide an in-place helper updater; never terminate a helper while it owns an active private group. The UI remains compatible with Protocol-7 and newer helpers, and existing contacts are not projected as an empty replacement identity. OmaQ keeps identity and contact data outside the plugin directory. A private identity-presence record and an encrypted-or-plain recovery copy matching committed `tox.save` state are maintained under `~/.local/state/omaq/`. If the secondary copy cannot be updated, OmaQ keeps the committed primary identity active, marks the older recovery copy as stale, and shows a degraded-recovery warning. A stale copy is never restored. If an established primary identity unexpectedly disappears, the helper restores only its current valid recovery copy or stops visibly without creating a new identity. A confirmed Import can repair that stopped state only when the bundle has the exact protected public fingerprint.
 
 ## Uninstall
 
