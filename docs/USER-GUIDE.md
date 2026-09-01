@@ -223,4 +223,4 @@ Do not delete recovery markers manually. Review the exact warning, complete the 
 
 Installation, source updates, helper status, rollback, removal, retained data, and optional package cleanup have a dedicated [installation lifecycle guide](INSTALLATION.md).
 
-Restart the complete Omarchy shell immediately after each source update and before helper activation. This order clears plugin hot-reload state before the helper build or group-safe restart begins.
+Run the source update, helper build, and group-safe activation attempt before the update command attempts its guarded final Omarchy shell restart. A successful restart clears plugin hot-reload state only after monitored plugin files stop changing. The guard also attempts that restart on failed update paths.

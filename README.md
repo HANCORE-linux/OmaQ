@@ -37,15 +37,26 @@ The repository intentionally omits the generated `helper/omaq` binary, and direc
 
 ## Update
 
-Update the source, restart the shell, then request group-safe helper activation:
+Update the source and helper, then attempt one complete shell restart as the final step:
 
 ```bash
-omarchy plugin update hancore.omaq --yes &&
-omarchy restart shell &&
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
+(
+  finish_update() {
+    update_status=$?
+    restart_status=0
+    trap - EXIT
+    omarchy restart shell || restart_status=$?
+    ((update_status == 0)) || exit "$update_status"
+    exit "$restart_status"
+  }
+  trap finish_update EXIT
+
+  omarchy plugin update hancore.omaq --yes &&
+    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
+)
 ```
 
-The immediate shell restart clears plugin hot-reload state before helper activation; the update documentation covers status, pending groups, and rollback.
+The guarded final restart is attempted after every source, build, and activation write, including failed update paths. If that restart reports an error, rerun `omarchy restart shell` successfully before checking status or changing plugin files. The update documentation covers status, pending groups, and rollback.
 
 ## Uninstall
 
