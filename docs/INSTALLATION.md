@@ -28,17 +28,39 @@ omarchy plugin validate ~/.config/omarchy/plugins/hancore.omaq
 
 ## Update OmaQ
 
-Update the source first. Restart the complete Omarchy shell immediately, then build and activate the helper:
+Update the source and helper first. Use the guarded command so one complete Omarchy shell restart is attempted after every source, build, backup, and activation write:
 
 ```bash
-omarchy plugin update hancore.omaq --yes &&
-omarchy restart shell &&
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
+(
+  finish_update() {
+    update_status=$?
+    restart_status=0
+    trap - EXIT
+    omarchy restart shell || restart_status=$?
+    ((update_status == 0)) || exit "$update_status"
+    exit "$restart_status"
+  }
+  trap finish_update EXIT
+
+  omarchy plugin update hancore.omaq --yes &&
+    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
+)
 ```
 
-The shell restart clears hot-reload state for every shell plugin before helper activation. This prevents a burst of source-file changes from leaving a fail-closed monitor, such as the network status monitor, locked until a later restart.
+The helper updater runs only when the source update succeeds. The exit guard still attempts the final shell restart when either command fails, preserving the source or helper failure status. If both commands succeed, it returns the restart status.
+
+A successful final restart clears hot-reload state for every shell plugin after the update can no longer change monitored plugin files. If the restart reports an error, rerun `omarchy restart shell` successfully before the final checks. Do not run another plugin update, helper build, or rollback between that successful restart and the checks.
 
 The helper updater requires an already running Protocol-9-or-newer helper. First installation uses the separate `make helper` command instead.
+
+After the guarded command finishes, check NetworkManager and the running-versus-available helper state:
+
+```bash
+nmcli -t -f STATE general
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
+```
+
+Then confirm that OmaQ no longer shows a reconnecting state.
 
 ### Check update status
 
@@ -65,8 +87,8 @@ An activation command can report one of these successful outcomes:
 
 A pending result has one of these details:
 
-- `active_groups`: leave every private group, then retry activation
-- `group_state_uncertain`: resolve the reported group cleanup or identity state, then retry activation
+- `active_groups`: leave every private group, then rerun the complete guarded update command
+- `group_state_uncertain`: resolve the reported group cleanup or identity state, then rerun the complete guarded update command
 - `activation_unsupported`: leave the old helper running and use a later full user-session restart to adopt the available binary
 
 Pending results return success because the running helper remains unchanged. OmaQ never signals the helper or uses a legacy unsafe stop.
@@ -75,15 +97,28 @@ Activation can fail with a visible `degraded` error when restart verification fa
 
 ### Recover from a degraded activation
 
-Restore the retained helper image through the same locked boundary, restart the shell, and check status:
+Restore the retained helper image through the same locked boundary, attempt a final shell restart, and then check status:
 
 ```bash
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --rollback &&
-omarchy restart shell &&
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
+(
+  finish_rollback() {
+    rollback_status=$?
+    restart_status=0
+    status_status=0
+    trap - EXIT
+    omarchy restart shell || restart_status=$?
+    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status || status_status=$?
+    ((rollback_status == 0)) || exit "$rollback_status"
+    ((restart_status == 0)) || exit "$restart_status"
+    exit "$status_status"
+  }
+  trap finish_rollback EXIT
+
+  ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --rollback
+)
 ```
 
-Do not run another build or plugin update concurrently. The updater serializes its own operations but cannot lock unrelated write commands.
+Do not run another build or plugin update concurrently. The updater serializes its own operations but cannot lock unrelated write commands. The rollback guard attempts the restart and status check even when rollback fails after changing a monitored path. It preserves rollback errors first, restart errors second, and status errors last. If the restart fails, rerun `omarchy restart shell` and the status command before treating recovery as complete.
 
 <details>
 <summary>How group-safe helper activation works</summary>
