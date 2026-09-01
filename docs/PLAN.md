@@ -106,7 +106,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Payload | **Double Ratchet** (Signal spec) on **direct** conversations. Tox is the pipe. Not SimpleX. Not a second handshake we write ourselves. Library: Arch extra `libsignal-protocol-c` (existing). Groups stay Tox-native until a later go. |
 | Ratchet bootstrap | Direct invite requires `rk=` (32-byte identity key, 64 hex). The redeeming peer returns its own ratchet identity in the token-authenticated friend request; both expected pins and Signal identity keys persist before a bundle is accepted. Safety code still binds the Tox ids. |
 | Out of 50 MB | No Tor child. No second Tox instance per contact. No SimpleX stack. |
-| Bootstrap | Public Tox nodes, compiled in. |
+| Bootstrap | Public Tox nodes, compiled in. Startup and each bounded periodic retry register both bootstrap nodes and TCP relays; TCP-only recovery never relies on a helper restart. |
 | Live | Never write `~/.config/omarchy/plugins/` except one announced install. Verify uses temp dirs only. |
 | Package | AUR in **phase 7**. **AUR account registration is temporarily off** — do not upload, do not create an AUR account, do not start phase 7 until a new **go**. Package files live under `/usr/share/omaq/`; the shell does **not** scan that path. Activation is an explicit user command (see §11). |
 

@@ -131,7 +131,7 @@ static const struct bootstrap_node bootstrap_nodes[] = {
 	  "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
 };
 
-static void bootstrap_tox(struct omaq_tox *t, int add_relays)
+static void bootstrap_tox(struct omaq_tox *t)
 {
 	if (!t || !t->tox)
 		return;
@@ -142,8 +142,7 @@ static void bootstrap_tox(struct omaq_tox *t, int add_relays)
 			continue;
 		(void)tox_bootstrap(t->tox, bootstrap_nodes[i].host,
 				    bootstrap_nodes[i].udp_port, key, &berr);
-		if (add_relays)
-			(void)tox_add_tcp_relay(t->tox, bootstrap_nodes[i].host,
+		(void)tox_add_tcp_relay(t->tox, bootstrap_nodes[i].host,
 					bootstrap_nodes[i].tcp_port, key, &berr);
 	}
 }
@@ -869,7 +868,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	}
 	if (!loaded_savedata && tox_self_get_name_size(t->tox) == 0)
 		(void)omaq_tox_set_name(t, "omaq");
-	bootstrap_tox(t, 1);
+	bootstrap_tox(t);
 	t->next_bootstrap = time(NULL) + 10;
 	if (!loaded_savedata && omaq_tox_save(t) < 0) {
 		omaq_tox_discard(t);
@@ -980,9 +979,9 @@ void omaq_tox_iterate(struct omaq_tox *t)
 	now = time(NULL);
 	if (t->next_bootstrap != 0 && now >= t->next_bootstrap) {
 		/* toxcore recommends waiting after a disconnect before bootstrapping.
-		 * Retry more often while offline, and periodically while online so a
-		 * live interface/NAT change is recovered without restarting OmaQ. */
-		bootstrap_tox(t, 0);
+		 * Retry bootstrap and TCP relay registration together so TCP-only
+		 * recovery never depends on restarting OmaQ. */
+		bootstrap_tox(t);
 		t->next_bootstrap = now + (t->online ? 60 : 10);
 	}
 }

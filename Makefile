@@ -61,6 +61,7 @@ BIN_FILE_TRANSFER_TEST := tests/file_transfer_test
 BIN_AV_STATE_TEST := tests/av_state_test
 BIN_RATCHET_PREKEY_TEST := tests/ratchet_prekey_test
 BIN_IDENTITY_GUARD_TEST := tests/identity_guard_test
+BIN_TOX_RELAY_RETRY_TEST := tests/tox_relay_retry_test
 BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
 BIN_GROUP_ADMIN_TEST_HELPER := tests/omaq_group_admin_test_helper
 
@@ -69,6 +70,7 @@ ifeq ($(SIG_OK),yes)
 endif
 ifeq ($(TOX_OK),yes)
   IDENTITY_GUARD_TEST_TARGET := $(BIN_IDENTITY_GUARD_TEST)
+  TOX_RELAY_RETRY_TEST_TARGET := $(BIN_TOX_RELAY_RETRY_TEST)
 endif
 ifeq ($(IMAGE_OK),yes)
   CLIPBOARD_E2E_COMMAND := sh tests/clipboard-image-e2e.sh ./$(BIN_IPC_TEST_HELPER)
@@ -116,6 +118,13 @@ $(BIN_IDENTITY_GUARD_TEST): tests/identity_guard_test.c helper/identity_guard.c 
 		tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c \
 		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
 
+$(BIN_TOX_RELAY_RETRY_TEST): tests/tox_relay_retry_test.c helper/tox_adapt.c helper/identity_guard.c helper/file.c
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX \
+		$(shell $(PKG_CONFIG) --cflags $(TOX_PC)) -o $@ \
+		tests/tox_relay_retry_test.c helper/identity_guard.c helper/file.c \
+		-Wl,--wrap=tox_bootstrap -Wl,--wrap=tox_add_tcp_relay \
+		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
+
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
 		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
@@ -148,13 +157,15 @@ check-images:
 $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
-test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
+test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
 	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_IDENTITY_GUARD_TEST); fi
+	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_TOX_RELAY_RETRY_TEST); fi
 	@if [ "$(SIG_OK)" = "yes" ]; then ./$(BIN_RATCHET_PREKEY_TEST); fi
+	python3 tests/tcp_relay_retry_source_test.py
 	sh tests/float-script.sh
 	sh tests/nonblocking-invite.sh
 	sh tests/input-mask.sh
@@ -313,4 +324,5 @@ verify-8: test arch helper
 clean:
 	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
 		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IDENTITY_GUARD_TEST) \
-		$(BIN_IPC_TEST_HELPER) $(BIN_GROUP_ADMIN_TEST_HELPER) $(BIN_HELP)
+		$(BIN_TOX_RELAY_RETRY_TEST) $(BIN_IPC_TEST_HELPER) \
+		$(BIN_GROUP_ADMIN_TEST_HELPER) $(BIN_HELP)
