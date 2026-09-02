@@ -1,8 +1,6 @@
-# OmaQ
-
-<p align="center">
-  <img src="assets/OmaQ_Final.png" alt="" width="420">
-</p>
+<h1 align="center">
+  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
+</h1>
 
 <p align="center">
   OmaQ is invite-only chat for the Omarchy bar: no account, phone number, or public user search.<br>

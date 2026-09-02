@@ -3131,6 +3131,7 @@ BarWidget {
               materialIcon: "shield"
               label: "Safety code"
               selected: root.moreOpen && root.moreSection === "chat"
+              fillSelected: false
               onClicked: root.openRailAdvanced("chat")
             }
             RailIcon {
@@ -3180,6 +3181,7 @@ BarWidget {
                 materialIcon: "badge"
                 label: "Identity"
                 selected: root.moreOpen && root.moreSection === "identity"
+                fillSelected: false
                 onClicked: root.openRailAdvanced("identity")
               }
             }

@@ -57,6 +57,15 @@ for forbidden in ('placeholderText: "Search this chat"', 'text: "Search"',
         raise SystemExit(f"panel-request-focus: panel message search remains: {forbidden}")
 if 'label: "Safety code"' not in panel or 'text: "Show safety code"' not in panel:
     raise SystemExit("panel-request-focus: safety-code path was removed with message search")
+if '"FILL": railIcon.selected && railIcon.fillSelected ? 1 : 0' not in panel:
+    raise SystemExit("panel-request-focus: rail icon fill binding changed")
+for icon, label in (("shield", "Safety code"), ("badge", "Identity")):
+    start = panel.index(f'materialIcon: "{icon}"')
+    end = panel.index("onClicked:", start)
+    if "fillSelected: false" not in panel[start:end]:
+        raise SystemExit(
+            f"panel-request-focus: {label} rail icon changes glyph fill when selected"
+        )
 if 'text: "YOU · " + root.connectionLabel().toUpperCase()' not in self_block:
     raise SystemExit("panel-request-focus: normal self status is missing")
 for forbidden in ("omaq.selfAvatar", "omaq.selfNickname", '"YOU · "'):
