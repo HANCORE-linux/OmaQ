@@ -1752,12 +1752,28 @@ BarWidget {
 
   function parseSystemColors(raw) {
     var found = ["", "", "", "", "", "", "", ""]
+    var semanticIndex = {
+      background: 0,
+      red: 1,
+      green: 2,
+      yellow: 3,
+      blue: 4,
+      magenta: 5,
+      cyan: 6,
+      foreground: 7
+    }
     var lines = String(raw || "").split("\n")
     var i
     for (i = 0; i < lines.length; i++) {
-      var match = lines[i].match(/^\s*color([0-7])\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
-      if (match)
-        found[Number(match[1])] = match[2]
+      var semanticMatch = lines[i].match(
+        /^\s*(background|red|green|yellow|blue|magenta|cyan|foreground)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+      if (semanticMatch)
+        found[semanticIndex[semanticMatch[1]]] = semanticMatch[2]
+    }
+    for (i = 0; i < lines.length; i++) {
+      var ansiMatch = lines[i].match(/^\s*color([0-7])\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+      if (ansiMatch)
+        found[Number(ansiMatch[1])] = ansiMatch[2]
     }
     var n
     for (n = 0; n < 8; n++) {
