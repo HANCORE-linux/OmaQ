@@ -35,7 +35,7 @@ The supported updater keeps every source fetch and helper build outside the moni
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
-The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
+The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. Private GitHub access also requires an authenticated GitHub CLI session from `gh auth login`; the updater passes its token only as a GitHub-scoped in-memory Git header. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
 
 ### Bootstrap an older installation
 
@@ -57,13 +57,58 @@ Installations that predate `update-omaq.sh` can run the controller from an exter
   bootstrap=$(/usr/bin/mktemp -d \
     "$state_home/omaq-update-bootstrap.XXXXXX")
   trap '/usr/bin/rm -rf -- "$bootstrap"' EXIT
-  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    GIT_TERMINAL_PROMPT=0 \
-    /usr/bin/git -c core.hooksPath=/dev/null -c http.sslVerify=true \
-      -c http.followRedirects=initial -c protocol.file.allow=never \
-      clone --branch main --single-branch -- \
-      https://github.com/HANCORE-linux/OmaQ.git "$bootstrap"
+  /usr/bin/gh auth status --hostname github.com
+  token=$(/usr/bin/gh auth token --hostname github.com)
+  authorization=$(builtin printf 'x-access-token:%s' "$token" | /usr/bin/base64 -w0)
+  export OMAQ_BOOTSTRAP_AUTH="Authorization: Basic $authorization"
+  unset token authorization
+  /usr/bin/python3 -I - "$bootstrap" <<'PY'
+import os, re, subprocess, sys
+
+root = sys.argv[1]
+auth = os.environ.pop("OMAQ_BOOTSTRAP_AUTH")
+env = {
+    "HOME": os.path.expanduser("~"),
+    "PATH": "/usr/bin:/bin",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+    "GIT_CONFIG_VALUE_0": auth,
+}
+git = [
+    "/usr/bin/git", "-c", "core.hooksPath=/dev/null",
+    "-c", "http.sslVerify=true", "-c", "http.followRedirects=false",
+    "-c", "protocol.file.allow=never",
+]
+origin = "https://github.com/HANCORE-linux/OmaQ.git"
+remote = subprocess.check_output(
+    [*git, "ls-remote", "--exit-code", origin, "refs/heads/main"],
+    env=env, text=True,
+).split()
+if len(remote) != 2 or not re.fullmatch(r"[0-9a-f]{40}", remote[0]):
+    raise SystemExit("Canonical origin returned an invalid main ref")
+subprocess.run(
+    [*git, "clone", "--branch", "main", "--single-branch", "--", origin, root],
+    check=True, env=env,
+)
+head = subprocess.check_output(
+    [*git, "-C", root, "rev-parse", "HEAD"], env=env, text=True,
+).strip()
+url = subprocess.check_output(
+    [*git, "-C", root, "remote", "get-url", "origin"], env=env, text=True,
+).strip()
+branch = subprocess.check_output(
+    [*git, "-C", root, "symbolic-ref", "--short", "HEAD"], env=env, text=True,
+).strip()
+status = subprocess.check_output(
+    [*git, "-C", root, "status", "--porcelain=v1", "-z"], env=env,
+)
+if head != remote[0] or url != origin or branch != "main" or status:
+    raise SystemExit("Bootstrap checkout identity mismatch")
+PY
+  unset OMAQ_BOOTSTRAP_AUTH
   /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
     /usr/bin/omarchy plugin validate "$bootstrap"
   "$bootstrap/scripts/update-omaq.sh" --yes

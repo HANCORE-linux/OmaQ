@@ -853,6 +853,109 @@ class SourceUpdateTests(unittest.TestCase):
                 activation, "a" * 64, {"b" * 64}, 14
             )
 
+    def test_private_github_auth_uses_a_scoped_internal_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            github_cli = Path(directory) / "gh"
+            token = "github_pat_" + "a" * 32
+            github_cli.write_text(
+                f"#!/bin/sh\nprintf '%s\\n' {token!r}\n", encoding="utf-8"
+            )
+            github_cli.chmod(0o755)
+            original_path = MODULE.trusted_github_cli_path
+            original_origin = MODULE.CANONICAL_ORIGIN
+            MODULE.trusted_github_cli_path = lambda: str(github_cli)
+            MODULE.CANONICAL_ORIGIN = "https://github.com/HANCORE-linux/OmaQ.git"
+            try:
+                environment = MODULE.git_network_environment()
+            finally:
+                MODULE.trusted_github_cli_path = original_path
+                MODULE.CANONICAL_ORIGIN = original_origin
+            self.assertEqual(environment["GIT_CONFIG_COUNT"], "1")
+            self.assertEqual(
+                environment["GIT_CONFIG_KEY_0"],
+                "http.https://github.com/.extraHeader",
+            )
+            encoded = environment["GIT_CONFIG_VALUE_0"].split()[-1]
+            self.assertEqual(
+                MODULE.base64.b64decode(encoded).decode("ascii"),
+                f"x-access-token:{token}",
+            )
+            self.assertNotIn(token, environment["GIT_CONFIG_VALUE_0"])
+
+            source = Path(directory) / "source"
+            checkout = Path(directory) / "checkout"
+            source.mkdir()
+            subprocess.run(
+                ["/usr/bin/git", "-C", str(source), "init", "-b", "main"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            (source / "tracked").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(
+                ["/usr/bin/git", "-C", str(source), "add", "tracked"], check=True
+            )
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(source),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            clone_args = [
+                "/usr/bin/git",
+                "clone",
+                "--",
+                str(source),
+                str(checkout),
+            ]
+            self.assertNotIn(token, " ".join(clone_args))
+            subprocess.run(
+                clone_args,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            config = (checkout / ".git/config").read_text(encoding="utf-8")
+            self.assertNotIn(token, config)
+            self.assertNotIn("extraHeader", config)
+
+    def test_github_auth_fails_closed_for_missing_invalid_or_unsafe_cli(self):
+        original_path = MODULE.trusted_github_cli_path
+        try:
+            MODULE.trusted_github_cli_path = lambda: None
+            self.assertIsNone(MODULE.github_auth_header())
+            with tempfile.TemporaryDirectory() as directory:
+                github_cli = Path(directory) / "gh"
+                github_cli.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+                github_cli.chmod(0o755)
+                MODULE.trusted_github_cli_path = lambda: str(github_cli)
+                self.assertIsNone(MODULE.github_auth_header())
+                github_cli.write_text(
+                    "#!/bin/sh\nprintf 'too-short\\n'\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(MODULE.UpdateError, "invalid authentication"):
+                    MODULE.github_auth_header()
+                unsafe_parent = Path(directory) / "unsafe"
+                unsafe_parent.mkdir(mode=0o777)
+                unsafe_parent.chmod(0o777)
+                unsafe_cli = unsafe_parent / "gh"
+                unsafe_cli.write_bytes(b"not executable code")
+                unsafe_cli.chmod(0o755)
+                with self.assertRaisesRegex(MODULE.UpdateError, "unsafe executable parent"):
+                    MODULE.validate_github_cli_path(unsafe_cli)
+        finally:
+            MODULE.trusted_github_cli_path = original_path
+
     def test_git_checkout_requires_main_origin_and_clean_complete_git_dir(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
