@@ -34,6 +34,8 @@ OmaQ keeps its helper socket and runtime markers private to your user account. T
 
 A same-user process that can read the helper instance marker and connect to the private socket can submit helper operations. The compatibility operation `helper.shutdown` can stop the helper without checking private group state, interrupting active messaging, transfers, invitations, or calls until Service starts it again. OmaQ's updater and uninstaller do not use that operation. They request only `helper.shutdown_if_no_groups`, which fails closed when registered or native groups exist or group state is uncertain.
 
+Source updates build an externally staged Git checkout before stopping the shell supervisor and watcher. The updater changes the live path with one atomic no-copy exchange. Consumer failures before helper activation roll the tree back under the same shell-off boundary. A final verification failure after helper activation leaves the already accepted new tree in place and returns an error because the helper process may have changed. This is a cooperative same-user boundary: do not start or restart the Omarchy shell from another process during an update.
+
 ## Know the passphrase boundary
 
 A passphrase encrypts the Tox savedata in `tox.save`. It does not encrypt Ratchet state, avatars, receipts, preferences, or chat history.

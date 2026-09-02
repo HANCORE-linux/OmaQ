@@ -5,10 +5,9 @@
 </p>
 
 <p align="center">
-  OmaQ is invite-only chat for the Omarchy bar: no account, phone number, or public user search.
+  OmaQ is invite-only chat for the Omarchy bar: no account, phone number, or public user search.<br>
+  <sub>Create your identity locally, then connect with a one-time private invitation link or QR code.</sub>
 </p>
-
-OmaQ creates your identity locally. Connect with another person by sharing a one-time private invitation as a link or QR code.
 
 ## Security
 
@@ -40,28 +39,15 @@ The repository intentionally omits the generated `helper/omaq` binary. Building 
 
 ## Update
 
-Update the source and helper, then attempt one complete shell restart as the final step:
+Run the shell-off updater from the installed Git checkout:
 
 ```bash
-(
-  finish_update() {
-    update_status=$?
-    restart_status=0
-    trap - EXIT
-    omarchy restart shell || restart_status=$?
-    ((update_status == 0)) || exit "$update_status"
-    exit "$restart_status"
-  }
-  trap finish_update EXIT
-
-  omarchy plugin update hancore.omaq --yes &&
-    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
-)
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
-> **Known host-reload risk:** Updating or building inside the monitored plugin tree can trigger a visible Quickshell loader crash and automatic shell restart. The detached helper, private groups, and persisted data remain available, but the interface briefly disappears. The final restart guard does not prevent this trigger; a trigger-free workflow is pending.
+The updater returns without staging or stopping the shell when the installed commit already matches `origin/main`. Otherwise, it clones and builds outside the monitored plugin directory, proves the atomic exchange is available, stops the shell supervisor, verifies that Quickshell and its watcher are gone, and exchanges the complete Git checkout. If private groups keep the old helper running, it reports `update-pending: old helper, new tree` without weakening the group-safe shutdown rule.
 
-The guarded final restart is attempted after every source, build, and activation write, including failed update paths. If that restart reports an error, rerun `omarchy restart shell` successfully before checking status or changing plugin files. The update documentation covers status, pending groups, and rollback.
+Use the [installation lifecycle](docs/INSTALLATION.md) to bootstrap installations that predate this command, pin an expected commit, inspect the retained source backup, or recover a helper activation.
 
 ## Uninstall
 

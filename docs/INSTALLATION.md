@@ -1,6 +1,6 @@
 # Install, update, or remove OmaQ
 
-This guide covers source installation, the current update order and its known host-reload risk, helper status checks, rollback, removal, retained data, and optional package cleanup.
+This guide covers source installation, shell-off updates, helper status, rollback, removal, retained data, and optional package cleanup.
 
 [![OmaQ panel after installation](images/guide/01-panel-home.png)](images/guide/01-panel-home.png)
 
@@ -29,51 +29,86 @@ omarchy plugin validate ~/.config/omarchy/plugins/hancore.omaq
 
 ## Update OmaQ
 
-Update the source and helper first. The guarded command attempts one complete Omarchy shell restart after every source, build, backup, and activation write:
+The supported updater keeps every source fetch and helper build outside the monitored plugin directory. Run it from an installation that already contains the command:
+
+```bash
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
+```
+
+The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
+
+### Bootstrap an older installation
+
+Installations that predate `update-omaq.sh` can run the controller from an external canonical clone. This bootstrap does not modify the live plugin before the controller stops the shell:
 
 ```bash
 (
-  finish_update() {
-    update_status=$?
-    restart_status=0
-    trap - EXIT
-    omarchy restart shell || restart_status=$?
-    ((update_status == 0)) || exit "$update_status"
-    exit "$restart_status"
-  }
-  trap finish_update EXIT
-
-  omarchy plugin update hancore.omaq --yes &&
-    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --activate
+  set -euo pipefail; umask 077
+  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  case "$state_home" in
+    /*) ;;
+    *) echo "State staging path must be absolute" >&2; exit 1 ;;
+  esac
+  plugins=$(/usr/bin/realpath -m -- "$HOME/.config/omarchy/plugins")
+  state_home=$(/usr/bin/realpath -m -- "$state_home")
+  case "$state_home/" in
+    "$plugins/"*) echo "State staging is inside the plugin tree" >&2; exit 1 ;;
+  esac
+  bootstrap=$(/usr/bin/mktemp -d \
+    "$state_home/omaq-update-bootstrap.XXXXXX")
+  trap '/usr/bin/rm -rf -- "$bootstrap"' EXIT
+  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    GIT_TERMINAL_PROMPT=0 \
+    /usr/bin/git -c core.hooksPath=/dev/null -c http.sslVerify=true \
+      -c http.followRedirects=initial -c protocol.file.allow=never \
+      clone --branch main --single-branch -- \
+      https://github.com/HANCORE-linux/OmaQ.git "$bootstrap"
+  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    /usr/bin/omarchy plugin validate "$bootstrap"
+  "$bootstrap/scripts/update-omaq.sh" --yes
 )
 ```
 
-> **Known host-reload risk:** This command changes files in the shell-monitored plugin tree. On the current host stack, those writes have triggered a visible Quickshell loader crash and automatic shell restart. The detached helper, private groups, and persisted data remain available, but the OmaQ interface briefly disappears. The final restart guard does not prevent this hot-reload trigger. A trigger-free update workflow is pending.
+To bind an announced release or reviewed revision, add `--expect-commit` followed by its complete lowercase 40-character commit hash. The updater aborts if canonical `origin/main` differs.
 
-The helper updater runs only when the source update succeeds. The exit guard still attempts the final shell restart when either command fails, preserving the source or helper failure status. If both commands succeed, it returns the restart status.
+### Understand the shell-off sequence
 
-When the command reaches its final restart, that restart clears remaining hot-reload state after the update has stopped changing monitored plugin files. It does not prevent a loader failure during the earlier writes. If the restart reports an error, rerun `omarchy restart shell` successfully before the final checks. Do not run another plugin update, helper build, or rollback between that successful restart and the checks.
+The updater performs these steps in order:
 
-The helper updater requires an already running Protocol-9-or-newer helper. First installation uses the separate `make helper` command instead.
+1. Lock source updates outside the replaceable plugin tree.
+2. Copy the controller's hardened `helper-runtime.py` into the private runtime lock directory so a tree exchange cannot replace it.
+3. Bind the clean live checkout, canonical `origin`, running helper identity, protocol marker, and hashes.
+4. Resolve canonical `origin/main`. If it matches the live commit, skip staging and the shell stop; retry only a pending group-safe helper activation.
+5. Clone the complete `main` checkout, including `.git`, below `~/.local/state/omaq-source-updates/`.
+6. Validate the staged plugin, build its helper, validate it again, and bind the commit and helper SHA-256.
+7. Verify matching filesystem and mount identities, then perform a disposable external `mv -T --exchange --no-copy` capability probe.
+8. Refuse a locked session, stop Quickshell, then terminate the exact `omarchy-launch-shell` supervisor if it remains in backoff.
+9. Verify that the supervisor, Quickshell, plugin watcher, and shell IPC are all absent.
+10. Back up the running `/proc/<pid>/exe` image through the bound runtime tool.
+11. Repeat the stopped-state check and exchange the staged and live directories with `mv -T --exchange --no-copy`.
+12. Validate the live plugin and create `helper/omaq.prev` from the still-running old image.
+13. Start the shell and bind its supervisor PID, Quickshell PID, start times, parent relationship, and session path through every consumer check.
+14. Require `listPlugins`, the `hancore.omaq` IPC target, running and available helper hashes, protocol compatibility, and the correlated shell journal to pass.
+15. Activate the new helper through `helper-runtime.py --expect-sha256`.
+16. Recheck the bound shell plus the running helper hash and protocol; an inactive or incompatible replacement fails the update.
 
-After the guarded command finishes, check NetworkManager and the running-versus-available helper state:
+The updater checks filesystem device, mount identity, and exchange capability before stopping the shell, then repeats the boundary checks during activation. The exchange requires one filesystem and never falls back to a copy. Clone and build monitoring enforce 50,000 entries, 512 MiB per tree, 2 GiB across retained update trees, and at least 1 GiB free before acquisition. A limit or timeout terminates the complete staging process group. OmaQ keeps at most eight staged or previous trees before requiring manual inspection and cleanup.
+
+The old complete Git checkout moves to the external path printed as `previous tree`. OmaQ retains that directory for inspection; it does not delete source backups automatically.
+
+The final process check detects a cooperative restart before the exchange and aborts without renaming either tree. Another process running as the same user remains inside OmaQ's documented trust boundary. Do not run `omarchy restart shell` concurrently with an update.
+
+### Check update status
+
+After the command finishes, check NetworkManager and the helper state:
 
 ```bash
 nmcli -t -f STATE general
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
 ```
 
-Then confirm that OmaQ no longer shows a reconnecting state.
-
-### Check update status
-
-Check the running and available helper without building or stopping anything:
-
-```bash
-~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status
-```
-
-The status command reports one of these states:
+The helper status reports one of these states:
 
 - **Current**: the running and available helper hashes match
 - **Update pending**: the running and available helper hashes differ
@@ -85,53 +120,36 @@ Use the activation result to choose the next step:
 
 | Result | Meaning | Next step |
 |---|---|---|
-| `activated` | Group-free restart and replacement verification completed | Continue with the final checks |
-| `current` | Running and available helper already match | Continue with the final checks |
-| `inactive` | The helper exited before activation | Start Service to use the available binary |
-| `update-pending`, detail `active_groups` | The running helper remains active because private groups exist | Leave every private group, then rerun the guarded update |
-| `update-pending`, detail `group_state_uncertain` | Group cleanup or identity state cannot be proven safe | Resolve the reported state, then rerun the guarded update |
-| `update-pending`, detail `activation_unsupported` | The running helper does not support safe activation | Use a later full user-session restart |
-| `degraded` | Replacement verification failed | Use the rollback procedure below |
+| `activated` | The group-free replacement passed hash and process verification | Continue with the final checks |
+| `current` | The running and available helper already match | Continue with the final checks |
+| `update-pending: old helper, new tree` with `active_groups` | Private groups keep the old helper running under the new compatible QML tree | Leave every private group, then rerun the updater |
+| `update-pending: old helper, new tree` with `group_state_uncertain` | The helper cannot prove group-free state | Resolve the reported state, then rerun the updater |
+| `update-pending: old helper, new tree` with `activation_unsupported` | The helper cannot perform correlated safe shutdown | Use a later full user-session restart |
+| `degraded` | Replacement verification failed after the new tree passed consumer checks | Run the helper rollback below |
 
-Pending outcomes return success because the running helper remains unchanged. OmaQ never signals the helper or uses a legacy unsafe stop. A degraded result retains `.prev` for rollback; a later status check may report `inactive`.
+Pending outcomes return success because the running helper remains unchanged. Protocol capability gating permits this mixed state only when the staged QML requirement does not exceed the running helper protocol.
 
-### Recover from a degraded activation
+### Recover from an update failure
 
-Restore the retained helper image through the same locked boundary, attempt a final shell restart, and then check status:
+A staged build or pre-exchange check leaves the live tree unchanged. A post-exchange schema, shell, plugin, IPC, or helper-consumer failure stops the shell and exchanges the retained old tree back before helper activation. The command returns an error and states whether automatic restoration passed.
+
+The final activation check can fail after the new tree passed its pre-activation consumer checks. The updater leaves that tree in place because the helper process may already have changed, returns a failure, and never treats an inactive helper as success. Check helper status first. Restore `.prev` if the hashes differ or the error reports an inactive, substituted, protocol-incompatible, or degraded helper:
 
 ```bash
-(
-  finish_rollback() {
-    rollback_status=$?
-    restart_status=0
-    status_status=0
-    trap - EXIT
-    omarchy restart shell || restart_status=$?
-    ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --status || status_status=$?
-    ((rollback_status == 0)) || exit "$rollback_status"
-    ((restart_status == 0)) || exit "$restart_status"
-    exit "$status_status"
-  }
-  trap finish_rollback EXIT
-
-  ~/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh --rollback
-)
+~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh \
+  --rollback-helper --yes
 ```
 
-Follow these rollback boundaries:
-
-- Do not run another build or plugin update concurrently; the updater cannot lock unrelated write commands.
-- The guard attempts the restart and status check even when rollback fails after changing a monitored path.
-- Error priority is rollback, restart, then status. If restart fails, rerun `omarchy restart shell` and the status command before treating recovery as complete.
+The rollback uses `helper-runtime.py restore`, starts the shell, repeats the consumer checks, and activates the restored hash through the same group-safe operation. It never writes `helper/omaq` while the plugin watcher is running.
 
 <details>
 <summary>How group-safe helper activation works</summary>
 
-Before the normal `make helper` build, the updater copies the verified running `/proc/<pid>/exe` image to `helper/omaq.prev`. A build or synchronous validation failure restores the available path without stopping the running process.
+Before the directory exchange, the runtime doctor copies the verified running `/proc/<pid>/exe` image to the old tree's `helper/omaq.prev`. After the exchange, it copies that same bound image into the new tree's `.prev`. The available helper remains the externally built staging image.
 
-Activation sends only `helper.shutdown_if_no_groups`. The helper confirms durable group-free state before stopping. Service starts the available binary, and the updater verifies its hash, executable identity, protocol marker, and correlated probe.
+Activation sends only `helper.shutdown_if_no_groups`. The helper confirms durable group-free state before stopping. Service starts the available binary, and the updater verifies its hash, executable identity, protocol marker, and correlated probe. A pre-existing `.prev` does not participate in activation; only `restore` reads it.
 
-A group-free restart creates a short offline window. In-flight messages become `delivery_unknown`, while active transfers, calls, and invitations fail visibly. No signal fallback, updater-owned download, staging build, binary hot-swap, or crash journal is used.
+A group-free restart creates a short offline window. In-flight messages become `delivery_unknown`, while active transfers, calls, and invitations fail visibly. The workflow has no signal fallback, binary hot-swap, or crash journal.
 
 </details>
 
