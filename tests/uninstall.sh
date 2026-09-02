@@ -47,6 +47,21 @@ run_case() {
   backup="$case_root/backup"
   umask 077
   mkdir -p "$plugin/scripts" "$plugin/helper" "$home" "$state" "$runtime" "$backup"
+  rule_dir="$runtime/omaq-hypr"
+  rule_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  mkdir -m 700 "$rule_dir"
+  printf 'generation\n' >"$rule_dir/rules-v2.$rule_key"
+  printf 'legacy generation\n' >"$rule_dir/rules.$rule_key"
+  : >"$rule_dir/rules-v2.$rule_key.lock"
+  : >"$rule_dir/rules.$rule_key.lock"
+  : >"$rule_dir/rules-v2.$rule_key.tmp.A1b2C3"
+  : >"$rule_dir/rules.$rule_key.tmp.D4e5F6"
+  : >"$rule_dir/rules.$rule_key.watch.lock"
+  chmod 600 "$rule_dir/rules-v2.$rule_key" "$rule_dir/rules.$rule_key" \
+    "$rule_dir/rules-v2.$rule_key.tmp.A1b2C3" \
+    "$rule_dir/rules.$rule_key.tmp.D4e5F6"
+  chmod 644 "$rule_dir/rules-v2.$rule_key.lock" \
+    "$rule_dir/rules.$rule_key.lock" "$rule_dir/rules.$rule_key.watch.lock"
   cp "$root/scripts/uninstall-omaq.sh" "$plugin/scripts/uninstall-omaq.sh"
   cp "$helper" "$plugin/helper/omaq"
   chmod 755 "$plugin/scripts/uninstall-omaq.sh" "$plugin/helper/omaq"
@@ -84,6 +99,10 @@ run_case() {
     echo "uninstall: uninstall marker was not cleaned" >&2
     exit 1
   }
+  [ ! -e "$rule_dir" ] || {
+    echo "uninstall: allowlisted runtime rules were not cleaned" >&2
+    exit 1
+  }
   grep -q 'private and downloaded data was not deleted' "$case_root/uninstall.out"
 }
 
@@ -110,6 +129,103 @@ PATH="$tmp/bin:$PATH" OMAQ_HOME="$missing_state_root/home" \
   echo "uninstall: missing-state serialization failed" >&2
   exit 1
 }
+
+run_rule_cleanup_refused_case() {
+  mode=$1
+  case_root="$tmp/rule-$mode"
+  plugin="$case_root/plugin"
+  home="$case_root/home"
+  state="$case_root/state"
+  runtime="$case_root/runtime"
+  backup="$case_root/backup"
+  rule_dir="$runtime/omaq-hypr"
+  rule_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  valid_rule="$rule_dir/rules-v2.$rule_key"
+  umask 077
+  mkdir -p "$plugin/scripts" "$plugin/helper" "$home" "$state" "$runtime" "$backup"
+  cp "$root/scripts/uninstall-omaq.sh" "$plugin/scripts/uninstall-omaq.sh"
+  cp "$helper" "$plugin/helper/omaq"
+  chmod 755 "$plugin/scripts/uninstall-omaq.sh" "$plugin/helper/omaq"
+  printf 'retain me\n' >"$case_root/protected"
+
+  case "$mode" in
+  symlink-directory)
+    mkdir -m 700 "$case_root/rule-target"
+    printf 'generation\n' >"$case_root/rule-target/rules-v2.$rule_key"
+    ln -s "$case_root/rule-target" "$rule_dir"
+    ;;
+  *)
+    mkdir -m 700 "$rule_dir"
+    printf 'generation\n' >"$valid_rule"
+    case "$mode" in
+    symlink-entry)
+      rm "$valid_rule"
+      ln -s "$case_root/protected" "$valid_rule"
+      ;;
+    hardlink-entry)
+      printf 'hardlink target\n' >"$case_root/hardlink-target"
+      rm "$valid_rule"
+      ln "$case_root/hardlink-target" "$valid_rule"
+      ;;
+    unexpected-entry)
+      printf 'unexpected\n' >"$rule_dir/notes"
+      ;;
+    unsafe-mode)
+      chmod 755 "$rule_dir"
+      ;;
+    unsafe-root-mode)
+      chmod 755 "$runtime"
+      ;;
+    esac
+    ;;
+  esac
+
+  PATH="$tmp/bin:$PATH" OMAQ_HOME="$home" OMAQ_STATE="$state" \
+    XDG_RUNTIME_DIR="$runtime" OMAQ_TEST_PLUGIN_BACKUP="$backup" \
+    OMAQ_TEST_OMARCHY_CALLED="$case_root/omarchy.called" \
+    "$plugin/scripts/uninstall-omaq.sh" --yes \
+    >"$case_root/uninstall.out" 2>"$case_root/uninstall.err"
+  [ -f "$case_root/omarchy.called" ] || {
+    echo "uninstall: $mode cleanup refusal blocked plugin removal" >&2
+    exit 1
+  }
+  { [ -e "$rule_dir" ] || [ -L "$rule_dir" ]; } || {
+    echo "uninstall: $mode unsafe rule directory was removed" >&2
+    exit 1
+  }
+  grep -q 'retain me' "$case_root/protected" || {
+    echo "uninstall: $mode cleanup touched a symlink target" >&2
+    exit 1
+  }
+  case "$mode" in
+  symlink-directory)
+    [ -f "$case_root/rule-target/rules-v2.$rule_key" ] || {
+      echo "uninstall: symlink-directory cleanup touched the target directory" >&2
+      exit 1
+    }
+    ;;
+  hardlink-entry)
+    [ -f "$valid_rule" ] && [ -f "$case_root/hardlink-target" ] || {
+      echo "uninstall: hardlink-entry cleanup removed a linked file" >&2
+      exit 1
+    }
+    ;;
+  unexpected-entry | unsafe-mode | unsafe-root-mode)
+    [ -f "$valid_rule" ] || {
+      echo "uninstall: $mode cleanup removed an allowlisted file before refusing" >&2
+      exit 1
+    }
+    ;;
+  esac
+  grep -q 'runtime rule cleanup refused' "$case_root/uninstall.err"
+}
+
+run_rule_cleanup_refused_case symlink-directory
+run_rule_cleanup_refused_case symlink-entry
+run_rule_cleanup_refused_case hardlink-entry
+run_rule_cleanup_refused_case unexpected-entry
+run_rule_cleanup_refused_case unsafe-mode
+run_rule_cleanup_refused_case unsafe-root-mode
 
 run_refused_case() {
   mode=$1

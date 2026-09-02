@@ -444,8 +444,79 @@ cleanup_marker
 trap - EXIT
 runtime_root=${XDG_RUNTIME_DIR:-"/tmp/omaq-runtime-${UID}"}
 rule_dir="$runtime_root/omaq-hypr"
-if [[ -d "$rule_dir" && ! -L "$rule_dir" && -O "$rule_dir" ]]; then
-  rm -rf -- "$rule_dir"
+if ! python3 - "$rule_dir" <<'PY'
+import os
+import re
+import stat
+import sys
+
+rule_dir = sys.argv[1]
+if (not os.path.isabs(rule_dir) or os.path.normpath(rule_dir) != rule_dir or
+        os.path.realpath(rule_dir) != rule_dir):
+    raise SystemExit("uninstall-omaq: unsafe runtime rule path")
+parent, leaf = os.path.split(rule_dir)
+allowed = re.compile(
+    r"rules(?:-v2)?\.[0-9a-f]{64}(?:\.lock|\.tmp\.[A-Za-z0-9]{6})?"
+    r"|rules\.[0-9a-f]{64}\.watch\.lock"
+)
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+
+
+def remove_rule_dir():
+    try:
+        parent_fd = os.open(parent, flags)
+    except FileNotFoundError:
+        return
+    try:
+        parent_info = os.fstat(parent_fd)
+        if (parent_info.st_uid != os.geteuid() or
+                stat.S_IMODE(parent_info.st_mode) & 0o077):
+            raise OSError("unsafe runtime root ownership or mode")
+        try:
+            rule_fd = os.open(leaf, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        try:
+            rule_info = os.fstat(rule_fd)
+            if (rule_info.st_uid != os.geteuid() or
+                    stat.S_IMODE(rule_info.st_mode) & 0o077):
+                raise OSError("unsafe rule directory ownership or mode")
+            entries = os.listdir(rule_fd)
+            for name in entries:
+                if not allowed.fullmatch(name):
+                    raise OSError(f"unexpected rule entry: {name}")
+                entry = os.stat(name, dir_fd=rule_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(entry.st_mode) or
+                        entry.st_uid != os.geteuid() or entry.st_nlink != 1):
+                    raise OSError(f"unsafe rule entry: {name}")
+            for name in entries:
+                os.unlink(name, dir_fd=rule_fd)
+            os.fsync(rule_fd)
+            if os.listdir(rule_fd):
+                raise OSError("rule directory changed during cleanup")
+            try:
+                current = os.stat(leaf, dir_fd=parent_fd,
+                                  follow_symlinks=False)
+            except FileNotFoundError as error:
+                raise OSError("rule directory changed during cleanup") from error
+            if ((current.st_dev, current.st_ino) !=
+                    (rule_info.st_dev, rule_info.st_ino)):
+                raise OSError("rule directory changed during cleanup")
+            os.rmdir(leaf, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(rule_fd)
+    finally:
+        os.close(parent_fd)
+
+
+try:
+    remove_rule_dir()
+except OSError as error:
+    raise SystemExit(f"uninstall-omaq: unsafe runtime rule layout: {error}")
+PY
+then
+  echo "uninstall-omaq: runtime rule cleanup refused; inspect $rule_dir manually" >&2
 fi
 
 cat <<'EOF'
