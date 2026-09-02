@@ -1,23 +1,24 @@
 # Install, update, or remove OmaQ
 
-This guide covers the supported source installation, safe update order, helper status checks, rollback, removal, retained data, and optional package cleanup.
+This guide covers source installation, the current update order and its known host-reload risk, helper status checks, rollback, removal, retained data, and optional package cleanup.
 
 [![OmaQ panel after installation](images/guide/01-panel-home.png)](images/guide/01-panel-home.png)
 
 ## Install OmaQ
 
-Arch User Repository (AUR) packaging remains paused. Install the required packages, add the plugin, and build the local helper:
+Arch User Repository (AUR) packaging remains paused. Install the required packages, add the plugin while disabled, build the local helper, and then enable it:
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
   ttf-material-symbols-variable qrencode &&
 omarchy plugin add \
-  https://github.com/HANCORE-linux/OmaQ.git --enable &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper
+  https://github.com/HANCORE-linux/OmaQ.git --yes &&
+make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
+omarchy plugin enable hancore.omaq
 ```
 
-The repository does not contain a generated `helper/omaq` binary. The local build requires Signal support and refuses direct plaintext fallback.
+The repository does not contain a generated `helper/omaq` binary. Keep the plugin disabled during the build so the generated binary is not written into an active monitored plugin tree. The local build requires Signal support and refuses direct plaintext fallback.
 
 Verify the plugin and helper after installation:
 
@@ -28,7 +29,7 @@ omarchy plugin validate ~/.config/omarchy/plugins/hancore.omaq
 
 ## Update OmaQ
 
-Update the source and helper first. Use the guarded command so one complete Omarchy shell restart is attempted after every source, build, backup, and activation write:
+Update the source and helper first. The guarded command attempts one complete Omarchy shell restart after every source, build, backup, and activation write:
 
 ```bash
 (
@@ -47,9 +48,11 @@ Update the source and helper first. Use the guarded command so one complete Omar
 )
 ```
 
+> **Known host-reload risk:** This command changes files in the shell-monitored plugin tree. On the current host stack, those writes have triggered a visible Quickshell loader crash and automatic shell restart. The detached helper, private groups, and persisted data remain available, but the OmaQ interface briefly disappears. The final restart guard does not prevent this hot-reload trigger. A trigger-free update workflow is pending.
+
 The helper updater runs only when the source update succeeds. The exit guard still attempts the final shell restart when either command fails, preserving the source or helper failure status. If both commands succeed, it returns the restart status.
 
-A successful final restart clears hot-reload state for every shell plugin after the update can no longer change monitored plugin files. If the restart reports an error, rerun `omarchy restart shell` successfully before the final checks. Do not run another plugin update, helper build, or rollback between that successful restart and the checks.
+When the command reaches its final restart, that restart clears remaining hot-reload state after the update has stopped changing monitored plugin files. It does not prevent a loader failure during the earlier writes. If the restart reports an error, rerun `omarchy restart shell` successfully before the final checks. Do not run another plugin update, helper build, or rollback between that successful restart and the checks.
 
 The helper updater requires an already running Protocol-9-or-newer helper. First installation uses the separate `make helper` command instead.
 
@@ -78,22 +81,19 @@ The status command reports one of these states:
 
 ### Understand activation outcomes
 
-An activation command can report one of these successful outcomes:
+Use the activation result to choose the next step:
 
-- `activated`: the group-free restart and replacement verification completed
-- `current`: the running helper already matches the available binary
-- `inactive`: the helper exited before activation; the next Service start uses the available binary
-- `update-pending`: the running helper remains unchanged and the output includes a reason
+| Result | Meaning | Next step |
+|---|---|---|
+| `activated` | Group-free restart and replacement verification completed | Continue with the final checks |
+| `current` | Running and available helper already match | Continue with the final checks |
+| `inactive` | The helper exited before activation | Start Service to use the available binary |
+| `update-pending`, detail `active_groups` | The running helper remains active because private groups exist | Leave every private group, then rerun the guarded update |
+| `update-pending`, detail `group_state_uncertain` | Group cleanup or identity state cannot be proven safe | Resolve the reported state, then rerun the guarded update |
+| `update-pending`, detail `activation_unsupported` | The running helper does not support safe activation | Use a later full user-session restart |
+| `degraded` | Replacement verification failed | Use the rollback procedure below |
 
-A pending result has one of these details:
-
-- `active_groups`: leave every private group, then rerun the complete guarded update command
-- `group_state_uncertain`: resolve the reported group cleanup or identity state, then rerun the complete guarded update command
-- `activation_unsupported`: leave the old helper running and use a later full user-session restart to adopt the available binary
-
-Pending results return success because the running helper remains unchanged. OmaQ never signals the helper or uses a legacy unsafe stop.
-
-Activation can fail with a visible `degraded` error when restart verification fails. The retained `.prev` image remains available for rollback, while a later status check may report `inactive`.
+Pending outcomes return success because the running helper remains unchanged. OmaQ never signals the helper or uses a legacy unsafe stop. A degraded result retains `.prev` for rollback; a later status check may report `inactive`.
 
 ### Recover from a degraded activation
 
@@ -118,7 +118,11 @@ Restore the retained helper image through the same locked boundary, attempt a fi
 )
 ```
 
-Do not run another build or plugin update concurrently. The updater serializes its own operations but cannot lock unrelated write commands. The rollback guard attempts the restart and status check even when rollback fails after changing a monitored path. It preserves rollback errors first, restart errors second, and status errors last. If the restart fails, rerun `omarchy restart shell` and the status command before treating recovery as complete.
+Follow these rollback boundaries:
+
+- Do not run another build or plugin update concurrently; the updater cannot lock unrelated write commands.
+- The guard attempts the restart and status check even when rollback fails after changing a monitored path.
+- Error priority is rollback, restart, then status. If restart fails, rerun `omarchy restart shell` and the status command before treating recovery as complete.
 
 <details>
 <summary>How group-safe helper activation works</summary>

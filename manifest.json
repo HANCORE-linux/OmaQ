@@ -4,7 +4,7 @@
   "name": "OmaQ",
   "version": "0.8.1-beta.1",
   "author": "hancore",
-  "license": "MIT AND CC-BY-SA-4.0 AND CC0-1.0 AND LicenseRef-Pixabay-Content",
+  "license": "MIT AND GPL-3.0-only AND CC-BY-SA-4.0 AND CC0-1.0 AND LicenseRef-Pixabay-Content",
   "description": "Invite-only 1:1 and group chat for the Omarchy bar.",
   "kinds": ["bar-widget"],
   "entryPoints": {

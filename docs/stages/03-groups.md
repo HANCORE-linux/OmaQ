@@ -1,6 +1,6 @@
 # Phase 3 — groups
 
-**Status:** done through Protocol 12; Protocol-13 restart/parity remediation is under validation.
+**Status:** done. Later Protocol 12 and 13 work is recorded in [`protocol-11-14.md`](protocol-11-14.md).
 **Date:** 2026-08-28
 
 ## Landed

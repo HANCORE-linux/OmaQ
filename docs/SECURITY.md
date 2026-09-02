@@ -28,6 +28,12 @@ OmaQ stores identity, contact, Ratchet, preference, and history data locally:
 
 Private filesystem permissions protect these locations. Do not synchronize them as source files or commit them to Git.
 
+## Protect the local session
+
+OmaQ keeps its helper socket and runtime markers private to your user account. These permissions exclude other local accounts; they do not isolate OmaQ from another process already running as you. Treat applications and scripts running under your account as trusted, and lock the session when you leave it.
+
+A same-user process that can read the helper instance marker and connect to the private socket can submit helper operations. The compatibility operation `helper.shutdown` can stop the helper without checking private group state, interrupting active messaging, transfers, invitations, or calls until Service starts it again. OmaQ's updater and uninstaller do not use that operation. They request only `helper.shutdown_if_no_groups`, which fails closed when registered or native groups exist or group state is uncertain.
+
 ## Know the passphrase boundary
 
 A passphrase encrypts the Tox savedata in `tox.save`. It does not encrypt Ratchet state, avatars, receipts, preferences, or chat history.

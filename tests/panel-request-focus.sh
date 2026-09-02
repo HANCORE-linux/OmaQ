@@ -27,6 +27,21 @@ required = [
 for marker in required:
     if marker not in panel:
         raise SystemExit(f"panel-request-focus: missing {marker!r}")
+layout_markers = [
+    "readonly property int cardWidth: 400",
+    "function orderedFriendCells(columnCount)",
+    "readonly property int columnCount: Math.max(1, Math.min(2,",
+    "model: root.orderedFriendCells(columnCount)",
+    "id: inviteSteps",
+    'text: "Send the link or QR through a trusted channel"',
+    'text: "They redeem the invite once"',
+    'text: "Verify and accept the request"',
+]
+for marker in layout_markers:
+    if marker not in panel:
+        raise SystemExit(f"panel-request-focus: missing panel layout marker {marker!r}")
+if 'text: "You accept · the chat opens"' in panel:
+    raise SystemExit("panel-request-focus: invite instructions promise automatic chat opening")
 
 self_start = panel.index("id: selfHeaderContent")
 pending_start = panel.index("id: pendingRequestContent")
@@ -155,6 +170,11 @@ aliases = '''  property alias testService: omaq
   property alias testSafetyEmpty: safetyContactEmpty
   property alias testSafetyChoices: safetyContactChoices
   property alias testSafetyShowButton: safetyShowButton
+  property alias testCard: card
+  property alias testFriendsGrid: friendsGrid
+  property alias testInviteContent: inviteContent
+  property alias testInviteSteps: inviteSteps
+  property alias testInviteStepsRepeater: inviteStepsRepeater
 '''
 if panel.count(needle) != 1:
     raise SystemExit("panel-request-focus: test alias insertion point changed")
@@ -179,12 +199,40 @@ ShellRoot {
   id: testRoot
   property bool failed: false
   property int step: 0
+  property real compactHeight: 0
 
   function check(value, message) {
     if (value)
       return
     failed = true
     console.error("PANEL_REQUEST_FAIL " + message)
+  }
+
+  function inviteStepsFit() {
+    if (panel.testInviteStepsRepeater.count !== 3)
+      return false
+    for (var stepIndex = 0; stepIndex < 3; stepIndex++) {
+      var stepRow = panel.testInviteStepsRepeater.itemAt(stepIndex)
+      if (!stepRow || stepRow.x < -0.5 ||
+          stepRow.x + stepRow.width > panel.testInviteSteps.width + 0.5) {
+        console.error("PANEL_REQUEST_STEP_ROW", stepIndex, stepRow,
+          stepRow ? stepRow.x : -1, stepRow ? stepRow.width : -1,
+          panel.testInviteSteps.width)
+        return false
+      }
+      for (var childIndex = 0; childIndex < stepRow.children.length; childIndex++) {
+        var child = stepRow.children[childIndex]
+        if (child.visible && (child.x < -0.5 || child.y < -0.5 ||
+            child.x + child.width > stepRow.width + 0.5 ||
+            child.y + child.height > stepRow.height + 0.5)) {
+          console.error("PANEL_REQUEST_STEP_CHILD", stepIndex, childIndex,
+            child.x, child.y, child.width, child.height, stepRow.width,
+            stepRow.height)
+          return false
+        }
+      }
+    }
+    return true
   }
 
   OmaQ.Panel {
@@ -252,7 +300,8 @@ ShellRoot {
           "safety menu has no empty-contact guidance")
         panel.testService.friends = [{ id: "7",
           name: "Alice with a deliberately overlong remote legacy contact name that must stay inside the panel frame",
-          key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]
+          key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          online: false }]
       } else if (testRoot.step === 6) {
         var choicesFit = panel.testSafetyChoices.visible &&
           panel.testSafetyChoices.width > 0 && panel.testSafetyChoices.children.length > 0
@@ -275,6 +324,69 @@ ShellRoot {
         testRoot.check(panel.testService.safetyConv === "7" &&
           panel.testService.safetyRequest !== "",
           "safety request is not bound to the selected contact")
+        panel.moreOpen = false
+        var friends = []
+        for (var friendIndex = 0; friendIndex < 14; friendIndex++)
+          friends.push({ id: String(friendIndex + 1),
+            name: "Wilhelmine-Konstanze " + String(friendIndex + 1),
+            key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            online: false })
+        panel.testService.friends = friends
+      } else if (testRoot.step === 7) {
+        testRoot.compactHeight = panel.testCard.height
+        testRoot.check(panel.testCard.width === 400,
+          "panel card width is not the literal 400 pixels")
+        testRoot.check(panel.testFriendsGrid.visible &&
+          panel.testFriendsGrid.columnCount === 1 &&
+          panel.testFriendsGrid.count === 14 &&
+          Math.abs(panel.testFriendsGrid.cellWidth -
+            panel.testFriendsGrid.width) < 0.5,
+          "contact grid is not width-driven or one-column at font base 12")
+        var firstFriend = panel.testFriendsGrid.itemAtIndex(0)
+        testRoot.check(firstFriend && firstFriend.modelData.id === "1",
+          "one-column friend order changed")
+        testRoot.check(panel.testFriendsGrid.contentHeight >
+          panel.testFriendsGrid.height + 1,
+          "one-column friend list does not expose scrolling after five rows")
+        panel.testFriendsGrid.positionViewAtIndex(13, GridView.End)
+      } else if (testRoot.step === 8) {
+        var lastFriend = panel.testFriendsGrid.itemAtIndex(13)
+        testRoot.check(lastFriend && lastFriend.modelData.id === "14" &&
+          panel.testFriendsGrid.contentY > 0,
+          "last friend cannot be reached through the scrollable grid")
+        Style.spacingScale = 0.75
+      } else if (testRoot.step === 9) {
+        testRoot.check(panel.testFriendsGrid.columnCount === 2 &&
+          panel.testFriendsGrid.count === 18 &&
+          Math.abs(panel.testFriendsGrid.cellWidth * 2 -
+            panel.testFriendsGrid.width) < 0.5,
+          "width-driven two-column contact path did not activate")
+        var ordered = panel.orderedFriendCells(2)
+        testRoot.check(ordered.length === 18 && ordered[0].id === "1" &&
+          ordered[1].id === "6" && ordered[2].id === "2" &&
+          ordered[9].id === "10" && ordered[10].id === "11" &&
+          ordered[11] === null && ordered[16].id === "14" &&
+          ordered[17] === null,
+          "two-column friend order or page padding changed")
+        Style.spacingScale = 1
+        panel.testService.inviteUrl = "omaq://invite/mock-token"
+        panel.testService.qrPath = "/tmp/omaq-invite-layout-missing.png"
+        panel.testService.inviteExpiresAt = Math.floor(Date.now() / 1000) + 86400
+        panel.inviteOpen = true
+      } else if (testRoot.step === 10) {
+        testRoot.check(panel.testInviteContent.visible &&
+          panel.testInviteSteps.visible && testRoot.inviteStepsFit(),
+          "invite instructions are hidden, incomplete, or overflowing")
+        testRoot.check(panel.testCard.width === 400 &&
+          panel.testCard.height > testRoot.compactHeight,
+          "invite content did not extend the fixed-width panel")
+        Style.fontBaseSize = 16
+      } else if (testRoot.step === 11) {
+        testRoot.check(panel.testCard.width === 400 &&
+          panel.testInviteContent.width > 0 &&
+          panel.testInviteContent.width < panel.testCard.width &&
+          testRoot.inviteStepsFit(),
+          "font base 16 escaped the fixed panel or invite rows")
         console.log(testRoot.failed ? "PANEL_REQUEST_RESULT fail" : "PANEL_REQUEST_RESULT ok")
         Qt.quit()
       }
@@ -292,7 +404,7 @@ if ! timeout 12s env \
   echo "panel-request-focus: hidden QML runtime failed" >&2
   exit 1
 fi
-if grep -q 'PANEL_REQUEST_FAIL\|PANEL_REQUEST_RESULT fail' "$out" ||
+if grep -Eq 'PANEL_REQUEST_FAIL|PANEL_REQUEST_RESULT fail|ReferenceError|TypeError|Binding loop|Cannot anchor|Unable to assign' "$out" ||
    ! grep -q 'PANEL_REQUEST_RESULT ok' "$out"; then
   cat "$out" >&2
   echo "panel-request-focus: hidden QML assertions failed" >&2

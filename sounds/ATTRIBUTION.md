@@ -1,5 +1,13 @@
 # Sound attribution
 
+## UHOH notification
+
+`sounds/uhoh.wav` is an original, project-generated two-tone notification distributed under OmaQ's MIT license. It contains a 180 ms E5 sine tone, a 55 ms silent pause, and a 270 ms A4 sine tone at 48 kHz stereo PCM, with 12 ms fades and 24% peak amplitude.
+
+- OmaQ `uhoh.wav` SHA-256: `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`
+- Format: lossless signed 16-bit little-endian stereo PCM at 48 kHz
+- Quality boundary: both channels are identical, the clip begins and ends at zero, the inter-tone pause is silent, and the maximum adjacent-sample delta is 679 out of 65,535
+
 ## Call ringing tone
 
 `phone.oga` is a transcoded call-progress tone used only while an incoming or outgoing direct call is ringing.

@@ -15,5 +15,4 @@ __pycache__/
 /pkg
 /src
 *.pkg.tar*
-.rss-idle-kb
 .DS_Store

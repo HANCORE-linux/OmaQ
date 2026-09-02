@@ -1,5 +1,7 @@
+# OmaQ
+
 <p align="center">
-  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
+  <img src="assets/OmaQ_Final.png" alt="" width="420">
 </p>
 
 <p align="center">
@@ -22,18 +24,19 @@ Toxcore transports encrypted packets between peers. Direct messages receive an a
 
 ## Install
 
-Arch User Repository (AUR) packaging remains paused. Install the dependencies, add the plugin, and build its local Signal-enabled helper:
+Arch User Repository (AUR) packaging remains paused. Install the dependencies, add the plugin while disabled, build its local Signal-enabled helper, and then enable it:
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
   ttf-material-symbols-variable qrencode &&
 omarchy plugin add \
-  https://github.com/HANCORE-linux/OmaQ.git --enable &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper
+  https://github.com/HANCORE-linux/OmaQ.git --yes &&
+make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
+omarchy plugin enable hancore.omaq
 ```
 
-The repository intentionally omits the generated `helper/omaq` binary, and direct messaging is refused when the Signal Ratchet helper is unavailable.
+The repository intentionally omits the generated `helper/omaq` binary. Building before enablement avoids writing that binary into an active monitored plugin, and direct messaging remains unavailable when the Signal Ratchet helper is missing.
 
 ## Update
 
@@ -56,6 +59,8 @@ Update the source and helper, then attempt one complete shell restart as the fin
 )
 ```
 
+> **Known host-reload risk:** Updating or building inside the monitored plugin tree can trigger a visible Quickshell loader crash and automatic shell restart. The detached helper, private groups, and persisted data remain available, but the interface briefly disappears. The final restart guard does not prevent this trigger; a trigger-free workflow is pending.
+
 The guarded final restart is attempted after every source, build, and activation write, including failed update paths. If that restart reports an error, rerun `omarchy restart shell` successfully before checking status or changing plugin files. The update documentation covers status, pending groups, and rollback.
 
 ## Uninstall
@@ -70,4 +75,14 @@ Keep retained data if you may reinstall OmaQ or still need the identity or histo
 
 ## Documentation
 
-[Documentation index](docs/README.md) · [Illustrated user guide](docs/USER-GUIDE.md) · [Installation lifecycle](docs/INSTALLATION.md) · [Security and privacy](docs/SECURITY.md) · [Current status](docs/CURRENT.md) · [Architecture plan](docs/PLAN.md) · [Third-party components](THIRD_PARTY.md)
+- [Documentation index](docs/README.md)
+- [Illustrated user guide](docs/USER-GUIDE.md)
+- [Installation lifecycle](docs/INSTALLATION.md)
+- [Security and privacy](docs/SECURITY.md)
+- [Current status](docs/CURRENT.md)
+- [Architecture plan](docs/PLAN.md)
+- [Third-party components](THIRD_PARTY.md)
+
+## License
+
+The QML plugin is licensed under the [MIT License](LICENSE.MIT). OmaQ's helper source is GPL-3.0-or-later; the distributed helper binary is [GPL-3.0-only](LICENSE.GPL-3) because it also links to `libsignal-protocol-c`. See [Third-party components](THIRD_PARTY.md) for dependency and asset licenses.

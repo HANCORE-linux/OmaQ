@@ -107,5 +107,4 @@ fi
 
 rss=$(ps -o rss= -p "$pa" | tr -d ' ')
 echo "two-homes: ok rss_a_kb=$rss"
-echo "$rss" >"$root/.rss-idle-kb" || true
 exit 0

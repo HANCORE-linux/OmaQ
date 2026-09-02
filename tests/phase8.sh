@@ -452,6 +452,5 @@ if [ "$rss" -gt 51200 ]; then
 	echo "phase8: rss ${rss} kB > 51200" >&2
 	exit 1
 fi
-echo "$rss" >"$root/.rss-ratchet-kb" || true
 echo "phase8: ok rss_a_kb=$rss"
 exit 0

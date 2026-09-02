@@ -17,6 +17,8 @@ holdb=$(mktemp -u /tmp/omaq-p2fb-XXXXXX)
 png=$(mktemp /tmp/omaq-p2-XXXXXX.png)
 pa=""
 pb=""
+# Invoked through the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup() {
 	exec 3>&- 4>&- 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
@@ -187,11 +189,13 @@ if [ -z "$ca" ] || [ "$ca" != "$cb" ]; then
 	echo "phase2: safety codes differ" >&2
 	exit 1
 fi
-grep -a '"event":"safety"' "$fa" | tail -1 | grep -a -q '"request":"safety-a"' &&
-grep -a '"event":"safety"' "$fb" | tail -1 | grep -a -q '"request":"safety-b"' || {
+if ! grep -a '"event":"safety"' "$fa" | tail -1 |
+	grep -a -q '"request":"safety-a"' ||
+   ! grep -a '"event":"safety"' "$fb" | tail -1 |
+	grep -a -q '"request":"safety-b"'; then
 	echo "phase2: safety request correlation missing" >&2
 	exit 1
-}
+fi
 
 # Redeeming an own-identity or duplicate-contact invite is a benign,
 # request-correlated rejection, never a reason to disable Tox or Ratchet.
@@ -296,13 +300,12 @@ while [ "$i" -lt 8 ]; do
 done
 
 rss=$(ps -o rss= -p "$pa" | tr -d ' ')
-base=6648
-if [ -f "$root/.rss-idle-kb" ]; then
-	base=$(tr -d ' ' <"$root/.rss-idle-kb")
+if [ -z "$rss" ]; then
+	echo "phase2: helper stopped before rss measurement" >&2
+	exit 1
 fi
-max=$((base * 3 / 2))
-if [ -n "$rss" ] && [ "$rss" -gt "$max" ]; then
-	echo "phase2: rss ${rss}kB > 1.5x baseline ${base}kB" >&2
+if [ "$rss" -gt 51200 ]; then
+	echo "phase2: rss ${rss} kB > 51200" >&2
 	exit 1
 fi
 

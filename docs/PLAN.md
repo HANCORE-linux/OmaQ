@@ -64,7 +64,7 @@ External review of PLAN + `OmaQ.md` vs the live Quattro shell. Verdicts:
 | 3c | Private group needs an existing friend | **Use as constraint.** Group invite after 1:1. No public DHT directory. Confirm in `03-toxcore.md`. |
 | 3d | `group.c` must not duplicate toxcore | **Use.** Headers first, implement only the gap. |
 | 3e | Group invite roles | **Member-only.** Promote a joined member with a separate stable-key `setRole` operation. |
-| — | Manifest `version`; SPDX `GPL-3.0-or-later`; verify-0 is a C driver; do not invent RSS | **Use.** |
+| — | Manifest `version`; helper-source and linked-binary GPL scope; verify-0 is a C driver; do not invent RSS | **Use.** |
 | — | Helper death; sender and global rate limits; import must not clobber | **Use.** Ordinary incoming messages are bounded before replay lookup, history, unread persistence, and event fan-out. |
 | — | NGC API details as facts | **Discard until headers.** Marked suspicion only. |
 
@@ -93,7 +93,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Transport | Tox (`toxcore`). Not SimpleX. Not LAN-only. |
 | Helper | **Exactly one** C11 process per user session. Not one per Panel, not one per monitor. |
 | Singleton | **Helper** takes `flock` on `$OMAQ_HOME/omaq.lock`. Service uses `Process.startDetached()` and then attaches to `$OMAQ_STATE/omaq.sock`. The lock owner binds that socket; a second starter exits `2` (`already_running`) without replacing it. No flock in QML (Quickshell.Io has Process, Socket, FileView — no lock). |
-| License | QML/plugin **MIT**. Helper **GPL-3.0-or-later** (matches toxcore). |
+| License | QML/plugin **MIT**. OmaQ helper source **GPL-3.0-or-later**; the distributed helper binary is **GPL-3.0-only** while linked to `libsignal-protocol-c` 2.3.3. |
 | Invite | Full grammar in §4. One use, 24 h, revocable, never auto-accept. |
 | QR | Always tokenised `omaq://invite/…`. The Tox address is inside because Tox cannot add a friend without it. The token is what dies on revoke. **Nospam rotation voids every open invite at once.** |
 | Model | `conversation` is `direct` or `group`. One chat page for both. |
@@ -101,7 +101,7 @@ Owner addendum (binding): cards move to any monitor and stay; pin = Hyprland top
 | Groups | `owner > admin > member`. NGC `observer` unused in 0.x. Phase 3 starts by reading toxcore headers, then implements only the gap. |
 | Surfaces | **Card:** Quickshell overlay, drag to any monitor, stay there. **Pinned:** real Hyprland `xdg-toplevel`, terminal look. Then stock Omarchy keys apply (`SUPER+T` tile↔float, `SUPER+SHIFT+arrows` swap). Unpin (`lösen`) returns to the card. OmaQ does not bind those keys. |
 | Theme | Default System (`colors.toml`). Palettes: Paper, Ink, Moss, Dusk, Ember. Terminal-pin style uses the same palette, monospace. |
-| Sound | Compact Settings picker: off, UHOH, PING, MAIL, Aurora, Glow, Click, Knock, and user-imported files. Users may remove only OmaQ-managed custom copies; bundled sounds remain immutable. Removed preset selections fall back to UHOH. |
+| Sound | Compact Settings picker: off, UHOH, PING, MAIL, Aurora, Glow, Click, Knock, and user-imported files. UHOH uses the project-generated lossless `sounds/uhoh.wav`; its stable setting id remains `icq-message`. Users may remove only OmaQ-managed custom copies; bundled sounds remain immutable. Removed preset selections fall back to UHOH. |
 | Memory | **50 MB RSS** for everything OmaQ starts (one helper + QML in a session). Do not invent a number in prose — measure. `verify-1-tox` records idle RSS; phase 6 records call-peak; phase 8 records ratchet idle + one-text. Fail if a single helper > 51200 kB. |
 | Payload | **Double Ratchet** (Signal spec) on **direct** conversations. Tox is the pipe. Not SimpleX. Not a second handshake we write ourselves. Library: Arch extra `libsignal-protocol-c` (existing). Groups stay Tox-native until a later go. |
 | Ratchet bootstrap | Direct invite requires `rk=` (32-byte identity key, 64 hex). The redeeming peer returns its own ratchet identity in the token-authenticated friend request; both expected pins and Signal identity keys persist before a bundle is accepted. Safety code still binds the Tox ids. |
@@ -404,7 +404,7 @@ IPC: `open`, `close`, `toggle`, `invite`, `status`.
 
 QR tools: system `qrencode` / `zbarimg`.
 
-Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `messageScale` (`0.9`, `1.0`, `1.1`, `1.2`, or `1.4`), `animateUnread`. The compact panel uses a fixed mutually exclusive self/request header: a pending friend or group request replaces the complete self presentation until the request ends. It also uses a fixed support-link frame, a Friends/Groups frame, and a fixed action rail. The two compact upper frames share the former header height; the transparent GitHub and monochrome Ko-fi support glyphs remain borderless, use `color03` on hover/focus, and match the cell size, glyph scale, and column spacing of the rail below. Friends begin at the top of the lower-left frame and fill five vertical entries per left/center/right column before continuing in a vertically scrollable area with a fading scrollbar; the heading shows online/total counts, unread names are underlined, and hover/focus uses `color03`. Every rail selection and confirmation remains enclosed by the thin lower-left frame. Rail menus extend the panel only to their natural height while the header and right frames stay stationary; the lower-left area scrolls only when constrained by screen height. Group-name and Identity path inputs use the panel's full field width; message search belongs to each ChatPage. Selecting a listed group opens its chat directly. The group-chat header can invite an existing contact or let any role leave after confirmation; member and invite entries remain unframed. Complete group sender names determine the minimum bubble width, and helper-persisted system rows identify member joins and leaves. Message scaling affects message bodies and text typed in the composer while the composer frame and controls retain their normal size. Settings provide a live preview. Custom sound import stores a bounded private helper-managed copy; only projected custom entries expose removal, and bundled sounds remain immutable.
+Settings (phase 4): `notifyBadge`, `notifyRightPanel`, `notifyDesktop`, `surfaceMode` (`separate`|`bundled`), `sound`, `soundCustomPath`, `chatTheme`, `messageScale` (`0.9`, `1.0`, `1.1`, `1.2`, or `1.4`), `animateUnread`. The compact panel uses a fixed mutually exclusive self/request header: a pending friend or group request replaces the complete self presentation until the request ends. It also uses a fixed support-link frame, a Friends/Groups frame, and a fixed action rail. The two compact upper frames share the former header height; the transparent GitHub and monochrome Ko-fi support glyphs remain borderless, use `color03` on hover/focus, and match the cell size, glyph scale, and column spacing of the rail below. The panel card remains a literal 400 QML pixels wide. Friends begin at the top of the lower-left frame; their column count derives from the inner grid width rather than contact count, the standard font bases use one column, and entries after the fifth remain reachable in the vertically scrollable area with its fading scrollbar. The heading shows online/total counts, unread names are underlined, and hover/focus uses `color03`. An active direct invite explains sharing through a trusted channel, one-time redemption, and explicit verification and acceptance without claiming that acceptance opens the chat. Every rail selection and confirmation remains enclosed by the thin lower-left frame. Rail menus extend the panel only to their natural height while the header and right frames stay stationary; the lower-left area scrolls only when constrained by screen height. Group-name and Identity path inputs use the panel's full field width; message search belongs to each ChatPage. Selecting a listed group opens its chat directly. The group-chat header can invite an existing contact or let any role leave after confirmation; member and invite entries remain unframed. Complete group sender names determine the minimum bubble width, and helper-persisted system rows identify member joins and leaves. Message scaling affects message bodies and text typed in the composer while the composer frame and controls retain their normal size. Settings provide a live preview. Custom sound import stores a bounded private helper-managed copy; only projected custom entries expose removal, and bundled sounds remain immutable.
 
 DirectChat and GroupChat expose a compact Reply icon on every replyable message in the same hover/focus action group as reactions and editing. The icon starts the existing reply flow; the existing right-click context menu remains unchanged. Message text supports pointer and keyboard selection. A compact Copy icon appears only while a non-empty selection exists and copies exactly the selected text.
 
@@ -459,7 +459,8 @@ ln -s /usr/share/omaq/plugin ~/.config/omarchy/plugins/hancore.omaq
 No `install=` daemon. No `Restart=always`.
 
 `depends`: `toxcore`, `libsignal-protocol-c`, `libpulse`, `ttf-material-symbols-variable`, `qrencode`, `zbar`.
-`license`: `MIT` and `GPL-3.0-or-later`.  
+`license`: `MIT` and `GPL-3.0-only` for the distributed payload; OmaQ's helper source remains GPL-3.0-or-later.
+
 `source=`: tagged tarball + real `sha256sums`, never `SKIP` on a release.
 
 ---
@@ -538,9 +539,7 @@ Export/import (`identity_exists` / `replace`), search on disk.
 
 ### Phase 7 — package
 
-**Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, do not register an AUR account. Local PKGBUILD work waits for a new **go**. AUR upload is a second go after that.
-
-**Done (later):** `make verify-7` + `docs/stages/07-package.md`. AUR upload only after another explicit go.
+**Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, and do not register an AUR account. Local PKGBUILD work and its stage note wait for a new **go**. AUR upload requires a separate approval after that.
 
 ### Phase 8 — Double Ratchet on 1:1 (50 MB)
 

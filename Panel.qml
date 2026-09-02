@@ -165,9 +165,7 @@ BarWidget {
   readonly property int pad: Style.spacing.popupPadding
   readonly property real nicknameControlHeight: Style.space(18)
   readonly property real nicknameEditorHeight: Style.space(30)
-  readonly property int friendColumnCount: Math.min(3, Math.max(1,
-    Math.ceil(Math.max(1, omaq.friends ? omaq.friends.length : 0) / 5)))
-  readonly property int cardWidth: Style.space(320 + (friendColumnCount - 1) * 130)
+  readonly property int cardWidth: 400
   readonly property real railIconWidth: Style.space(30)
   readonly property real railWidth: railIconWidth * 2 + framePadding * 2
   readonly property real headerHeight: Style.space(48)
@@ -1077,9 +1075,9 @@ BarWidget {
     return friend && friend.online ? "online" : "offline"
   }
 
-  function orderedFriendCells() {
+  function orderedFriendCells(columnCount) {
     var friends = omaq.friends || []
-    var columns = root.friendColumnCount
+    var columns = Math.max(1, Math.floor(Number(columnCount) || 1))
     var pageSize = columns * 5
     var cells = []
     for (var page = 0; page * pageSize < friends.length; page++) {
@@ -3446,9 +3444,11 @@ BarWidget {
               clip: true
               boundsBehavior: Flickable.StopAtBounds
               flow: GridView.FlowLeftToRight
-              cellWidth: width / root.friendColumnCount
+              readonly property int columnCount: Math.max(1, Math.min(2,
+                Math.floor(Math.max(1, width) / Style.space(170))))
+              cellWidth: width / columnCount
               cellHeight: Style.space(24)
-              model: root.orderedFriendCells()
+              model: root.orderedFriendCells(columnCount)
 
               delegate: Item {
                   id: friendDelegate
@@ -4241,6 +4241,53 @@ BarWidget {
                 color: root.inviteRemainingSeconds <= 300 ? root.urgent : root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
+              }
+
+              Column {
+                id: inviteSteps
+                visible: root.inviteConfirmMode === ""
+                width: parent.width
+                spacing: Style.space(4)
+
+                Repeater {
+                  id: inviteStepsRepeater
+                  model: [
+                    { number: "1", text: "Send the link or QR through a trusted channel" },
+                    { number: "2", text: "They redeem the invite once" },
+                    { number: "3", text: "Verify and accept the request" }
+                  ]
+
+                  delegate: Item {
+                    required property var modelData
+                    width: inviteSteps.width
+                    height: Math.max(inviteStepNumber.implicitHeight,
+                                     inviteStepText.implicitHeight)
+
+                    SafeText {
+                      id: inviteStepNumber
+                      anchors.left: parent.left
+                      anchors.top: parent.top
+                      width: Style.space(14)
+                      text: modelData.number
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    SafeText {
+                      id: inviteStepText
+                      anchors.left: inviteStepNumber.right
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.leftMargin: Style.space(6)
+                      text: modelData.text
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      wrapMode: Text.WordWrap
+                    }
+                  }
+                }
               }
 
               GridLayout {

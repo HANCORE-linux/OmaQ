@@ -23,7 +23,7 @@ make verify-2
 
 ## Measured
 
-- Helper RSS during phase2 two-home run: **6072 kB** (under 1.5× the phase-1 baseline of 6648 kB)
+- Helper RSS during the historical phase 2 two-home run: **6072 kB**. The current absolute single-helper limit is 51,200 kB.
 
 ## Stays out
 

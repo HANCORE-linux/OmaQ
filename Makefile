@@ -171,6 +171,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/input-mask.sh
 	sh tests/surface-owner.sh
 	sh tests/chat-surface-geometry.sh
+	sh tests/chat-transcript-layout.sh
 	sh tests/chat-message-actions.sh
 	python3 tests/qml_plaintext_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
@@ -256,7 +257,7 @@ verify-4: test arch helper
 	test -f themes/dusk.json
 	test -f themes/ember.json
 	test -f themes/system.json
-	test -f sounds/icq-message.mp3
+	test -f sounds/uhoh.wav
 	test -f sounds/click.wav
 	test -f sounds/knock.wav
 	test -f sounds/qq.oga
@@ -272,7 +273,7 @@ verify-4: test arch helper
 		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \
 		'a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  sounds/LICENSES/CC0-1.0.txt' \
 		'9dd354243ce155dff84ebba498dcd8c4abd8c2e6fa8b143f4fad2f8b11a53929  sounds/PIXABAY-CONTENT-LICENSE.md' \
-		'14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1  sounds/icq-message.mp3' \
+		'8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744  sounds/uhoh.wav' \
 		'fa13f711d61b01a6db2f9097159019606e14d0ef8075a00def7bb97ae8bdd332  sounds/click.wav' \
 		'8b54813baa31e51324e865aed8c5dfd6ecd674bab87236a8fb1df301cb92a7ae  sounds/knock.wav' \
 		'0e283f3de90a2cc52a4239430bd5cdd82c6e7df4d69af00abae6d07c6e4f0933  sounds/aurora.oga' \

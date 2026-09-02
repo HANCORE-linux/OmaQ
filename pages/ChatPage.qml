@@ -3891,9 +3891,7 @@ FocusScope {
           id: line
           width: list.messageLaneWidth
           height: model.newMarker ? newDivider.implicitHeight :
-            Math.max(bubble.implicitHeight +
-              (line.hasReaction || line.hasGroupReceipt || line.timestampText !== ""
-                ? Style.space(14) : 0),
+            Math.max(bubble.implicitHeight + line.metadataReserve,
               sysLine.implicitHeight)
           readonly property bool smileOnly: model.dir !== "sys" && root.isSmileOnly(model.text)
           readonly property bool hasCode: model.dir !== "sys" && (String(model.text || "").indexOf("```") !== -1 || new RegExp("\\x60[^\\x60\\n]+\\x60").test(String(model.text || "")))
@@ -3953,6 +3951,40 @@ FocusScope {
           readonly property bool hasReaction: !line.deleted &&
             (line.reactionMe !== "" || line.reactionPeer !== "" ||
              line.groupReactionEmojis.length > 0)
+          readonly property real metadataGap: Style.space(5)
+          readonly property bool hasMetadataText: line.timestampText !== "" ||
+            line.hasGroupReceipt
+          readonly property bool splitMetadataText: line.hasGroupReceipt &&
+            line.timestampText !== "" && groupReceiptStatus.implicitWidth +
+              line.metadataGap + messageTimestamp.implicitWidth > line.width
+          readonly property real metadataTextWidth: line.splitMetadataText
+            ? Math.max(groupReceiptStatus.implicitWidth, messageTimestamp.implicitWidth)
+            : (line.hasGroupReceipt ? groupReceiptStatus.implicitWidth : 0) +
+              (line.hasGroupReceipt && line.timestampText !== "" ? line.metadataGap : 0) +
+              (line.timestampText !== "" ? messageTimestamp.implicitWidth : 0)
+          readonly property real metadataTextHeight: line.splitMetadataText
+            ? groupReceiptStatus.implicitHeight + Style.space(2) +
+              messageTimestamp.implicitHeight
+            : Math.max(groupReceiptStatus.visible ? groupReceiptStatus.implicitHeight : 0,
+                       messageTimestamp.visible ? messageTimestamp.implicitHeight : 0)
+          readonly property real metadataRightEdge: Math.min(line.width,
+            bubble.x + bubble.width)
+          readonly property real metadataLeftEdge: Math.max(0,
+            line.metadataRightEdge - line.metadataTextWidth)
+          readonly property real reactionLeftEdge: Math.max(0, Math.min(
+            line.width - reactionBadge.width, bubble.x + Style.space(6)))
+          readonly property real reactionRightEdge: line.reactionLeftEdge +
+            reactionBadge.width
+          readonly property bool metadataReactionCollision: line.hasReaction &&
+            line.hasMetadataText && line.reactionRightEdge + Style.space(4) >
+              line.metadataLeftEdge && line.reactionLeftEdge <
+                Math.max(line.metadataRightEdge,
+                         line.metadataLeftEdge + line.metadataTextWidth)
+          readonly property real metadataTextTop: line.metadataReactionCollision
+            ? Style.space(15) : Style.space(1)
+          readonly property real metadataReserve: Math.max(
+            line.hasReaction ? Style.space(14) : 0,
+            line.hasMetadataText ? line.metadataTextTop + line.metadataTextHeight : 0)
           property bool reactionPickerOpen: false
           property var reactionChoices: root.reactionChoicesFor(line.reactionMe, 5)
           readonly property bool actionControlsVisible: line.failed ||
@@ -3990,7 +4022,8 @@ FocusScope {
             anchors.right: model.dir === "out" ? parent.right : undefined
             width: Math.max(
               line.showGroupSender
-                ? Math.min(parent.width, groupSenderMetrics.advanceWidth + Style.space(16)) : 0,
+                ? Math.min(parent.width, groupSenderMetrics.advanceWidth +
+                    (line.hasCode ? Style.space(68) : Style.space(16))) : 0,
               line.hasGroupReceipt
                 ? Math.min(parent.width, groupReceiptMetrics.advanceWidth + Style.space(16)) : 0,
               line.imageMessage
@@ -4022,7 +4055,7 @@ FocusScope {
               anchors.right: parent.right
               anchors.top: parent.top
               anchors.leftMargin: Style.space(8)
-              anchors.rightMargin: Style.space(8)
+              anchors.rightMargin: line.hasCode ? Style.space(60) : Style.space(8)
               anchors.topMargin: Style.space(3)
               text: root.groupMemberName(line.senderPeer)
               color: root.accent
@@ -4251,6 +4284,7 @@ FocusScope {
             }
 
             FormatBtn {
+              id: codeCopyButton
               visible: line.hasCode && !line.smileOnly && !(model.dir === "out" && model.ack !== undefined)
               anchors.top: parent.top
               anchors.right: parent.right
@@ -4418,10 +4452,12 @@ FocusScope {
 
           OmaQ.SafeText {
             id: messageTimestamp
+            objectName: "messageTimestamp"
             visible: line.timestampText !== "" && model.dir !== "sys" && !model.newMarker
-            anchors.top: bubble.bottom
-            anchors.right: bubble.right
-            anchors.topMargin: Style.space(1)
+            x: Math.max(0, line.metadataRightEdge - width)
+            y: bubble.y + bubble.height + line.metadataTextTop +
+              (line.splitMetadataText && groupReceiptStatus.visible
+                ? groupReceiptStatus.implicitHeight + Style.space(2) : 0)
             text: line.timestampText
             color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.52)
             font.family: root.fontFamily
@@ -4432,11 +4468,14 @@ FocusScope {
 
           OmaQ.SafeText {
             id: groupReceiptStatus
+            objectName: "groupReceiptStatus"
             visible: line.hasGroupReceipt && model.dir !== "sys" && !model.newMarker
-            anchors.top: bubble.bottom
-            anchors.right: messageTimestamp.visible ? messageTimestamp.left : bubble.right
-            anchors.rightMargin: messageTimestamp.visible ? Style.space(5) : 0
-            anchors.topMargin: Style.space(1)
+            x: line.splitMetadataText
+              ? Math.max(0, line.metadataRightEdge - width)
+              : Math.max(0, line.metadataRightEdge - width -
+                  (messageTimestamp.visible
+                    ? messageTimestamp.width + line.metadataGap : 0))
+            y: bubble.y + bubble.height + line.metadataTextTop
             text: line.groupReceiptText
             color: root.receiptDeliveredColor
             font.family: root.fontFamily
@@ -4447,11 +4486,11 @@ FocusScope {
 
           Rectangle {
             id: reactionBadge
+            objectName: "reactionBadge"
             visible: line.hasReaction && model.dir !== "sys" && !model.newMarker
-            anchors.left: bubble.left
+            x: line.reactionLeftEdge
             anchors.verticalCenter: bubble.bottom
             anchors.verticalCenterOffset: Style.space(3)
-            anchors.leftMargin: Style.space(6)
             width: reactionBadgeRow.implicitWidth + Style.space(8)
             height: Style.space(20)
             radius: 0
