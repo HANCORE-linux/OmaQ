@@ -221,6 +221,4 @@ Do not delete recovery markers manually. Review the exact warning, complete the 
 
 ## Maintain OmaQ
 
-Installation, source updates, helper status, rollback, removal, retained data, and optional package cleanup have a dedicated [installation lifecycle guide](INSTALLATION.md).
-
-Run the source update, helper build, and group-safe activation attempt before the update command attempts its guarded final Omarchy shell restart. A successful restart clears plugin hot-reload state only after monitored plugin files stop changing. The guard also attempts that restart on failed update paths.
+Use the [installation lifecycle guide](INSTALLATION.md) for installation, source updates, helper status, rollback, removal, retained data, and optional package cleanup. The current guard also attempts that restart on failed update paths, but it does not prevent monitored writes from triggering hot reload.

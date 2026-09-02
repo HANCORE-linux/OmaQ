@@ -3,7 +3,7 @@
 ## User documentation
 
 - [Illustrated user guide](USER-GUIDE.md): invitations, chats, files, calls, groups, identity protection, and recovery
-- [Installation lifecycle](INSTALLATION.md): installation, safe updates, helper status, rollback, removal, and retained data
+- [Installation lifecycle](INSTALLATION.md): installation, current update risks, helper status, rollback, removal, and retained data
 - [Security and privacy](SECURITY.md): encryption, relay privacy, local storage, identity protection, and safety codes
 
 ## Project references
