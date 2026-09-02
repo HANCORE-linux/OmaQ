@@ -55,17 +55,17 @@ The release-audit follow-up passes the full `make test` aggregate, `make verify-
 
 Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
 
-Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Update regressions cover source no-ops without a shell stop, monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, pre-stop exchange probing, supervisor backoff, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation.
+Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Update regressions cover source no-ops without a shell stop, private GitHub authentication without token arguments or checkout persistence, monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, pre-stop exchange probing, supervisor backoff, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation.
 
 The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
-No current test claims visible native Wayland or multi-monitor acceptance. A read-only preflight passed on the primary machine, but the updater has not performed a live shell stop, tree exchange, or restart. Both live installations remain on `580c69cf7583ccca4461bd265334edc0a692b65d`; no private identity, Ratchet, group registry, or history data was synchronized for this audit.
+No current test claims visible native Wayland or multi-monitor acceptance. A read-only preflight passed on the primary machine. The first authorized update attempt failed during its external remote preflight because the private origin had no noninteractive credential; it did not stop the shell or modify the live checkout. A subsequent external private-origin clone, build, commit binding, and authentication-persistence check passed, but no live shell stop, tree exchange, or restart has occurred. Both live installations remain on `580c69cf7583ccca4461bd265334edc0a692b65d`; no private identity, Ratchet, group registry, or history data was synchronized for this audit.
 
 ## Next order
 
-1. Prepare the Quickshell upstream crash report.
-2. Run the remaining native acceptance checks without silently changing the live plugin.
-3. Investigate the Panel QML toolchain failure.
-4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
-5. Capture a neutral image of the current sound picker.
-6. Keep publication and cleanup as separately approved phases.
+1. Update and accept the primary machine at the exact reviewed commit.
+2. Confirm the same-commit no-op without a shell stop on the primary machine.
+3. Update the second machine only after a separate approval.
+4. Prepare the Quickshell upstream crash report.
+5. Investigate the Panel QML toolchain failure.
+6. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.

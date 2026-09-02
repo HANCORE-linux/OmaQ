@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -37,7 +38,7 @@ GIT_NETWORK_CONFIG = (
     "-c",
     "http.sslVerify=true",
     "-c",
-    "http.followRedirects=initial",
+    "http.followRedirects=false",
     "-c",
     "protocol.file.allow=never",
 )
@@ -129,6 +130,98 @@ def trusted_environment() -> dict[str, str]:
     return environment
 
 
+def validate_secure_parent_chain(path: Path) -> None:
+    current = path
+    while True:
+        info = current.stat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or info.st_mode & 0o022
+        ):
+            fail(f"unsafe executable parent directory: {current}")
+        if current.parent == current:
+            return
+        current = current.parent
+
+
+def validate_github_cli_path(candidate: Path) -> str:
+    try:
+        validate_secure_parent_chain(candidate.absolute().parent)
+        resolved = candidate.resolve(strict=True)
+        validate_secure_parent_chain(resolved.parent)
+        info = resolved.stat()
+    except FileNotFoundError:
+        raise
+    except OSError as error:
+        fail(f"cannot inspect GitHub CLI candidate {candidate}: {error}")
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid not in {0, os.geteuid()}
+        or info.st_mode & 0o022
+        or not info.st_mode & 0o111
+        or info.st_size > 128 * 1024 * 1024
+    ):
+        fail(f"unsafe GitHub CLI path: {resolved}")
+    return str(resolved)
+
+
+def trusted_github_cli_path() -> str | None:
+    candidates = [Path("/usr/bin/gh"), Path.home() / ".local/bin/gh"]
+    candidates.extend(
+        (Path.home() / ".local/share/mise/installs/gh/latest").glob("*/bin/gh")
+    )
+    for candidate in candidates:
+        try:
+            return validate_github_cli_path(candidate)
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def github_auth_header() -> str | None:
+    github_cli = trusted_github_cli_path()
+    if github_cli is None:
+        return None
+    cli_fd = os.open(
+        github_cli, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    )
+    try:
+        info = os.fstat(cli_fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or info.st_mode & 0o022
+            or not info.st_mode & 0o111
+            or info.st_size > 128 * 1024 * 1024
+        ):
+            fail("GitHub CLI changed before token acquisition")
+        executable = f"/proc/self/fd/{cli_fd}"
+        result = run(
+            [executable, "auth", "token", "--hostname", "github.com"],
+            check=False,
+            capture=True,
+            timeout=10,
+            env=trusted_environment(),
+            pass_fds=(cli_fd,),
+        )
+    finally:
+        os.close(cli_fd)
+    if result.returncode != 0:
+        return None
+    token = bounded_text(result.stdout, "gh auth token").strip()
+    if (
+        len(token) < 20
+        or len(token) > 512
+        or any(ord(char) < 0x21 or ord(char) > 0x7E for char in token)
+    ):
+        fail("GitHub CLI returned an invalid authentication token")
+    credentials = base64.b64encode(
+        f"x-access-token:{token}".encode("ascii")
+    ).decode("ascii")
+    return f"Authorization: Basic {credentials}"
+
+
 def run(
     args: list[str],
     *,
@@ -139,6 +232,7 @@ def run(
     quiet: bool = False,
     cwd: Path | None = None,
     preexec_fn=None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess:
     stdout = subprocess.PIPE if capture else (subprocess.DEVNULL if quiet else None)
     stderr = subprocess.PIPE if capture else (subprocess.DEVNULL if quiet else None)
@@ -152,6 +246,7 @@ def run(
                 env=env,
                 cwd=cwd,
                 preexec_fn=preexec_fn,
+                pass_fds=pass_fds,
             )
         except OSError as error:
             fail(f"command failed to start: {args[0]}: {error}")
@@ -203,6 +298,7 @@ def run(
                 env=env,
                 cwd=cwd,
                 preexec_fn=preexec_fn,
+                pass_fds=pass_fds,
             )
         except subprocess.TimeoutExpired:
             fail(f"command timed out: {args[0]}")
@@ -1252,6 +1348,22 @@ def git_environment() -> dict[str, str]:
     return environment
 
 
+def git_network_environment() -> dict[str, str]:
+    environment = git_environment()
+    if CANONICAL_ORIGIN != "https://github.com/HANCORE-linux/OmaQ.git":
+        return environment
+    header = github_auth_header()
+    if header is not None:
+        environment.update(
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+                "GIT_CONFIG_VALUE_0": header,
+            }
+        )
+    return environment
+
+
 def git_output(root: Path, arguments: list[str], source: str) -> str:
     git = command_path("git")
     return capture_line(
@@ -1364,7 +1476,7 @@ def resolve_remote_main(update_base: Path, expected_commit: str) -> str:
         ],
         capture=True,
         timeout=60,
-        env=git_environment(),
+        env=git_network_environment(),
         cwd=update_base,
         preexec_fn=limit_staging_file_size,
     )
@@ -1412,7 +1524,7 @@ def stage_update(
         ],
         stage,
         timeout=300,
-        env=git_environment(),
+        env=git_network_environment(),
         cwd=update_base,
     )
     stage_head = validate_git_checkout(stage, expected_origin=CANONICAL_ORIGIN)
