@@ -258,6 +258,24 @@ ShellRoot {
         panel.testService.selfNickname = "HANCORE"
         panel.testService.connectionState = "online"
         panel.testService.pending = false
+        var semanticPalette = ["#010203", "#111213", "#212223", "#313233",
+                               "#414243", "#515253", "#616263", "#717273"]
+        panel.parseSystemColors([
+          'background = "#010203"',
+          'red = "#111213"',
+          'green = "#212223"',
+          'yellow = "#313233"',
+          'blue = "#414243"',
+          'magenta = "#515253"',
+          'cyan = "#616263"',
+          'foreground = "#717273"'
+        ].join("\n"))
+        for (var colorIndex = 0; colorIndex < semanticPalette.length; colorIndex++)
+          testRoot.check(panel.systemColors[colorIndex] === semanticPalette[colorIndex],
+            "semantic system color " + colorIndex + " was not parsed")
+        panel.parseSystemColors('yellow = "#313233"\ncolor3 = "#a1a2a3"')
+        testRoot.check(panel.systemColors[3] === "#a1a2a3",
+          "legacy ANSI system color did not override its semantic equivalent")
       } else if (testRoot.step === 1) {
         testRoot.check(panel.testSelfAvatar.visible, "self avatar hidden without request")
         testRoot.check(panel.testSelfContent.visible, "self content hidden without request")
