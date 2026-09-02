@@ -403,7 +403,7 @@ def wait_new_runtime(state_dir: Path, helper_path: Path, expected: str,
                 current.close()
         time.sleep(0.1)
     fail(f"degraded: helper did not restart with the available binary ({last_error}); "
-         "inspect .prev, then run update-helper.sh --rollback")
+         "inspect .prev, then run update-omaq.sh --rollback-helper --yes")
 
 
 def open_tree(root: Path) -> tuple[int, int, tuple[int, int, int, int]]:
@@ -554,7 +554,7 @@ def command(args):
                             (current_path.st_dev, current_path.st_ino) !=
                             (current_info.st_dev, current_info.st_ino)):
                         fail("degraded: available helper changed during activation; "
-                             "inspect .prev, then run update-helper.sh --rollback")
+                             "inspect .prev, then run update-omaq.sh --rollback-helper --yes")
                     describe("activated", available_hash, replacement)
                 finally:
                     os.close(current_fd)

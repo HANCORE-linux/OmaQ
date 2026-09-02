@@ -145,13 +145,18 @@ fi
   echo "helper-update: hash mismatch stopped the running helper" >&2; exit 1;
 }
 
-activated=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" --state "$state" --json)
+prev_before_activation=$(sha256sum "$plugin/helper/omaq.prev" | cut -d' ' -f1)
+activated=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" \
+  --state "$state" --expect-sha256 "$new_hash" --json)
 python3 - "$activated" "$new_hash" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
 assert value["state"] == "activated"
 assert value["running_sha256"] == sys.argv[2] == value["available_sha256"]
 PY
+[ "$(sha256sum "$plugin/helper/omaq.prev" | cut -d' ' -f1)" = "$prev_before_activation" ] || {
+  echo "helper-update: activation changed the existing rollback image" >&2; exit 1;
+}
 
 # A registered group must defer the next available image without stopping the
 # current helper. Resetting the isolated test group permits a later retry.
@@ -173,7 +178,8 @@ printf '\0' >>"$plugin/helper/omaq.next"
 chmod 755 "$plugin/helper/omaq.next"
 mv -f "$plugin/helper/omaq.next" "$plugin/helper/omaq"
 blocked_hash=$(sha256sum "$plugin/helper/omaq" | cut -d' ' -f1)
-blocked=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" --state "$state" --json)
+blocked=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" \
+  --state "$state" --expect-sha256 "$blocked_hash" --json)
 python3 - "$blocked" "$blocked_hash" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
@@ -196,7 +202,8 @@ while True:
         break
 client.close()
 PY
-retried=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" --state "$state" --json)
+retried=$(python3 "$plugin/scripts/helper-runtime.py" activate --root "$plugin" \
+  --state "$state" --expect-sha256 "$blocked_hash" --json)
 python3 - "$retried" "$blocked_hash" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
@@ -238,32 +245,53 @@ fi
 grep -q 'another helper update is active' "$tmp/lock.err"
 wait "$lock_holder"
 
-# Rollback validates .prev without following links or accepting special or
-# writable files, and binds the restored hash into group-safe activation.
+# The legacy wrapper delegates rollback to the shell-off source updater before
+# it takes the helper lock or changes helper/omaq.
+cat >"$plugin/scripts/update-omaq.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$tmp/rollback-delegated"
+exit 37
+EOF
+chmod 755 "$plugin/scripts/update-omaq.sh"
+pid_before_delegation=$(cat "$state/omaq.pid")
+available_before_delegation=$(sha256sum "$plugin/helper/omaq" | cut -d' ' -f1)
+set +e
+XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
+  "$plugin/scripts/update-helper.sh" --rollback >/dev/null 2>&1
+delegation_rc=$?
+set -e
+[ "$delegation_rc" -eq 37 ]
+[ "$(cat "$tmp/rollback-delegated")" = "--rollback-helper --yes" ]
+[ "$(cat "$state/omaq.pid")" = "$pid_before_delegation" ]
+[ "$(sha256sum "$plugin/helper/omaq" | cut -d' ' -f1)" = \
+  "$available_before_delegation" ]
+
+# The runtime restore boundary validates .prev without following links or
+# accepting special or writable files.
 pid_before_bad_rollback=$(cat "$state/omaq.pid")
 mv "$plugin/helper/omaq.prev" "$plugin/helper/omaq.prev.safe"
 ln -s "$tmp/external" "$plugin/helper/omaq.prev"
-if XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
-    "$plugin/scripts/update-helper.sh" --rollback >/dev/null 2>&1; then
+if python3 "$plugin/scripts/helper-runtime.py" restore \
+    --root "$plugin" --state "$state" >/dev/null 2>&1; then
   echo "helper-update: rollback followed a symlink" >&2; exit 1
 fi
 rm -f "$plugin/helper/omaq.prev"
 mkfifo "$plugin/helper/omaq.prev"
-if XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
-    "$plugin/scripts/update-helper.sh" --rollback >/dev/null 2>&1; then
+if python3 "$plugin/scripts/helper-runtime.py" restore \
+    --root "$plugin" --state "$state" >/dev/null 2>&1; then
   echo "helper-update: rollback accepted a FIFO" >&2; exit 1
 fi
 rm -f "$plugin/helper/omaq.prev"
 mkdir "$plugin/helper/omaq.prev"
-if XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
-    "$plugin/scripts/update-helper.sh" --rollback >/dev/null 2>&1; then
+if python3 "$plugin/scripts/helper-runtime.py" restore \
+    --root "$plugin" --state "$state" >/dev/null 2>&1; then
   echo "helper-update: rollback accepted a directory" >&2; exit 1
 fi
 rmdir "$plugin/helper/omaq.prev"
 cp "$plugin/helper/omaq.prev.safe" "$plugin/helper/omaq.prev"
 chmod 775 "$plugin/helper/omaq.prev"
-if XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
-    "$plugin/scripts/update-helper.sh" --rollback >/dev/null 2>&1; then
+if python3 "$plugin/scripts/helper-runtime.py" restore \
+    --root "$plugin" --state "$state" >/dev/null 2>&1; then
   echo "helper-update: rollback accepted a writable image" >&2; exit 1
 fi
 [ "$(cat "$state/omaq.pid")" = "$pid_before_bad_rollback" ] || {
@@ -272,9 +300,22 @@ fi
 rm -f "$plugin/helper/omaq.prev" "$plugin/helper/omaq.prev.safe"
 cp "$source_helper" "$plugin/helper/omaq.prev"
 chmod 755 "$plugin/helper/omaq.prev"
-rollback=$(XDG_RUNTIME_DIR="$runtime_dir" OMAQ_STATE="$state" \
-  "$plugin/scripts/update-helper.sh" --rollback)
-printf '%s\n' "$rollback" | grep -q 'OmaQ helper: activated'
+restored=$(python3 "$plugin/scripts/helper-runtime.py" restore \
+  --root "$plugin" --state "$state" --json)
+python3 - "$restored" "$old_hash" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["state"] == "available-restored"
+assert value["available_sha256"] == sys.argv[2]
+PY
+rollback=$(python3 "$plugin/scripts/helper-runtime.py" activate \
+  --root "$plugin" --state "$state" --expect-sha256 "$old_hash" --json)
+python3 - "$rollback" "$old_hash" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["state"] == "activated"
+assert value["running_sha256"] == sys.argv[2] == value["available_sha256"]
+PY
 [ "$(sha256sum "$plugin/helper/omaq" | cut -d' ' -f1)" = "$old_hash" ]
 
 # Root replacement during make cannot redirect the already descriptor-bound

@@ -231,4 +231,4 @@ Do not delete recovery markers manually. Follow the exact warning and complete i
 
 ## Maintain OmaQ
 
-Use the [installation lifecycle guide](INSTALLATION.md) for installation, source updates, helper status, rollback, removal, retained data, and optional package cleanup. The current guard also attempts that restart on failed update paths, but it does not prevent monitored writes from triggering hot reload.
+Use the [installation lifecycle guide](INSTALLATION.md) for installation, shell-off source updates, helper status, rollback, removal, retained data, and optional package cleanup. The updater builds externally and changes the live checkout only after the Omarchy shell supervisor and plugin watcher have stopped.

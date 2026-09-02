@@ -8,8 +8,8 @@ Usage: update-helper.sh [--activate] [--status] [--rollback]
 Build OmaQ's helper with the normal Makefile and report whether the detached
 runtime still uses an older binary. --activate requests a group-free safe stop;
 Service.qml then starts the newly built helper automatically. --status only
-reports versions. --rollback restores helper/omaq.prev and requests the same
-group-safe activation without rebuilding or replacing the rollback image.
+reports versions. --rollback delegates to update-omaq.sh so helper/omaq.prev is
+restored only while the Omarchy shell watcher is stopped.
 EOF
 }
 
@@ -35,6 +35,11 @@ fi
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 runtime="$root/scripts/helper-runtime.py"
 [[ -x $runtime ]] || { echo "update-helper: helper runtime tool is not executable" >&2; exit 1; }
+if ((rollback)); then
+  updater="$root/scripts/update-omaq.sh"
+  [[ -x $updater ]] || { echo "update-helper: shell-off updater is unavailable" >&2; exit 1; }
+  exec "$updater" --rollback-helper --yes
+fi
 [[ -r $root/Makefile ]] || { echo "update-helper: Makefile is unavailable" >&2; exit 1; }
 command -v flock >/dev/null || { echo "update-helper: flock is unavailable" >&2; exit 1; }
 
@@ -70,23 +75,6 @@ common=(--root "$root" --root-identity "$root_identity")
 
 if ((status_only)); then
   exec python3 "$runtime_bound" status "${common[@]}"
-fi
-
-if ((rollback)); then
-  rollback_json=$(python3 "$runtime_bound" restore "${common[@]}" --json)
-  rollback_hash=$(python3 - "$rollback_json" <<'PY'
-import json, sys
-value = json.loads(sys.argv[1])
-hash_value = value.get("available_sha256")
-if not isinstance(hash_value, str) or len(hash_value) != 64 or any(
-        char not in "0123456789abcdef" for char in hash_value):
-    raise SystemExit("update-helper: invalid rollback helper hash")
-print(hash_value)
-PY
-)
-  echo "update-helper: restored helper/omaq.prev as the available binary ($rollback_hash)"
-  exec python3 "$runtime_bound" activate "${common[@]}" \
-    --expect-sha256 "$rollback_hash"
 fi
 
 # Back up the image that is actually executing. /proc/<pid>/exe remains bound

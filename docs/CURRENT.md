@@ -35,20 +35,19 @@ This page is the current product and release snapshot. Completed phase and follo
 - Ordinary QML text uses the PlainText-default `SafeText` boundary. Only the escaped chat header and escaped Markdown message renderer may use RichText.
 - Group attachments use bounded sender-fair pending state, explicit acceptance, stable group and member binding, exact size and SHA-256 verification, and a durable accepted-ID ledger.
 - The uninstaller verifies process, executable, socket, instance, group state, and acknowledgement before removal. Runtime-rule cleanup is descriptor-relative and refuses symlinks, hardlinks, unexpected names, unsafe modes, or changed directory identity.
-- The current update command writes inside the shell-monitored plugin tree. Those writes triggered a Quickshell loader crash on 2026-09-01. The supervisor restored the shell, and the detached helper, private groups, and persisted data survived. The final restart guard does not prevent the hot-reload trigger, so a trigger-free replacement remains required.
+- Source updates clone and build outside the monitored plugin directory. The updater stops Quickshell and `omarchy-launch-shell`, checks both again before an atomic no-copy tree exchange, validates the restarted plugin consumer, and keeps helper activation group-safe. A process running as the same user remains inside the documented trust boundary and must not restart the shell concurrently.
 
 ## Open points
 
 ### Existing validation gaps
 
-1. Replace the monitored-tree update workflow with a trigger-free lifecycle before relying on it as crash-free.
-2. Submit the correlated loader crash to Quickshell upstream.
-3. Complete native three-peer group-attachment injection, mixed recipient outcomes, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks.
-4. Complete native separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
-5. Complete native Quickshell and Wayland acceptance for themes, images, multiple monitors, and floating versus tiled windows.
-6. Investigate `qmlcachegen Panel.qml` parser and import failures. `qmllint Panel.qml` can still exit 255 without diagnostics.
-7. Decide whether to leave the retired message clip only in historical Git objects or plan a separately governed repository-history migration.
-8. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
+1. Submit the correlated loader crash and the crash-handler Exit-255 relaunch symptom to Quickshell upstream.
+2. Complete native three-peer group-attachment injection, mixed recipient outcomes, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks.
+3. Complete native separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
+4. Complete native Quickshell and Wayland acceptance for themes, images, multiple monitors, and floating versus tiled windows.
+5. Investigate `qmlcachegen Panel.qml` parser and import failures. `qmllint Panel.qml` can still exit 255 without diagnostics.
+6. Decide whether to leave the retired message clip only in historical Git objects or plan a separately governed repository-history migration.
+7. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
 
 ## Latest validation
 
@@ -56,7 +55,7 @@ The release-audit follow-up passes the full `make test` aggregate, `make verify-
 
 Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
 
-Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Documentation-order tests require disabled plugin addition before the helper build, enablement only after a successful build, exact update error propagation, and the known host-reload warning in both README and the installation guide.
+Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Update regressions cover monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, supervisor backoff, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation.
 
 The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
@@ -64,10 +63,9 @@ No current test claims visible native Wayland or multi-monitor acceptance. Both 
 
 ## Next order
 
-1. Design and approve a trigger-free update workflow.
-2. Prepare the Quickshell upstream crash report.
-3. Run the remaining native acceptance checks without silently changing the live plugin.
-4. Investigate the Panel QML toolchain failure.
-5. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
-6. Capture a neutral image of the current sound picker.
-7. Keep publication and cleanup as separately approved phases.
+1. Prepare the Quickshell upstream crash report.
+2. Run the remaining native acceptance checks without silently changing the live plugin.
+3. Investigate the Panel QML toolchain failure.
+4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
+5. Capture a neutral image of the current sound picker.
+6. Keep publication and cleanup as separately approved phases.

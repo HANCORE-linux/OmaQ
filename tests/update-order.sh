@@ -1,7 +1,6 @@
 #!/bin/sh
-# This mock verifies documented install and update order plus exit status only.
-# It cannot exercise the Quickshell plugin-loader lifecycle or prove that
-# monitored writes are safe.
+# This mock verifies the documented command surface and install ordering.
+# Shell lifecycle, supervisor races, and atomic exchange use source-update.py.
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
@@ -11,7 +10,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-extract_update_block() {
+extract_block() {
   heading=$1
   document=$2
   awk -v heading="$heading" '
@@ -22,8 +21,8 @@ extract_update_block() {
   ' "$document"
 }
 
-extract_update_block "## Install" "$root/README.md" >"$tmp/readme-install.sh"
-extract_update_block "## Install OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-install.sh"
+extract_block "## Install" "$root/README.md" >"$tmp/readme-install.sh"
+extract_block "## Install OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-install.sh"
 [ -s "$tmp/readme-install.sh" ] || {
   echo "update-order: README install command is missing" >&2
   exit 1
@@ -33,20 +32,21 @@ cmp -s "$tmp/readme-install.sh" "$tmp/installation-install.sh" || {
   exit 1
 }
 
-extract_update_block "## Update" "$root/README.md" >"$tmp/readme-update.sh"
-extract_update_block "## Update OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-update.sh"
+extract_block "## Update" "$root/README.md" >"$tmp/readme-update.sh"
+extract_block "## Update OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-update.sh"
 [ -s "$tmp/readme-update.sh" ] || {
   echo "update-order: README update command is missing" >&2
   exit 1
 }
 cmp -s "$tmp/readme-update.sh" "$tmp/installation-update.sh" || {
-  echo "update-order: documented update commands differ" >&2
+  echo "update-order: documented primary update commands differ" >&2
   exit 1
 }
-extract_update_block "### Recover from a degraded activation" \
+
+extract_block "### Recover from an update failure" \
   "$root/docs/INSTALLATION.md" >"$tmp/rollback.sh"
 [ -s "$tmp/rollback.sh" ] || {
-  echo "update-order: rollback command is missing" >&2
+  echo "update-order: helper rollback command is missing" >&2
   exit 1
 }
 
@@ -67,39 +67,9 @@ case "$*" in
     printf 'enable\n' >>"$OMAQ_INSTALL_TEST_LOG"
     exit "${OMAQ_ENABLE_STATUS:-0}"
     ;;
-  "plugin update hancore.omaq --yes")
-    printf 'source\n' >>"$OMAQ_UPDATE_TEST_LOG"
-    exit "${OMAQ_SOURCE_STATUS:-0}"
-    ;;
-  "restart shell")
-    printf 'restart\n' >>"$OMAQ_UPDATE_TEST_LOG"
-    exit "${OMAQ_RESTART_STATUS:-0}"
-    ;;
   *)
     printf 'unexpected omarchy command: %s\n' "$*" >&2
     exit 99
-    ;;
-esac
-EOF
-cat >"$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh" <<'EOF'
-#!/bin/sh
-set -eu
-case "$*" in
-  --activate)
-    printf 'helper\n' >>"$OMAQ_UPDATE_TEST_LOG"
-    exit "${OMAQ_HELPER_STATUS:-0}"
-    ;;
-  --rollback)
-    printf 'rollback\n' >>"$OMAQ_UPDATE_TEST_LOG"
-    exit "${OMAQ_ROLLBACK_STATUS:-0}"
-    ;;
-  --status)
-    printf 'status\n' >>"$OMAQ_UPDATE_TEST_LOG"
-    exit "${OMAQ_STATUS_STATUS:-0}"
-    ;;
-  *)
-    printf 'unexpected helper command: %s\n' "$*" >&2
-    exit 98
     ;;
 esac
 EOF
@@ -113,8 +83,14 @@ set -eu
 printf 'helper-build\n' >>"$OMAQ_INSTALL_TEST_LOG"
 exit "${OMAQ_BUILD_STATUS:-0}"
 EOF
+cat >"$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$OMAQ_UPDATE_TEST_LOG"
+exit "${OMAQ_UPDATE_STATUS:-0}"
+EOF
 chmod 755 "$tmp/bin/omarchy" "$tmp/bin/make" \
-  "$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-helper.sh"
+  "$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh"
 
 run_install_case() {
   name=$1
@@ -146,10 +122,7 @@ run_install_case() {
   }
   printf '%b' "$expected_log" >"$tmp/install-$name.expected"
   cmp -s "$log" "$tmp/install-$name.expected" || {
-    printf 'update-order: install %s order mismatch\nexpected:\n' "$name" >&2
-    cat "$tmp/install-$name.expected" >&2
-    printf 'actual:\n' >&2
-    cat "$log" >&2
+    printf 'update-order: install %s order mismatch\n' "$name" >&2
     exit 1
   }
 }
@@ -163,110 +136,80 @@ run_install_case build-failure 0 0 23 0 23 \
 run_install_case enable-failure 0 0 0 24 24 \
   'packages\nadd-disabled\nhelper-build\nenable\n'
 
-run_case() {
+run_update_case() {
   name=$1
-  source_status=$2
-  helper_status=$3
-  restart_status=$4
-  expected_status=$5
-  expected_log=$6
-  log="$tmp/$name.log"
+  status=$2
+  expected=$3
+  log="$tmp/update-$name.log"
   : >"$log"
-
   if HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
-      OMAQ_UPDATE_TEST_LOG="$log" \
-      OMAQ_SOURCE_STATUS="$source_status" \
-      OMAQ_HELPER_STATUS="$helper_status" \
-      OMAQ_RESTART_STATUS="$restart_status" \
+      OMAQ_UPDATE_TEST_LOG="$log" OMAQ_UPDATE_STATUS="$status" \
       bash "$tmp/readme-update.sh"; then
-    actual_status=0
+    actual=0
   else
-    actual_status=$?
+    actual=$?
   fi
-
-  [ "$actual_status" -eq "$expected_status" ] || {
-    printf 'update-order: %s returned %s, expected %s\n' \
-      "$name" "$actual_status" "$expected_status" >&2
+  [ "$actual" -eq "$expected" ] || {
+    printf 'update-order: update %s returned %s, expected %s\n' \
+      "$name" "$actual" "$expected" >&2
     exit 1
   }
-  printf '%b' "$expected_log" >"$tmp/$name.expected"
-  cmp -s "$log" "$tmp/$name.expected" || {
-    printf 'update-order: %s order mismatch\nexpected:\n' "$name" >&2
-    cat "$tmp/$name.expected" >&2
-    printf 'actual:\n' >&2
-    cat "$log" >&2
+  [ "$(cat "$log")" = "--yes" ] || {
+    echo "update-order: primary updater arguments changed" >&2
     exit 1
   }
 }
 
-run_case success 0 0 0 0 'source\nhelper\nrestart\n'
-run_case source-failure 23 0 0 23 'source\nrestart\n'
-run_case helper-failure 0 24 0 24 'source\nhelper\nrestart\n'
-run_case restart-failure 0 0 25 25 'source\nhelper\nrestart\n'
-run_case operation-and-restart-failure 0 26 27 26 'source\nhelper\nrestart\n'
-run_case source-and-restart-failure 28 0 29 28 'source\nrestart\n'
+run_update_case success 0 0
+run_update_case failure 31 31
 
-run_rollback_case() {
-  name=$1
-  rollback_status=$2
-  restart_status=$3
-  expected_status=$4
-  expected_log=$5
-  log="$tmp/$name.log"
-  : >"$log"
-
-  if HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
-      OMAQ_UPDATE_TEST_LOG="$log" \
-      OMAQ_ROLLBACK_STATUS="$rollback_status" \
-      OMAQ_RESTART_STATUS="$restart_status" \
-      OMAQ_STATUS_STATUS="${status_status:-0}" \
-      bash "$tmp/rollback.sh"; then
-    actual_status=0
-  else
-    actual_status=$?
-  fi
-
-  [ "$actual_status" -eq "$expected_status" ] || {
-    printf 'update-order: %s returned %s, expected %s\n' \
-      "$name" "$actual_status" "$expected_status" >&2
-    exit 1
-  }
-  printf '%b' "$expected_log" >"$tmp/$name.expected"
-  cmp -s "$log" "$tmp/$name.expected" || {
-    printf 'update-order: %s order mismatch\nexpected:\n' "$name" >&2
-    cat "$tmp/$name.expected" >&2
-    printf 'actual:\n' >&2
-    cat "$log" >&2
-    exit 1
-  }
-}
-
-run_rollback_case rollback-success 0 0 0 'rollback\nrestart\nstatus\n'
-run_rollback_case rollback-failure 31 0 31 'rollback\nrestart\nstatus\n'
-run_rollback_case rollback-restart-failure 0 32 32 'rollback\nrestart\nstatus\n'
-run_rollback_case rollback-and-restart-failure 33 34 33 'rollback\nrestart\nstatus\n'
-status_status=35
-run_rollback_case rollback-status-failure 0 0 35 'rollback\nrestart\nstatus\n'
-unset status_status
-
-grep -Fq "must then attempt exactly one complete \`omarchy restart shell\`" \
-  "$root/docs/PLAN.md" || {
-  echo "update-order: architecture contract does not require the final restart" >&2
+rollback_log="$tmp/rollback.log"
+: >"$rollback_log"
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" OMAQ_UPDATE_TEST_LOG="$rollback_log" \
+  OMAQ_UPDATE_STATUS=0 bash "$tmp/rollback.sh"
+[ "$(cat "$rollback_log")" = "--rollback-helper --yes" ] || {
+  echo "update-order: helper rollback does not use the shell-off updater" >&2
   exit 1
 }
-grep -Fq 'also attempts that restart on failed update paths' "$root/docs/USER-GUIDE.md" || {
-  echo "update-order: user guide omits failed update paths" >&2
-  exit 1
-}
+
 for document in "$root/README.md" "$root/docs/INSTALLATION.md"; do
-  grep -Fq 'Known host-reload risk' "$document" || {
-    echo "update-order: documented command omits the known host-reload risk" >&2
+  if grep -Fq 'Known host-reload risk' "$document"; then
+    echo "update-order: obsolete host-reload warning remains" >&2
     exit 1
-  }
-  grep -Fiq 'final restart guard does not prevent' "$document" || {
-    echo "update-order: documented warning overstates the restart guard" >&2
+  fi
+  if grep -Fq 'omarchy plugin update hancore.omaq' "$document"; then
+    echo "update-order: documented update still writes through the active checkout" >&2
     exit 1
-  }
+  fi
 done
+
+grep -Fq 'mv -T --exchange --no-copy' "$root/docs/PLAN.md" || {
+  echo "update-order: architecture omits the atomic no-copy exchange" >&2
+  exit 1
+}
+grep -Fq 'omarchy-launch-shell' "$root/docs/PLAN.md" || {
+  echo "update-order: architecture omits the shell supervisor" >&2
+  exit 1
+}
+grep -Fq 'update-pending: old helper, new tree' "$root/docs/PLAN.md" || {
+  echo "update-order: architecture omits the mixed helper state" >&2
+  exit 1
+}
+grep -Fq 'shell-off source updates' "$root/docs/USER-GUIDE.md" || {
+  echo "update-order: user guide omits the shell-off workflow" >&2
+  exit 1
+}
+grep -Fq 'cooperative same-user boundary' "$root/docs/SECURITY.md" || {
+  echo "update-order: security guide omits the concurrent-restart boundary" >&2
+  exit 1
+}
+grep -Fq 'Bootstrap an older installation' "$root/docs/INSTALLATION.md" || {
+  echo "update-order: installation guide omits the external bootstrap" >&2
+  exit 1
+}
+[ -x "$root/scripts/update-omaq.sh" ] && [ -x "$root/scripts/update-omaq.py" ] || {
+  echo "update-order: source updater is not executable" >&2
+  exit 1
+}
 
 printf 'update-order: ok\n'
