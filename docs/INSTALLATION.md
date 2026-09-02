@@ -133,7 +133,7 @@ The updater performs these steps in order:
 10. Back up the running `/proc/<pid>/exe` image through the bound runtime tool.
 11. Repeat the stopped-state check and exchange the staged and live directories with `mv -T --exchange --no-copy`.
 12. Validate the live plugin and create `helper/omaq.prev` from the still-running old image.
-13. Start the shell and bind its supervisor PID, Quickshell PID, start times, parent relationship, and session path through every consumer check.
+13. Start the shell, wait for exactly one ready supervisor, Quickshell process, and watcher when the restart wrapper reports only its readiness timeout, recheck that the session is unlocked in that case, then bind their PIDs, start times, parent relationship, and session path through every consumer check.
 14. Require `listPlugins`, the `hancore.omaq` IPC target, running and available helper hashes, protocol compatibility, and the correlated shell journal to pass.
 15. Activate the new helper through `helper-runtime.py --expect-sha256`.
 16. Recheck the bound shell plus the running helper hash and protocol; an inactive or incompatible replacement fails the update.
@@ -142,7 +142,7 @@ The updater checks filesystem device, mount identity, and exchange capability be
 
 The old complete Git checkout moves to the external path printed as `previous tree`. OmaQ retains that directory for inspection; it does not delete source backups automatically.
 
-The final process check detects a cooperative restart before the exchange and aborts without renaming either tree. Another process running as the same user remains inside OmaQ's documented trust boundary. Do not run `omarchy restart shell` concurrently with an update.
+The final process check detects a cooperative restart before the exchange and aborts without renaming either tree. During a rollback stop, every exact replacement supervisor observed before the deadline is terminated so the launcher's backoff cannot strand a mixed tree. Another process running as the same user remains inside OmaQ's documented trust boundary. Do not run `omarchy restart shell` concurrently with an update.
 
 ### Check update status
 
