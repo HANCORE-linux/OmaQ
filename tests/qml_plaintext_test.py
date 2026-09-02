@@ -19,12 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
     "ChatSurface.qml": "e40d764c67ba056748efc681af0749893e826f16fc2bbe3fa4e7026b3cd11c97",
-    "Panel.qml": "2a861b11c5d01db5bfe6c750454bb0a37a4b87699278fdd0bcb293962fceb324",
+    "Panel.qml": "dfdae066a00c3acc1931c673b26ce67bc31a56ca98a5fb880813f08acd623401",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "8d89679c5e6a1ead4c1c7d1479e804d6ee0bc8cddf982e4523629122d48d94dc",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "e4864a218b008654e64182556cd3a6d04bf6dfd4b67b41f7f69766a14a7dc149",
+    "pages/ChatPage.qml": "75117cba5d4530967abffea470cfe761f77b8c10ae0275f9fb139ec269fd6fd1",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -146,9 +146,9 @@ REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
     "ChatSurface.qml": "536820193eb50bd63cb5777b65eb6f647086f407fe1a1dce6db432806dc7c481",
-    "Panel.qml": "bad75f40efb072be61dff11e960d3362b164a6f69523f5fa29c10b817b5f5219",
+    "Panel.qml": "66dc7079d62294591101cd24da2e4ede855bc12b58d6d7da803688da226254d8",
     "Service.qml": "90015a29d7e7cdc9c52ad81bf1b748ebc042cf33805a1f1f90e59f5ea5f51b2d",
-    "pages/ChatPage.qml": "cb31c415876c60056c1cd8972e5e5f8acc480309a22524d0f64c7772ecff1b03",
+    "pages/ChatPage.qml": "ba714366e6928a4fed978235118d4bc95065cf41b48e75b4d1b57dce6d80caf3",
 }
 FUNCTION_PARAMETERS = re.compile(
     r"\bfunction(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\((?P<params>[^)]*)\)"

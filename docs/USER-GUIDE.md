@@ -14,7 +14,7 @@ Your identity, contacts, Ratchet state, preferences, and history remain in local
 
 ## Open the panel and respond to requests
 
-The fixed panel header normally shows your avatar, nickname, and connection state. A pending friend or group request temporarily replaces the complete self presentation until you accept or decline it.
+The 400-pixel panel uses a fixed header that normally shows your avatar, nickname, and connection state. A pending friend or group request temporarily replaces the complete self presentation until you accept or decline it.
 
 Hover or keyboard-focus an action-rail icon to display its label. Use the rail to open these functions:
 
@@ -37,7 +37,7 @@ Hover or keyboard-focus an action-rail icon to display its label. Use the rail t
 
 Close the panel with `Escape`, another press on the OmaQ bar action, or a click outside. The panel intentionally has no redundant Close button and never keeps a desktop-sized invisible input region.
 
-Friend names show online, away, and offline state. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
+Friend names use the panel's width-driven grid and show online, away, and offline state. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
 
 ## Create and redeem invitations
 
@@ -46,7 +46,7 @@ A direct connection starts with a one-use `omaq://` invitation shared through a 
 <table>
 <thead><tr><th>Create an invitation</th><th>Redeem an invitation</th><th>Verify identity</th><th>Incoming call</th></tr></thead>
 <tbody><tr>
-<td><a href="images/guide/04-panel-active-invite.png"><img src="images/guide/04-panel-active-invite.png" alt="Active OmaQ invitation" width="220"></a><br>The Invite view shows a QR code, shortened link, exact lifetime, Copy link, New link, and Revoke.</td>
+<td><a href="images/guide/04-panel-active-invite.png"><img src="images/guide/04-panel-active-invite.png" alt="Active OmaQ invitation" width="220"></a><br>The Invite view shows a QR code, shortened link, exact lifetime, concise share/redeem/accept instructions, Copy link, New link, and Revoke.</td>
 <td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly.</td>
 <td><strong>Safety code</strong><br>Select a direct contact, display its safety code, and compare it with that contact through another trusted channel. Message search stays inside the matching chat window.</td>
 <td><a href="images/guide/27-panel-incoming-call.png"><img src="images/guide/27-panel-incoming-call.png" alt="Incoming direct voice call" width="220"></a><br>An incoming DirectCall offers Answer and Decline. Opening the caller's chat never answers automatically.</td>
