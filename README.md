@@ -74,3 +74,7 @@ Keep retained data if you may reinstall OmaQ or still need the identity or histo
 ## Documentation
 
 [Documentation index](docs/README.md) · [Illustrated user guide](docs/USER-GUIDE.md) · [Installation lifecycle](docs/INSTALLATION.md) · [Security and privacy](docs/SECURITY.md) · [Current status](docs/CURRENT.md) · [Architecture plan](docs/PLAN.md) · [Third-party components](THIRD_PARTY.md)
+
+## License
+
+The QML plugin is licensed under the [MIT License](LICENSE.MIT). OmaQ's helper source is GPL-3.0-or-later; the distributed helper binary is [GPL-3.0-only](LICENSE.GPL-3) because it also links to `libsignal-protocol-c`. See [Third-party components](THIRD_PARTY.md) for dependency and asset licenses.

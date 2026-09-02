@@ -18,7 +18,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
-    "ChatSurface.qml": "074974012929bc8e3e8aeeac2d9eef6d9c394d78548b68a1c3e0c34353fe11c6",
+    "ChatSurface.qml": "e40d764c67ba056748efc681af0749893e826f16fc2bbe3fa4e7026b3cd11c97",
     "Panel.qml": "2a861b11c5d01db5bfe6c750454bb0a37a4b87699278fdd0bcb293962fceb324",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
@@ -145,7 +145,7 @@ COMPUTED_WRITE_ALLOWLIST = {
 REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
-    "ChatSurface.qml": "3f853b765fd570d05f915fccd9ae1503becf3c02af2926841207445472a7f222",
+    "ChatSurface.qml": "536820193eb50bd63cb5777b65eb6f647086f407fe1a1dce6db432806dc7c481",
     "Panel.qml": "bad75f40efb072be61dff11e960d3362b164a6f69523f5fa29c10b817b5f5219",
     "Service.qml": "90015a29d7e7cdc9c52ad81bf1b748ebc042cf33805a1f1f90e59f5ea5f51b2d",
     "pages/ChatPage.qml": "cb31c415876c60056c1cd8972e5e5f8acc480309a22524d0f64c7772ecff1b03",

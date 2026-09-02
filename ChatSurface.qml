@@ -960,7 +960,7 @@ Item {
       return
     var path = selectedSound === "custom" ? root.managedCustomSoundPath() : ""
     if (selectedSound === "icq-message")
-      path = String(Qt.resolvedUrl("sounds/icq-message.mp3")).replace(/^file:\/\//, "")
+      path = String(Qt.resolvedUrl("sounds/uhoh.wav")).replace(/^file:\/\//, "")
     else if (selectedSound !== "custom")
       path = String(Qt.resolvedUrl("sounds/" + root.packagedSoundFile(selectedSound))).replace(/^file:\/\//, "")
     if (!path)
