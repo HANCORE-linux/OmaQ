@@ -680,6 +680,124 @@ class SourceUpdateTests(unittest.TestCase):
         self.assertFalse(controller._is_shell(wrong_session))
         self.assertEqual(shell.ppid, launcher.pid)
 
+    def test_shell_start_waits_for_delayed_readiness_after_wrapper_failure(self):
+        controller = MODULE.ShellController.__new__(MODULE.ShellController)
+        controller.omarchy = "/usr/bin/omarchy"
+        controller.ipc_env = {}
+        expected = MODULE.ShellProcesses((), (), ())
+        attempts = []
+        lock_checks = []
+        controller.refuse_locked_session = lambda: lock_checks.append(True)
+
+        def delayed_running():
+            attempts.append(True)
+            if len(attempts) < 3:
+                raise MODULE.UpdateError("shell still loading")
+            return expected
+
+        original_run = MODULE.run
+        original_sleep = MODULE.time.sleep
+        try:
+            MODULE.run = lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0],
+                1,
+                b"",
+                b"Omarchy shell did not become ready after restart.\n",
+            )
+            MODULE.time.sleep = lambda _seconds: None
+            controller.assert_running = delayed_running
+            self.assertEqual(controller.start(), expected)
+        finally:
+            MODULE.run = original_run
+            MODULE.time.sleep = original_sleep
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(lock_checks, [True])
+
+    def test_delayed_shell_start_rechecks_the_session_lock(self):
+        controller = MODULE.ShellController.__new__(MODULE.ShellController)
+        controller.omarchy = "/usr/bin/omarchy"
+        controller.ipc_env = {}
+        controller.wait_running = lambda: MODULE.ShellProcesses((), (), ())
+
+        def locked_session():
+            raise MODULE.UpdateError(
+                "refusing to update while the Hyprland session is locked"
+            )
+
+        controller.refuse_locked_session = locked_session
+        original_run = MODULE.run
+        try:
+            MODULE.run = lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0],
+                1,
+                b"",
+                b"Omarchy shell did not become ready after restart.\n",
+            )
+            with self.assertRaisesRegex(MODULE.UpdateError, "session is locked"):
+                controller.start()
+        finally:
+            MODULE.run = original_run
+
+    def test_shell_start_rejects_non_readiness_wrapper_failure(self):
+        controller = MODULE.ShellController.__new__(MODULE.ShellController)
+        controller.omarchy = "/usr/bin/omarchy"
+        controller.ipc_env = {}
+        waited = []
+        controller.wait_running = lambda: waited.append(True)
+        original_run = MODULE.run
+        try:
+            MODULE.run = lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0],
+                1,
+                b"",
+                b"Omarchy shell restarted, but the session lock was not re-secured.\n",
+            )
+            with self.assertRaisesRegex(MODULE.UpdateError, "lock was not re-secured"):
+                controller.start()
+        finally:
+            MODULE.run = original_run
+        self.assertEqual(waited, [])
+
+    def test_shell_stop_terminates_a_supervisor_that_reappears(self):
+        controller = MODULE.ShellController.__new__(MODULE.ShellController)
+        controller.quickshell = Path("/usr/bin/quickshell")
+        controller.shell_dir = Path("/usr/share/omarchy/shell")
+        controller.ipc_env = {}
+        first_launcher = MODULE.ProcessInfo(100, 10, 1000, ("launcher",), {}, "/bin/bash")
+        first_shell = MODULE.ProcessInfo(
+            101, 100, 1001, ("quickshell",), {}, "/usr/bin/quickshell"
+        )
+        second_launcher = MODULE.ProcessInfo(
+            200, 10, 2000, ("launcher",), {}, "/bin/bash"
+        )
+        second_shell = MODULE.ProcessInfo(
+            201, 200, 2001, ("quickshell",), {}, "/usr/bin/quickshell"
+        )
+        first = MODULE.ShellProcesses((first_launcher,), (first_shell,), ())
+        second = MODULE.ShellProcesses((second_launcher,), (second_shell,), ())
+        stopped = MODULE.ShellProcesses((), (), ())
+        states = iter((first, second, stopped))
+        terminated = []
+        kills = []
+        controller.assert_running = lambda: first
+        controller.scan = lambda: next(states)
+        controller.ping = lambda: False
+        controller._terminate_bound = lambda process: terminated.append(process.pid)
+        original_run = MODULE.run
+        original_sleep = MODULE.time.sleep
+        try:
+            MODULE.run = lambda *args, **kwargs: (
+                kills.append(args[0])
+                or subprocess.CompletedProcess(args[0], 0, b"", b"")
+            )
+            MODULE.time.sleep = lambda _seconds: None
+            controller.stop(require_running=True)
+        finally:
+            MODULE.run = original_run
+            MODULE.time.sleep = original_sleep
+        self.assertEqual(terminated, [100, 200])
+        self.assertEqual(len(kills), 2)
+
     def test_stopped_check_rejects_supervisor_backoff_without_quickshell(self):
         controller = MODULE.ShellController.__new__(MODULE.ShellController)
         launcher = MODULE.ProcessInfo(
@@ -699,12 +817,24 @@ class SourceUpdateTests(unittest.TestCase):
         controller = MODULE.ShellController.__new__(MODULE.ShellController)
         launcher = MODULE.ProcessInfo(100, 10, 1000, ("launcher",), {}, "/bin/bash")
         shell = MODULE.ProcessInfo(101, 100, 1001, ("quickshell",), {}, "/usr/bin/quickshell")
-        expected = MODULE.ShellProcesses((launcher,), (shell,), ())
+        watcher = MODULE.ProcessInfo(103, 101, 1003, ("inotifywait",), {}, "/usr/bin/inotifywait")
+        expected = MODULE.ShellProcesses((launcher,), (shell,), (watcher,))
         controller.scan = lambda: expected
         controller.assert_same_shell(expected)
 
         replacement = MODULE.ProcessInfo(102, 100, 1002, shell.argv, {}, shell.executable)
-        controller.scan = lambda: MODULE.ShellProcesses((launcher,), (replacement,), ())
+        controller.scan = lambda: MODULE.ShellProcesses(
+            (launcher,), (replacement,), (watcher,)
+        )
+        with self.assertRaisesRegex(MODULE.UpdateError, "changed during consumer"):
+            controller.assert_same_shell(expected)
+
+        replacement_watcher = MODULE.ProcessInfo(
+            104, 101, 1004, watcher.argv, {}, watcher.executable
+        )
+        controller.scan = lambda: MODULE.ShellProcesses(
+            (launcher,), (shell,), (replacement_watcher,)
+        )
         with self.assertRaisesRegex(MODULE.UpdateError, "changed during consumer"):
             controller.assert_same_shell(expected)
 

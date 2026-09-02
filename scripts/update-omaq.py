@@ -945,13 +945,31 @@ class ShellController:
 
     def assert_running(self) -> ShellProcesses:
         state = self.scan()
-        if len(state.launchers) != 1 or len(state.shells) != 1:
-            fail("expected exactly one Omarchy shell supervisor and one Quickshell process")
+        if (
+            len(state.launchers) != 1
+            or len(state.shells) != 1
+            or len(state.watchers) != 1
+        ):
+            fail(
+                "expected exactly one Omarchy shell supervisor, Quickshell "
+                "process, and plugin watcher"
+            )
         if state.shells[0].ppid != state.launchers[0].pid:
             fail("Quickshell is not owned by the bound Omarchy shell supervisor")
         if not self.ping():
             fail("Omarchy shell is not ready before update")
         return state
+
+    def wait_running(self, timeout: float = 45) -> ShellProcesses:
+        deadline = time.monotonic() + timeout
+        last_error = "Omarchy shell did not become ready"
+        while time.monotonic() < deadline:
+            try:
+                return self.assert_running()
+            except UpdateError as error:
+                last_error = str(error)
+                time.sleep(0.1)
+        fail(last_error)
 
     def assert_stopped(self) -> None:
         state = self.scan()
@@ -1010,9 +1028,11 @@ class ShellController:
 
         # A nonzero Quickshell exit leaves the launcher in its one-second
         # backoff. Terminate that exact supervisor before it can relaunch.
+        terminated_launchers = set()
         state = self.scan()
         for launcher in state.launchers:
             self._terminate_bound(launcher)
+            terminated_launchers.add((launcher.pid, launcher.start))
 
         deadline = time.monotonic() + 10
         last_kill = 0.0
@@ -1021,7 +1041,12 @@ class ShellController:
             if not state.launchers and not state.shells and not state.watchers:
                 if not self.ping():
                     return
-            elif state.shells and not state.launchers and time.monotonic() - last_kill > 0.25:
+            for launcher in state.launchers:
+                identity = (launcher.pid, launcher.start)
+                if identity not in terminated_launchers:
+                    self._terminate_bound(launcher)
+                    terminated_launchers.add(identity)
+            if state.shells and time.monotonic() - last_kill > 0.25:
                 run(
                     [
                         str(self.quickshell),
@@ -1040,12 +1065,28 @@ class ShellController:
         fail("Omarchy shell supervisor did not stop cleanly")
 
     def start(self) -> ShellProcesses:
-        run([self.omarchy, "restart", "shell"], timeout=45, env=self.ipc_env)
-        return self.assert_running()
+        result = run(
+            [self.omarchy, "restart", "shell"],
+            check=False,
+            capture=True,
+            timeout=45,
+            env=self.ipc_env,
+        )
+        readiness_timeout = False
+        if result.returncode != 0:
+            detail = bounded_text(result.stderr, "Omarchy shell restart").strip()
+            if detail != "Omarchy shell did not become ready after restart.":
+                suffix = f": {detail}" if detail else ""
+                fail(f"Omarchy shell restart failed ({result.returncode}){suffix}")
+            readiness_timeout = True
+        running = self.wait_running()
+        if readiness_timeout:
+            self.refuse_locked_session()
+        return running
 
     def assert_same_shell(self, expected: ShellProcesses) -> None:
         current = self.scan()
-        if current.launchers != expected.launchers or current.shells != expected.shells:
+        if current != expected:
             fail("the restarted Omarchy shell changed during consumer checks")
 
     def journal_cursor(self) -> str:
