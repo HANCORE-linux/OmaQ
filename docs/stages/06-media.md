@@ -22,7 +22,7 @@
 make verify-6
 ```
 
-The latest measured call-peak RSS is recorded in `.rss-call-kb`. Gate is 40960 kB (OmaQ.md ≤ 40 MB).
+`tests/phase6.sh` prints the measured call-peak RSS. The gate is 40,960 kB.
 
 ## Stays out
 

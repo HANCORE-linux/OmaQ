@@ -146,7 +146,83 @@ done
 	exit 1
 }
 
+status_sequence=0
+direct_peers_online() {
+	status_sequence=$((status_sequence + 1))
+	request_a="phase6-online-a-$status_sequence"
+	request_b="phase6-online-b-$status_sequence"
+	printf '{"op":"status","id":"%s"}\n' "$request_a" >&3
+	printf '{"op":"status","id":"%s"}\n' "$request_b" >&4
+	python3 - "$fa" "$request_a" "$fb" "$request_b" <<'PY'
+import json
+import sys
+import time
+
+
+def records(path):
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        lines = stream.readlines()
+    result = []
+    for index, line in enumerate(lines):
+        if index == len(lines) - 1 and not line.endswith("\n"):
+            continue
+        value = json.loads(line)
+        if isinstance(value, dict):
+            result.append(value)
+    return result
+
+
+def projection(path, request):
+    values = records(path)
+    snapshot_index = next((
+        index for index in range(len(values) - 1, -1, -1)
+        if values[index].get("event") == "snapshot"
+        and values[index].get("request") == request
+    ), None)
+    if snapshot_index is None:
+        return None
+    generation = None
+    friend_online = False
+    for value in values[snapshot_index + 1:]:
+        if value.get("event") == "friend.list.begin" and generation is None:
+            generation = value.get("generation")
+        elif generation is not None and value.get("generation") == generation:
+            if value.get("event") == "friend.info" and value.get("id") == "0":
+                friend_online = value.get("online") is True
+            elif value.get("event") == "friend.list.end":
+                return values[snapshot_index].get("online") is True and friend_online
+    return None
+
+
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    states = (projection(sys.argv[1], sys.argv[2]),
+              projection(sys.argv[3], sys.argv[4]))
+    if all(state is not None for state in states):
+        raise SystemExit(0 if all(states) else 1)
+    time.sleep(0.05)
+raise SystemExit(2)
+PY
+}
+
+online=0
+i=0
+while [ "$i" -lt 90 ]; do
+	if direct_peers_online; then
+		online=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+if [ "$online" -ne 1 ]; then
+	echo "phase6: public Tox connectivity did not make both direct peers online" >&2
+	tail -20 "$fa.err" "$fb.err" >&2
+	exit 1
+fi
+
 sent=0
+offline_during_send=0
 i=0
 while [ "$i" -lt 60 ]; do
 	printf '{"op":"msg.send","conversation":"0","key":"%s","text":"ping","id":"phase6-ping-%s"}\n' "$friend_key_a" "$i" >&3
@@ -155,9 +231,20 @@ while [ "$i" -lt 60 ]; do
 		sent=1
 		break
 	fi
+	if ! direct_peers_online; then
+		offline_during_send=1
+	fi
 	i=$((i + 1))
 done
-[ "$sent" -eq 1 ] || { echo "phase6: not connected" >&2; exit 1; }
+if [ "$sent" -ne 1 ]; then
+	if [ "$offline_during_send" -eq 1 ] || ! direct_peers_online; then
+		echo "phase6: public Tox connectivity was unavailable during direct messaging" >&2
+	else
+		echo "phase6: encrypted direct messaging did not establish while both peers were online" >&2
+	fi
+	tail -20 "$fa.err" "$fb.err" >&2
+	exit 1
+fi
 
 printf '{"op":"file.send","conversation":"0","key":"%s","path":"%s","id":"phase6-file-send"}\n' "$friend_key_a" "$src" >&3
 ok=0
@@ -204,28 +291,100 @@ python3 - "$fa" "$fb" "$ha/history/d:$friend_key_a/messages.jsonl" \
 	"$hb/history/d:$friend_key_b/messages.jsonl" "$src" "$got" <<'PY'
 import json
 import sys
+import time
+
 
 def records(path):
+    try:
+        with open(path, encoding="utf-8", errors="strict") as stream:
+            lines = stream.readlines()
+    except FileNotFoundError:
+        return []
     result = []
-    with open(path, encoding="utf-8", errors="strict") as stream:
-        for line in stream:
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    for index, line in enumerate(lines):
+        if index == len(lines) - 1 and not line.endswith("\n"):
+            continue
+        value = json.loads(line)
+        if isinstance(value, dict):
+            result.append(value)
     return result
 
-for event_path, history_path, message_path, direction in (
-        (sys.argv[1], sys.argv[3], sys.argv[5], "out"),
-        (sys.argv[2], sys.argv[4], sys.argv[6], "in")):
-    event = next((item for item in reversed(records(event_path))
-                  if item.get("event") == "message" and item.get("dir") == direction and
-                  item.get("kind") == "file" and item.get("text") == message_path), None)
-    stored = next((item for item in reversed(records(history_path))
-                   if event and item.get("id") == event.get("id")), None)
-    if not event or not stored or not isinstance(event.get("ts"), int) or \
-            event["ts"] <= 0 or event["ts"] != stored.get("ts"):
-        raise SystemExit("phase6: Direct attachment event/history timestamp mismatch")
+
+sides = (
+    ("sender", sys.argv[1], sys.argv[3], sys.argv[5], "out"),
+    ("receiver", sys.argv[2], sys.argv[4], sys.argv[6], "in"),
+)
+deadline = time.monotonic() + 10
+while True:
+    synchronized = []
+    for label, event_path, history_path, message_path, direction in sides:
+        event = next((
+            item for item in reversed(records(event_path))
+            if item.get("event") == "message" and item.get("dir") == direction
+            and item.get("kind") == "file" and item.get("text") == message_path
+        ), None)
+        stored = next((
+            item for item in reversed(records(history_path))
+            if event and item.get("id") == event.get("id")
+        ), None)
+        synchronized.append((label, event, stored))
+    if all(event and stored for _, event, stored in synchronized):
+        break
+    if time.monotonic() >= deadline:
+        missing = []
+        for label, event, stored in synchronized:
+            if not event:
+                missing.append(f"{label} event")
+            elif not stored:
+                missing.append(f"{label} history entry")
+        raise SystemExit(
+            "phase6: attachment timestamp synchronization timed out waiting for "
+            + ", ".join(missing)
+        )
+    time.sleep(0.1)
+
+def timestamp_failures(pairs):
+    missing = []
+    mismatches = []
+    for label, event, stored in pairs:
+        event_stamp = event.get("ts")
+        history_stamp = stored.get("ts")
+        event_valid = (isinstance(event_stamp, int)
+                       and not isinstance(event_stamp, bool) and event_stamp > 0)
+        history_valid = (isinstance(history_stamp, int)
+                         and not isinstance(history_stamp, bool) and history_stamp > 0)
+        if not event_valid:
+            missing.append(f"{label} event")
+        if not history_valid:
+            missing.append(f"{label} history")
+        if event_valid and history_valid and event_stamp != history_stamp:
+            mismatches.append(
+                f"{label} event={event_stamp}, {label} history={history_stamp}"
+            )
+    return missing, mismatches
+
+
+fixture = (
+    ("sender", {"ts": 100}, {"ts": 100}),
+    ("receiver", {"ts": 101}, {"ts": 101}),
+)
+if timestamp_failures(fixture) != ([], []):
+    raise SystemExit("phase6: cross-peer timestamp fixture failed")
+mismatch_fixture = (("sender", {"ts": 100}, {"ts": 101}),)
+if not timestamp_failures(mismatch_fixture)[1]:
+    raise SystemExit("phase6: local timestamp mismatch fixture failed")
+
+missing, mismatches = timestamp_failures(synchronized)
+if missing:
+    raise SystemExit(
+        "phase6: authoritative attachment timestamp missing from "
+        + ", ".join(missing)
+    )
+if mismatches:
+    raise SystemExit(
+        "phase6: attachment event/history timestamp mismatch: "
+        + "; ".join(mismatches)
+    )
 PY
 
 # A recipient decline must produce a visible terminal cancellation on both peers.
@@ -381,6 +540,5 @@ if [ "$peak" -gt 40960 ]; then
 	exit 1
 fi
 
-echo "$peak" >"$root/.rss-call-kb" || true
 echo "phase6: ok rss_call_kb=$peak dest=$got"
 exit 0
