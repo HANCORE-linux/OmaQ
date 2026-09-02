@@ -58,7 +58,7 @@ Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented
 
 Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Documentation-order tests require disabled plugin addition before the helper build, enablement only after a successful build, exact update error propagation, and the known host-reload warning in both README and the installation guide.
 
-The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest now distinguishes OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
+The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
 No current test claims visible native Wayland or multi-monitor acceptance. Both live installations remain on `580c69cf7583ccca4461bd265334edc0a692b65d`; no private identity, Ratchet, group registry, or history data was synchronized for this audit.
 

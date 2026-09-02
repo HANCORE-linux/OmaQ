@@ -159,17 +159,46 @@ import sys
 import time
 
 
-def records(path):
-    with open(path, encoding="utf-8", errors="strict") as stream:
-        lines = stream.readlines()
+def decode_records(lines, path):
     result = []
     for index, line in enumerate(lines):
-        if index == len(lines) - 1 and not line.endswith("\n"):
-            continue
-        value = json.loads(line)
-        if isinstance(value, dict):
-            result.append(value)
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1 and not line.endswith("\n"):
+                continue
+            raise
+        if not isinstance(value, dict):
+            raise SystemExit(f"phase6: non-object JSON record in {path}")
+        result.append(value)
     return result
+
+
+def records(path):
+    with open(path, encoding="utf-8", errors="strict") as stream:
+        return decode_records(stream.readlines(), path)
+
+
+def check_parser_fixtures():
+    for label, payload in (("terminated", "null\n"),
+                           ("unterminated", "null")):
+        try:
+            decode_records([payload], f"<status-{label}-null-fixture>")
+        except SystemExit as error:
+            if "non-object JSON record" in str(error):
+                continue
+        raise SystemExit(
+            f"phase6: status parser accepted a complete {label} null record"
+        )
+    complete = decode_records(["{\"event\":\"fixture\"}"],
+                              "<status-complete-fixture>")
+    incomplete = decode_records(["{\"event\":"],
+                                "<status-incomplete-fixture>")
+    if complete != [{"event": "fixture"}] or incomplete:
+        raise SystemExit("phase6: status parser partial-line fixture failed")
+
+
+check_parser_fixtures()
 
 
 def projection(path, request):
@@ -294,20 +323,49 @@ import sys
 import time
 
 
+def decode_records(lines, path):
+    result = []
+    for index, line in enumerate(lines):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1 and not line.endswith("\n"):
+                continue
+            raise
+        if not isinstance(value, dict):
+            raise SystemExit(f"phase6: non-object JSON record in {path}")
+        result.append(value)
+    return result
+
+
 def records(path):
     try:
         with open(path, encoding="utf-8", errors="strict") as stream:
-            lines = stream.readlines()
+            return decode_records(stream.readlines(), path)
     except FileNotFoundError:
         return []
-    result = []
-    for index, line in enumerate(lines):
-        if index == len(lines) - 1 and not line.endswith("\n"):
-            continue
-        value = json.loads(line)
-        if isinstance(value, dict):
-            result.append(value)
-    return result
+
+
+def check_parser_fixtures():
+    for label, payload in (("terminated", "null\n"),
+                           ("unterminated", "null")):
+        try:
+            decode_records([payload], f"<attachment-{label}-null-fixture>")
+        except SystemExit as error:
+            if "non-object JSON record" in str(error):
+                continue
+        raise SystemExit(
+            f"phase6: attachment parser accepted a complete {label} null record"
+        )
+    complete = decode_records(["{\"event\":\"fixture\"}"],
+                              "<attachment-complete-fixture>")
+    incomplete = decode_records(["{\"event\":"],
+                                "<attachment-incomplete-fixture>")
+    if complete != [{"event": "fixture"}] or incomplete:
+        raise SystemExit("phase6: attachment parser partial-line fixture failed")
+
+
+check_parser_fixtures()
 
 
 sides = (
