@@ -5,10 +5,9 @@
 </p>
 
 <p align="center">
-  OmaQ is invite-only chat for the Omarchy bar: no account, phone number, or public user search.
+  OmaQ is invite-only chat for the Omarchy bar: no account, phone number, or public user search.<br>
+  <sub>Create your identity locally, then connect with a one-time private invitation link or QR code.</sub>
 </p>
-
-OmaQ creates your identity locally. Connect with another person by sharing a one-time private invitation as a link or QR code.
 
 ## Security
 
