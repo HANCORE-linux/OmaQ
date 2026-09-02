@@ -2,15 +2,23 @@
 
 This visual guide covers the complete OmaQ workflow: connect with trusted people, use DirectChat and GroupChat, exchange files, manage notifications, protect your identity, and recover safely from interrupted state changes. Click any screenshot to open its full-size original.
 
+Use this guide by task:
+
+- [Understand OmaQ security](#understand-omaq-security)
+- [Open the panel and respond to requests](#open-the-panel-and-respond-to-requests)
+- [Create and redeem invitations](#create-and-redeem-invitations)
+- [Personalize the interface](#personalize-the-interface)
+- [Send DirectChat messages](#send-directchat-messages)
+- [Exchange files and images](#exchange-files-and-images)
+- [Make DirectChat voice calls](#make-directchat-voice-calls)
+- [Create and manage private groups](#create-and-manage-private-groups)
+- [Protect and move your identity](#protect-and-move-your-identity)
+- [Handle destructive and recovery states](#handle-destructive-and-recovery-states)
+- [Maintain OmaQ](#maintain-omaq)
+
 ## Understand OmaQ security
 
-![How OmaQ messages travel](images/omaq-message-flow.png)
-
-OmaQ has no accounts, central chat server, or project-operated infrastructure. The local `helper/omaq` process connects to public Tox bootstrap and Transmission Control Protocol (TCP) relay nodes run by community volunteers. Those nodes help clients discover the network and forward encrypted packets, but they cannot read message contents.
-
-Direct messages add the Signal Double Ratchet to Tox transport and never fall back to plaintext. OmaQ disables direct User Datagram Protocol (UDP) discovery and hole punching, so contacts do not receive each other's IP addresses. Tox relay operators can still observe ordinary connection metadata.
-
-Your identity, contacts, Ratchet state, preferences, and history remain in local storage. Use OmaQ only for lawful private communication with people you trust.
+OmaQ stores identity and history locally. Direct messages add the Signal Double Ratchet to Tox transport and never fall back to plaintext. Read [Security and privacy](SECURITY.md) for relay metadata, local-data protection, passphrase limits, and contact verification.
 
 ## Open the panel and respond to requests
 
@@ -64,7 +72,7 @@ A new link expires 24 hours after the helper issues it. **New link** first revok
 
 ## Personalize the interface
 
-Panel preferences use the active OmaQ and Omarchy visual system. Message scaling changes message bodies only; composer controls, receipts, and group member labels keep their normal size.
+Panel preferences use the active OmaQ and Omarchy visual system. Message scaling changes message bodies and composer input; composer controls, receipts, and group member labels keep their normal size.
 
 <table>
 <thead><tr><th>Message size</th><th>Chat theme</th><th>Notification sound</th><th>Demo window</th></tr></thead>
@@ -82,7 +90,7 @@ Omarchy plugin settings also control badges, right-side notifications, desktop n
 
 ## Send DirectChat messages
 
-DirectChat binds its window, history, unread state, files, Ratchet state, and preferences to the contact's stable public key. A reused temporary Tox friend number cannot redirect an existing chat surface or operation. Newly opened floating DirectChat and GroupChat windows use the same compositor-native opening animation as ordinary application windows. When a DirectChat or GroupChat window is floating, drag the handle in its top toolbar to move it with the pointer. The handle is disabled during initial placement and while the window is tiled, and it does not overlap message selection or toolbar buttons.
+New DirectChat and GroupChat windows use the compositor's standard opening animation. When a chat is floating, drag its toolbar handle to move it. Tiled windows retain their compositor-managed position.
 
 <table>
 <thead><tr><th>DirectChat</th><th>Formatting tools</th><th>Emoji picker</th><th>Clear chat</th></tr></thead>
@@ -94,13 +102,21 @@ DirectChat binds its window, history, unread state, files, Ratchet state, and pr
 </tr></tbody>
 </table>
 
+### Write and send
+
 Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` for a line break. Text paste remains available while the helper reconnects or lacks image capability.
 
-Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. Message text supports pointer and keyboard selection; the selection Copy action appears only for a non-empty selection and copies exactly that text. A failed pre-delivery message stays visible with a safe Resend action. A message that may already have reached transport reports an unknown result and does not offer automatic resend.
+### Use message actions
 
-Select the chat-header search action or press `Ctrl+F` to search only that conversation. Each open chat owns its query, request correlation, and results, so a delayed result from another DirectChat or GroupChat is ignored. Results show the sender, complete local date and time, and a two-line plain-text excerpt. `Escape` closes the search. The panel does not search messages; its separate **Safety code** section only verifies the selected direct contact's identity.
+Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. The selection Copy action appears only for selected text and copies exactly that text. A failed pre-delivery message offers Resend, while an unknown result does not resend automatically.
 
-Every non-system message with an authoritative history timestamp shows its helper-persisted local time. Messages from the current day use `HH:mm`; older messages include `YYYY-MM-DD`. This is the time at which local history accepted the message, not a timestamp claimed by a remote sender. Optimistic outgoing rows use the local enqueue time until the correlated helper event confirms the persisted value; a confirmed row with no valid timestamp displays no invented time.
+### Search a conversation
+
+Select the chat-header search action or press `Ctrl+F` to search only that conversation. Results show the sender, complete local date and time, and a two-line plain-text excerpt. `Escape` closes search. The panel's separate **Safety code** section verifies a selected direct contact instead of searching messages.
+
+### Read timestamps and receipts
+
+Timestamps show when local history accepted each message. Current-day messages use `HH:mm`; older messages include `YYYY-MM-DD`. Confirmed messages never display an invented time.
 
 Direct receipt markers remain monotonic:
 
@@ -109,7 +125,7 @@ Direct receipt markers remain monotonic:
 - `✓✓`: delivered
 - `✓✓` in `color03`: read
 
-Delayed events never change Read back to Delivered or Sent. The **New messages** divider marks the first unread message loaded from helper-authoritative history.
+Delayed events never change Read back to Delivered or Sent. The **New messages** divider marks the first unread message.
 
 ## Exchange files and images
 
@@ -139,7 +155,7 @@ OmaQ captures and plays 48 kHz mono audio through the PulseAudio client library.
 
 ## Create and manage private groups
 
-Private Tox New Group Chats (NGC) support up to 10 members. Group identity, membership, roles, unread state, messages, and attachments remain helper-authoritative.
+Private Tox New Group Chats (NGC) support up to 10 members. GroupChat provides member roles, moderation, unread state, messages, receipts, files, and images.
 
 Create and open a group in this order:
 
@@ -155,7 +171,7 @@ Create and open a group in this order:
 <td><a href="images/guide/11-panel-groups.png"><img src="images/guide/11-panel-groups.png" alt="OmaQ groups panel" width="220"></a><br>Create a named group, select it, open it, invite an absent contact, leave it, or dissolve it when you are the owner.</td>
 <td><a href="images/guide/22-group-chat-overview.png"><img src="images/guide/22-group-chat-overview.png" alt="OmaQ GroupChat overview" width="220"></a><br>GroupChat shows sender names, member typing, reactions, system messages, member-aware receipts, files, images, and the shared composer. Calls are intentionally absent.</td>
 <td><a href="images/guide/23-group-members.png"><img src="images/guide/23-group-members.png" alt="GroupChat member strip" width="220"></a><br>The strip shows You, owner/admin/member roles, and filled online or muted offline presence indicators.</td>
-<td><a href="images/guide/24-group-add-member.png"><img src="images/guide/24-group-add-member.png" alt="Add a GroupChat member" width="220"></a><br>Owners and admins select a contact who is not already present, then send a request-correlated invitation.</td>
+<td><a href="images/guide/24-group-add-member.png"><img src="images/guide/24-group-add-member.png" alt="Add a GroupChat member" width="220"></a><br>Owners and admins select a contact who is not already present, then send a private invitation.</td>
 </tr></tbody>
 </table>
 
@@ -171,11 +187,9 @@ Create and open a group in this order:
 
 Click or keyboard-open another member to review presence and available moderation actions. Owners can promote a member to admin or return an admin to member. Owners and admins can remove members according to role policy, and every moderation change requires confirmation.
 
-Group messages support the same formatting, arbitrary emoji-only presentation, replies, editing, confirmed deletion, reactions, unread divider, and image workflow as DirectChat. Typing names use stable group member keys. Outgoing receipts summarize exact member state, such as **Read by 1** or **Read by 1 · Delivered to 2**.
+Group messages support the same formatting, emoji-only presentation, replies, editing, confirmed deletion, reactions, unread divider, and image workflow as DirectChat. Outgoing receipts summarize member state, such as **Read by 1** or **Read by 1 · Delivered to 2**.
 
-Tox NGC has no native group file primitive. OmaQ broadcasts only bounded offer metadata, then sends attachment bytes privately to each online member who accepts. The helper binds every packet to the stable group, sender member key, transfer ID, exact size, and SHA-256 digest.
-
-A Quickshell reload reconnects to the same detached Protocol-13 helper, so active private groups remain projected in the panel. A complete computer reboot or actual helper termination remains different: Tox cannot reconstruct a private NGC membership from its Chat ID alone, so another member may need to invite that identity again.
+Group attachments are offered independently to each online member and are not queued for offline members. A shell reload reconnects to the same detached helper. If the helper cannot restore a private membership after termination, another member must send a fresh invitation.
 
 ## Protect and move your identity
 
@@ -201,7 +215,7 @@ After importing an identity with existing contacts, remove affected contacts on 
 
 ## Handle destructive and recovery states
 
-Danger-zone actions bind confirmation to the selected object and never guess from a reused temporary number. Select **Danger zone** in the action rail, choose the exact contact or personal-ID action, then review the named confirmation before continuing.
+Danger-zone actions name the affected contact or personal-ID change and require confirmation. Select **Danger zone**, choose the exact action, and review the confirmation before continuing.
 
 <table>
 <thead><tr><th>Danger zone</th><th>Remove contact</th><th>Rotate personal ID</th><th>Verify state</th></tr></thead>
@@ -213,11 +227,7 @@ Danger-zone actions bind confirmation to the selected object and never guess fro
 </tr></tbody>
 </table>
 
-OmaQ keeps a fingerprint-bound identity-presence record and a current recovery copy under `~/.local/state/omaq/`. If established `tox.save` disappears, the helper restores only its verified non-stale copy or stops visibly without creating a replacement identity.
-
-A degraded recovery warning means the committed primary identity remains active, but the secondary copy could not be refreshed. OmaQ marks the old copy stale and never restores it automatically. Export a current bundle before relying on automatic recovery.
-
-Do not delete recovery markers manually. Review the exact warning, complete the requested verification or fresh-invite workflow, then use the correlated confirmation action.
+Do not delete recovery markers manually. Follow the exact warning and complete its verification or fresh-invite steps. If recovery is degraded, export a current bundle before relying on the backup.
 
 ## Maintain OmaQ
 

@@ -539,9 +539,7 @@ Export/import (`identity_exists` / `replace`), search on disk.
 
 ### Phase 7 — package
 
-**Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, do not register an AUR account. Local PKGBUILD work waits for a new **go**. AUR upload is a second go after that.
-
-**Done (later):** `make verify-7` + `docs/stages/07-package.md`. AUR upload only after another explicit go.
+**Halted.** Owner: AUR registration is temporarily off. Do not run `verify-7`, do not `makepkg` for upload, and do not register an AUR account. Local PKGBUILD work and its stage note wait for a new **go**. AUR upload requires a separate approval after that.
 
 ### Phase 8 — Double Ratchet on 1:1 (50 MB)
 

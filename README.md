@@ -1,5 +1,7 @@
+# OmaQ
+
 <p align="center">
-  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
+  <img src="assets/OmaQ_Final.png" alt="" width="420">
 </p>
 
 <p align="center">
@@ -73,7 +75,13 @@ Keep retained data if you may reinstall OmaQ or still need the identity or histo
 
 ## Documentation
 
-[Documentation index](docs/README.md) · [Illustrated user guide](docs/USER-GUIDE.md) · [Installation lifecycle](docs/INSTALLATION.md) · [Security and privacy](docs/SECURITY.md) · [Current status](docs/CURRENT.md) · [Architecture plan](docs/PLAN.md) · [Third-party components](THIRD_PARTY.md)
+- [Documentation index](docs/README.md)
+- [Illustrated user guide](docs/USER-GUIDE.md)
+- [Installation lifecycle](docs/INSTALLATION.md)
+- [Security and privacy](docs/SECURITY.md)
+- [Current status](docs/CURRENT.md)
+- [Architecture plan](docs/PLAN.md)
+- [Third-party components](THIRD_PARTY.md)
 
 ## License
 
