@@ -45,7 +45,7 @@ Run the shell-off updater from the installed Git checkout:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
-The updater clones and builds outside the monitored plugin directory. It then stops the shell supervisor, verifies that Quickshell and its watcher are gone, and atomically exchanges the complete Git checkout. If private groups keep the old helper running, it reports `update-pending: old helper, new tree` without weakening the group-safe shutdown rule.
+The updater returns without staging or stopping the shell when the installed commit already matches `origin/main`. Otherwise, it clones and builds outside the monitored plugin directory, proves the atomic exchange is available, stops the shell supervisor, verifies that Quickshell and its watcher are gone, and exchanges the complete Git checkout. If private groups keep the old helper running, it reports `update-pending: old helper, new tree` without weakening the group-safe shutdown rule.
 
 Use the [installation lifecycle](docs/INSTALLATION.md) to bootstrap installations that predate this command, pin an expected commit, inspect the retained source backup, or recover a helper activation.
 

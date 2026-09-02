@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -203,11 +205,13 @@ class SourceUpdateTests(unittest.TestCase):
         updater.expected_commit = ""
         updater.runtime_tool = Path("/tmp/runtime.py")
         updater.shell = FakeShell()
-        updater.preflight = lambda: ("a" * 40, helper)
+        updater.preflight = lambda: ("a" * 40, helper, object())
+        original_resolve = MODULE.resolve_remote_main
         original_stage = MODULE.stage_update
         original_identity = MODULE.directory_identity
         original_validate = MODULE.validate_git_checkout
         original_helper_call = MODULE.helper_call
+        MODULE.resolve_remote_main = lambda *args: "b" * 40
         MODULE.stage_update = lambda *args: MODULE.StagedTree(
             Path("/tmp/staged"), "b" * 40, "b" * 64, 15
         )
@@ -218,11 +222,149 @@ class SourceUpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.UpdateError, "requires helper protocol 15"):
                 updater.update()
         finally:
+            MODULE.resolve_remote_main = original_resolve
             MODULE.stage_update = original_stage
             MODULE.directory_identity = original_identity
             MODULE.validate_git_checkout = original_validate
             MODULE.helper_call = original_helper_call
         self.assertFalse(updater.shell.stopped)
+
+    def test_exchange_preflight_failure_aborts_before_shell_stop(self):
+        helper = {
+            "state": "current",
+            "running_pid": 123,
+            "running_protocol": 14,
+            "running_sha256": "a" * 64,
+            "available_sha256": "a" * 64,
+        }
+
+        class FakeShell:
+            def __init__(self):
+                self.stopped = False
+
+            def refuse_locked_session(self):
+                return None
+
+            def stop(self, *, require_running):
+                self.stopped = True
+
+        updater = MODULE.Updater.__new__(MODULE.Updater)
+        updater.root = Path("/tmp/live")
+        updater.update_base = Path("/tmp/update-base")
+        updater.expected_commit = ""
+        updater.runtime_tool = Path("/tmp/runtime.py")
+        updater.shell = FakeShell()
+        updater.preflight = lambda: ("a" * 40, helper, object())
+        original_resolve = MODULE.resolve_remote_main
+        original_stage = MODULE.stage_update
+        original_identity = MODULE.directory_identity
+        original_validate = MODULE.validate_git_checkout
+        original_helper_call = MODULE.helper_call
+        original_exchange_preflight = MODULE.preflight_exchange_support
+        MODULE.resolve_remote_main = lambda *args: "b" * 40
+        MODULE.stage_update = lambda *args: MODULE.StagedTree(
+            Path("/tmp/staged"), "b" * 40, "b" * 64, 14
+        )
+        MODULE.directory_identity = lambda path: (1, 2)
+        MODULE.validate_git_checkout = lambda *args, **kwargs: "a" * 40
+        MODULE.helper_call = lambda *args, **kwargs: helper
+
+        def reject_exchange(*_args):
+            raise MODULE.UpdateError("exchange unavailable")
+
+        MODULE.preflight_exchange_support = reject_exchange
+        try:
+            with self.assertRaisesRegex(MODULE.UpdateError, "exchange unavailable"):
+                updater.update()
+        finally:
+            MODULE.resolve_remote_main = original_resolve
+            MODULE.stage_update = original_stage
+            MODULE.directory_identity = original_identity
+            MODULE.validate_git_checkout = original_validate
+            MODULE.helper_call = original_helper_call
+            MODULE.preflight_exchange_support = original_exchange_preflight
+        self.assertFalse(updater.shell.stopped)
+
+    def test_same_commit_skips_staging_and_shell_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Service.qml").write_text(
+                "QtObject {\n"
+                "readonly property int requiredHelperProtocol: 7\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            running = {
+                "state": "update-pending",
+                "running_pid": 123,
+                "running_protocol": 14,
+                "running_sha256": "a" * 64,
+                "available_sha256": "b" * 64,
+            }
+            activated = {
+                "state": "activated",
+                "running_pid": 124,
+                "running_protocol": 14,
+                "running_sha256": "b" * 64,
+                "available_sha256": "b" * 64,
+            }
+            expected_shell = object()
+            actions = []
+
+            class FakeShell:
+                def __init__(self):
+                    self.stopped = False
+                    self.consumed = False
+
+                def assert_same_shell(self, expected):
+                    self.asserted = expected
+
+                def refuse_locked_session(self):
+                    return None
+
+                def journal_cursor(self):
+                    return "cursor"
+
+                def consumer_ready(self, *args, **kwargs):
+                    self.consumed = True
+                    return activated
+
+                def stop(self, *, require_running):
+                    self.stopped = True
+
+            updater = MODULE.Updater.__new__(MODULE.Updater)
+            updater.root = root
+            updater.update_base = root.parent
+            updater.expected_commit = ""
+            updater.runtime_tool = root / "runtime.py"
+            updater.shell = FakeShell()
+            updater.preflight = lambda: ("a" * 40, running, expected_shell)
+            original_resolve = MODULE.resolve_remote_main
+            original_stage = MODULE.stage_update
+            original_validate = MODULE.validate_git_checkout
+            original_helper_call = MODULE.helper_call
+            MODULE.resolve_remote_main = lambda *args: "a" * 40
+            MODULE.stage_update = lambda *args: self.fail("same commit was staged")
+            MODULE.validate_git_checkout = lambda *args, **kwargs: "a" * 40
+
+            def fake_helper_call(_root, action, **_kwargs):
+                actions.append(action)
+                return running if action == "status" else activated
+
+            MODULE.helper_call = fake_helper_call
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = updater.update()
+            finally:
+                MODULE.resolve_remote_main = original_resolve
+                MODULE.stage_update = original_stage
+                MODULE.validate_git_checkout = original_validate
+                MODULE.helper_call = original_helper_call
+            self.assertEqual(result, activated)
+            self.assertEqual(actions, ["status", "activate"])
+            self.assertIs(updater.shell.asserted, expected_shell)
+            self.assertTrue(updater.shell.consumed)
+            self.assertFalse(updater.shell.stopped)
 
     def test_exchange_uses_directory_exchange_and_is_reversible(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -440,6 +582,45 @@ class SourceUpdateTests(unittest.TestCase):
                 MODULE.MAX_UPDATE_BYTES = previous_total
                 MODULE.MAX_TREE_BYTES = previous_tree_bytes
 
+    def test_exchange_capability_is_probed_before_live_exchange(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            live = parent / "live"
+            staging = parent / "staging"
+            live.mkdir()
+            staging.mkdir()
+            MODULE.preflight_exchange_support(staging, live)
+            self.assertEqual(list(parent.glob("exchange-probe-*")), [])
+            with self.assertRaisesRegex(MODULE.UpdateError, "mount boundary"):
+                MODULE.preflight_exchange_support(
+                    staging,
+                    live,
+                    mount_resolver=lambda path: 1 if path == staging else 2,
+                )
+            self.assertEqual(list(parent.glob("exchange-probe-*")), [])
+
+            unsupported = parent / "mv-without-exchange"
+            unsupported.write_text("#!/bin/sh\nexit 64\n", encoding="utf-8")
+            unsupported.chmod(0o755)
+            with self.assertRaisesRegex(MODULE.UpdateError, "exchange is unavailable"):
+                MODULE.preflight_exchange_support(
+                    staging, live, mv_path=str(unsupported)
+                )
+            self.assertEqual(list(parent.glob("exchange-probe-*")), [])
+
+    def test_mount_identity_uses_the_deepest_mountpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            nested = base / "mount with space"
+            target = nested / "tree"
+            target.mkdir(parents=True)
+            escaped = str(nested).replace(" ", r"\040")
+            mountinfo = (
+                "1 0 0:1 / / rw - rootfs rootfs rw\n"
+                f"2 1 0:2 / {escaped} rw - tmpfs tmpfs rw\n"
+            )
+            self.assertEqual(MODULE.mount_id_for(target, mountinfo), 2)
+
     def test_cross_device_exchange_fails_without_copy(self):
         shared = Path("/dev/shm")
         if not shared.is_dir():
@@ -455,6 +636,8 @@ class SourceUpdateTests(unittest.TestCase):
                 self.skipTest("test paths are on one filesystem")
             (live / "old").write_text("old\n", encoding="utf-8")
             (staging / "new").write_text("new\n", encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.UpdateError, "different filesystems"):
+                MODULE.preflight_exchange_support(staging, live)
             with self.assertRaisesRegex(MODULE.UpdateError, "different filesystems"):
                 MODULE.exchange_trees(staging, live, lambda: None)
             self.assertTrue((live / "old").is_file())

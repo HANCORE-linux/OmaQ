@@ -15,10 +15,13 @@ The updater now:
 - requires a clean Git-managed `main` checkout with the canonical OmaQ `origin`
 - uses fixed system Git commands, sanitized Git configuration and transport state, canonical HTTPS, and optional exact-commit binding
 - refuses runtime or state staging paths that resolve inside the monitored plugin directory
+- resolves canonical `origin/main` first and skips staging plus the shell stop when the live commit already matches
+- retries a pending group-safe helper activation during that source no-op without stopping the shell
 - bounds clone and build writes, retained tree count and bytes, and required free space; limit failures terminate the complete staging process group
 - clones the complete replacement checkout and builds its helper below private user state
 - validates the plugin before and after the external build
 - binds the target commit, helper SHA-256, running helper protocol, and literal staged QML requirement
+- checks `st_dev` plus the `/proc/self/mountinfo` mount ID and exercises the exact no-copy exchange with disposable external directories before any shell stop
 - refuses a locked session and stops both Quickshell and its `omarchy-launch-shell` supervisor
 - checks the supervisor, shell, recursive watcher, and shell IPC immediately before the exchange
 - exchanges complete trees with `mv -T --exchange --no-copy`
@@ -45,7 +48,8 @@ The focused tests cover:
 - full `.git` checkout, branch, origin, sanitized Git environment, clean-tree requirements, and serialization with the helper updater
 - symlink and special-file rejection
 - same-filesystem exchange and reverse exchange
-- cross-device refusal without copy fallback
+- no-op source updates without staging or a shell stop
+- pre-stop exchange-capability probing and cross-device refusal without copy fallback
 - monitored-path refusal, bounded acquisition, descendant-process termination, and retained update storage
 - a supervisor in the one-second relaunch backoff
 - shell-stop recovery, interrupt handling, and restarted-shell identity replacement
@@ -53,4 +57,4 @@ The focused tests cover:
 - `.prev` preservation during hash-bound activation and group-pending retries
 - inactive, wrong-hash, and protocol-incompatible activation outcomes
 
-These tests do not claim visible Wayland acceptance or simulate an uncooperative same-user process starting in the final syscall window. The Quickshell crash and its Exit-255 crash-handler relaunch symptom still warrant an upstream report.
+These tests do not perform a live shell stop or tree exchange, claim visible Wayland acceptance, or simulate an uncooperative same-user process starting in the final syscall window. The Quickshell crash and its Exit-255 crash-handler relaunch symptom still warrant an upstream report.

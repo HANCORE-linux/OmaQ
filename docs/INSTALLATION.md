@@ -79,19 +79,21 @@ The updater performs these steps in order:
 1. Lock source updates outside the replaceable plugin tree.
 2. Copy the controller's hardened `helper-runtime.py` into the private runtime lock directory so a tree exchange cannot replace it.
 3. Bind the clean live checkout, canonical `origin`, running helper identity, protocol marker, and hashes.
-4. Clone the complete `main` checkout, including `.git`, below `~/.local/state/omaq-source-updates/`.
-5. Validate the staged plugin, build its helper, validate it again, and bind the commit and helper SHA-256.
-6. Refuse a locked session, stop Quickshell, then terminate the exact `omarchy-launch-shell` supervisor if it remains in backoff.
-7. Verify that the supervisor, Quickshell, plugin watcher, and shell IPC are all absent.
-8. Back up the running `/proc/<pid>/exe` image through the bound runtime tool.
-9. Repeat the stopped-state check and exchange the staged and live directories with `mv -T --exchange --no-copy`.
-10. Validate the live plugin and create `helper/omaq.prev` from the still-running old image.
-11. Start the shell and bind its supervisor PID, Quickshell PID, start times, parent relationship, and session path through every consumer check.
-12. Require `listPlugins`, the `hancore.omaq` IPC target, running and available helper hashes, protocol compatibility, and the correlated shell journal to pass.
-13. Activate the new helper through `helper-runtime.py --expect-sha256`.
-14. Recheck the bound shell plus the running helper hash and protocol; an inactive or incompatible replacement fails the update.
+4. Resolve canonical `origin/main`. If it matches the live commit, skip staging and the shell stop; retry only a pending group-safe helper activation.
+5. Clone the complete `main` checkout, including `.git`, below `~/.local/state/omaq-source-updates/`.
+6. Validate the staged plugin, build its helper, validate it again, and bind the commit and helper SHA-256.
+7. Verify matching filesystem and mount identities, then perform a disposable external `mv -T --exchange --no-copy` capability probe.
+8. Refuse a locked session, stop Quickshell, then terminate the exact `omarchy-launch-shell` supervisor if it remains in backoff.
+9. Verify that the supervisor, Quickshell, plugin watcher, and shell IPC are all absent.
+10. Back up the running `/proc/<pid>/exe` image through the bound runtime tool.
+11. Repeat the stopped-state check and exchange the staged and live directories with `mv -T --exchange --no-copy`.
+12. Validate the live plugin and create `helper/omaq.prev` from the still-running old image.
+13. Start the shell and bind its supervisor PID, Quickshell PID, start times, parent relationship, and session path through every consumer check.
+14. Require `listPlugins`, the `hancore.omaq` IPC target, running and available helper hashes, protocol compatibility, and the correlated shell journal to pass.
+15. Activate the new helper through `helper-runtime.py --expect-sha256`.
+16. Recheck the bound shell plus the running helper hash and protocol; an inactive or incompatible replacement fails the update.
 
-The exchange requires one filesystem and never falls back to a copy. Clone and build monitoring enforce 50,000 entries, 512 MiB per tree, 2 GiB across retained update trees, and at least 1 GiB free before acquisition. A limit or timeout terminates the complete staging process group. OmaQ keeps at most eight staged or previous trees before requiring manual inspection and cleanup.
+The updater checks filesystem device, mount identity, and exchange capability before stopping the shell, then repeats the boundary checks during activation. The exchange requires one filesystem and never falls back to a copy. Clone and build monitoring enforce 50,000 entries, 512 MiB per tree, 2 GiB across retained update trees, and at least 1 GiB free before acquisition. A limit or timeout terminates the complete staging process group. OmaQ keeps at most eight staged or previous trees before requiring manual inspection and cleanup.
 
 The old complete Git checkout moves to the external path printed as `previous tree`. OmaQ retains that directory for inspection; it does not delete source backups automatically.
 

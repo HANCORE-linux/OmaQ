@@ -636,13 +636,60 @@ def process_start_and_parent(raw: str) -> tuple[int, int]:
 
 def read_proc_file(path: Path, maximum: int) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    chunks = []
+    total = 0
     try:
-        data = os.read(fd, maximum + 1)
+        while True:
+            chunk = os.read(fd, min(65536, maximum + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > maximum:
+                fail(f"oversized process metadata: {path}")
     finally:
         os.close(fd)
-    if len(data) > maximum:
-        fail(f"oversized process metadata: {path}")
-    return data
+    return b"".join(chunks)
+
+
+def decode_mountinfo_path(value: str) -> Path:
+    def replace(match: re.Match) -> str:
+        return chr(int(match.group(1), 8))
+
+    if re.search(r"\\(?![0-7]{3})", value):
+        fail("mountinfo contains an unsupported mount escape")
+    decoded = re.sub(r"\\([0-7]{3})", replace, value)
+    if not decoded.startswith("/"):
+        fail("mountinfo contains an unsupported mount path")
+    return Path(decoded)
+
+
+def mount_id_for(path: Path, mountinfo: str | None = None) -> int:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve mount identity for {path}: {error}")
+    if mountinfo is None:
+        raw = read_proc_file(Path("/proc/self/mountinfo"), 2 * 1024 * 1024)
+        try:
+            mountinfo = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError as error:
+            fail(f"mountinfo is not UTF-8: {error}")
+    matches = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or not fields[0].isdecimal():
+            fail("mountinfo contains a malformed record")
+        mountpoint = decode_mountinfo_path(fields[4])
+        if resolved == mountpoint or mountpoint in resolved.parents:
+            matches.append((len(mountpoint.parts), int(fields[0])))
+    if not matches:
+        fail(f"cannot identify the mount for {path}")
+    depth = max(item[0] for item in matches)
+    identifiers = {identifier for item_depth, identifier in matches if item_depth == depth}
+    if len(identifiers) != 1:
+        fail(f"mount identity is ambiguous for {path}")
+    return identifiers.pop()
 
 
 class ProcessTable:
@@ -1304,13 +1351,8 @@ def validate_build_artifacts(root: Path) -> None:
         fail("staged build created an unexpected or modified tree entry")
 
 
-def stage_update(
-    update_base: Path,
-    live_head: str,
-    expected_commit: str,
-) -> StagedTree:
+def resolve_remote_main(update_base: Path, expected_commit: str) -> str:
     git = command_path("git")
-    check_update_storage(update_base)
     remote = run(
         [
             git,
@@ -1327,9 +1369,29 @@ def stage_update(
         preexec_fn=limit_staging_file_size,
     )
     fields = bounded_text(remote.stdout, "git ls-remote").strip().split()
-    if len(fields) != 2 or fields[1] != "refs/heads/main" or not HEX_40.fullmatch(fields[0]):
+    if (
+        len(fields) != 2
+        or fields[1] != "refs/heads/main"
+        or not HEX_40.fullmatch(fields[0])
+    ):
         fail("canonical origin returned an ambiguous main ref")
     target = fields[0]
+    if expected_commit and target != expected_commit:
+        fail(f"origin/main is {target}, not the expected commit {expected_commit}")
+    return target
+
+
+def stage_update(
+    update_base: Path,
+    live_head: str,
+    expected_commit: str,
+    target_commit: str = "",
+) -> StagedTree:
+    git = command_path("git")
+    check_update_storage(update_base)
+    target = target_commit or resolve_remote_main(update_base, expected_commit)
+    if not HEX_40.fullmatch(target):
+        fail("target commit is not a lowercase 40-hex object name")
     if expected_commit and target != expected_commit:
         fail(f"origin/main is {target}, not the expected commit {expected_commit}")
 
@@ -1392,6 +1454,64 @@ def stage_update(
     return StagedTree(stage, stage_head, helper_hash, required)
 
 
+def preflight_exchange_support(
+    staging: Path,
+    live: Path,
+    *,
+    mv_path: str | None = None,
+    mount_resolver: Callable[[Path], int] = mount_id_for,
+) -> None:
+    staging_identity = directory_identity(staging)
+    live_identity = directory_identity(live)
+    if staging_identity[0] != live_identity[0]:
+        fail("staging and live trees are on different filesystems")
+    if mount_resolver(staging) != mount_resolver(live):
+        fail("staging and live trees cross a mount boundary")
+
+    parent = staging.parent
+    lstat_directory(parent, private=True)
+    token = f"exchange-probe-{os.getpid()}-{secrets.token_hex(8)}"
+    first = parent / f"{token}-a"
+    second = parent / f"{token}-b"
+    created = []
+    try:
+        first.mkdir(mode=0o700)
+        created.append(first)
+        second.mkdir(mode=0o700)
+        created.append(second)
+        first_identity = directory_identity(first)
+        second_identity = directory_identity(second)
+        command = mv_path or command_path("mv")
+        result = run(
+            [
+                command,
+                "-T",
+                "--exchange",
+                "--no-copy",
+                "--",
+                str(first),
+                str(second),
+            ],
+            check=False,
+            quiet=True,
+            env=trusted_environment(),
+        )
+        if result.returncode != 0:
+            fail("atomic no-copy directory exchange is unavailable")
+        if (
+            directory_identity(first) != second_identity
+            or directory_identity(second) != first_identity
+        ):
+            fail("atomic exchange probe returned unexpected directory identities")
+    finally:
+        for path in created:
+            try:
+                path.rmdir()
+            except FileNotFoundError:
+                pass
+        fsync_directory(parent)
+
+
 def exchange_trees(
     staging: Path,
     live: Path,
@@ -1403,6 +1523,8 @@ def exchange_trees(
     live_before = directory_identity(live)
     if staging_before[0] != live_before[0]:
         fail("staging and live trees are on different filesystems")
+    if mount_id_for(staging) != mount_id_for(live):
+        fail("staging and live trees cross a mount boundary")
     if staging == live or live in staging.parents or staging in live.parents:
         fail("staging and live tree paths overlap")
 
@@ -1523,11 +1645,11 @@ class Updater:
         self.exchanged = False
         self.shell_stopped = False
 
-    def preflight(self) -> tuple[str, dict]:
+    def preflight(self) -> tuple[str, dict, ShellProcesses]:
         if os.geteuid() == 0:
             fail("refusing to update OmaQ as root")
         self.shell.refuse_locked_session()
-        self.shell.assert_running()
+        initial_shell = self.shell.assert_running()
         self.shell.require_enabled_plugin()
         live_head = validate_git_checkout(self.root, expected_origin=CANONICAL_ORIGIN)
         validate_plugin(self.root)
@@ -1535,7 +1657,7 @@ class Updater:
             self.root, "status", runtime_path=self.runtime_tool
         )
         validate_helper_status(helper)
-        return live_head, helper
+        return live_head, helper, initial_shell
 
     def restore_shell_without_exchange(self) -> None:
         if not self.shell_stopped:
@@ -1610,12 +1732,82 @@ class Updater:
             )
         fail(f"update failed and the previous tree was restored: {original_error}")
 
+    def finish_noop_update(
+        self,
+        live_head: str,
+        live_identity: tuple[int, int],
+        expected_shell: ShellProcesses,
+    ) -> dict:
+        if directory_identity(self.root) != live_identity:
+            fail("live plugin root changed during the no-op preflight")
+        if (
+            validate_git_checkout(self.root, expected_origin=CANONICAL_ORIGIN)
+            != live_head
+        ):
+            fail("live checkout changed during the no-op preflight")
+        self.shell.assert_same_shell(expected_shell)
+        helper = helper_call(
+            self.root, "status", runtime_path=self.runtime_tool
+        )
+        validate_helper_status(helper)
+        required_protocol = parse_required_helper_protocol(
+            self.root / "Service.qml"
+        )
+        require_protocol_compatible(
+            required_protocol, helper["running_protocol"]
+        )
+        result = helper
+        if helper["state"] == "update-pending":
+            self.shell.refuse_locked_session()
+            cursor = self.shell.journal_cursor()
+            result = helper_call(
+                self.root,
+                "activate",
+                expected_hash=helper["available_sha256"],
+                runtime_path=self.runtime_tool,
+            )
+            state, activated_hash = validate_activation_result(
+                result,
+                helper["available_sha256"],
+                {helper["running_sha256"]},
+                required_protocol,
+            )
+            self.shell.consumer_ready(
+                cursor,
+                helper["available_sha256"],
+                expected_shell,
+                runtime_path=self.runtime_tool,
+                allowed_running={activated_hash},
+                expected_running_pid=result["running_pid"],
+                required_protocol=required_protocol,
+            )
+            if state == "update-pending":
+                print("update-pending: old helper, new tree")
+                print(f"  Detail: {result['detail']}")
+            else:
+                print(f"helper: {state}")
+        else:
+            print("helper: current")
+        print(f"source: current ({live_head})")
+        print(f"available helper: {helper['available_sha256']}")
+        return result
+
     def update(self) -> dict:
-        live_head, old_helper = self.preflight()
+        live_head, old_helper, initial_shell = self.preflight()
         self.original_helper = old_helper
         live_identity = directory_identity(self.root)
+        target_commit = resolve_remote_main(
+            self.update_base, self.expected_commit
+        )
+        if target_commit == live_head:
+            return self.finish_noop_update(
+                live_head, live_identity, initial_shell
+            )
         self.staged = stage_update(
-            self.update_base, live_head, self.expected_commit
+            self.update_base,
+            live_head,
+            self.expected_commit,
+            target_commit,
         )
         if directory_identity(self.root) != live_identity:
             fail("live plugin root changed while the replacement was staged")
@@ -1634,6 +1826,7 @@ class Updater:
         require_protocol_compatible(
             self.staged.required_protocol, old_helper["running_protocol"]
         )
+        preflight_exchange_support(self.staged.path, self.root)
 
         self.shell.refuse_locked_session()
         try:
