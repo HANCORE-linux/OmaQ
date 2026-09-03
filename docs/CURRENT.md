@@ -7,7 +7,7 @@ This page is the current product and release snapshot. Completed phase and follo
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
 - **Manifest version:** `0.8.1-beta.1`, Protocol 14
-- **Live plugins:** the primary installation is a clean Git-managed checkout at `07f43f99f44ccfd80a6c31cbbe9d40234855e6be`; the second installation remains a clean Git-managed checkout at `580c69cf7583ccca4461bd265334edc0a692b65d`
+- **Live plugins:** both installations are clean Git-managed checkouts at `f8bea135387d13e65de0032b88470a6490e714f0`
 - **Live helper:** Protocol 14, SHA-256 `ee43637be9ac9880bb465408a87c8ace94015c217a1df25dc79ce088308a1fba`
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
@@ -59,13 +59,12 @@ Uninstall regressions cover current and legacy rule names, interrupted temporary
 
 The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
-No current test claims visible native Wayland or multi-monitor acceptance. The first authorized primary-machine update attempt failed during its external remote preflight because the private origin had no noninteractive credential; it did not stop the shell or modify the live checkout. After authenticated acquisition was added, the shell-off exchange installed `7fde5c2c4b0e74c1717e8ac1baf2809694b2b393`, but the controller treated asynchronous shell startup as an immediate failure and entered rollback. Stopping that loading instance reproduced the known Quickshell `QQuickLoader`/`__dynamic_cast` crash, and a replacement supervisor appeared faster than the rollback stop handled it. The tree therefore remained on the new commit. The shell-readiness follow-up then installed `5a86d7ea49449934a499213e5d876f41f56d9325` with a clean restart, no new coredump, a bound previous tree, Protocol 14 helper continuity, complete consumer acceptance, and a same-commit no-op without process or staging changes. A later acceptance harness mistakenly imported the live controller and created an ignored Python bytecode cache, causing one hot reload without a crash. The README and panel-icon polish subsequently installed `07f43f99f44ccfd80a6c31cbbe9d40234855e6be` with another clean restart and removed that cache through the full atomic tree exchange; checkout, previous-tree, plugin-consumer, and unchanged Protocol 14 helper bindings passed without a new coredump. The second machine remains on `580c69cf7583ccca4461bd265334edc0a692b65d`; no private identity, Ratchet, group registry, or history data was synchronized.
+No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed the shell-off update to `f8bea135387d13e65de0032b88470a6490e714f0` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
 
 ## Next order
 
-1. Merge and audit the system-theme compatibility fix.
-2. Update the primary machine to that exact reviewed commit and complete visible theme-switch plus same-commit no-op acceptance.
-3. Update the second machine only after separate approval and primary-machine acceptance.
-4. Prepare the Quickshell upstream crash report.
-5. Finalize the beta release notes.
-6. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
+1. Finalize the beta release notes and decide whether the post-tag fixes require a new prerelease tag.
+2. Add the correlated Quickshell lifecycle evidence to the existing upstream report after explicit approval.
+3. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
+4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
+5. Keep packaging and AUR publication paused until separately approved.
