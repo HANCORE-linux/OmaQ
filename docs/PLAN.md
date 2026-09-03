@@ -1,6 +1,6 @@
 # OmaQ — execution plan
 
-**Authority:** This file is how we build. German product contract: [`../../Prompt-Uebergabe/OmaQ.md`](../../Prompt-Uebergabe/OmaQ.md). If they disagree, stop and fix both before writing code.
+**Authority:** `AGENTS.md` and this file define repository work. If they disagree, `AGENTS.md` wins; stop and reconcile them before writing code.
 
 **Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. The live plugin is installed under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`. Snapshot: [`CURRENT.md`](CURRENT.md).
 **Tree:** `/home/hancore/Projects/omaq`  
