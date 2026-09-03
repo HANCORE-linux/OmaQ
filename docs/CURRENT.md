@@ -6,8 +6,8 @@ This page is the current product and release snapshot. Completed phase and follo
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.8.1-beta.1`, Protocol 14
-- **Live plugins:** both installations are clean Git-managed checkouts at `f8bea135387d13e65de0032b88470a6490e714f0`
+- **Manifest version:** `0.8.1-beta.2`, Protocol 14
+- **Accepted live source base:** both installations passed exact-commit and same-commit no-op acceptance at `16bf393b2d39107beb8e23cfce8450e93b893095`; the metadata-only release-prep successor still requires final tag-target acceptance before tagging
 - **Live helper:** Protocol 14, SHA-256 `ee43637be9ac9880bb465408a87c8ace94015c217a1df25dc79ce088308a1fba`
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
@@ -41,17 +41,16 @@ This page is the current product and release snapshot. Completed phase and follo
 
 ### Existing validation gaps
 
-1. Submit the correlated loader crash and the crash-handler Exit-255 relaunch symptom to Quickshell upstream.
-2. Complete native three-peer group-attachment injection, mixed recipient outcomes, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks.
-3. Complete native separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
-4. Complete native Quickshell and Wayland acceptance for themes, images, multiple monitors, and floating versus tiled windows.
-5. Investigate `qmlcachegen Panel.qml` parser and import failures. `qmllint Panel.qml` can still exit 255 without diagnostics.
-6. Decide whether to leave the retired message clip only in historical Git objects or plan a separately governed repository-history migration.
-7. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
+1. Complete native three-peer group-attachment injection, mixed recipient outcomes, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks.
+2. Complete native separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
+3. Complete native Quickshell and Wayland acceptance for themes, images, multiple monitors, and floating versus tiled windows.
+4. Investigate the `qmlcachegen Panel.qml` parser and import failures. In the installed environment, `qmllint Panel.qml` can still exit 255 without diagnostics; the other QML lint targets and runtime fixtures remain the supported gates.
+5. Decide whether to leave the retired message clip only in historical Git objects or plan a separately governed repository-history migration.
+6. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
 
 ## Latest validation
 
-The release-audit follow-up passes the full `make test` aggregate, `make verify-4`, `make helper`, `make arch`, phase 2, phase 8, Omarchy plugin validation, ShellCheck on every changed shell file, Qt parsing for all eight QML files, `qmllint` for ChatSurface, ChatPage, Service, and Panel, syntax checks, and `git diff --check`. Panel runtime coverage verifies both semantic Omarchy theme keys and legacy `color0`–`color7` palettes, including deterministic legacy precedence in a mixed file.
+The release-audit follow-up passes the full `make test` aggregate, `make verify-4`, `make helper`, `make arch`, phase 2, phase 8, Omarchy plugin validation, ShellCheck on every changed shell file, Qt parsing for all eight QML files, `qmllint` for ChatSurface, ChatPage, and Service, syntax checks, and `git diff --check`. Panel runtime coverage verifies both semantic Omarchy theme keys and legacy `color0`–`color7` palettes, including deterministic legacy precedence in a mixed file.
 
 Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
 
@@ -59,12 +58,11 @@ Uninstall regressions cover current and legacy rule names, interrupted temporary
 
 The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
-No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed the shell-off update to `f8bea135387d13e65de0032b88470a6490e714f0` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
+No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed shell-off updates through `16bf393b2d39107beb8e23cfce8450e93b893095` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, no new coredumps, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
 
 ## Next order
 
-1. Finalize the beta release notes and decide whether the post-tag fixes require a new prerelease tag.
-2. Add the correlated Quickshell lifecycle evidence to the existing upstream report after explicit approval.
-3. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
-4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
-5. Keep packaging and AUR publication paused until separately approved.
+1. Complete the `v0.8.1-beta.2` release prep, audit its exact merge commit, accept that tag target on both machines, and keep tag creation plus GitHub publication as separate approvals.
+2. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
+3. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
+4. Keep packaging and AUR publication paused until separately approved.
