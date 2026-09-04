@@ -4,7 +4,7 @@ This note records the first-install workflow added after `v0.8.1-beta.2`. It rep
 
 ## Installation transaction
 
-The documented bootstrap acquires a complete `main` clone outside `~/.config/omarchy/plugins/`. It uses fixed system Git, disables inherited system and global Git configuration, scopes an authenticated GitHub header to `https://github.com/`, disables redirects and file transport, and verifies the checkout commit, branch, origin, and clean status before executing the controller.
+The primary source command clones the current `main` branch outside `~/.config/omarchy/plugins/` and runs the installer from that checkout. It trusts authenticated GitHub and the configured Git client during acquisition. The optional exact-commit bootstrap uses fixed system Git, disables inherited system and global Git configuration, scopes an authenticated GitHub header to `https://github.com/`, limits acquisition, and verifies the checkout commit, branch, origin, and clean status before executing the controller.
 
 The controller then:
 

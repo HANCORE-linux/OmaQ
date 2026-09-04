@@ -6,15 +6,33 @@ This guide covers source installation, shell-off updates, helper status, rollbac
 
 ## Install OmaQ
 
-Arch User Repository (AUR) packaging remains paused. The source installer requires an authenticated GitHub CLI session for the private repository, an unlocked Omarchy session, and no existing `~/.config/omarchy/plugins/hancore.omaq` path. Install the dependencies first:
+> [!IMPORTANT]
+> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
+
+The source install requires authenticated Git access to the private repository, an unlocked Omarchy session, and no existing `~/.config/omarchy/plugins/hancore.omaq` path. If Git cannot authenticate, run `gh auth login --hostname github.com`, then `/usr/bin/gh auth setup-git --hostname github.com` once.
+
+Install the dependencies, clone OmaQ, and run the installer:
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode
+  ttf-material-symbols-variable qrencode &&
+source_root=$(mktemp -d "$HOME/.omaq-source-install.XXXXXX") &&
+git clone --branch main --single-branch -- \
+  https://github.com/HANCORE-linux/OmaQ.git "$source_root" &&
+"$source_root/scripts/install-omaq.sh" --yes
 ```
 
-Then acquire one complete external checkout, verify it against canonical `origin/main`, and run its installer:
+`mktemp` creates the private staging directory atomically under your home directory. This keeps the clone outside Omarchy's monitored plugin directory, even when you run the command from that directory. The installer builds the omitted Signal-enabled `helper/omaq` before the checkout becomes visible to Omarchy. It then moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, so the temporary source path no longer exists after installation.
+
+The standard command trusts authenticated GitHub and your Git client to acquire the current `main` branch. Use the following bootstrap when you need pre-execution commit pinning and acquisition limits.
+
+<details>
+<summary>Pin a reviewed commit and limit acquisition</summary>
+
+### Use the bounded exact-commit bootstrap
+
+Set `expected_commit` to a reviewed 40-character commit hash, or leave it empty to select current canonical `main`:
 
 ```bash
 (
@@ -217,11 +235,11 @@ PY
 )
 ```
 
-The bootstrap exports the GitHub authorization header only inside its subshell and does not store a token in the checkout. It limits command output to 1 MiB, checks the clone during acquisition against the 50,000-entry and 512 MiB tree limits, requires 1 GiB free first, and terminates the complete process group on a timeout or limit failure. To bind a reviewed revision, set `expected_commit` near the top of the block to its complete lowercase 40-character hash. The bootstrap rejects a different canonical ref before cloning or executing downloaded code, and the installer repeats that binding before and after the build.
+The bootstrap keeps the GitHub token in memory, limits clone size and command output, and terminates the process group after a timeout or limit failure. It rejects a changed canonical ref before cloning or executing downloaded code. The installer repeats the commit check before and after the build.
 
-The repository intentionally omits the generated `helper/omaq` binary. The installer validates a pristine self-contained full Git clone and rejects shallow, sparse, partial, alternate-object, common-directory, symlink, and gitlink trees. It rejects index concealment flags, compares every tracked file's mode and Git blob hash with `HEAD`, and checks the complete Git object graph. It also accepts only a missing shell config or the supported integer schema version 1. It then builds the Signal-enabled helper outside the monitored plugin directory, stops the shell supervisor and watcher, rechecks persisted enablement at the rename boundary, and uses Linux `renameat2(RENAME_NOREPLACE)` to place that same checkout without copying or overwriting another path. The restarted shell performs the only discovery scan. The installer waits for that scan to expose a disabled OmaQ entry, then calls `omarchy plugin enable`; that command changes plugin state without requesting another rescan.
+</details>
 
-A failure before enablement moves the checkout back to its external path and restarts the shell. Once a helper or enabled plugin may be active, a failure keeps the complete installed tree and disables OmaQ instead of deleting a potentially active runtime. Successful enablement and failure cleanup both reread `shell.json` without following symlinks and require the persisted state to match the shell's projection. If disablement cannot be proven, the installer stops the shell and leaves the tree in place for recovery.
+The installer validates the complete Git checkout, builds the helper outside the monitored plugin tree, stops the shell, and places the checkout with `renameat2(RENAME_NOREPLACE)`. It then restarts the shell, waits for startup discovery, and enables OmaQ once. See the [source installation transaction](stages/safe-source-install.md) for security boundaries and failure recovery.
 
 Verify the plugin and helper after installation:
 
@@ -242,36 +260,15 @@ The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the 
 
 ### Bootstrap an older installation
 
-Installations that predate `update-omaq.sh` use the same bounded [external controller acquisition](#install-omaq) shown above. Change only the first assignment from `mode=install` to `mode=update`. The update branch validates the external plugin and invokes `update-omaq.sh`; it does not modify the live checkout before that controller stops the shell.
+Installations that predate `update-omaq.sh` use the [bounded exact-commit bootstrap](#use-the-bounded-exact-commit-bootstrap) shown above. Change only the first assignment from `mode=install` to `mode=update`. The update branch validates the external plugin and invokes `update-omaq.sh`; it does not modify the live checkout before that controller stops the shell.
 
 To bind an announced release or reviewed revision, set `expected_commit` in the shared block. Both the bootstrap and updater abort if canonical `origin/main` differs.
 
-### Understand the shell-off sequence
+### What happens during an update
 
-The updater performs these steps in order:
+The updater clones and builds outside the monitored plugin tree. When the remote commit differs, it verifies exchange support, stops the shell, atomically exchanges the complete checkouts, restarts the shell, and checks the plugin and helper. The old checkout remains at the printed `previous tree` path for manual recovery.
 
-1. Lock source updates outside the replaceable plugin tree.
-2. Copy the controller's hardened `helper-runtime.py` into the private runtime lock directory so a tree exchange cannot replace it.
-3. Bind the clean live checkout, canonical `origin`, running helper identity, protocol marker, and hashes.
-4. Resolve canonical `origin/main`. If it matches the live commit, skip staging and the shell stop; retry only a pending group-safe helper activation.
-5. Clone the complete `main` checkout, including `.git`, below `~/.local/state/omaq-source-updates/`.
-6. Validate the staged plugin, build its helper, validate it again, and bind the commit and helper SHA-256.
-7. Verify matching filesystem and mount identities, then perform a disposable external `mv -T --exchange --no-copy` capability probe.
-8. Refuse a locked session, stop Quickshell, then terminate the exact `omarchy-launch-shell` supervisor if it remains in backoff.
-9. Verify that the supervisor, Quickshell, plugin watcher, and shell IPC are all absent.
-10. Back up the running `/proc/<pid>/exe` image through the bound runtime tool.
-11. Repeat the stopped-state check and exchange the staged and live directories with `mv -T --exchange --no-copy`.
-12. Validate the live plugin and create `helper/omaq.prev` from the still-running old image.
-13. Start the shell, wait for exactly one ready supervisor, Quickshell process, and watcher when the restart wrapper reports only its readiness timeout, recheck that the session is unlocked in that case, then bind their PIDs, start times, parent relationship, and session path through every consumer check.
-14. Require `listPlugins`, the `hancore.omaq` IPC target, running and available helper hashes, protocol compatibility, and the correlated shell journal to pass.
-15. Activate the new helper through `helper-runtime.py --expect-sha256`.
-16. Recheck the bound shell plus the running helper hash and protocol; an inactive or incompatible replacement fails the update.
-
-The updater checks filesystem device, mount identity, and exchange capability before stopping the shell, then repeats the boundary checks during activation. The exchange requires one filesystem and never falls back to a copy. Clone and build monitoring enforce 50,000 entries, 512 MiB per tree, 2 GiB across retained update trees, and at least 1 GiB free before acquisition. A limit or timeout terminates the complete staging process group. OmaQ keeps at most eight staged or previous trees before requiring manual inspection and cleanup.
-
-The old complete Git checkout moves to the external path printed as `previous tree`. OmaQ retains that directory for inspection; it does not delete source backups automatically.
-
-The final process check detects a cooperative restart before the exchange and aborts without renaming either tree. During a rollback stop, every exact replacement supervisor observed before the deadline is terminated so the launcher's backoff cannot strand a mixed tree. Another process running as the same user remains inside OmaQ's documented trust boundary. Do not run `omarchy restart shell` concurrently with an update.
+An active private group can keep the compatible old helper running under the new plugin tree. The updater reports that state as pending instead of forcing a restart. Do not run `omarchy restart shell` during an update. See the [shell-off update transaction](stages/trigger-free-updates.md) for the complete sequence and security boundaries.
 
 ### Check update status
 

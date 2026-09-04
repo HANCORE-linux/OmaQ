@@ -21,15 +21,20 @@ Toxcore transports encrypted packets between peers. Direct messages receive an a
 
 ## Install
 
-Arch User Repository (AUR) packaging remains paused. Install the dependencies, then use the verified shell-off source procedure in the [installation lifecycle](docs/INSTALLATION.md):
+> [!IMPORTANT]
+> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode
+  ttf-material-symbols-variable qrencode &&
+source_root=$(mktemp -d "$HOME/.omaq-source-install.XXXXXX") &&
+git clone --branch main --single-branch -- \
+  https://github.com/HANCORE-linux/OmaQ.git "$source_root" &&
+"$source_root/scripts/install-omaq.sh" --yes
 ```
 
-The repository intentionally omits the generated `helper/omaq` binary. The source installer builds it in an external full Git checkout, stops the shell and plugin watcher, atomically places that same checkout without overwriting an existing path, starts the shell for one discovery scan, and only then enables OmaQ. Direct messaging remains unavailable when the Signal Ratchet helper is missing.
+The final command builds the omitted Signal-enabled `helper/omaq` outside the monitored plugin directory and moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`. Direct messaging remains unavailable when that helper is missing. See the [installation lifecycle](docs/INSTALLATION.md) for private-repository authentication, exact-commit pinning, verification, and recovery.
 
 ## Update
 
