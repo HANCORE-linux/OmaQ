@@ -55,8 +55,8 @@ if sound_schema["options"] != expected_options or \
         sound_schema["defaultValue"] != "icq-message":
     raise SystemExit("custom-sound: manifest presets differ from the panel")
 expected_license = (
-    "MIT AND GPL-3.0-only AND CC-BY-SA-4.0 AND CC0-1.0 AND "
-    "LicenseRef-Pixabay-Content"
+    "MIT AND GPL-3.0-only AND Apache-2.0 AND CC-BY-SA-4.0 AND "
+    "CC0-1.0 AND LicenseRef-Pixabay-Content"
 )
 if manifest["license"] != expected_license:
     raise SystemExit("custom-sound: manifest license expression is incomplete")
@@ -77,7 +77,43 @@ icq_path = sounds / "icq-message.mp3"
 expected_icq_sha256 = "14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1"
 if hashlib.sha256(icq_path.read_bytes()).hexdigest() != expected_icq_sha256:
     raise SystemExit("custom-sound: ICQ asset hash changed")
+attribution = (sounds / "ATTRIBUTION.md").read_text()
+for required in (
+    "https://github.com/mail-ru-im/im-desktop/blob/78924d804fc38a5746a073d5bdb71c1c4cc97780/products/icq/app/resources/sounds/incoming.wav",
+    "78924d804fc38a5746a073d5bdb71c1c4cc97780",
+    "Copyright (C) 2016 ICQ LLC (Mail.Ru Group)",
+    "Apache License 2.0 (`LICENSES/Apache-2.0.txt`)",
+    "6060dfb8fc8fdc1b58bd9482f57c491a3b73a61f4289dbc8d2b5c7d4d54f406f",
+    expected_icq_sha256,
+    "leading and trailing silence",
+    "does not claim ICQ endorsement or trademark rights",
+    "Upstream notice: `LICENSES/ICQ-NOTICE.md`",
+):
+    if required not in attribution:
+        raise SystemExit(f"custom-sound: missing ICQ attribution: {required}")
+apache = sounds / "LICENSES" / "Apache-2.0.txt"
+if hashlib.sha256(apache.read_bytes()).hexdigest() != \
+        "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff":
+    raise SystemExit("custom-sound: Apache-2.0 license text changed")
+notice = (sounds / "LICENSES" / "ICQ-NOTICE.md").read_text()
+for required in (
+    "Copyright 2016 ICQ LLC (Mail.Ru Group)",
+    "Licensed under the Apache License, Version 2.0",
+    "not redistributed as part of this sound",
+):
+    if required not in notice:
+        raise SystemExit(f"custom-sound: missing ICQ notice text: {required}")
 PY
+grep -Fxq "license=('MIT' 'GPL-3.0-or-later' 'Apache-2.0' 'custom:Pixabay Content License')" \
+  "$root/packaging/PKGBUILD" || {
+  echo "custom-sound: PKGBUILD omits the Apache-2.0 asset license" >&2
+  exit 1
+}
+grep -Fxq "| ICQ Desktop incoming-message sound | Derived \`sounds/icq-message.mp3\` | Apache-2.0 | Bundled UHOH notification sound; see [\`sounds/ATTRIBUTION.md\`](sounds/ATTRIBUTION.md) |" \
+  "$root/THIRD_PARTY.md" || {
+  echo "custom-sound: third-party ICQ attribution is missing" >&2
+  exit 1
+}
 tmp=$(mktemp -d /tmp/omaq-custom-sound-XXXXXX)
 pid=""
 cleanup() {

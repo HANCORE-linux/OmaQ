@@ -11,8 +11,9 @@ usage() {
 Usage: ./install.sh [--section left|center|right] [--expect-commit COMMIT] --yes
 
 Install OmaQ's package dependencies and build its helper. When this script is
-run from the live Omarchy plugin checkout, it restarts the shell and verifies
-the running helper. An external checkout uses the verified shell-off installer.
+run from the live Omarchy plugin checkout, it waits for reactive plugin
+activation and verifies the running helper. An external checkout uses the
+verified shell-off installer.
 EOF
 }
 
@@ -77,7 +78,7 @@ if [ -n "$expected_commit" ]; then
 fi
 
 [ "$confirmed" -eq 1 ] ||
-  fail "refusing to install packages or restart the shell without --yes"
+  fail "refusing to install packages or enable OmaQ without --yes"
 [ "$(/usr/bin/id -u)" -ne 0 ] || fail "refusing to install OmaQ as root"
 umask 077
 
@@ -91,6 +92,21 @@ install_packages() {
   PATH=/usr/bin:/bin /usr/bin/omarchy pkg add \
     toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
     ttf-material-symbols-variable qrencode
+}
+
+helper_is_current() {
+  status_json=$(PATH=/usr/bin:/bin /usr/bin/python3 -IB \
+    "$helper_runtime" status --root "$root" --json 2>/dev/null || true)
+  printf '%s\n' "$status_json" | /usr/bin/python3 -I -c '
+import json, sys
+value = json.load(sys.stdin)
+available = value.get("available_sha256")
+running = value.get("running_sha256")
+valid_hash = (isinstance(available, str) and len(available) == 64 and
+              all(char in "0123456789abcdef" for char in available))
+raise SystemExit(0 if value.get("state") == "current" and valid_hash and
+                 running == available else 1)
+' 2>/dev/null
 }
 
 if [ "$root" = "$live_root" ]; then
@@ -150,7 +166,7 @@ if [ "$root" = "$live_root" ]; then
   elif [ "$enable_status" -eq 1 ] && [ ! -s "$enable_tmp/stdout" ] &&
       printf 'omarchy-shell is not responding\n' |
         /usr/bin/cmp -s - "$enable_tmp/stderr"; then
-    printf '%s\n' "plugin enable response was interrupted; verifying after restart"
+    printf '%s\n' "plugin enable response was interrupted; verifying reactive activation"
   else
     /usr/bin/cat "$enable_tmp/stdout"
     /usr/bin/cat "$enable_tmp/stderr" >&2
@@ -159,23 +175,16 @@ if [ "$root" = "$live_root" ]; then
   cleanup_enable_tmp
   trap - EXIT HUP INT TERM
 
-  PATH=/usr/bin:/bin /usr/bin/omarchy restart shell
-
+  # Helper writes may leave a watched-tree QML reload in flight, while plugin
+  # enablement reactively activates OmaQ's Loaders. Do not force a second shell
+  # exit while they may still be finalizing IpcHandler registration:
+  # Quickshell can crash there.
   ready=0
   attempt=0
   while [ "$attempt" -lt 200 ]; do
-    status_json=$(PATH=/usr/bin:/bin /usr/bin/python3 -IB \
-      "$helper_runtime" status --root "$root" --json 2>/dev/null || true)
-    if printf '%s\n' "$status_json" | /usr/bin/python3 -I -c '
-import json, sys
-value = json.load(sys.stdin)
-available = value.get("available_sha256")
-running = value.get("running_sha256")
-valid_hash = (isinstance(available, str) and len(available) == 64 and
-              all(char in "0123456789abcdef" for char in available))
-raise SystemExit(0 if value.get("state") == "current" and valid_hash and
-                 running == available else 1)
-' 2>/dev/null; then
+    if OMARCHY_SHELL_IPC_TIMEOUT=0.2s PATH=/usr/bin:/bin \
+        /usr/bin/omarchy-shell hancore.omaq status >/dev/null 2>&1 &&
+        helper_is_current; then
       ready=1
       break
     fi
@@ -185,7 +194,7 @@ raise SystemExit(0 if value.get("state") == "current" and valid_hash and
   [ "$ready" -eq 1 ] || {
     PATH=/usr/bin:/bin /usr/bin/python3 -IB \
       "$helper_runtime" status --root "$root" --json || true
-    fail "shell restarted, but the OmaQ helper did not become ready"
+    fail "OmaQ was enabled, but its plugin IPC and helper did not become ready"
   }
   printf 'source: installed (%s)\n' "$head"
   printf 'helper: current\n'

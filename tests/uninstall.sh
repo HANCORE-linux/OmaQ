@@ -110,7 +110,7 @@ run_case() {
     echo "uninstall: allowlisted runtime rules were not cleaned" >&2
     exit 1
   }
-  grep -q 'Unselected data was retained' "$case_root/uninstall.out"
+  grep -q 'Unselected data and all packages were kept' "$case_root/uninstall.out"
 }
 
 run_case graceful
@@ -828,6 +828,20 @@ grep -Fq -- '--default=false Permanently delete' "$interactive/gum.log" || {
   exit 1
 }
 tr -d '\r' <"$interactive/uninstall.out" >"$interactive/uninstall.normalized"
+grep -Fxq 'OmaQ removed. Unselected data and all packages were kept.' \
+  "$interactive/uninstall.normalized" || {
+  echo "uninstall: concise completion status is missing" >&2
+  exit 1
+}
+grep -Fxq 'Optional package removal (Pacman refuses required packages):' \
+  "$interactive/uninstall.normalized" || {
+  echo "uninstall: concise package guidance is missing" >&2
+  exit 1
+}
+! grep -Fq 'If you have verified that' "$interactive/uninstall.normalized" || {
+  echo "uninstall: verbose package guidance remains" >&2
+  exit 1
+}
 grep -Fxq -- '  sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode' \
   "$interactive/uninstall.normalized" || {
   echo "uninstall: exact manual non-recursive package command is missing" >&2

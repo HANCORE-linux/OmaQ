@@ -138,6 +138,7 @@ mkdir -p "$live/scripts" "$tmp/live-bin"
 sed -e "s#/usr/bin/omarchy#$tmp/live-bin/omarchy#g" \
   -e "s#/usr/bin/git#$tmp/live-bin/git#g" \
   -e "s#/usr/bin/make#$tmp/live-bin/make#g" \
+  -e "s#/usr/bin/sleep#$tmp/live-bin/sleep#g" \
   "$root/install.sh" >"$live/install.sh"
 cat >"$live/scripts/helper-runtime.py" <<'EOF'
 #!/usr/bin/python3
@@ -189,6 +190,30 @@ case "$*" in
   *) exit 95 ;;
 esac
 EOF
+cat >"$tmp/live-bin/omarchy-shell" <<'EOF'
+#!/bin/sh
+[ "$*" = "hancore.omaq status" ] || exit 96
+[ "${OMARCHY_SHELL_IPC_TIMEOUT:-}" = "0.2s" ] || exit 98
+count=0
+[ ! -f "$OMAQ_IPC_COUNTER" ] || count=$(cat "$OMAQ_IPC_COUNTER")
+count=$((count + 1))
+printf '%s\n' "$count" >"$OMAQ_IPC_COUNTER"
+case "${OMAQ_IPC_MODE:-success}" in
+  failure) exit 1 ;;
+  delayed) [ "$count" -gt 3 ] || exit 1 ;;
+  success) ;;
+  *) exit 97 ;;
+esac
+printf 'ipc-ready\n' >>"$OMAQ_INSTALL_TEST_LOG"
+printf 'ready\n'
+EOF
+cat >"$tmp/live-bin/sleep" <<'EOF'
+#!/bin/sh
+[ "$*" = "0.1" ] || exit 98
+count=0
+[ ! -f "$OMAQ_SLEEP_COUNTER" ] || count=$(cat "$OMAQ_SLEEP_COUNTER")
+printf '%s\n' "$((count + 1))" >"$OMAQ_SLEEP_COUNTER"
+EOF
 cat >"$tmp/live-bin/git" <<'EOF'
 #!/bin/sh
 [ "$3 $4 $5" = "rev-parse --verify HEAD" ] || exit 94
@@ -200,8 +225,8 @@ printf 'build\n' >>"$OMAQ_INSTALL_TEST_LOG"
 exit "${OMAQ_BUILD_STATUS:-0}"
 EOF
 chmod 755 "$live/install.sh" "$live/scripts/helper-runtime.py" \
-  "$tmp/live-bin/omarchy" \
-  "$tmp/live-bin/git" "$tmp/live-bin/make"
+  "$tmp/live-bin/omarchy" "$tmp/live-bin/omarchy-shell" \
+  "$tmp/live-bin/git" "$tmp/live-bin/make" "$tmp/live-bin/sleep"
 mkdir "$tmp/python-shadow"
 cat >"$tmp/python-shadow/json.py" <<'EOF'
 raise RuntimeError("readiness parser imported json.py from the working directory")
@@ -217,15 +242,22 @@ run_live_case() {
   expected_status=$7
   expected_log=$8
   plugin_enabled=${9:-false}
+  ipc_mode=${10:-success}
+  expected_ipc_calls=${11:-}
+  expected_sleep_calls=${12:-}
   log="$tmp/live-$name.log"
+  ipc_counter="$tmp/live-$name.ipc-counter"
+  sleep_counter="$tmp/live-$name.sleep-counter"
   : >"$log"
+  rm -f "$ipc_counter" "$sleep_counter"
   if (
     cd "$tmp/python-shadow"
     HOME="$live_home" PYTHONPATH="$tmp/python-shadow" \
       OMAQ_INSTALL_TEST_LOG="$log" OMAQ_VALIDATE_STATUS="$validate" \
       OMAQ_PACKAGE_STATUS="$package" OMAQ_BUILD_STATUS="$build" \
       OMAQ_ENABLE_RESULT="$enable" OMAQ_RESTART_STATUS="$restart" \
-      OMAQ_PLUGIN_ENABLED="$plugin_enabled" \
+      OMAQ_PLUGIN_ENABLED="$plugin_enabled" OMAQ_IPC_MODE="$ipc_mode" \
+      OMAQ_IPC_COUNTER="$ipc_counter" OMAQ_SLEEP_COUNTER="$sleep_counter" \
       "$live/install.sh" --yes
   ) >"$tmp/live-$name.out" 2>"$tmp/live-$name.err"; then
     actual=0
@@ -243,11 +275,43 @@ run_live_case() {
     cat "$log" >&2
     exit 1
   }
+  if [ -n "$expected_ipc_calls" ]; then
+    [ -f "$ipc_counter" ] &&
+      [ "$(cat "$ipc_counter")" -eq "$expected_ipc_calls" ] || {
+      echo "update-order: live $name IPC readiness count changed" >&2
+      exit 1
+    }
+  fi
+  if [ -n "$expected_sleep_calls" ]; then
+    actual_sleep_calls=0
+    [ ! -f "$sleep_counter" ] || actual_sleep_calls=$(cat "$sleep_counter")
+    [ "$actual_sleep_calls" -eq "$expected_sleep_calls" ] || {
+      echo "update-order: live $name readiness delay count changed" >&2
+      exit 1
+    }
+  fi
 }
-run_live_case success 0 0 0 0 0 0 \
-  'validate\nplugin-state\npackages\nbuild\nenable\nrestart\nverify\n'
-run_live_case transient-enable 0 0 0 transient 0 0 \
-  'validate\nplugin-state\npackages\nbuild\nenable\nrestart\nverify\n'
+run_live_case success 0 0 0 0 26 0 \
+  'validate\nplugin-state\npackages\nbuild\nenable\nipc-ready\nverify\n' \
+  false success 1 0
+run_live_case transient-enable 0 0 0 transient 26 0 \
+  'validate\nplugin-state\npackages\nbuild\nenable\nipc-ready\nverify\n' \
+  false success 1 0
+grep -Fxq 'plugin enable response was interrupted; verifying reactive activation' \
+  "$tmp/live-transient-enable.out" || {
+  echo "update-order: transient enable message is stale" >&2
+  exit 1
+}
+! grep -Fq 'verifying after restart' "$tmp/live-transient-enable.out" || {
+  echo "update-order: transient enable still promises a restart" >&2
+  exit 1
+}
+run_live_case delayed-ipc 0 0 0 0 26 0 \
+  'validate\nplugin-state\npackages\nbuild\nenable\nipc-ready\nverify\n' \
+  false delayed 4 3
+run_live_case ipc-timeout 0 0 0 0 0 1 \
+  'validate\nplugin-state\npackages\nbuild\nenable\nverify\n' \
+  false failure 200 200
 run_live_case validation-failure 23 0 0 0 0 23 'validate\n'
 run_live_case enabled-before-build 0 0 0 0 0 1 \
   'validate\nplugin-state\n' true
@@ -261,8 +325,6 @@ run_live_case enable-no-newline 0 0 0 no-newline 0 1 \
   'validate\nplugin-state\npackages\nbuild\nenable\n'
 run_live_case enable-extra-stdout 0 0 0 extra-stdout 0 1 \
   'validate\nplugin-state\npackages\nbuild\nenable\n'
-run_live_case restart-failure 0 0 0 0 26 26 \
-  'validate\nplugin-state\npackages\nbuild\nenable\nrestart\n'
 
 wrapper="$tmp/wrapper"
 mkdir -p "$wrapper/scripts" "$wrapper/bin"

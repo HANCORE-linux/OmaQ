@@ -831,11 +831,8 @@ done
 
 cat <<'EOF'
 
-OmaQ was unloaded. Unselected data was retained.
-Dependency packages are never removed automatically. If you have verified that
-none were installed before OmaQ and no other application needs them, the
-non-recursive removal command is:
-
+OmaQ removed. Unselected data and all packages were kept.
+Optional package removal (Pacman refuses required packages):
   sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode
 EOF
 (( cleanup_failed == 0 )) || exit 1
