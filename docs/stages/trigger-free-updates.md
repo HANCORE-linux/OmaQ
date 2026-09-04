@@ -13,7 +13,7 @@ A 2026-09-01 coredump correlated OmaQ write events with a generic QML loader pat
 The updater now:
 
 - requires a clean Git-managed `main` checkout with the canonical OmaQ `origin`
-- uses fixed system Git commands, sanitized Git configuration and transport state, canonical HTTPS, optional exact-commit binding, and a GitHub-scoped in-memory header from an authenticated GitHub CLI when private access requires it
+- uses fixed system Git commands, sanitized Git configuration and transport state, canonical HTTPS, optional exact-commit binding, and a fresh private credential-free `HOME` for each public network operation
 - refuses runtime or state staging paths that resolve inside the monitored plugin directory
 - resolves canonical `origin/main` first and skips staging plus the shell stop when the live commit already matches
 - retries a pending group-safe helper activation during that source no-op without stopping the shell
@@ -46,7 +46,7 @@ The focused tests cover:
 
 - duplicate JSON keys plus protocol decoys in comments, quoted strings, and template strings
 - protocol requirements below, equal to, and above the running version
-- full `.git` checkout, branch, origin, sanitized Git environment, private GitHub authentication without argument or checkout persistence, clean-tree requirements, and serialization with the helper updater
+- full `.git` checkout, branch, origin, sanitized Git environment, isolated network homes, `.netrc` exclusion on the real remote-resolution path, clean-tree requirements, and serialization with the helper updater
 - symlink and special-file rejection
 - same-filesystem exchange and reverse exchange
 - no-op source updates without staging or a shell stop

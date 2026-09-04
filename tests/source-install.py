@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.server
 import importlib.util
 import io
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -121,6 +123,18 @@ class SourceInstallTests(unittest.TestCase):
             self.assertFalse(cache.exists())
             self.assertFalse(marker.exists())
 
+    def test_install_section_is_optional_and_strict(self):
+        self.assertEqual(MODULE.parse_args(["--yes"]).section, "")
+        self.assertEqual(
+            MODULE.parse_args(["--section", "left", "--yes"]).section,
+            "left",
+        )
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            MODULE.parse_args(["--section", "top", "--yes"])
+
     def test_git_environment_disables_replace_objects(self):
         self.assertEqual(
             MODULE.core.git_environment().get("GIT_NO_REPLACE_OBJECTS"), "1"
@@ -134,6 +148,9 @@ class SourceInstallTests(unittest.TestCase):
         )
         self.assertEqual(documentation.count(marker), 1)
         self.assertIn("mode=update", documentation)
+        self.assertNotIn("OMAQ_BOOTSTRAP_AUTH", documentation)
+        self.assertNotIn("/usr/bin/gh auth", documentation)
+        self.assertIn("os.path.isabs(h)", documentation)
         start = documentation.index(marker) + len(marker)
         end = documentation.index("\nPY\n", start)
         compile(documentation[start:end], "documented-install-bootstrap", "exec")
@@ -150,8 +167,81 @@ class SourceInstallTests(unittest.TestCase):
             "os.killpg(process.pid, signal.SIGKILL)",
             "http.followRedirects=false",
             "Expected commit must be complete lowercase 40-hex",
+            'network_home = root + ".network-home"',
+            "network_parent = os.path.dirname(network_home)",
+            '"HOME": network_home',
+            '"GIT_CEILING_DIRECTORIES": network_parent',
+            '"-c", "credential.helper="',
+            '"-c", "http.extraHeader="',
+            "env=env, cwd=network_home",
+            "os.rmdir(network_home)",
         ):
             self.assertIn(required, bootstrap)
+        self.assertNotIn('"HOME": os.path.expanduser("~")', bootstrap)
+        self.assertLess(
+            bootstrap.index("os.mkdir(network_home, mode=0o700)"),
+            bootstrap.index('[*git, "ls-remote"'),
+        )
+
+    def test_public_bootstrap_home_does_not_send_netrc_credentials(self):
+        class CredentialHandler(http.server.BaseHTTPRequestHandler):
+            authorizations: list[str | None] = []
+
+            def do_GET(self):
+                authorization = self.headers.get("Authorization")
+                self.authorizations.append(authorization)
+                if authorization is None:
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="omaq-test"')
+                else:
+                    self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CredentialHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                credential_home = root / "credential-home"
+                isolated_home = root / "isolated-home"
+                credential_home.mkdir(mode=0o700)
+                isolated_home.mkdir(mode=0o700)
+                netrc = credential_home / ".netrc"
+                netrc.write_text(
+                    "machine 127.0.0.1 login leaked password secret\n",
+                    encoding="utf-8",
+                )
+                netrc.chmod(0o600)
+                url = f"http://127.0.0.1:{server.server_port}/repo.git"
+
+                def request(home: Path) -> list[str | None]:
+                    CredentialHandler.authorizations.clear()
+                    subprocess.run(
+                        ["/usr/bin/git", "ls-remote", url],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                        env={
+                            "HOME": str(home),
+                            "PATH": "/usr/bin:/bin",
+                            "GIT_CONFIG_GLOBAL": "/dev/null",
+                            "GIT_CONFIG_NOSYSTEM": "1",
+                            "GIT_TERMINAL_PROMPT": "0",
+                        },
+                    )
+                    return list(CredentialHandler.authorizations)
+
+                self.assertTrue(any(request(credential_home)))
+                self.assertFalse(any(request(isolated_home)))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_shell_config_parser_binds_only_enabled_locations(self):
         disabled = {
@@ -628,6 +718,7 @@ class SourceInstallTests(unittest.TestCase):
             installer.shell_stopped = False
             installer.enable_attempted = False
             installer.activation_possible = False
+            installer.section = "left"
             installer.preflight_and_build = lambda: (staged, object())
             installer.validate_pre_activation_helper = lambda _staged: {
                 "state": "inactive",
@@ -641,6 +732,17 @@ class SourceInstallTests(unittest.TestCase):
 
             def run(args, **_kwargs):
                 if args[1:3] == ["plugin", "enable"]:
+                    self.assertEqual(
+                        args,
+                        [
+                            shell.omarchy,
+                            "plugin",
+                            "enable",
+                            MODULE.core.PLUGIN_ID,
+                            "--section",
+                            "left",
+                        ],
+                    )
                     events.append("enable")
                 else:
                     self.fail(f"unexpected command: {args}")

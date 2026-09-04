@@ -4,7 +4,7 @@ This note records the first-install workflow added after `v0.8.1-beta.2`. It rep
 
 ## Installation transaction
 
-The primary source command clones the current `main` branch outside `~/.config/omarchy/plugins/` and runs the installer from that checkout. It trusts authenticated GitHub and the configured Git client during acquisition. The optional exact-commit bootstrap uses fixed system Git, disables inherited system and global Git configuration, scopes an authenticated GitHub header to `https://github.com/`, limits acquisition, and verifies the checkout commit, branch, origin, and clean status before executing the controller.
+The primary source command atomically creates private source and network-home directories directly under `$HOME`, clones the current `main` branch with fixed system Git and sanitized credential-free configuration, removes the still-empty network home, and runs the installer from that checkout. It trusts public GitHub's current `main` and has no acquisition-size bound. The optional exact-commit bootstrap adds acquisition limits and verifies the checkout commit, branch, origin, and clean status before executing the controller. Both paths accept `--section left|center|right` and pass it only to the single final Omarchy enable operation; no interactive placement or Shibumi-specific mutation occurs. Shibumi V2 consumes the resulting Omarchy layout entry directly, while V1 adoption remains a Shibumi compatibility boundary.
 
 The controller then:
 

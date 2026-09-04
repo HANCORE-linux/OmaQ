@@ -643,7 +643,7 @@ def preflight_install_support(source: Path, target: Path) -> None:
 
 
 class Installer:
-    def __init__(self, expected_commit: str):
+    def __init__(self, expected_commit: str, section: str):
         self.source = Path(__file__).absolute().parent.parent
         self.root = Path.home() / ".config/omarchy/plugins" / core.PLUGIN_ID
         self.plugins_dir = self.root.parent
@@ -655,6 +655,7 @@ class Installer:
         core.lstat_directory(self.source.parent)
         target_absent(self.root)
         self.expected_commit = expected_commit
+        self.section = section
         self.lock = core.UpdateLock(self.plugins_dir)
         self.shell = core.ShellController(self.plugins_dir)
         self.shell.live_root = self.root
@@ -910,8 +911,17 @@ class Installer:
                 raise
 
             self.enable_attempted = True
+            enable_command = [
+                self.shell.omarchy,
+                "plugin",
+                "enable",
+                core.PLUGIN_ID,
+            ]
+            section = getattr(self, "section", "")
+            if section:
+                enable_command.extend(["--section", section])
             core.run(
-                [self.shell.omarchy, "plugin", "enable", core.PLUGIN_ID],
+                enable_command,
                 capture=True,
                 timeout=10,
                 env=self.shell.ipc_env,
@@ -969,6 +979,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="require this exact checkout and canonical origin/main commit",
     )
     parser.add_argument(
+        "--section",
+        choices=("left", "center", "right"),
+        default="",
+        help="place OmaQ in this bar section (default: manifest setting)",
+    )
+    parser.add_argument(
         "--yes", action="store_true", help="confirm the temporary shell stop"
     )
     args = parser.parse_args(argv)
@@ -991,7 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGHUP, interrupted)
     installer = None
     try:
-        installer = Installer(args.expect_commit)
+        installer = Installer(args.expect_commit, args.section)
         installer.install()
         return 0
     except (core.UpdateError, OSError, ValueError) as error:

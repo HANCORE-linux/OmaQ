@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -35,6 +35,10 @@ MAX_PROC_BYTES = 256 * 1024
 GIT_NETWORK_CONFIG = (
     "-c",
     "core.hooksPath=/dev/null",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "http.extraHeader=",
     "-c",
     "http.sslVerify=true",
     "-c",
@@ -130,98 +134,6 @@ def trusted_environment() -> dict[str, str]:
     return environment
 
 
-def validate_secure_parent_chain(path: Path) -> None:
-    current = path
-    while True:
-        info = current.stat()
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid not in {0, os.geteuid()}
-            or info.st_mode & 0o022
-        ):
-            fail(f"unsafe executable parent directory: {current}")
-        if current.parent == current:
-            return
-        current = current.parent
-
-
-def validate_github_cli_path(candidate: Path) -> str:
-    try:
-        validate_secure_parent_chain(candidate.absolute().parent)
-        resolved = candidate.resolve(strict=True)
-        validate_secure_parent_chain(resolved.parent)
-        info = resolved.stat()
-    except FileNotFoundError:
-        raise
-    except OSError as error:
-        fail(f"cannot inspect GitHub CLI candidate {candidate}: {error}")
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid not in {0, os.geteuid()}
-        or info.st_mode & 0o022
-        or not info.st_mode & 0o111
-        or info.st_size > 128 * 1024 * 1024
-    ):
-        fail(f"unsafe GitHub CLI path: {resolved}")
-    return str(resolved)
-
-
-def trusted_github_cli_path() -> str | None:
-    candidates = [Path("/usr/bin/gh"), Path.home() / ".local/bin/gh"]
-    candidates.extend(
-        (Path.home() / ".local/share/mise/installs/gh/latest").glob("*/bin/gh")
-    )
-    for candidate in candidates:
-        try:
-            return validate_github_cli_path(candidate)
-        except FileNotFoundError:
-            continue
-    return None
-
-
-def github_auth_header() -> str | None:
-    github_cli = trusted_github_cli_path()
-    if github_cli is None:
-        return None
-    cli_fd = os.open(
-        github_cli, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
-    )
-    try:
-        info = os.fstat(cli_fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid not in {0, os.geteuid()}
-            or info.st_mode & 0o022
-            or not info.st_mode & 0o111
-            or info.st_size > 128 * 1024 * 1024
-        ):
-            fail("GitHub CLI changed before token acquisition")
-        executable = f"/proc/self/fd/{cli_fd}"
-        result = run(
-            [executable, "auth", "token", "--hostname", "github.com"],
-            check=False,
-            capture=True,
-            timeout=10,
-            env=trusted_environment(),
-            pass_fds=(cli_fd,),
-        )
-    finally:
-        os.close(cli_fd)
-    if result.returncode != 0:
-        return None
-    token = bounded_text(result.stdout, "gh auth token").strip()
-    if (
-        len(token) < 20
-        or len(token) > 512
-        or any(ord(char) < 0x21 or ord(char) > 0x7E for char in token)
-    ):
-        fail("GitHub CLI returned an invalid authentication token")
-    credentials = base64.b64encode(
-        f"x-access-token:{token}".encode("ascii")
-    ).decode("ascii")
-    return f"Authorization: Basic {credentials}"
-
-
 def run(
     args: list[str],
     *,
@@ -232,8 +144,10 @@ def run(
     quiet: bool = False,
     cwd: Path | None = None,
     preexec_fn=None,
-    pass_fds: tuple[int, ...] = (),
+    process_group: bool = False,
 ) -> subprocess.CompletedProcess:
+    if process_group and not capture:
+        fail("process-group isolation requires captured command output")
     stdout = subprocess.PIPE if capture else (subprocess.DEVNULL if quiet else None)
     stderr = subprocess.PIPE if capture else (subprocess.DEVNULL if quiet else None)
     if capture:
@@ -246,7 +160,7 @@ def run(
                 env=env,
                 cwd=cwd,
                 preexec_fn=preexec_fn,
-                pass_fds=pass_fds,
+                start_new_session=process_group,
             )
         except OSError as error:
             fail(f"command failed to start: {args[0]}: {error}")
@@ -276,8 +190,11 @@ def run(
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
             returncode = process.wait(timeout=remaining)
         except BaseException:
-            process.kill()
-            process.wait()
+            if process_group:
+                terminate_process_group(process)
+            else:
+                process.kill()
+                process.wait()
             raise
         finally:
             selector.close()
@@ -285,6 +202,9 @@ def run(
                 process.stdout.close()
             if process.stderr is not None and not process.stderr.closed:
                 process.stderr.close()
+        if process_group and not wait_process_group_exit(process, timeout=1.0):
+            terminate_process_group(process)
+            fail(f"command left a child process running: {args[0]}")
         result = subprocess.CompletedProcess(args, returncode, bytes(output), bytes(errors))
     else:
         try:
@@ -298,7 +218,6 @@ def run(
                 env=env,
                 cwd=cwd,
                 preexec_fn=preexec_fn,
-                pass_fds=pass_fds,
             )
         except subprocess.TimeoutExpired:
             fail(f"command timed out: {args[0]}")
@@ -583,35 +502,36 @@ def check_tree_bounds(root: Path, *, allow_disappeared: bool = False) -> None:
         current = stack.pop()
         try:
             with os.scandir(current) as iterator:
-                children = list(iterator)
+                for child in iterator:
+                    entries += 1
+                    if entries > MAX_TREE_ENTRIES:
+                        fail("staged checkout exceeds the 50000-entry limit")
+                    try:
+                        info = child.stat(follow_symlinks=False)
+                    except FileNotFoundError as error:
+                        if allow_disappeared:
+                            continue
+                        fail(f"cannot inspect staged entry: {error}")
+                    except OSError as error:
+                        fail(f"cannot inspect staged entry: {error}")
+                    if stat.S_ISLNK(info.st_mode):
+                        fail(f"staged checkout contains a symlink: {child.path}")
+                    if stat.S_ISDIR(info.st_mode):
+                        stack.append(Path(child.path))
+                    elif stat.S_ISREG(info.st_mode):
+                        total += info.st_size
+                        if total > MAX_TREE_BYTES:
+                            fail("staged checkout exceeds the 512 MiB limit")
+                    else:
+                        fail(
+                            f"staged checkout contains a special file: {child.path}"
+                        )
         except FileNotFoundError as error:
             if allow_disappeared:
                 continue
             fail(f"cannot inspect staged tree: {error}")
         except OSError as error:
             fail(f"cannot inspect staged tree: {error}")
-        for child in children:
-            entries += 1
-            if entries > MAX_TREE_ENTRIES:
-                fail("staged checkout exceeds the 50000-entry limit")
-            try:
-                info = child.stat(follow_symlinks=False)
-            except FileNotFoundError as error:
-                if allow_disappeared:
-                    continue
-                fail(f"cannot inspect staged entry: {error}")
-            except OSError as error:
-                fail(f"cannot inspect staged entry: {error}")
-            if stat.S_ISLNK(info.st_mode):
-                fail(f"staged checkout contains a symlink: {child.path}")
-            if stat.S_ISDIR(info.st_mode):
-                stack.append(Path(child.path))
-            elif stat.S_ISREG(info.st_mode):
-                total += info.st_size
-                if total > MAX_TREE_BYTES:
-                    fail("staged checkout exceeds the 512 MiB limit")
-            else:
-                fail(f"staged checkout contains a special file: {child.path}")
 
 
 def check_update_storage(root: Path) -> None:
@@ -668,6 +588,15 @@ def process_group_exists(process: subprocess.Popen) -> bool:
         os.killpg(process.pid, 0)
     except ProcessLookupError:
         return False
+    return True
+
+
+def wait_process_group_exit(process: subprocess.Popen, *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while process_group_exists(process):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
     return True
 
 
@@ -1390,20 +1319,34 @@ def git_environment() -> dict[str, str]:
     return environment
 
 
-def git_network_environment() -> dict[str, str]:
+@contextmanager
+def git_network_environment(parent: Path):
+    if not parent.is_absolute():
+        fail("isolated network home parent must be absolute")
+    lstat_directory(parent)
+    network_home = parent / f".omaq-network-home-{secrets.token_hex(16)}"
+    if os.pathsep in str(parent):
+        fail("isolated network home parent contains the Git path separator")
+    try:
+        os.mkdir(network_home, 0o700)
+    except OSError as error:
+        fail(f"cannot create isolated network home: {error}")
+    identity = directory_identity(network_home)
     environment = git_environment()
-    if CANONICAL_ORIGIN != "https://github.com/HANCORE-linux/OmaQ.git":
-        return environment
-    header = github_auth_header()
-    if header is not None:
-        environment.update(
-            {
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
-                "GIT_CONFIG_VALUE_0": header,
-            }
-        )
-    return environment
+    environment["HOME"] = str(network_home)
+    environment["GIT_CEILING_DIRECTORIES"] = str(parent)
+    try:
+        yield environment
+    finally:
+        try:
+            info = lstat_directory(network_home, private=True)
+            if (info.st_dev, info.st_ino) != identity:
+                fail("isolated network home changed identity")
+            os.rmdir(network_home)
+        except UpdateError:
+            raise
+        except OSError as error:
+            fail(f"isolated network home changed: {error}")
 
 
 def git_output(root: Path, arguments: list[str], source: str) -> str:
@@ -1507,21 +1450,23 @@ def validate_build_artifacts(root: Path) -> None:
 
 def resolve_remote_main(update_base: Path, expected_commit: str) -> str:
     git = command_path("git")
-    remote = run(
-        [
-            git,
-            *GIT_NETWORK_CONFIG,
-            "ls-remote",
-            "--exit-code",
-            CANONICAL_ORIGIN,
-            "refs/heads/main",
-        ],
-        capture=True,
-        timeout=60,
-        env=git_network_environment(),
-        cwd=update_base,
-        preexec_fn=limit_staging_file_size,
-    )
+    with git_network_environment(update_base) as environment:
+        remote = run(
+            [
+                git,
+                *GIT_NETWORK_CONFIG,
+                "ls-remote",
+                "--exit-code",
+                CANONICAL_ORIGIN,
+                "refs/heads/main",
+            ],
+            capture=True,
+            timeout=60,
+            env=environment,
+            cwd=Path(environment["HOME"]),
+            preexec_fn=limit_staging_file_size,
+            process_group=True,
+        )
     fields = bounded_text(remote.stdout, "git ls-remote").strip().split()
     if (
         len(fields) != 2
@@ -1551,24 +1496,25 @@ def stage_update(
 
     timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     stage = update_base / f"tree-{timestamp}-{secrets.token_hex(6)}"
-    run_tree_bounded(
-        [
-            git,
-            *GIT_NETWORK_CONFIG,
-            "clone",
-            "--no-hardlinks",
-            "--branch",
-            "main",
-            "--single-branch",
-            "--",
-            CANONICAL_ORIGIN,
-            str(stage),
-        ],
-        stage,
-        timeout=300,
-        env=git_network_environment(),
-        cwd=update_base,
-    )
+    with git_network_environment(update_base) as environment:
+        run_tree_bounded(
+            [
+                git,
+                *GIT_NETWORK_CONFIG,
+                "clone",
+                "--no-hardlinks",
+                "--branch",
+                "main",
+                "--single-branch",
+                "--",
+                CANONICAL_ORIGIN,
+                str(stage),
+            ],
+            stage,
+            timeout=300,
+            env=environment,
+            cwd=Path(environment["HOME"]),
+        )
     stage_head = validate_git_checkout(stage, expected_origin=CANONICAL_ORIGIN)
     if stage_head != target:
         fail("origin/main changed while the staging clone was created")

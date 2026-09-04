@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import http.server
 import io
 import importlib.util
 import json
@@ -15,8 +16,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -983,108 +986,179 @@ class SourceUpdateTests(unittest.TestCase):
                 activation, "a" * 64, {"b" * 64}, 14
             )
 
-    def test_private_github_auth_uses_a_scoped_internal_header(self):
+    def test_network_git_rejects_a_relative_parent(self):
+        with self.assertRaisesRegex(MODULE.UpdateError, "must be absolute"):
+            with MODULE.git_network_environment(Path("relative")):
+                self.fail("relative network home unexpectedly opened")
+
+    def test_network_git_uses_a_private_temporary_home(self):
         with tempfile.TemporaryDirectory() as directory:
-            github_cli = Path(directory) / "gh"
-            token = "github_pat_" + "a" * 32
-            github_cli.write_text(
-                f"#!/bin/sh\nprintf '%s\\n' {token!r}\n", encoding="utf-8"
-            )
-            github_cli.chmod(0o755)
-            original_path = MODULE.trusted_github_cli_path
-            original_origin = MODULE.CANONICAL_ORIGIN
-            MODULE.trusted_github_cli_path = lambda: str(github_cli)
-            MODULE.CANONICAL_ORIGIN = "https://github.com/HANCORE-linux/OmaQ.git"
-            try:
-                environment = MODULE.git_network_environment()
-            finally:
-                MODULE.trusted_github_cli_path = original_path
-                MODULE.CANONICAL_ORIGIN = original_origin
-            self.assertEqual(environment["GIT_CONFIG_COUNT"], "1")
-            self.assertEqual(
-                environment["GIT_CONFIG_KEY_0"],
-                "http.https://github.com/.extraHeader",
-            )
-            encoded = environment["GIT_CONFIG_VALUE_0"].split()[-1]
-            self.assertEqual(
-                MODULE.base64.b64decode(encoded).decode("ascii"),
-                f"x-access-token:{token}",
-            )
-            self.assertNotIn(token, environment["GIT_CONFIG_VALUE_0"])
-
-            source = Path(directory) / "source"
-            checkout = Path(directory) / "checkout"
-            source.mkdir()
-            subprocess.run(
-                ["/usr/bin/git", "-C", str(source), "init", "-b", "main"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-            )
-            (source / "tracked").write_text("tracked\n", encoding="utf-8")
-            subprocess.run(
-                ["/usr/bin/git", "-C", str(source), "add", "tracked"], check=True
-            )
-            subprocess.run(
-                [
-                    "/usr/bin/git",
-                    "-C",
-                    str(source),
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.invalid",
-                    "commit",
-                    "-m",
-                    "fixture",
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-            )
-            clone_args = [
-                "/usr/bin/git",
-                "clone",
-                "--",
-                str(source),
-                str(checkout),
-            ]
-            self.assertNotIn(token, " ".join(clone_args))
-            subprocess.run(
-                clone_args,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=environment,
-            )
-            config = (checkout / ".git/config").read_text(encoding="utf-8")
-            self.assertNotIn(token, config)
-            self.assertNotIn("extraHeader", config)
-
-    def test_github_auth_fails_closed_for_missing_invalid_or_unsafe_cli(self):
-        original_path = MODULE.trusted_github_cli_path
-        try:
-            MODULE.trusted_github_cli_path = lambda: None
-            self.assertIsNone(MODULE.github_auth_header())
-            with tempfile.TemporaryDirectory() as directory:
-                github_cli = Path(directory) / "gh"
-                github_cli.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-                github_cli.chmod(0o755)
-                MODULE.trusted_github_cli_path = lambda: str(github_cli)
-                self.assertIsNone(MODULE.github_auth_header())
-                github_cli.write_text(
-                    "#!/bin/sh\nprintf 'too-short\\n'\n", encoding="utf-8"
+            parent = Path(directory)
+            with MODULE.git_network_environment(parent) as environment:
+                network_home = Path(environment["HOME"])
+                self.assertEqual(network_home.parent, parent)
+                self.assertNotEqual(network_home, Path.home())
+                self.assertEqual(network_home.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(
+                    environment["GIT_CEILING_DIRECTORIES"], str(parent)
                 )
-                with self.assertRaisesRegex(MODULE.UpdateError, "invalid authentication"):
-                    MODULE.github_auth_header()
-                unsafe_parent = Path(directory) / "unsafe"
-                unsafe_parent.mkdir(mode=0o777)
-                unsafe_parent.chmod(0o777)
-                unsafe_cli = unsafe_parent / "gh"
-                unsafe_cli.write_bytes(b"not executable code")
-                unsafe_cli.chmod(0o755)
-                with self.assertRaisesRegex(MODULE.UpdateError, "unsafe executable parent"):
-                    MODULE.validate_github_cli_path(unsafe_cli)
-        finally:
-            MODULE.trusted_github_cli_path = original_path
+                self.assertEqual(list(network_home.iterdir()), [])
+                self.assertNotIn("GIT_CONFIG_COUNT", environment)
+                self.assertNotIn("GIT_CONFIG_KEY_0", environment)
+                self.assertNotIn("GIT_CONFIG_VALUE_0", environment)
+            self.assertFalse(network_home.exists())
+
+    def test_network_git_rejects_a_modified_temporary_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            with self.assertRaisesRegex(
+                MODULE.UpdateError, "isolated network home changed"
+            ):
+                with MODULE.git_network_environment(parent) as environment:
+                    Path(environment["HOME"], ".netrc").write_text(
+                        "machine example.invalid login user password secret\n",
+                        encoding="utf-8",
+                    )
+
+    def test_network_git_timeout_terminates_descendants_before_home_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            pid_path = parent / "child.pid"
+            program = (
+                "import pathlib, subprocess, sys, time; "
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(60)']); "
+                "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+                "time.sleep(60)"
+            )
+            with self.assertRaisesRegex(MODULE.UpdateError, "command timed out"):
+                with MODULE.git_network_environment(parent) as environment:
+                    network_home = Path(environment["HOME"])
+                    MODULE.run(
+                        [sys.executable, "-c", program, str(pid_path)],
+                        capture=True,
+                        timeout=0.5,
+                        env=environment,
+                        process_group=True,
+                    )
+            self.assertFalse(network_home.exists())
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 5
+            while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            child_alive = Path(f"/proc/{child_pid}").exists()
+            if child_alive:
+                os.kill(child_pid, signal.SIGKILL)
+            self.assertFalse(child_alive, "network Git descendant survived timeout")
+
+    def test_remote_resolution_does_not_use_the_real_home_netrc(self):
+        class AuthenticationHandler(http.server.BaseHTTPRequestHandler):
+            authorizations: list[str | None] = []
+
+            def do_GET(self):
+                type(self).authorizations.append(self.headers.get("Authorization"))
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="fixture"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, _format, *_arguments):
+                return
+
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            credential_home = parent / "credential-home"
+            credential_home.mkdir(mode=0o700)
+            netrc = credential_home / ".netrc"
+            netrc.write_text(
+                "machine 127.0.0.1 login fixture password secret\n",
+                encoding="utf-8",
+            )
+            netrc.chmod(0o600)
+            server = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), AuthenticationHandler
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            origin = (
+                f"http://127.0.0.1:{server.server_address[1]}/repository.git"
+            )
+            original_origin = MODULE.CANONICAL_ORIGIN
+            try:
+                control_environment = MODULE.git_environment()
+                control_environment["HOME"] = str(credential_home)
+                subprocess.run(
+                    [
+                        "/usr/bin/git",
+                        *MODULE.GIT_NETWORK_CONFIG,
+                        "ls-remote",
+                        "--exit-code",
+                        origin,
+                        "refs/heads/main",
+                    ],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    env=control_environment,
+                )
+                self.assertTrue(
+                    any(AuthenticationHandler.authorizations),
+                    "positive control did not send .netrc credentials",
+                )
+
+                marker = parent / "credential-helper-ran"
+                credential_helper = parent / "credential-helper"
+                credential_helper.write_text(
+                    "#!/bin/sh\ntouch -- " + str(marker) + "\n",
+                    encoding="utf-8",
+                )
+                credential_helper.chmod(0o700)
+                subprocess.run(
+                    ["/usr/bin/git", "-C", str(parent), "init", "-b", "main"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    [
+                        "/usr/bin/git",
+                        "-C",
+                        str(parent),
+                        "config",
+                        "credential.helper",
+                        f"!{credential_helper}",
+                    ],
+                    check=True,
+                )
+                subprocess.run(
+                    [
+                        "/usr/bin/git",
+                        "-C",
+                        str(parent),
+                        "config",
+                        "url.http://127.0.0.1:9/blocked.insteadOf",
+                        origin,
+                    ],
+                    check=True,
+                )
+
+                AuthenticationHandler.authorizations.clear()
+                MODULE.CANONICAL_ORIGIN = origin
+                with self.assertRaisesRegex(MODULE.UpdateError, "command failed"):
+                    MODULE.resolve_remote_main(parent, "")
+                self.assertTrue(AuthenticationHandler.authorizations)
+                self.assertFalse(marker.exists())
+                self.assertTrue(
+                    all(
+                        authorization is None
+                        for authorization in AuthenticationHandler.authorizations
+                    )
+                )
+            finally:
+                MODULE.CANONICAL_ORIGIN = original_origin
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
 
     def test_git_checkout_requires_main_origin_and_clean_complete_git_dir(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1232,6 +1306,46 @@ class SourceUpdateTests(unittest.TestCase):
             (root / "unexpected.tmp").write_text("unexpected\n", encoding="utf-8")
             with self.assertRaisesRegex(MODULE.UpdateError, "unexpected"):
                 MODULE.validate_build_artifacts(root)
+
+    def test_tree_entry_limit_stops_consuming_the_iterator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            regular = root / "regular"
+            regular.write_bytes(b"")
+            regular_info = regular.stat()
+
+            class Entry:
+                path = str(regular)
+
+                def stat(self, *, follow_symlinks):
+                    if follow_symlinks:
+                        raise AssertionError("scanner followed a fixture entry")
+                    return regular_info
+
+            class BoundedIterator:
+                def __init__(self):
+                    self.calls = 0
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_arguments):
+                    return False
+
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    self.calls += 1
+                    if self.calls > MODULE.MAX_TREE_ENTRIES + 1:
+                        raise AssertionError("scanner consumed beyond the entry limit")
+                    return Entry()
+
+            iterator = BoundedIterator()
+            with mock.patch.object(MODULE.os, "scandir", return_value=iterator):
+                with self.assertRaisesRegex(MODULE.UpdateError, "50000-entry limit"):
+                    MODULE.check_tree_bounds(root)
+            self.assertEqual(iterator.calls, MODULE.MAX_TREE_ENTRIES + 1)
 
     def test_tree_boundaries_reject_symlinks_and_special_files(self):
         with tempfile.TemporaryDirectory() as directory:
