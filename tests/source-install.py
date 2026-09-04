@@ -745,6 +745,62 @@ class SourceInstallTests(unittest.TestCase):
                     timeout=1,
                 )
 
+    def test_startup_discovery_retries_only_exact_shell_transition_error(self):
+        events: list[str] = []
+        shell = FakeShell(events)
+        valid = {
+            "id": MODULE.core.PLUGIN_ID,
+            "enabled": False,
+            "firstParty": False,
+            "kinds": ["bar-widget"],
+        }
+        success = subprocess.CompletedProcess(
+            [],
+            0,
+            b'[{"id":"hancore.omaq","enabled":false,'
+            b'"firstParty":false,"kinds":["bar-widget"]}]\n',
+            b"",
+        )
+        transient = subprocess.CompletedProcess(
+            [], 1, b"", b"omarchy-shell is not responding\n"
+        )
+        with mock.patch.object(
+            MODULE.core, "run", side_effect=[transient, success]
+        ) as listed:
+            MODULE.wait_plugin_state(
+                shell,
+                enabled=False,
+                expected_shell=shell.started,
+                cursor="cursor",
+                timeout=2,
+            )
+        self.assertEqual(listed.call_count, 2)
+
+        for returncode, stdout, stderr in (
+            (2, b"", b"omarchy-shell is not responding\n"),
+            (1, b"", b"omarchy-shell is not responding"),
+            (1, b"", b"omarchy-shell is not responding \n"),
+            (1, b"unexpected\n", b"omarchy-shell is not responding\n"),
+            (1, b"", b"unexpected\n"),
+        ):
+            with self.subTest(
+                returncode=returncode, stdout=stdout, stderr=stderr
+            ), mock.patch.object(
+                MODULE.core,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], returncode, stdout, stderr
+                ),
+            ):
+                with self.assertRaises(MODULE.core.UpdateError):
+                    MODULE.wait_plugin_state(
+                        shell,
+                        enabled=False,
+                        expected_shell=shell.started,
+                        cursor="cursor",
+                        timeout=1,
+                    )
+
     def test_install_uses_startup_discovery_then_one_enable(self):
         source_text = MODULE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("rescanPlugins", source_text)

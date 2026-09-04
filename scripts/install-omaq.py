@@ -36,6 +36,10 @@ class ActivationPossibleError(InstallError):
     """The installed tree may already have an active consumer."""
 
 
+class PluginListTransitionError(core.UpdateError):
+    """The shell list request hit the one trusted reload transition."""
+
+
 def fail(message: str) -> None:
     raise InstallError(message)
 
@@ -142,10 +146,27 @@ def require_persisted_plugin_enabled() -> None:
 def plugin_entries(shell: core.ShellController) -> list[dict]:
     result = core.run(
         [shell.omarchy, "plugin", "list", "--json"],
+        check=False,
         capture=True,
         timeout=5,
         env=shell.ipc_env,
     )
+    if result.returncode != 0:
+        if (
+            result.returncode == 1
+            and result.stdout == b""
+            and result.stderr == b"omarchy-shell is not responding\n"
+        ):
+            raise PluginListTransitionError(
+                "plugin list crossed an Omarchy shell reload"
+            )
+        stdout = core.bounded_text(result.stdout, "plugin list stdout").strip()
+        stderr = core.bounded_text(result.stderr, "plugin list stderr").strip()
+        detail = stderr or stdout
+        suffix = f": {detail}" if detail else ""
+        core.fail(
+            f"command failed ({result.returncode}): {shell.omarchy}{suffix}"
+        )
     value = core.strict_json(
         core.bounded_text(result.stdout, "plugin list"), "plugin list"
     )
@@ -236,7 +257,11 @@ def wait_plugin_state(
         failed_line = shell.journal_failed(cursor)
         if failed_line:
             fail(f"new shell reported an OmaQ loader failure: {failed_line}")
-        entries = plugin_entries(shell)
+        try:
+            entries = plugin_entries(shell)
+        except PluginListTransitionError:
+            time.sleep(0.1)
+            continue
         if not entries:
             time.sleep(0.1)
             continue

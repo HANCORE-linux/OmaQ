@@ -40,16 +40,14 @@ OmaQ runs no servers and has no operator access to your identity, contacts, or m
 ## Install
 
 > [!IMPORTANT]
-> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
+> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, install it through Omarchy's normal plugin command.
 
 ```bash
-mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-git clone --no-hardlinks --branch main --single-branch -- \
-  https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
-"$HOME/.omaq-source-install/install.sh" --section right --yes
+omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --yes &&
+~/.config/omarchy/plugins/hancore.omaq/install.sh --yes
 ```
 
-This installs OmaQ and its dependencies in the right bar section. Use `left` or `center` if preferred.
+Omarchy installs the plugin checkout. `install.sh` installs the required packages, builds the helper, enables OmaQ in its manifest's right bar section, restarts the shell, and verifies the running helper. Pass `--section left` or `--section center` to `install.sh` to choose another section.
 
 ## Update
 
@@ -69,7 +67,7 @@ Run the verified wrapper:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
 ```
 
-Keep retained data if you may reinstall OmaQ or still need the identity or history. Private data, local state, received files, backups, and dependency packages remain available for manual inspection or removal.
+Keep retained data if you may reinstall OmaQ or still need the identity or history. In an interactive run, every remaining OmaQ data directory is offered separately for permanent removal; each answer defaults to No. `--yes` removes the plugin non-interactively and retains all data. Dependency packages are never removed automatically; the wrapper prints a separate non-recursive Pacman command for optional manual cleanup.
 
 ## Documentation
 
