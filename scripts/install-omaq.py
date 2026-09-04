@@ -193,6 +193,35 @@ def require_plugin_state(shell: core.ShellController, *, enabled: bool) -> None:
     validate_plugin_entries(plugin_entries(shell), enabled=enabled)
 
 
+def enable_plugin(shell: core.ShellController, section: str) -> None:
+    command = [shell.omarchy, "plugin", "enable", core.PLUGIN_ID]
+    if section:
+        command.extend(["--section", section])
+    result = core.run(
+        command,
+        check=False,
+        capture=True,
+        timeout=10,
+        env=shell.ipc_env,
+    )
+    if result.returncode == 0:
+        return
+    stdout = core.bounded_text(result.stdout, "plugin enable stdout").strip()
+    stderr = core.bounded_text(result.stderr, "plugin enable stderr").strip()
+    if (
+        result.returncode == 1
+        and result.stdout == b""
+        and result.stderr == b"omarchy-shell is not responding\n"
+    ):
+        # Enabling the plugin rewrites shell.json and can reload the IPC handler
+        # before its reply arrives. This result is uncertain, not successful;
+        # the caller must still prove every consumer and persisted postcondition.
+        return
+    detail = stderr or stdout
+    suffix = f": {detail}" if detail else ""
+    fail(f"plugin enable command failed ({result.returncode}){suffix}")
+
+
 def wait_plugin_state(
     shell: core.ShellController,
     *,
@@ -918,21 +947,7 @@ class Installer:
                 raise
 
             self.enable_attempted = True
-            enable_command = [
-                self.shell.omarchy,
-                "plugin",
-                "enable",
-                core.PLUGIN_ID,
-            ]
-            section = getattr(self, "section", "")
-            if section:
-                enable_command.extend(["--section", section])
-            core.run(
-                enable_command,
-                capture=True,
-                timeout=10,
-                env=self.shell.ipc_env,
-            )
+            enable_plugin(self.shell, getattr(self, "section", ""))
             helper = self.shell.consumer_ready(
                 cursor,
                 self.staged.helper_hash,

@@ -780,7 +780,7 @@ class SourceInstallTests(unittest.TestCase):
                 assert_stopped()
                 os.rename(source_path, target_path)
 
-            def run(args, **_kwargs):
+            def run(args, **kwargs):
                 if args[1:3] == ["plugin", "enable"]:
                     self.assertEqual(
                         args,
@@ -793,10 +793,16 @@ class SourceInstallTests(unittest.TestCase):
                             "left",
                         ],
                     )
+                    self.assertIs(kwargs.get("check"), False)
                     events.append("enable")
                 else:
                     self.fail(f"unexpected command: {args}")
-                return subprocess.CompletedProcess(args, 0, b"", b"")
+                return subprocess.CompletedProcess(
+                    args,
+                    1,
+                    b"",
+                    b"omarchy-shell is not responding\n",
+                )
 
             with (
                 mock.patch.object(MODULE, "target_absent", lambda path: None),
@@ -824,6 +830,39 @@ class SourceInstallTests(unittest.TestCase):
             self.assertLess(
                 events.index("consumer-ready"), events.index("persisted-enabled")
             )
+
+    def test_enable_rejects_every_other_command_failure(self):
+        shell = FakeShell([])
+        failures = (
+            (1, b"", b"omarchy-shell is not running\n"),
+            (2, b"", b"omarchy-shell is not responding\n"),
+            (1, b"unexpected\n", b"omarchy-shell is not responding\n"),
+            (1, b" \n", b"omarchy-shell is not responding\n"),
+            (1, b"", b"omarchy-shell is not responding"),
+            (1, b"", b"omarchy-shell is not responding\r\n"),
+            (1, b"", b"omarchy-shell is not responding\n\n"),
+            (1, b"", b"omarchy-shell is not responding\nextra\n"),
+            (1, b"", b""),
+        )
+        for returncode, stdout, stderr in failures:
+            with (
+                self.subTest(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                ),
+                mock.patch.object(
+                    MODULE.core,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        [], returncode, stdout, stderr
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    MODULE.InstallError, "plugin enable command failed"
+                ),
+            ):
+                MODULE.enable_plugin(shell, "right")
 
     def test_raced_target_keeps_shell_stopped_and_is_not_discovered(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1056,6 +1095,13 @@ class SourceInstallTests(unittest.TestCase):
 
             def run(args, **_kwargs):
                 events.append(args[2])
+                if args[2] == "enable":
+                    return subprocess.CompletedProcess(
+                        args,
+                        1,
+                        b"",
+                        b"omarchy-shell is not responding\n",
+                    )
                 return subprocess.CompletedProcess(args, 0, b"", b"")
 
             with (
