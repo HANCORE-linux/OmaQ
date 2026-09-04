@@ -15,7 +15,7 @@ Clone OmaQ and run its installer:
 
 ```bash
 mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-/usr/bin/git clone --no-hardlinks --branch main --single-branch -- \
+git clone --no-hardlinks --branch main --single-branch -- \
   https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
 "$HOME/.omaq-source-install/install.sh" --section right --yes
 ```
@@ -24,7 +24,7 @@ The private checkout is a direct child of your home directory, outside Omarchy's
 
 Shibumi V2 consumes the same Omarchy bar layout and hosts OmaQ without a separate integration path. Shibumi V1 adoption of newly enabled third-party widgets remains a Shibumi compatibility boundary rather than an OmaQ-specific installer action.
 
-If installation fails and `.omaq-source-install` remains in your home directory, inspect the reported error before removing that path and starting again. The command refuses to reuse the retained checkout. Successfully installed dependency packages remain available.
+If `.omaq-source-install` remains after a failure, inspect the error, then remove it with `rm -rf -- "$HOME/.omaq-source-install"`. If the error says the installed tree remains, do not rerun this command; follow the reported recovery state. Successfully installed dependency packages remain available.
 
 The short command trusts the user's Git configuration and environment, including URL rewrites, proxies, credential helpers, and TLS settings; it does not independently prove before execution that the checkout came from public GitHub. Use the following bootstrap when acquisition must ignore user Git configuration, bind a reviewed commit before execution, and enforce resource limits.
 

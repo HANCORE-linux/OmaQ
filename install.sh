@@ -84,28 +84,18 @@ installer="$root/scripts/install-omaq.sh"
 [ -f "$installer" ] && [ -x "$installer" ] && [ ! -L "$installer" ] ||
   fail "verified source installer is unavailable: $installer"
 
-if [ -n "$expected_commit" ] && [ -n "$section" ]; then
-  "$installer" --preflight-only --expect-commit "$expected_commit" \
-    --section "$section" --yes
-elif [ -n "$expected_commit" ]; then
-  "$installer" --preflight-only --expect-commit "$expected_commit" --yes
-elif [ -n "$section" ]; then
-  "$installer" --preflight-only --section "$section" --yes
-else
-  "$installer" --preflight-only --yes
+set -- --yes
+if [ -n "$section" ]; then
+  set -- --section "$section" "$@"
 fi
+if [ -n "$expected_commit" ]; then
+  set -- --expect-commit "$expected_commit" "$@"
+fi
+
+"$installer" --preflight-only "$@"
 
 PATH=/usr/bin:/bin /usr/bin/omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
   ttf-material-symbols-variable qrencode
 
-if [ -n "$expected_commit" ] && [ -n "$section" ]; then
-  exec "$installer" --expect-commit "$expected_commit" \
-    --section "$section" --yes
-elif [ -n "$expected_commit" ]; then
-  exec "$installer" --expect-commit "$expected_commit" --yes
-elif [ -n "$section" ]; then
-  exec "$installer" --section "$section" --yes
-else
-  exec "$installer" --yes
-fi
+exec "$installer" "$@"

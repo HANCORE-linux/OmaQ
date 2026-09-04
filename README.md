@@ -44,12 +44,12 @@ OmaQ runs no servers and has no operator access to your identity, contacts, or m
 
 ```bash
 mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-/usr/bin/git clone --no-hardlinks --branch main --single-branch -- \
+git clone --no-hardlinks --branch main --single-branch -- \
   https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
 "$HOME/.omaq-source-install/install.sh" --section right --yes
 ```
 
-`install.sh` installs the required packages, builds the omitted Signal-enabled `helper/omaq` outside the monitored plugin directory, moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and places OmaQ in the right bar section. Change `--section right` to `left` or `center` if preferred. Shibumi V2 follows the same layout without a separate OmaQ installation path. Direct messaging remains unavailable when the helper is missing. See the [installation lifecycle](docs/INSTALLATION.md) for the bounded exact-commit bootstrap, verification, and recovery.
+This installs OmaQ and its dependencies in the right bar section. Use `left` or `center` if preferred.
 
 ## Update
 

@@ -36,8 +36,12 @@ cmp -s "$tmp/readme-install.sh" "$tmp/installation-install.sh" || {
 # shellcheck disable=SC2016
 grep -Fq 'mkdir -m 700 -- "$HOME/.omaq-source-install"' \
   "$tmp/readme-install.sh"
-grep -Fq '/usr/bin/git clone --no-hardlinks --branch main --single-branch --' \
+grep -Eq '^git clone --no-hardlinks --branch main --single-branch -- \\$' \
   "$tmp/readme-install.sh"
+if grep -Fq '/usr/bin/git clone' "$tmp/readme-install.sh"; then
+  echo "update-order: convenience install no longer uses user Git" >&2
+  exit 1
+fi
 grep -Fq 'https://github.com/HANCORE-linux/OmaQ.git' \
   "$tmp/readme-install.sh"
 # shellcheck disable=SC2016
@@ -49,8 +53,7 @@ if grep -Fq 'omarchy pkg add' "$tmp/readme-install.sh" ||
   echo "update-order: primary install bypasses the root installer" >&2
   exit 1
 fi
-sed "s#/usr/bin/git#$tmp/bin/git#g" "$tmp/readme-install.sh" \
-  >"$tmp/readme-install-test.sh"
+cp "$tmp/readme-install.sh" "$tmp/readme-install-test.sh"
 
 extract_block "## Update" "$root/README.md" >"$tmp/readme-update.sh"
 extract_block "## Update OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-update.sh"
@@ -354,6 +357,11 @@ grep -Fq '<summary>Pin a reviewed commit and limit acquisition</summary>' \
   echo "update-order: bounded bootstrap is not an optional detail" >&2
   exit 1
 }
+grep -Fq '"/usr/bin/git", "-c", "core.hooksPath=/dev/null"' \
+  "$root/docs/INSTALLATION.md" || {
+  echo "update-order: bounded bootstrap does not bind system Git" >&2
+  exit 1
+}
 
 if grep -Eq '<sub>|<br[ >]' "$root/README.md"; then
   echo "update-order: README introduction changes the subtitle size or line" >&2
@@ -379,6 +387,15 @@ grep -Fq 'the updater builds outside the monitored plugin tree' \
 if grep -Fq 'The updater returns without staging or stopping the shell' \
     "$root/README.md"; then
   echo "update-order: verbose README update explanation remains" >&2
+  exit 1
+fi
+grep -Fq 'This installs OmaQ and its dependencies in the right bar section.' \
+  "$root/README.md" || {
+  echo "update-order: concise README install summary is missing" >&2
+  exit 1
+}
+if grep -Fq 'builds the omitted Signal-enabled' "$root/README.md"; then
+  echo "update-order: verbose README install explanation remains" >&2
   exit 1
 fi
 
