@@ -21,19 +21,15 @@ Toxcore transports encrypted packets between peers. Direct messages receive an a
 
 ## Install
 
-Arch User Repository (AUR) packaging remains paused. Install the dependencies, add the plugin while disabled, build its local Signal-enabled helper, and then enable it:
+Arch User Repository (AUR) packaging remains paused. Install the dependencies, then use the verified shell-off source procedure in the [installation lifecycle](docs/INSTALLATION.md):
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode &&
-omarchy plugin add \
-  https://github.com/HANCORE-linux/OmaQ.git --yes &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
-omarchy plugin enable hancore.omaq
+  ttf-material-symbols-variable qrencode
 ```
 
-The repository intentionally omits the generated `helper/omaq` binary. Building before enablement avoids writing that binary into an active monitored plugin, and direct messaging remains unavailable when the Signal Ratchet helper is missing.
+The repository intentionally omits the generated `helper/omaq` binary. The source installer builds it in an external full Git checkout, stops the shell and plugin watcher, atomically places that same checkout without overwriting an existing path, starts the shell for one discovery scan, and only then enables OmaQ. Direct messaging remains unavailable when the Signal Ratchet helper is missing.
 
 ## Update
 

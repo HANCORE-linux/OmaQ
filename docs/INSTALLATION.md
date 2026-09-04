@@ -6,19 +6,222 @@ This guide covers source installation, shell-off updates, helper status, rollbac
 
 ## Install OmaQ
 
-Arch User Repository (AUR) packaging remains paused. Install the required packages, add the plugin while disabled, build the local helper, and then enable it:
+Arch User Repository (AUR) packaging remains paused. The source installer requires an authenticated GitHub CLI session for the private repository, an unlocked Omarchy session, and no existing `~/.config/omarchy/plugins/hancore.omaq` path. Install the dependencies first:
 
 ```bash
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode &&
-omarchy plugin add \
-  https://github.com/HANCORE-linux/OmaQ.git --yes &&
-make -C ~/.config/omarchy/plugins/hancore.omaq helper &&
-omarchy plugin enable hancore.omaq
+  ttf-material-symbols-variable qrencode
 ```
 
-The repository does not contain a generated `helper/omaq` binary. Keep the plugin disabled during the build so the generated binary is not written into an active monitored plugin tree. The local build requires Signal support and refuses direct plaintext fallback.
+Then acquire one complete external checkout, verify it against canonical `origin/main`, and run its installer:
+
+```bash
+(
+  set -euo pipefail; umask 077
+  mode=install # Use mode=update only for the older-update bootstrap below.
+  expected_commit="" # Or set one complete reviewed lowercase 40-hex commit.
+  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  case "$state_home" in
+    /*) ;;
+    *) echo "State staging path must be absolute" >&2; exit 1 ;;
+  esac
+  plugins=$(/usr/bin/realpath -m -- "$HOME/.config/omarchy/plugins")
+  state_home=$(/usr/bin/realpath -m -- "$state_home")
+  case "$state_home/" in
+    "$plugins/"*) echo "State staging is inside the plugin tree" >&2; exit 1 ;;
+  esac
+  bootstrap=$(/usr/bin/mktemp -d \
+    "$state_home/omaq-source-bootstrap.XXXXXX")
+  trap '/usr/bin/rm -rf -- "$bootstrap"' EXIT
+  /usr/bin/gh auth status --hostname github.com
+  token=$(/usr/bin/gh auth token --hostname github.com)
+  authorization=$(builtin printf 'x-access-token:%s' "$token" | /usr/bin/base64 -w0)
+  export OMAQ_BOOTSTRAP_AUTH="Authorization: Basic $authorization"
+  unset token authorization
+  /usr/bin/python3 -I - "$bootstrap" "$expected_commit" <<'PY'
+import os, re, resource, shutil, signal, stat, subprocess, sys, time
+
+root = sys.argv[1]
+expected = sys.argv[2]
+auth = os.environ.pop("OMAQ_BOOTSTRAP_AUTH")
+maximum_output = 1024 * 1024
+maximum_entries = 50000
+maximum_tree = 512 * 1024 * 1024
+env = {
+    "HOME": os.path.expanduser("~"),
+    "PATH": "/usr/bin:/bin",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+    "GIT_CONFIG_VALUE_0": auth,
+}
+git = [
+    "/usr/bin/git", "-c", "core.hooksPath=/dev/null",
+    "-c", "http.sslVerify=true", "-c", "http.followRedirects=false",
+    "-c", "protocol.file.allow=never",
+]
+
+def limit_output_size():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_output, maximum_output))
+
+def limit_tree_file_size():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_tree, maximum_tree))
+
+def check_tree():
+    entries = total = 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = os.scandir(current)
+        except FileNotFoundError:
+            continue
+        with children:
+            for child in children:
+                entries += 1
+                if entries > maximum_entries:
+                    raise RuntimeError("Bootstrap checkout exceeds 50000 entries")
+                try:
+                    info = child.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    raise RuntimeError("Bootstrap checkout contains a symlink")
+                if stat.S_ISDIR(info.st_mode):
+                    stack.append(child.path)
+                elif stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                    if total > maximum_tree:
+                        raise RuntimeError("Bootstrap checkout exceeds 512 MiB")
+                else:
+                    raise RuntimeError("Bootstrap checkout contains a special file")
+
+def run(args, timeout, monitor=False):
+    output_path = root + ".output"
+    if monitor:
+        output_fd = os.open("/dev/null", os.O_RDWR | os.O_CLOEXEC)
+    else:
+        output_fd = os.open(
+            output_path,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+    try:
+        process = subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=output_fd, stderr=output_fd,
+            env=env,
+            preexec_fn=limit_tree_file_size if monitor else limit_output_size,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                if monitor:
+                    check_tree()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Command timed out: {args[1]}")
+                time.sleep(0.05)
+            if monitor:
+                check_tree()
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+            raise RuntimeError(f"Command left a child process: {args[1]}")
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"Command failed ({process.returncode}): {args[1]}"
+            )
+        if monitor:
+            return b""
+        size = os.fstat(output_fd).st_size
+        if size > maximum_output:
+            raise RuntimeError(f"Command output exceeds 1 MiB: {args[1]}")
+        os.lseek(output_fd, 0, os.SEEK_SET)
+        output = os.read(output_fd, maximum_output + 1)
+        if len(output) != size:
+            raise RuntimeError(f"Command output changed while reading: {args[1]}")
+        return output
+    finally:
+        os.close(output_fd)
+        if not monitor:
+            os.unlink(output_path)
+
+if shutil.disk_usage(os.path.dirname(root)).free < 2 * maximum_tree:
+    raise SystemExit("State staging has less than 1 GiB free")
+if expected and not re.fullmatch(r"[0-9a-f]{40}", expected):
+    raise SystemExit("Expected commit must be complete lowercase 40-hex")
+origin = "https://github.com/HANCORE-linux/OmaQ.git"
+remote = run(
+    [*git, "ls-remote", "--exit-code", origin, "refs/heads/main"], 60
+).decode("utf-8", "strict").split()
+if (len(remote) != 2 or remote[1] != "refs/heads/main"
+        or not re.fullmatch(r"[0-9a-f]{40}", remote[0])):
+    raise SystemExit("Canonical origin returned an invalid main ref")
+if expected and remote[0] != expected:
+    raise SystemExit("Canonical origin/main differs from the expected commit")
+run(
+    [*git, "clone", "--branch", "main", "--single-branch",
+     "--no-hardlinks", "--", origin, root],
+    300, monitor=True,
+)
+head = run([*git, "-C", root, "rev-parse", "HEAD"], 30).decode().strip()
+url = run([*git, "-C", root, "remote", "get-url", "origin"], 30).decode().strip()
+branch = run(
+    [*git, "-C", root, "symbolic-ref", "--short", "HEAD"], 30
+).decode().strip()
+status = run(
+    [*git, "-C", root, "status", "--porcelain=v1", "-z"], 30
+)
+if (head != remote[0] or (expected and head != expected)
+        or url != origin or branch != "main" or status):
+    raise SystemExit("Bootstrap checkout identity mismatch")
+PY
+  unset OMAQ_BOOTSTRAP_AUTH
+  case "$mode" in
+    install)
+      if [[ -n $expected_commit ]]; then
+        "$bootstrap/scripts/install-omaq.sh" \
+          --expect-commit "$expected_commit" --yes
+      else
+        "$bootstrap/scripts/install-omaq.sh" --yes
+      fi
+      ;;
+    update)
+      /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
+        /usr/bin/omarchy plugin validate "$bootstrap"
+      if [[ -n $expected_commit ]]; then
+        "$bootstrap/scripts/update-omaq.sh" \
+          --expect-commit "$expected_commit" --yes
+      else
+        "$bootstrap/scripts/update-omaq.sh" --yes
+      fi
+      ;;
+    *) echo "Unknown bootstrap mode" >&2; exit 1 ;;
+  esac
+)
+```
+
+The bootstrap exports the GitHub authorization header only inside its subshell and does not store a token in the checkout. It limits command output to 1 MiB, checks the clone during acquisition against the 50,000-entry and 512 MiB tree limits, requires 1 GiB free first, and terminates the complete process group on a timeout or limit failure. To bind a reviewed revision, set `expected_commit` near the top of the block to its complete lowercase 40-character hash. The bootstrap rejects a different canonical ref before cloning or executing downloaded code, and the installer repeats that binding before and after the build.
+
+The repository intentionally omits the generated `helper/omaq` binary. The installer validates a pristine self-contained full Git clone and rejects shallow, sparse, partial, alternate-object, common-directory, symlink, and gitlink trees. It rejects index concealment flags, compares every tracked file's mode and Git blob hash with `HEAD`, and checks the complete Git object graph. It also accepts only a missing shell config or the supported integer schema version 1. It then builds the Signal-enabled helper outside the monitored plugin directory, stops the shell supervisor and watcher, rechecks persisted enablement at the rename boundary, and uses Linux `renameat2(RENAME_NOREPLACE)` to place that same checkout without copying or overwriting another path. The restarted shell performs the only discovery scan. The installer waits for that scan to expose a disabled OmaQ entry, then calls `omarchy plugin enable`; that command changes plugin state without requesting another rescan.
+
+A failure before enablement moves the checkout back to its external path and restarts the shell. Once a helper or enabled plugin may be active, a failure keeps the complete installed tree and disables OmaQ instead of deleting a potentially active runtime. Successful enablement and failure cleanup both reread `shell.json` without following symlinks and require the persisted state to match the shell's projection. If disablement cannot be proven, the installer stops the shell and leaves the tree in place for recovery.
 
 Verify the plugin and helper after installation:
 
@@ -39,83 +242,9 @@ The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the 
 
 ### Bootstrap an older installation
 
-Installations that predate `update-omaq.sh` can run the controller from an external canonical clone. This bootstrap does not modify the live plugin before the controller stops the shell:
+Installations that predate `update-omaq.sh` use the same bounded [external controller acquisition](#install-omaq) shown above. Change only the first assignment from `mode=install` to `mode=update`. The update branch validates the external plugin and invokes `update-omaq.sh`; it does not modify the live checkout before that controller stops the shell.
 
-```bash
-(
-  set -euo pipefail; umask 077
-  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
-  case "$state_home" in
-    /*) ;;
-    *) echo "State staging path must be absolute" >&2; exit 1 ;;
-  esac
-  plugins=$(/usr/bin/realpath -m -- "$HOME/.config/omarchy/plugins")
-  state_home=$(/usr/bin/realpath -m -- "$state_home")
-  case "$state_home/" in
-    "$plugins/"*) echo "State staging is inside the plugin tree" >&2; exit 1 ;;
-  esac
-  bootstrap=$(/usr/bin/mktemp -d \
-    "$state_home/omaq-update-bootstrap.XXXXXX")
-  trap '/usr/bin/rm -rf -- "$bootstrap"' EXIT
-  /usr/bin/gh auth status --hostname github.com
-  token=$(/usr/bin/gh auth token --hostname github.com)
-  authorization=$(builtin printf 'x-access-token:%s' "$token" | /usr/bin/base64 -w0)
-  export OMAQ_BOOTSTRAP_AUTH="Authorization: Basic $authorization"
-  unset token authorization
-  /usr/bin/python3 -I - "$bootstrap" <<'PY'
-import os, re, subprocess, sys
-
-root = sys.argv[1]
-auth = os.environ.pop("OMAQ_BOOTSTRAP_AUTH")
-env = {
-    "HOME": os.path.expanduser("~"),
-    "PATH": "/usr/bin:/bin",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_CONFIG_NOSYSTEM": "1",
-    "GIT_TERMINAL_PROMPT": "0",
-    "GIT_CONFIG_COUNT": "1",
-    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
-    "GIT_CONFIG_VALUE_0": auth,
-}
-git = [
-    "/usr/bin/git", "-c", "core.hooksPath=/dev/null",
-    "-c", "http.sslVerify=true", "-c", "http.followRedirects=false",
-    "-c", "protocol.file.allow=never",
-]
-origin = "https://github.com/HANCORE-linux/OmaQ.git"
-remote = subprocess.check_output(
-    [*git, "ls-remote", "--exit-code", origin, "refs/heads/main"],
-    env=env, text=True,
-).split()
-if len(remote) != 2 or not re.fullmatch(r"[0-9a-f]{40}", remote[0]):
-    raise SystemExit("Canonical origin returned an invalid main ref")
-subprocess.run(
-    [*git, "clone", "--branch", "main", "--single-branch", "--", origin, root],
-    check=True, env=env,
-)
-head = subprocess.check_output(
-    [*git, "-C", root, "rev-parse", "HEAD"], env=env, text=True,
-).strip()
-url = subprocess.check_output(
-    [*git, "-C", root, "remote", "get-url", "origin"], env=env, text=True,
-).strip()
-branch = subprocess.check_output(
-    [*git, "-C", root, "symbolic-ref", "--short", "HEAD"], env=env, text=True,
-).strip()
-status = subprocess.check_output(
-    [*git, "-C", root, "status", "--porcelain=v1", "-z"], env=env,
-)
-if head != remote[0] or url != origin or branch != "main" or status:
-    raise SystemExit("Bootstrap checkout identity mismatch")
-PY
-  unset OMAQ_BOOTSTRAP_AUTH
-  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
-    /usr/bin/omarchy plugin validate "$bootstrap"
-  "$bootstrap/scripts/update-omaq.sh" --yes
-)
-```
-
-To bind an announced release or reviewed revision, add `--expect-commit` followed by its complete lowercase 40-character commit hash. The updater aborts if canonical `origin/main` differs.
+To bind an announced release or reviewed revision, set `expected_commit` in the shared block. Both the bootstrap and updater abort if canonical `origin/main` differs.
 
 ### Understand the shell-off sequence
 

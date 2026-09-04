@@ -1,4 +1,4 @@
-# Current status: 2026-09-03
+# Current status: 2026-09-04
 
 This page is the current product and release snapshot. Completed phase and follow-up history lives in the [stage notes](stages/README.md).
 
@@ -7,7 +7,7 @@ This page is the current product and release snapshot. Completed phase and follo
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
 - **Manifest version:** `0.8.1-beta.2`, Protocol 14
-- **Accepted live source base:** both installations passed exact-commit and same-commit no-op acceptance at `16bf393b2d39107beb8e23cfce8450e93b893095`; the metadata-only release-prep successor still requires final tag-target acceptance before tagging
+- **Accepted live source base:** both installations passed exact-commit and same-commit no-op acceptance at the `v0.8.1-beta.2` target `5a8cfaafc4f053294b6e50e7dc5f0028a59c2e50`
 - **Live helper:** Protocol 14, SHA-256 `ee43637be9ac9880bb465408a87c8ace94015c217a1df25dc79ce088308a1fba`
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
@@ -35,7 +35,7 @@ This page is the current product and release snapshot. Completed phase and follo
 - Ordinary QML text uses the PlainText-default `SafeText` boundary. Only the escaped chat header and escaped Markdown message renderer may use RichText.
 - Group attachments use bounded sender-fair pending state, explicit acceptance, stable group and member binding, exact size and SHA-256 verification, and a durable accepted-ID ledger.
 - The uninstaller verifies process, executable, socket, instance, group state, and acknowledgement before removal. Runtime-rule cleanup is descriptor-relative and refuses symlinks, hardlinks, unexpected names, unsafe modes, or changed directory identity.
-- Source updates clone and build outside the monitored plugin directory. The updater stops Quickshell and `omarchy-launch-shell`, checks both again before an atomic no-copy tree exchange, validates the restarted plugin consumer, and keeps helper activation group-safe. A process running as the same user remains inside the documented trust boundary and must not restart the shell concurrently.
+- Source installation and updates clone and build outside the monitored plugin directory. First installation uses an atomic no-replace rename before startup discovery and enablement; updates use an atomic no-copy tree exchange. Both stop Quickshell and `omarchy-launch-shell`, bind the watcher and restarted consumer, and keep helper handling fail-closed. A process running as the same user remains inside the documented trust boundary and must not restart the shell concurrently.
 
 ## Open points
 
@@ -54,15 +54,16 @@ The release-audit follow-up passes the full `make test` aggregate, `make verify-
 
 Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
 
-Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Update regressions cover source no-ops without a shell stop, private GitHub authentication without token arguments or checkout persistence, monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, pre-stop exchange probing, delayed shell readiness, supervisor backoff and reappearance during rollback, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation.
+Uninstall regressions cover current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, and unexpected files. Update regressions cover source no-ops without a shell stop, private GitHub authentication without token arguments or checkout persistence, monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, pre-stop exchange probing, delayed shell readiness, supervisor backoff and reappearance during rollback, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation. Installation regressions cover stale shell configuration, build-before-visibility ordering, atomic no-replace placement, a raced destination, one startup discovery followed by one enable, pre-enable rollback, and post-enable disable-with-retention.
 
 The default UHOH notification is now the project-generated `sounds/uhoh.wav` at SHA-256 `8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744`. It is lossless 48 kHz signed 16-bit stereo PCM, begins and ends at zero, has 24% peak amplitude, and has a maximum adjacent-sample delta of 679. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
-No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed shell-off updates through `16bf393b2d39107beb8e23cfce8450e93b893095` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, no new coredumps, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
+No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed shell-off updates through `5a8cfaafc4f053294b6e50e7dc5f0028a59c2e50` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, no new coredumps, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The source installer still requires a separately authorized live uninstall/reinstall acceptance; offline tests do not substitute for that check. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
 
 ## Next order
 
-1. Complete the `v0.8.1-beta.2` release prep, audit its exact merge commit, accept that tag target on both machines, and keep tag creation plus GitHub publication as separate approvals.
-2. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
-3. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
-4. Keep packaging and AUR publication paused until separately approved.
+1. Review and merge the shell-off source installer, then accept its exact merge commit without combining machine deployments.
+2. Capture Machine 2 recovery evidence and retained-data fingerprints, then perform the separately authorized uninstall/reinstall cycle and compare every retained path byte for byte.
+3. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
+4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
+5. Keep packaging and AUR publication paused until separately approved.
