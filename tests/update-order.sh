@@ -31,31 +31,24 @@ cmp -s "$tmp/readme-install.sh" "$tmp/installation-install.sh" || {
   echo "update-order: documented install commands differ" >&2
   exit 1
 }
-# The documented shell must retain this literal HOME expansion.
+# The standard command is intentionally a short clone plus root installer.
+# The bounded exact-commit acquisition remains available below it.
 # shellcheck disable=SC2016
-grep -Fq '/usr/bin/env -i -C "$HOME/.omaq-source-install.network-home"' \
+grep -Fq 'mkdir -m 700 -- "$HOME/.omaq-source-install"' \
   "$tmp/readme-install.sh"
-# The documented shell must retain this literal HOME expansion.
+grep -Fq '/usr/bin/git clone --no-hardlinks --branch main --single-branch --' \
+  "$tmp/readme-install.sh"
+grep -Fq 'https://github.com/HANCORE-linux/OmaQ.git' \
+  "$tmp/readme-install.sh"
 # shellcheck disable=SC2016
-grep -Fq 'HOME="$HOME/.omaq-source-install.network-home"' \
+grep -Fq '"$HOME/.omaq-source-install/install.sh" --section right --yes' \
   "$tmp/readme-install.sh"
-grep -Fq 'GIT_CONFIG_GLOBAL=/dev/null' "$tmp/readme-install.sh"
-grep -Fq 'GIT_CONFIG_NOSYSTEM=1' "$tmp/readme-install.sh"
-grep -Fq 'GIT_TERMINAL_PROMPT=0' "$tmp/readme-install.sh"
-# The ceiling must be the literal parent of Git's isolated working directory.
-# shellcheck disable=SC2016
-grep -Fq 'GIT_CEILING_DIRECTORIES="$HOME"' \
-  "$tmp/readme-install.sh"
-grep -Fq '/usr/bin/git -c core.hooksPath=/dev/null' \
-  "$tmp/readme-install.sh"
-grep -Fq -- '-c credential.helper=' "$tmp/readme-install.sh"
-grep -Fq -- '-c http.extraHeader=' "$tmp/readme-install.sh"
-grep -Fq -- '-c http.followRedirects=false' "$tmp/readme-install.sh"
-grep -Fq -- '-c protocol.file.allow=never' "$tmp/readme-install.sh"
-# The documented shell must retain this literal HOME expansion.
-# shellcheck disable=SC2016
-grep -Fq '/usr/bin/rmdir -- "$HOME/.omaq-source-install.network-home"' \
-  "$tmp/readme-install.sh"
+if grep -Fq 'omarchy pkg add' "$tmp/readme-install.sh" ||
+    grep -Fq 'scripts/install-omaq.sh' "$tmp/readme-install.sh" ||
+    grep -Fq '.omaq-source-install.network-home' "$tmp/readme-install.sh"; then
+  echo "update-order: primary install bypasses the root installer" >&2
+  exit 1
+fi
 sed "s#/usr/bin/git#$tmp/bin/git#g" "$tmp/readme-install.sh" \
   >"$tmp/readme-install-test.sh"
 
@@ -95,7 +88,7 @@ EOF
 cat >"$tmp/bin/git" <<'EOF'
 #!/bin/sh
 set -eu
-expected='-c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= -c http.extraHeader= -c http.sslVerify=true -c http.followRedirects=false -c protocol.file.allow=never clone --no-hardlinks --branch main --single-branch -- https://github.com/HANCORE-linux/OmaQ.git'
+expected='clone --no-hardlinks --branch main --single-branch -- https://github.com/HANCORE-linux/OmaQ.git'
 case "$*" in
   "$expected "*) ;;
   *)
@@ -103,53 +96,41 @@ case "$*" in
     exit 98
     ;;
 esac
-[ "$PATH" = /usr/bin:/bin ] && [ "$LANG" = C.UTF-8 ] && \
-  [ "$GIT_ATTR_NOSYSTEM" = 1 ] && \
-  [ "$GIT_CONFIG_GLOBAL" = /dev/null ] && \
-  [ "$GIT_CONFIG_NOSYSTEM" = 1 ] && \
-  [ "$GIT_NO_REPLACE_OBJECTS" = 1 ] && \
-  [ "$GIT_OPTIONAL_LOCKS" = 0 ] && [ "$GIT_TERMINAL_PROMPT" = 0 ] && \
-  [ "$GIT_CEILING_DIRECTORIES" = "$(dirname -- "$HOME")" ] && \
-  [ "$PWD" = "$HOME" ] || {
-  echo "git clone did not receive the sanitized environment" >&2
-  exit 94
-}
-[ "${GIT_CONFIG_COUNT+x}" != x ] && [ "${GIT_DIR+x}" != x ] && \
-  [ "${GIT_WORK_TREE+x}" != x ] && [ "${GIT_SSL_NO_VERIFY+x}" != x ] && \
-  [ "${GIT_ASKPASS+x}" != x ] && [ "${HTTPS_PROXY+x}" != x ] || {
-  echo "git clone inherited a poisoned environment variable" >&2
-  exit 93
-}
 source_tree=
 for argument do
   source_tree=$argument
 done
-install_home=$(dirname -- "$HOME")
-[ "$HOME" = "$install_home/.omaq-source-install.network-home" ] && \
-  [ "$source_tree" = "$install_home/.omaq-source-install" ] || {
-  echo "git clone did not use the private source and network-home paths" >&2
+install_home=$(dirname -- "$source_tree")
+[ "$source_tree" = "$install_home/.omaq-source-install" ] || {
+  echo "git clone did not use the private source path" >&2
   exit 96
 }
 [ -d "$source_tree" ] && [ ! -L "$source_tree" ] && \
-  [ "$(stat -c '%a' -- "$source_tree")" = 700 ] && \
-  [ -d "$HOME" ] && [ ! -L "$HOME" ] && \
-  [ "$(stat -c '%a' -- "$HOME")" = 700 ] || {
+  [ "$(stat -c '%a' -- "$source_tree")" = 700 ] || {
   echo "git clone staging path is not a private real directory" >&2
   exit 95
 }
-printf 'clone\n' >>"$install_home/.install-test.log"
-clone_status=$(cat "$install_home/.clone-status")
-[ "$clone_status" -eq 0 ] || exit "$clone_status"
+printf 'clone\n' >>"$OMAQ_INSTALL_TEST_LOG"
+[ "${OMAQ_CLONE_STATUS:-0}" -eq 0 ] || exit "$OMAQ_CLONE_STATUS"
 mkdir -p "$source_tree/scripts"
+sed "s#/usr/bin/omarchy#$OMAQ_TEST_OMARCHY#g" \
+  "$OMAQ_REAL_INSTALL_SCRIPT" >"$source_tree/install.sh"
 cat >"$source_tree/scripts/install-omaq.sh" <<'INSTALLER'
 #!/bin/sh
 set -eu
-[ "$*" = "--section right --yes" ] || exit 97
-[ ! -e "$HOME/.omaq-source-install.network-home" ] || exit 92
-printf 'install\n' >>"$OMAQ_INSTALL_TEST_LOG"
-exit "${OMAQ_INSTALLER_STATUS:-0}"
+case "$*" in
+  "--preflight-only --section right --yes")
+    printf 'preflight\n' >>"$OMAQ_INSTALL_TEST_LOG"
+    exit "${OMAQ_PREFLIGHT_STATUS:-0}"
+    ;;
+  "--section right --yes")
+    printf 'install\n' >>"$OMAQ_INSTALL_TEST_LOG"
+    exit "${OMAQ_INSTALLER_STATUS:-0}"
+    ;;
+  *) exit 97 ;;
+esac
 INSTALLER
-chmod 755 "$source_tree/scripts/install-omaq.sh"
+chmod 755 "$source_tree/install.sh" "$source_tree/scripts/install-omaq.sh"
 EOF
 cat >"$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh" <<'EOF'
 #!/bin/sh
@@ -165,24 +146,19 @@ run_install_case() {
   shell_name=$1
   shell_path=$2
   name=$3
-  package_status=$4
-  clone_status=$5
-  installer_status=$6
-  expected_status=$7
-  expected_log=$8
+  clone_status=$4
+  preflight_status=$5
+  package_status=$6
+  installer_status=$7
+  expected_status=$8
+  expected_log=$9
   source_tree="$tmp/home/.omaq-source-install"
-  network_home="$tmp/home/.omaq-source-install.network-home"
   log="$tmp/home/.install-test.log"
   error_log="$tmp/install-$shell_name-$name.stderr"
   plugins_dir="$tmp/home/.config/omarchy/plugins"
-  case_home="$tmp/home"
-  if [ "$name" = relative-home ]; then
-    case_home=..
-  fi
   : >"$log"
   : >"$error_log"
-  printf '%s\n' "$clone_status" >"$tmp/home/.clone-status"
-  rm -rf "$source_tree" "$network_home" "$plugins_dir/OmaQ"
+  rm -rf "$source_tree" "$plugins_dir/OmaQ"
   case "$name" in
     existing-directory)
       mkdir -m 700 -- "$source_tree"
@@ -190,28 +166,22 @@ run_install_case() {
     existing-symlink)
       ln -s "$plugins_dir" "$source_tree"
       ;;
-    existing-network-home)
-      mkdir -m 700 -- "$network_home"
-      ;;
   esac
 
   if (
     cd "$plugins_dir"
-    HOME="$case_home"
+    HOME="$tmp/home"
     PATH=$test_path
     OMAQ_INSTALL_TEST_LOG="$log"
-    OMAQ_PACKAGE_STATUS="$package_status"
     OMAQ_CLONE_STATUS="$clone_status"
+    OMAQ_PREFLIGHT_STATUS="$preflight_status"
+    OMAQ_PACKAGE_STATUS="$package_status"
     OMAQ_INSTALLER_STATUS="$installer_status"
-    GIT_CONFIG_COUNT=1
-    GIT_DIR=/tmp/poisoned-git-dir
-    GIT_WORK_TREE=/tmp/poisoned-git-work-tree
-    GIT_SSL_NO_VERIFY=1
-    GIT_ASKPASS=/tmp/poisoned-askpass
-    HTTPS_PROXY=http://127.0.0.1:1
-    export HOME PATH OMAQ_INSTALL_TEST_LOG OMAQ_PACKAGE_STATUS \
-      OMAQ_CLONE_STATUS OMAQ_INSTALLER_STATUS GIT_CONFIG_COUNT GIT_DIR \
-      GIT_WORK_TREE GIT_SSL_NO_VERIFY GIT_ASKPASS HTTPS_PROXY
+    OMAQ_REAL_INSTALL_SCRIPT="$root/install.sh"
+    OMAQ_TEST_OMARCHY="$tmp/bin/omarchy"
+    export HOME PATH OMAQ_INSTALL_TEST_LOG OMAQ_CLONE_STATUS \
+      OMAQ_PREFLIGHT_STATUS OMAQ_PACKAGE_STATUS OMAQ_INSTALLER_STATUS \
+      OMAQ_REAL_INSTALL_SCRIPT OMAQ_TEST_OMARCHY
     if [ "$shell_name" = fish ]; then
       "$shell_path" --no-config "$tmp/readme-install-test.sh"
     else
@@ -245,26 +215,83 @@ run_install_suite() {
   shell_name=$1
   shell_path=$2
   run_install_case "$shell_name" "$shell_path" \
-    success 0 0 0 0 'packages\nclone\ninstall\n'
+    success 0 0 0 0 0 'clone\npreflight\npackages\ninstall\n'
   run_install_case "$shell_name" "$shell_path" \
-    package-failure 21 0 0 21 'packages\n'
+    clone-failure 22 0 0 0 22 'clone\n'
   run_install_case "$shell_name" "$shell_path" \
-    clone-failure 0 22 0 22 'packages\nclone\n'
+    preflight-failure 0 24 0 0 24 'clone\npreflight\n'
   run_install_case "$shell_name" "$shell_path" \
-    installer-failure 0 0 23 23 'packages\nclone\ninstall\n'
+    package-failure 0 0 21 0 21 'clone\npreflight\npackages\n'
   run_install_case "$shell_name" "$shell_path" \
-    existing-directory 0 0 0 1 'packages\n'
+    installer-failure 0 0 0 23 23 \
+    'clone\npreflight\npackages\ninstall\n'
   run_install_case "$shell_name" "$shell_path" \
-    existing-symlink 0 0 0 1 'packages\n'
+    existing-directory 0 0 0 0 1 ''
   run_install_case "$shell_name" "$shell_path" \
-    existing-network-home 0 0 0 1 'packages\n'
-  run_install_case "$shell_name" "$shell_path" \
-    relative-home 0 0 0 1 'packages\n'
+    existing-symlink 0 0 0 0 1 ''
 }
 
 run_install_suite bash /usr/bin/bash
 if [ -x /usr/bin/fish ]; then
   run_install_suite fish /usr/bin/fish
+fi
+
+wrapper="$tmp/wrapper"
+mkdir -p "$wrapper/scripts"
+sed "s#/usr/bin/omarchy#$tmp/bin/omarchy#g" \
+  "$root/install.sh" >"$wrapper/install.sh"
+cat >"$wrapper/scripts/install-omaq.sh" <<'EOF'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+  --preflight-only)
+    printf 'preflight=%s\n' "$*" >>"$OMAQ_INSTALL_TEST_LOG"
+    exit "${OMAQ_PREFLIGHT_STATUS:-0}"
+    ;;
+  *) printf 'args=%s\n' "$*" >>"$OMAQ_INSTALL_TEST_LOG" ;;
+esac
+EOF
+chmod 755 "$wrapper/install.sh" "$wrapper/scripts/install-omaq.sh"
+wrapper_log="$tmp/wrapper.log"
+: >"$wrapper_log"
+OMAQ_INSTALL_TEST_LOG="$wrapper_log" OMAQ_PACKAGE_STATUS=0 \
+  "$wrapper/install.sh" --expect-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --section left --yes
+printf '%s\n' \
+  'preflight=--preflight-only --expect-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --section left --yes' \
+  'packages' \
+  'args=--expect-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --section left --yes' \
+  >"$tmp/wrapper.expected"
+cmp -s "$wrapper_log" "$tmp/wrapper.expected" || {
+  echo "update-order: root installer did not forward validated arguments" >&2
+  exit 1
+}
+reject_wrapper_arguments() {
+  : >"$wrapper_log"
+  if OMAQ_INSTALL_TEST_LOG="$wrapper_log" OMAQ_PACKAGE_STATUS=0 \
+      "$wrapper/install.sh" "$@" \
+      >"$tmp/wrapper.stdout" 2>"$tmp/wrapper.stderr"; then
+    echo "update-order: root installer accepted invalid arguments: $*" >&2
+    exit 1
+  fi
+  [ ! -s "$wrapper_log" ] || {
+    echo "update-order: root installer changed state before rejecting arguments" >&2
+    exit 1
+  }
+}
+reject_wrapper_arguments --section middle --yes
+reject_wrapper_arguments --section "" --yes
+reject_wrapper_arguments --yes --yes
+reject_wrapper_arguments --expect-commit ABC --yes
+reject_wrapper_arguments --expect-commit "" --yes
+reject_wrapper_arguments
+: >"$wrapper_log"
+OMAQ_INSTALL_TEST_LOG="$wrapper_log" "$wrapper/install.sh" --help \
+  >"$tmp/wrapper-help.txt"
+if [ -s "$wrapper_log" ] ||
+    ! grep -Fq 'Usage: ./install.sh' "$tmp/wrapper-help.txt"; then
+  echo "update-order: root installer help changed packages" >&2
+  exit 1
 fi
 
 run_update_case() {
@@ -387,7 +414,8 @@ grep -Fq 'Bootstrap an older installation' "$root/docs/INSTALLATION.md" || {
   echo "update-order: source updater is not executable" >&2
   exit 1
 }
-[ -x "$root/scripts/install-omaq.sh" ] && [ -x "$root/scripts/install-omaq.py" ] || {
+[ -x "$root/install.sh" ] && [ -x "$root/scripts/install-omaq.sh" ] &&
+    [ -x "$root/scripts/install-omaq.py" ] || {
   echo "update-order: source installer is not executable" >&2
   exit 1
 }

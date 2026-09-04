@@ -11,39 +11,22 @@ This guide covers source installation, shell-off updates, helper status, rollbac
 
 Run the source install as your desktop user while the Omarchy shell is running and the session is unlocked. The installer rejects root, a stopped shell, a locked session, or an existing `~/.config/omarchy/plugins/hancore.omaq`; use the [update section](#update-omaq) for an existing installation.
 
-Install the dependencies, clone OmaQ, and run the installer:
+Clone OmaQ and run its installer:
 
 ```bash
-omarchy pkg add \
-  toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode &&
-/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
-  /usr/bin/python3 -I -c \
-  'import os,sys;h=os.environ["HOME"];sys.exit(0 if os.path.isabs(h) and os.pathsep not in h else "HOME must be absolute and contain no Git path-list separator")' &&
 mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-mkdir -m 700 -- "$HOME/.omaq-source-install.network-home" &&
-/usr/bin/env -i -C "$HOME/.omaq-source-install.network-home" \
-  HOME="$HOME/.omaq-source-install.network-home" PATH=/usr/bin:/bin \
-  LANG=C.UTF-8 GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-  GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
-  GIT_TERMINAL_PROMPT=0 \
-  GIT_CEILING_DIRECTORIES="$HOME" \
-  /usr/bin/git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-  -c credential.helper= -c http.extraHeader= -c http.sslVerify=true \
-  -c http.followRedirects=false -c protocol.file.allow=never \
-  clone --no-hardlinks --branch main --single-branch -- \
+/usr/bin/git clone --no-hardlinks --branch main --single-branch -- \
   https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
-/usr/bin/rmdir -- "$HOME/.omaq-source-install.network-home" &&
-"$HOME/.omaq-source-install/scripts/install-omaq.sh" --section right --yes
+"$HOME/.omaq-source-install/install.sh" --section right --yes
 ```
 
-The private staging directories are direct children of your home directory, outside Omarchy's monitored plugin tree. Network Git runs with fixed system commands, sanitized configuration, and an empty temporary `HOME`; installation stops if Git writes into that home or any command fails. The installer builds the Signal-enabled helper there, stops the shell, atomically moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and enables it once in the selected section. Use `--section left`, `center`, or `right`; omitting the option uses OmaQ's manifest default of `right`. The bar disappears during this step and returns after OmaQ passes discovery and activation.
+The private checkout is a direct child of your home directory, outside Omarchy's monitored plugin tree. `install.sh` validates its arguments and runs the checkout, target, session, and shell preflight before installing the required packages through `omarchy pkg add`; it then delegates to the verified shell-off installer, which repeats the preflight before building. That installer builds the Signal-enabled helper, stops the shell, atomically moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and enables it once in the selected section. Use `--section left`, `center`, or `right`; omitting the option uses OmaQ's manifest default of `right`. The bar disappears during this step and returns after OmaQ passes discovery and activation.
 
 Shibumi V2 consumes the same Omarchy bar layout and hosts OmaQ without a separate integration path. Shibumi V1 adoption of newly enabled third-party widgets remains a Shibumi compatibility boundary rather than an OmaQ-specific installer action.
 
-If installation fails and `.omaq-source-install` or `.omaq-source-install.network-home` remains in your home directory, inspect the reported error before removing those paths and starting again. The command refuses to reuse the retained checkout.
+If installation fails and `.omaq-source-install` remains in your home directory, inspect the reported error before removing that path and starting again. The command refuses to reuse the retained checkout. Successfully installed dependency packages remain available.
 
-The standard command trusts public GitHub and your Git client to acquire the current `main` branch. Use the following bootstrap when you need pre-execution commit pinning and acquisition limits.
+The short command trusts the user's Git configuration and environment, including URL rewrites, proxies, credential helpers, and TLS settings; it does not independently prove before execution that the checkout came from public GitHub. Use the following bootstrap when acquisition must ignore user Git configuration, bind a reviewed commit before execution, and enforce resource limits.
 
 <details>
 <summary>Pin a reviewed commit and limit acquisition</summary>
@@ -234,12 +217,11 @@ PY
   case "$mode" in
     install)
       if [[ -n $expected_commit ]]; then
-        "$bootstrap/scripts/install-omaq.sh" \
+        "$bootstrap/install.sh" \
           --expect-commit "$expected_commit" \
           --section "$install_section" --yes
       else
-        "$bootstrap/scripts/install-omaq.sh" \
-          --section "$install_section" --yes
+        "$bootstrap/install.sh" --section "$install_section" --yes
       fi
       ;;
     update)

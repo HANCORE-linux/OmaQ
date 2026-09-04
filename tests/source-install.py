@@ -129,11 +129,60 @@ class SourceInstallTests(unittest.TestCase):
             MODULE.parse_args(["--section", "left", "--yes"]).section,
             "left",
         )
-        with (
-            contextlib.redirect_stderr(io.StringIO()),
-            self.assertRaises(SystemExit),
+        for arguments in (
+            ["--section", "top", "--yes"],
+            ["--section", "", "--yes"],
+            ["--expect-commit", "", "--yes"],
         ):
-            MODULE.parse_args(["--section", "top", "--yes"])
+            with (
+                self.subTest(arguments=arguments),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                MODULE.parse_args(arguments)
+
+    def test_preflight_only_does_not_build_or_install(self):
+        with (
+            mock.patch.object(MODULE, "Installer") as installer_type,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            installer = installer_type.return_value
+            installer.preflight.return_value = ("a" * 40, 14, object())
+            self.assertEqual(
+                MODULE.main(["--preflight-only", "--section", "right", "--yes"]),
+                0,
+            )
+        installer_type.assert_called_once_with("", "right")
+        installer.preflight.assert_called_once_with()
+        installer.install.assert_not_called()
+        installer.close.assert_called_once_with()
+
+    def test_build_repeats_preflight_before_invoking_make(self):
+        class StopBeforeBuild(Exception):
+            pass
+
+        events: list[str] = []
+        installer = object.__new__(MODULE.Installer)
+        installer.source = Path("/tmp/omaq-preflight-order")
+
+        def preflight():
+            events.append("preflight")
+            return "a" * 40, 14, object()
+
+        def stop_at_build(*_args, **_kwargs):
+            events.append("build")
+            raise StopBeforeBuild
+
+        installer.preflight = preflight
+        with (
+            mock.patch.object(MODULE.core, "command_path", return_value="/usr/bin/make"),
+            mock.patch.object(
+                MODULE.core, "run_tree_bounded", side_effect=stop_at_build
+            ),
+            self.assertRaises(StopBeforeBuild),
+        ):
+            installer.preflight_and_build()
+        self.assertEqual(events, ["preflight", "build"])
 
     def test_git_environment_disables_replace_objects(self):
         self.assertEqual(
@@ -150,7 +199,7 @@ class SourceInstallTests(unittest.TestCase):
         self.assertIn("mode=update", documentation)
         self.assertNotIn("OMAQ_BOOTSTRAP_AUTH", documentation)
         self.assertNotIn("/usr/bin/gh auth", documentation)
-        self.assertIn("os.path.isabs(h)", documentation)
+        self.assertIn('case "$state_home" in', documentation)
         start = documentation.index(marker) + len(marker)
         end = documentation.index("\nPY\n", start)
         compile(documentation[start:end], "documented-install-bootstrap", "exec")
