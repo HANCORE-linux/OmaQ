@@ -180,6 +180,8 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/group-chat-parity.sh
 	sh tests/panel-request-focus.sh
 	sh tests/emoji-parity.sh
+	sh tests/asset-provenance.sh
+	python3 tests/extract-emoji.py
 	sh tests/chat-composer-parity.sh
 	$(CLIPBOARD_E2E_COMMAND)
 	sh tests/paste-image.sh
@@ -259,6 +261,8 @@ verify-4: test arch helper
 	test -f themes/dusk.json
 	test -f themes/ember.json
 	test -f themes/system.json
+	test -f assets/emoji/ATTRIBUTION.md
+	test -f assets/emoji/LICENSES/OFL-1.1.txt
 	test -f sounds/icq-message.mp3
 	test -f sounds/click.wav
 	test -f sounds/knock.wav
@@ -274,6 +278,8 @@ verify-4: test arch helper
 	test -f sounds/LICENSES/CC-BY-SA-4.0.txt
 	test -f sounds/LICENSES/CC0-1.0.txt
 	printf '%s\n' \
+		'36652b52289475b6b0681cd67898fa8f75739e5a9160c495ae28cadf02bab6ce  assets/emoji/ATTRIBUTION.md' \
+		'500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b  assets/emoji/LICENSES/OFL-1.1.txt' \
 		'074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff  sounds/LICENSES/Apache-2.0.txt' \
 		'19c9990f3f4e032a9ef207154de9e5e667adefd0c791451ad6aad30afc8d6216  sounds/LICENSES/ICQ-NOTICE.md' \
 		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \

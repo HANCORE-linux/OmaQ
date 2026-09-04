@@ -56,7 +56,7 @@ if sound_schema["options"] != expected_options or \
     raise SystemExit("custom-sound: manifest presets differ from the panel")
 expected_license = (
     "MIT AND GPL-3.0-only AND Apache-2.0 AND CC-BY-SA-4.0 AND "
-    "CC0-1.0 AND LicenseRef-Pixabay-Content"
+    "CC0-1.0 AND OFL-1.1-no-RFN AND LicenseRef-Pixabay-Content"
 )
 if manifest["license"] != expected_license:
     raise SystemExit("custom-sound: manifest license expression is incomplete")
@@ -104,9 +104,9 @@ for required in (
     if required not in notice:
         raise SystemExit(f"custom-sound: missing ICQ notice text: {required}")
 PY
-grep -Fxq "license=('MIT' 'GPL-3.0-or-later' 'Apache-2.0' 'custom:Pixabay Content License')" \
+grep -Fxq "license=('MIT' 'GPL-3.0-only' 'Apache-2.0' 'CC-BY-SA-4.0' 'CC0-1.0' 'OFL-1.1-no-RFN' 'custom:Pixabay Content License')" \
   "$root/packaging/PKGBUILD" || {
-  echo "custom-sound: PKGBUILD omits the Apache-2.0 asset license" >&2
+  echo "custom-sound: PKGBUILD license array is incomplete" >&2
   exit 1
 }
 grep -Fxq "| ICQ Desktop incoming-message sound | Derived \`sounds/icq-message.mp3\` | Apache-2.0 | Bundled UHOH notification sound; see [\`sounds/ATTRIBUTION.md\`](sounds/ATTRIBUTION.md) |" \
