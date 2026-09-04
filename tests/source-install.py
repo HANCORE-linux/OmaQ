@@ -220,6 +220,7 @@ class SourceInstallTests(unittest.TestCase):
             "network_parent = os.path.dirname(network_home)",
             '"HOME": network_home',
             '"GIT_CEILING_DIRECTORIES": network_parent',
+            '"/usr/bin/git", "-c", "core.hooksPath=/dev/null"',
             '"-c", "credential.helper="',
             '"-c", "http.extraHeader="',
             "env=env, cwd=network_home",
