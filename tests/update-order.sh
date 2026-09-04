@@ -371,16 +371,49 @@ for document in "$root/README.md" "$root/docs/INSTALLATION.md"; do
     echo "update-order: obsolete host-reload warning remains" >&2
     exit 1
   }
-  ! grep -Fq 'omarchy plugin update hancore.omaq' "$document" || {
-    echo "update-order: unsafe active-tree update is documented" >&2
+  if ! grep -Fq 'Do not ' "$document" ||
+      ! grep -Fq 'omarchy plugin update' "$document"; then
+    echo "update-order: unsafe generic updater is not clearly rejected" >&2
     exit 1
-  }
+  fi
   grep -Fq 'omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --yes' \
     "$document" || {
     echo "update-order: normal plugin installation is missing" >&2
     exit 1
   }
 done
+
+if ! grep -Fq 'Do not update OmaQ with' "$root/README.md" ||
+    ! grep -Fq 'including the all-plugins form.' "$root/README.md"; then
+  echo "update-order: README generic-updater warning changed" >&2
+  exit 1
+fi
+if ! grep -Fq 'include OmaQ in an all-plugins' "$root/docs/INSTALLATION.md" ||
+    ! grep -Fq 'omarchy plugin update --yes' "$root/docs/INSTALLATION.md"; then
+  echo "update-order: installation guide omits the all-plugins update risk" >&2
+  exit 1
+fi
+grep -Fq 'fast-forwards the source checkout but has no OmaQ lifecycle hook to rebuild and verify the native helper' \
+  "$root/docs/INSTALLATION.md" || {
+  echo "update-order: installation guide omits the helper rebuild risk" >&2
+  exit 1
+}
+if ! grep -Fq \
+    "Only \`scripts/update-omaq.sh\` implements the source/helper update transaction." \
+    "$root/docs/SECURITY.md"; then
+  echo "update-order: security guide omits the supported updater boundary" >&2
+  exit 1
+fi
+grep -Fq 'including its all-plugins form: it can fast-forward the live source checkout without rebuilding the native helper' \
+  "$root/docs/SECURITY.md" || {
+  echo "update-order: security guide omits the generic updater risk" >&2
+  exit 1
+}
+grep -Fq 'leave the packages installed rather than forcing removal' \
+  "$root/docs/INSTALLATION.md" || {
+  echo "update-order: package conflict guidance is missing" >&2
+  exit 1
+}
 
 grep -Fq '<summary>Pin a reviewed commit and limit acquisition</summary>' \
   "$root/docs/INSTALLATION.md" || exit 1

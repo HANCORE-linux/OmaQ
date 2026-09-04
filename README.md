@@ -57,6 +57,8 @@ Run the shell-off updater from the installed Git checkout:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
+Do not update OmaQ with `omarchy plugin update`, including the all-plugins form. Omarchy would fast-forward the source checkout without rebuilding its native helper. Always use the OmaQ updater above.
+
 When needed, the updater builds outside the monitored plugin tree, exchanges the checkout while the shell is stopped, and verifies the result. Active groups can defer helper activation. See the [installation lifecycle](docs/INSTALLATION.md) for older installations, exact-commit pinning, backups, and recovery.
 
 ## Uninstall

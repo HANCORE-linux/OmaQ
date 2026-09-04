@@ -2,8 +2,8 @@
 
 **Authority:** `AGENTS.md` and this file define repository work. If they disagree, `AGENTS.md` wins; stop and reconcile them before writing code.
 
-**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. The live plugin is installed under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`. Snapshot: [`CURRENT.md`](CURRENT.md).
-**Tree:** `/home/hancore/Projects/omaq`  
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Snapshot: [`CURRENT.md`](CURRENT.md).
+**Tree:** repository root
 **Id:** `hancore.omaq`
 
 OmaQ is a Quattro bar plugin. Tox carries the messages. Invite by link or QR. No account. Direct chat first, groups later. Not Discord.
@@ -49,7 +49,7 @@ Each item requires its own regression-preserving change and review. Do not combi
 
 ### Review disposition
 
-External review of PLAN + `OmaQ.md` vs the live Quattro shell. Verdicts:
+Architecture review of PLAN + `OmaQ.md`. Verdicts:
 
 | # | Claim | Use? |
 |---|---|---|

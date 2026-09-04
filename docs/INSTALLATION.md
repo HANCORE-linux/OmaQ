@@ -254,6 +254,8 @@ The supported updater keeps every source fetch and helper build outside the moni
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
+Do not run `omarchy plugin update hancore.omaq --yes` or include OmaQ in an all-plugins `omarchy plugin update --yes` operation. Omarchy's generic updater fast-forwards the source checkout but has no OmaQ lifecycle hook to rebuild and verify the native helper. Use only the OmaQ updater above.
+
 The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
 
 ### Bootstrap an older installation
@@ -367,4 +369,4 @@ sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libweb
   ttf-material-symbols-variable qrencode
 ```
 
-Run it only after confirming that none of those packages predated OmaQ and no other application needs them. `pacman -R` is intentionally used without `-s`: it targets only the listed packages and refuses removal when another installed package requires one. `zbar` is not an OmaQ installation dependency and is not included.
+Run it only after confirming that none of those packages predated OmaQ and no other application needs them. `pacman -R` is intentionally used without `-s`: it targets only the listed packages and refuses the complete operation when another installed package requires one. If Pacman reports a dependency conflict, leave the packages installed rather than forcing removal. `zbar` is not an OmaQ installation dependency and is not included.
