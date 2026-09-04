@@ -13,9 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import struct
 import sys
-import wave
 panel = Path(sys.argv[1]).read_text()
 service = Path(sys.argv[2]).read_text()
 chat = Path(sys.argv[3]).read_text()
@@ -65,36 +63,20 @@ if manifest["license"] != expected_license:
 if 'return ["off", "icq-message", "qq", "msn", "aurora", "glow", "click",' not in chat or \
         '"knock", "custom"].indexOf(value) >= 0 ? value : "icq-message"' not in chat or \
         '["qq", "msn", "aurora", "glow"].indexOf(selectedSound)' not in chat or \
-        'Qt.resolvedUrl("sounds/uhoh.wav")' not in chat:
+        'Qt.resolvedUrl("sounds/icq-message.mp3")' not in chat:
     raise SystemExit("custom-sound: playback allowlist or fallback changed")
-expected_audio = {"uhoh.wav", "qq.oga", "msn.oga", "aurora.oga", "glow.oga",
-                  "click.wav", "knock.wav", "phone.oga"}
+expected_audio = {"icq-message.mp3", "qq.oga", "msn.oga", "aurora.oga",
+                  "glow.oga", "click.wav", "knock.wav", "phone.oga"}
 actual_audio = {path.name for path in sounds.iterdir()
                 if path.suffix in {".mp3", ".oga", ".wav"}}
 if actual_audio != expected_audio:
     raise SystemExit(f"custom-sound: unexpected bundled audio: {actual_audio!r}")
 if (sounds / "LICENSES" / "CC-BY-4.0.txt").exists():
     raise SystemExit("custom-sound: removed CC BY preset license remains")
-uhoh_path = sounds / "uhoh.wav"
-expected_uhoh_sha256 = "8a27ca4badca8aa1074e2e41e2ad8c2c591e5ac3628fb680252d2bd0308c9744"
-if hashlib.sha256(uhoh_path.read_bytes()).hexdigest() != expected_uhoh_sha256:
-    raise SystemExit("custom-sound: UHOH asset hash changed")
-with wave.open(str(uhoh_path), "rb") as uhoh:
-    audio_format = (uhoh.getnchannels(), uhoh.getsampwidth(),
-                    uhoh.getframerate(), uhoh.getcomptype())
-    frame_count = uhoh.getnframes()
-    audio = uhoh.readframes(frame_count)
-if audio_format != (2, 2, 48000, "NONE") or frame_count != 24240:
-    raise SystemExit(f"custom-sound: unexpected UHOH PCM format: {audio_format!r}")
-samples = struct.unpack("<" + "h" * (len(audio) // 2), audio)
-left = samples[0::2]
-right = samples[1::2]
-peak = max(abs(sample) for sample in left)
-max_delta = max(abs(left[index] - left[index - 1])
-                for index in range(1, len(left)))
-if left != right or left[0] != 0 or left[-1] != 0 or peak != 7864 or \
-        max_delta != 679 or max(abs(sample) for sample in left[8640:11280]) != 0:
-    raise SystemExit("custom-sound: UHOH PCM click-risk or headroom contract failed")
+icq_path = sounds / "icq-message.mp3"
+expected_icq_sha256 = "14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1"
+if hashlib.sha256(icq_path.read_bytes()).hexdigest() != expected_icq_sha256:
+    raise SystemExit("custom-sound: ICQ asset hash changed")
 PY
 tmp=$(mktemp -d /tmp/omaq-custom-sound-XXXXXX)
 pid=""
@@ -210,7 +192,7 @@ grep '"request":"custom-sound-remove"' "$tmp/output" | grep -q '"items":\[\]' ||
   echo "custom-sound: remove touched the source or retained the managed copy" >&2
   exit 1
 }
-[ -f "$root/sounds/uhoh.wav" ] || {
+[ -f "$root/sounds/icq-message.mp3" ] || {
   echo "custom-sound: bundled sound changed" >&2
   exit 1
 }

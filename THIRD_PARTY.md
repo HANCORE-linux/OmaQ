@@ -15,7 +15,6 @@
 | KDE Ocean Sound Theme | Four unmodified `.oga` files under `sounds/` | CC BY-SA 4.0 | Bundled notification sounds; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 | Wikimedia Commons recordings | Two derived `.wav` files under `sounds/` | CC0 1.0 | Bundled notification sounds; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 | Pixabay asset 223780 by `u_bfmec9l9lj` | Derived `sounds/phone.oga` | Pixabay Content License | Call-progress tone; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
-| Project-generated UHOH notification | `sounds/uhoh.wav` | MIT | Original lossless two-tone default notification; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 
 Install runtime dependencies with the commands in the [installation lifecycle guide](docs/INSTALLATION.md). `zbar` is optional and used only for verification.
 
