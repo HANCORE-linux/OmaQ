@@ -85,7 +85,7 @@ PY
 trap cleanup_marker EXIT
 
 python3 - "$plugin_root/helper/omaq" "$state_dir" "$uninstall_marker" "$$" <<'PY'
-import fcntl, json, os, socket, stat, sys, time
+import fcntl, hashlib, json, os, socket, stat, sys, time
 
 helper, state_dir, marker_path, owner_text = sys.argv[1:]
 try:
@@ -272,17 +272,75 @@ except (FileNotFoundError, OSError, ValueError, IndexError, UnicodeError) as err
     except SystemExit:
         raise SystemExit(f"uninstall-omaq: unsafe helper process state: {error}")
     raise SystemExit(0)
+
+
+def executable_identity(info):
+    return (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+            info.st_uid, info.st_nlink, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def validate_executable(info):
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or
+            info.st_nlink != 1 or info.st_mode & 0o022 or
+            not info.st_mode & stat.S_IXUSR or info.st_size <= 0 or
+            info.st_size > 64 * 1024 * 1024):
+        raise OSError("unsafe helper executable")
+
+
+def executable_digest(path, *, nofollow):
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    if nofollow:
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        validate_executable(before)
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise OSError("helper executable was truncated while hashing")
+            remaining -= len(chunk)
+            digest.update(chunk)
+        if os.read(descriptor, 1):
+            raise OSError("helper executable grew while hashing")
+        after = os.fstat(descriptor)
+        if executable_identity(after) != executable_identity(before):
+            raise OSError("helper executable changed while hashing")
+        if nofollow:
+            current = os.stat(path, follow_symlinks=False)
+            if executable_identity(current) != executable_identity(after):
+                raise OSError("helper executable path changed while hashing")
+        return after, digest.digest()
+    finally:
+        os.close(descriptor)
+
+
 try:
     if start != marker_start:
         raise OSError("helper start-time mismatch")
     if process_uid(pid) != uid:
         raise OSError("helper uid mismatch")
-    expected = os.path.realpath(helper)
-    expected_info = os.stat(expected)
-    process_info = os.stat(f"/proc/{pid}/exe")
+    if (not os.path.isabs(helper) or os.path.normpath(helper) != helper or
+            os.path.realpath(helper) != helper):
+        raise OSError("unsafe helper executable path")
+    expected_info = os.stat(helper, follow_symlinks=False)
+    validate_executable(expected_info)
+    process_path = f"/proc/{pid}/exe"
+    process_info = os.stat(process_path)
+    validate_executable(process_info)
     if (expected_info.st_dev, expected_info.st_ino) != (
             process_info.st_dev, process_info.st_ino):
-        raise OSError("helper executable mismatch")
+        # A source-only directory exchange can retain the byte-identical helper
+        # process in the previous tree. Bind both files before allowing that
+        # expected inode split; changed bytes remain fail-closed.
+        expected_info, expected_digest = executable_digest(helper, nofollow=True)
+        process_info, process_digest = executable_digest(
+            process_path, nofollow=False)
+        if expected_digest != process_digest:
+            raise OSError("helper executable mismatch")
 except (OSError, ValueError, IndexError, StopIteration, UnicodeError) as error:
     try:
         clean_stale_runtime()
@@ -305,10 +363,18 @@ def same_process():
         if process_start(pid) != start or process_uid(pid) != uid:
             return False
         current_info = os.stat(f"/proc/{pid}/exe")
-        return (current_info.st_dev, current_info.st_ino) == (
-            expected_info.st_dev, expected_info.st_ino)
+        return executable_identity(current_info) == executable_identity(process_info)
     except (OSError, ValueError, IndexError, StopIteration, UnicodeError):
         return False
+
+
+def same_available_helper():
+    try:
+        current = os.stat(helper, follow_symlinks=False)
+        return executable_identity(current) == executable_identity(expected_info)
+    except OSError:
+        return False
+
 
 def wait_stopped(seconds):
     deadline = time.monotonic() + seconds
@@ -349,6 +415,8 @@ def await_correlated(client, event_names, request):
 try:
     if not socket_available:
         raise OSError("helper socket is unavailable")
+    if not same_process() or not same_available_helper():
+        raise OSError("helper executable changed before shutdown")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.connect(socket_path)
         request = os.urandom(16).hex()

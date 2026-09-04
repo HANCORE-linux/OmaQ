@@ -38,7 +38,7 @@ The same-user process boundary remains cooperative. A separate same-user process
 
 The existing runtime doctor remains the only helper activation boundary. The controller copies that tool into its private runtime lock directory before the tree exchange, so an older or replaced live tree cannot redirect it. The doctor copies the running image from `/proc/<pid>/exe` into `.prev`, checks the staged helper with `--expect-sha256`, binds process and socket identity, and sends only `helper.shutdown_if_no_groups`.
 
-A staged QML requirement newer than the running helper aborts before the tree exchange. Active or uncertain groups therefore produce the explicit mixed state `update-pending: old helper, new tree` only when protocol capability gating keeps the new QML compatible.
+A staged QML requirement newer than the running helper aborts before the tree exchange. Active or uncertain groups therefore produce the explicit mixed state `update-pending: old helper, new tree` only when protocol capability gating keeps the new QML compatible. A byte-identical helper can keep running from the retained checkout after a source-only exchange; uninstall binds that relocated process through stable executable metadata and descriptor-bound SHA-256 equality with the live helper before requesting group-safe shutdown.
 
 ## Offline regression coverage
 
@@ -57,6 +57,7 @@ The focused tests cover:
 - a restart injected after an earlier stopped check but before the final exchange check
 - `.prev` preservation during hash-bound activation and group-pending retries
 - inactive, wrong-hash, and protocol-incompatible activation outcomes
+- uninstall acceptance of a stable byte-identical relocated helper and refusal of changed relocated bytes
 
 These tests do not perform a live shell stop or tree exchange, claim visible Wayland acceptance, or simulate an uncooperative same-user process starting in the final syscall window. The Quickshell crash and its Exit-255 crash-handler relaunch symptom still warrant an upstream report.
 

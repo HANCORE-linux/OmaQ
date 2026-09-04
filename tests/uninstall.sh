@@ -68,8 +68,15 @@ run_case() {
   printf 'retain me\n' >"$home/private-state"
   chmod 600 "$home/private-state"
 
+  running_helper="$plugin/helper/omaq"
+  if [ "$mode" = relocated ]; then
+    mkdir -p "$case_root/retained/helper"
+    cp "$helper" "$case_root/retained/helper/omaq"
+    chmod 755 "$case_root/retained/helper/omaq"
+    running_helper="$case_root/retained/helper/omaq"
+  fi
   OMAQ_HOME="$home" OMAQ_STATE="$state" \
-    "$plugin/helper/omaq" </dev/null >"$case_root/helper.out" 2>"$case_root/helper.err" &
+    "$running_helper" </dev/null >"$case_root/helper.out" 2>"$case_root/helper.err" &
   pid=$!
   tries=0
   while [ ! -S "$state/omaq.sock" ] || [ ! -f "$state/omaq.protocol" ]; do
@@ -107,6 +114,7 @@ run_case() {
 }
 
 run_case graceful
+run_case relocated
 
 missing_state_root="$tmp/missing-state"
 mkdir -p "$missing_state_root/plugin/scripts" "$missing_state_root/plugin/helper" \
@@ -249,9 +257,59 @@ run_refused_case() {
     safe_mode=$(printf '%s' "$mode" | tr - _)
     ;;
   esac
+  running_helper="$plugin/helper/omaq"
+  case "$mode" in
+  relocated-*)
+    mkdir -p "$case_root/retained/helper"
+    cp "$helper" "$case_root/retained/helper/omaq"
+    chmod 755 "$case_root/retained/helper/omaq"
+    running_helper="$case_root/retained/helper/omaq"
+    ;;
+  esac
+  case "$mode" in
+  relocated-different)
+    python3 - "$plugin/helper/omaq" <<'PY'
+import os, sys
+path = sys.argv[1]
+with open(path, "r+b", buffering=0) as target:
+    size = os.fstat(target.fileno()).st_size
+    if size <= 0:
+        raise SystemExit("test helper is empty")
+    target.seek(size // 2)
+    original = target.read(1)
+    target.seek(size // 2)
+    target.write(bytes([original[0] ^ 1]))
+    os.fsync(target.fileno())
+PY
+    [ "$(stat -c '%s' "$running_helper")" = \
+      "$(stat -c '%s' "$plugin/helper/omaq")" ]
+    [ "$(sha256sum "$running_helper" | awk '{print $1}')" != \
+      "$(sha256sum "$plugin/helper/omaq" | awk '{print $1}')" ]
+    ;;
+  relocated-symlink)
+    rm -- "$plugin/helper/omaq"
+    ln -s "$running_helper" "$plugin/helper/omaq"
+    ;;
+  relocated-hardlink)
+    ln "$plugin/helper/omaq" "$case_root/helper-hardlink"
+    ;;
+  relocated-unsafe-mode)
+    chmod 775 "$plugin/helper/omaq"
+    ;;
+  relocated-empty)
+    : >"$plugin/helper/omaq"
+    ;;
+  relocated-oversized)
+    truncate -s 67108865 "$plugin/helper/omaq"
+    ;;
+  relocated-fifo)
+    rm -- "$plugin/helper/omaq"
+    mkfifo "$plugin/helper/omaq"
+    ;;
+  esac
   OMAQ_HOME="$home" OMAQ_STATE="$state" \
     OMAQ_IPC_TEST_SAFE_SHUTDOWN_MODE="$safe_mode" \
-    "$plugin/helper/omaq" </dev/null >"$case_root/helper.out" 2>"$case_root/helper.err" &
+    "$running_helper" </dev/null >"$case_root/helper.out" 2>"$case_root/helper.err" &
   pid=$!
   tries=0
   while [ ! -S "$state/omaq.sock" ] || [ ! -f "$state/omaq.protocol" ]; do
@@ -302,7 +360,7 @@ PY
     chmod 755 "$plugin/helper/omaq.next"
     mv -f -- "$plugin/helper/omaq.next" "$plugin/helper/omaq"
     ;;
-  unsupported | silent | malformed | ack-fail)
+  unsupported | silent | malformed | ack-fail | relocated-*)
     ;;
   esac
 
@@ -378,7 +436,7 @@ PY
   incomplete)
     grep -q 'incomplete helper runtime state' "$case_root/uninstall.err"
     ;;
-  missing-binary | replaced-binary)
+  missing-binary | replaced-binary | relocated-*)
     grep -q 'refusing to signal an unverified process' "$case_root/uninstall.err"
     ;;
   unsupported | silent | ack-fail)
@@ -400,6 +458,13 @@ run_refused_case unavailable
 run_refused_case incomplete
 run_refused_case missing-binary
 run_refused_case replaced-binary
+run_refused_case relocated-different
+run_refused_case relocated-symlink
+run_refused_case relocated-hardlink
+run_refused_case relocated-unsafe-mode
+run_refused_case relocated-empty
+run_refused_case relocated-oversized
+run_refused_case relocated-fifo
 run_refused_case unsupported
 run_refused_case silent
 run_refused_case malformed
