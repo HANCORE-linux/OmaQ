@@ -188,6 +188,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/uninstall.sh
 	sh tests/helper-update.sh ./$(BIN_IPC_TEST_HELPER)
 	python3 tests/source-update.py
+	python3 tests/source-install.py
 	sh tests/update-order.sh
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 

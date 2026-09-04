@@ -59,29 +59,11 @@ case "$*" in
     printf 'packages\n' >>"$OMAQ_INSTALL_TEST_LOG"
     exit "${OMAQ_PACKAGE_STATUS:-0}"
     ;;
-  "plugin add https://github.com/HANCORE-linux/OmaQ.git --yes")
-    printf 'add-disabled\n' >>"$OMAQ_INSTALL_TEST_LOG"
-    exit "${OMAQ_ADD_STATUS:-0}"
-    ;;
-  "plugin enable hancore.omaq")
-    printf 'enable\n' >>"$OMAQ_INSTALL_TEST_LOG"
-    exit "${OMAQ_ENABLE_STATUS:-0}"
-    ;;
   *)
     printf 'unexpected omarchy command: %s\n' "$*" >&2
     exit 99
     ;;
 esac
-EOF
-cat >"$tmp/bin/make" <<'EOF'
-#!/bin/sh
-set -eu
-[ "$*" = "-C $HOME/.config/omarchy/plugins/hancore.omaq helper" ] || {
-  printf 'unexpected make command: %s\n' "$*" >&2
-  exit 97
-}
-printf 'helper-build\n' >>"$OMAQ_INSTALL_TEST_LOG"
-exit "${OMAQ_BUILD_STATUS:-0}"
 EOF
 cat >"$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh" <<'EOF'
 #!/bin/sh
@@ -89,26 +71,20 @@ set -eu
 printf '%s\n' "$*" >>"$OMAQ_UPDATE_TEST_LOG"
 exit "${OMAQ_UPDATE_STATUS:-0}"
 EOF
-chmod 755 "$tmp/bin/omarchy" "$tmp/bin/make" \
+chmod 755 "$tmp/bin/omarchy" \
   "$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh"
 
 run_install_case() {
   name=$1
   package_status=$2
-  add_status=$3
-  build_status=$4
-  enable_status=$5
-  expected_status=$6
-  expected_log=$7
+  expected_status=$3
+  expected_log=$4
   log="$tmp/install-$name.log"
   : >"$log"
 
   if HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
       OMAQ_INSTALL_TEST_LOG="$log" \
       OMAQ_PACKAGE_STATUS="$package_status" \
-      OMAQ_ADD_STATUS="$add_status" \
-      OMAQ_BUILD_STATUS="$build_status" \
-      OMAQ_ENABLE_STATUS="$enable_status" \
       bash "$tmp/readme-install.sh"; then
     actual_status=0
   else
@@ -127,14 +103,8 @@ run_install_case() {
   }
 }
 
-run_install_case success 0 0 0 0 0 \
-  'packages\nadd-disabled\nhelper-build\nenable\n'
-run_install_case package-failure 21 0 0 0 21 'packages\n'
-run_install_case add-failure 0 22 0 0 22 'packages\nadd-disabled\n'
-run_install_case build-failure 0 0 23 0 23 \
-  'packages\nadd-disabled\nhelper-build\n'
-run_install_case enable-failure 0 0 0 24 24 \
-  'packages\nadd-disabled\nhelper-build\nenable\n'
+run_install_case success 0 0 'packages\n'
+run_install_case package-failure 21 21 'packages\n'
 
 run_update_case() {
   name=$1
@@ -181,6 +151,10 @@ for document in "$root/README.md" "$root/docs/INSTALLATION.md"; do
     echo "update-order: documented update still writes through the active checkout" >&2
     exit 1
   fi
+  if grep -Fq "omarchy plugin add \\" "$document"; then
+    echo "update-order: documented install still exposes the tree before build" >&2
+    exit 1
+  fi
 done
 
 grep -Fq 'mv -T --exchange --no-copy' "$root/docs/PLAN.md" || {
@@ -211,5 +185,14 @@ grep -Fq 'Bootstrap an older installation' "$root/docs/INSTALLATION.md" || {
   echo "update-order: source updater is not executable" >&2
   exit 1
 }
+[ -x "$root/scripts/install-omaq.sh" ] && [ -x "$root/scripts/install-omaq.py" ] || {
+  echo "update-order: source installer is not executable" >&2
+  exit 1
+}
+if ! grep -Fq 'mode=install' "$root/docs/INSTALLATION.md" ||
+    ! grep -Fq 'mode=update' "$root/docs/INSTALLATION.md"; then
+  echo "update-order: shared source bootstrap modes are missing" >&2
+  exit 1
+fi
 
 printf 'update-order: ok\n'
