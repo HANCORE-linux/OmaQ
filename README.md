@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="420">
+  <img src="assets/OmaQ_Final.png" alt="OmaQ" width="640">
 </h1>
 
 <p align="center">
