@@ -7,8 +7,9 @@ This page is the current product and release snapshot. Completed phase and follo
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
 - **Manifest version:** `0.8.1-beta.2`, Protocol 14
-- **Accepted live source base:** both installations passed exact-commit and same-commit no-op acceptance at the `v0.8.1-beta.2` target `5a8cfaafc4f053294b6e50e7dc5f0028a59c2e50`
-- **Live helper:** Protocol 14, SHA-256 `ee43637be9ac9880bb465408a87c8ace94015c217a1df25dc79ce088308a1fba`
+- **Accepted Machine 2 source base:** the public exact-commit source install and same-commit no-op passed at `af8ee93184ca115115302cbceaa5acd8ad598e33`
+- **Historical Machine 1 source base:** last recorded at `ff9a97bbcee66502eae47a831d4606fd01cbe628`; not changed or revalidated during the Machine 2 cycle
+- **Machine 2 live helper:** Protocol 14, SHA-256 `ee43637be9ac9880bb465408a87c8ace94015c217a1df25dc79ce088308a1fba`
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
 
@@ -57,12 +58,13 @@ Uninstall regressions cover current and byte-identical relocated helper inodes, 
 
 The default UHOH notification uses `sounds/icq-message.mp3` at SHA-256 `14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1`. The 48 kHz stereo clip runs for 3.077 seconds. The manifest records GPL-3.0-only for the distributed payload; README and `THIRD_PARTY.md` distinguish OmaQ's GPL-3.0-or-later helper source from the GPL-3.0-only linked helper binary imposed by `libsignal-protocol-c` 2.3.3.
 
-No current test claims complete native Wayland or multi-monitor acceptance. Both installations completed shell-off updates through `5a8cfaafc4f053294b6e50e7dc5f0028a59c2e50` with bound previous trees, accepted plugin consumers, unchanged Protocol 14 helpers, clean restarts, no new coredumps, and same-commit no-ops. A visible primary-machine switch to the semantic Tokyo Night palette confirmed the System swatches and rail hover colors while Safety code and Identity remained outlined when selected; the prior Oxocarbon theme was restored afterward. No private identity, Ratchet, group registry, or history data was synchronized between machines. The source installer still requires a separately authorized live uninstall/reinstall acceptance; offline tests do not substitute for that check. The [trigger-free update history](stages/trigger-free-updates.md#deployment-validation) records the earlier failed attempts and their mitigations.
+No current test claims complete native Wayland or multi-monitor acceptance. Machine 2 updated from `3a90583156b848aead16e14e760d793cd4b31384` to `2ae4a7dd136cecd35fa19a3123927dc6b8417655`, then the official uninstaller stopped a byte-identical helper that had continued running from the retained checkout and removed the plugin. The public exact-commit source install subsequently placed `af8ee93184ca115115302cbceaa5acd8ad598e33`, enabled OmaQ in the right section, and passed plugin, IPC, Protocol 14, helper-hash, process, and journal checks. Its same-commit update no-op preserved the checkout inode and every bound process. The unchanged baseline of 50 covered Quickshell coredumps in the acceptance harness's scope. Six `python3.14` coredumps occurred earlier that day, all before installation; a later host- and timestamp-bound read-only query found no retained coredump record after the post-acceptance log timestamp. This was remote consumer acceptance, not visible Wayland acceptance.
+
+Every retained data root remained present across the uninstall and reinstall, but the aggregate fingerprint changed because orderly helper shutdown rewrote save data, empty group-registry files, and stdout spool state. This is not a byte-for-byte preservation claim. Machine 1 was not changed or revalidated during this cycle. No private identity, Ratchet, group registry, or history data was synchronized between machines. The [update](stages/trigger-free-updates.md#deployment-validation) and [installation](stages/safe-source-install.md#deployment-validation) notes record the lifecycle boundaries and evidence.
 
 ## Next order
 
-1. Review and merge the root source-install entry point without combining that delivery with a live deployment.
-2. Capture Machine 2 recovery evidence and retained-data fingerprints, then perform the separately authorized uninstall/reinstall cycle and compare every retained path byte for byte.
-3. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
-4. Decide separately whether a governed Git-history migration is warranted for the retired sound blob.
-5. Keep packaging and AUR publication paused until separately approved.
+1. Recheck Machine 1 read-only, then update it only under a separate live approval.
+2. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
+3. Prepare any new tag or release only after separate target acceptance and release approval.
+4. Keep packaging and AUR publication paused until separately approved.
