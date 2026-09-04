@@ -31,6 +31,33 @@ cmp -s "$tmp/readme-install.sh" "$tmp/installation-install.sh" || {
   echo "update-order: documented install commands differ" >&2
   exit 1
 }
+# The documented shell must retain this literal HOME expansion.
+# shellcheck disable=SC2016
+grep -Fq '/usr/bin/env -i -C "$HOME/.omaq-source-install.network-home"' \
+  "$tmp/readme-install.sh"
+# The documented shell must retain this literal HOME expansion.
+# shellcheck disable=SC2016
+grep -Fq 'HOME="$HOME/.omaq-source-install.network-home"' \
+  "$tmp/readme-install.sh"
+grep -Fq 'GIT_CONFIG_GLOBAL=/dev/null' "$tmp/readme-install.sh"
+grep -Fq 'GIT_CONFIG_NOSYSTEM=1' "$tmp/readme-install.sh"
+grep -Fq 'GIT_TERMINAL_PROMPT=0' "$tmp/readme-install.sh"
+# The ceiling must be the literal parent of Git's isolated working directory.
+# shellcheck disable=SC2016
+grep -Fq 'GIT_CEILING_DIRECTORIES="$HOME"' \
+  "$tmp/readme-install.sh"
+grep -Fq '/usr/bin/git -c core.hooksPath=/dev/null' \
+  "$tmp/readme-install.sh"
+grep -Fq -- '-c credential.helper=' "$tmp/readme-install.sh"
+grep -Fq -- '-c http.extraHeader=' "$tmp/readme-install.sh"
+grep -Fq -- '-c http.followRedirects=false' "$tmp/readme-install.sh"
+grep -Fq -- '-c protocol.file.allow=never' "$tmp/readme-install.sh"
+# The documented shell must retain this literal HOME expansion.
+# shellcheck disable=SC2016
+grep -Fq '/usr/bin/rmdir -- "$HOME/.omaq-source-install.network-home"' \
+  "$tmp/readme-install.sh"
+sed "s#/usr/bin/git#$tmp/bin/git#g" "$tmp/readme-install.sh" \
+  >"$tmp/readme-install-test.sh"
 
 extract_block "## Update" "$root/README.md" >"$tmp/readme-update.sh"
 extract_block "## Update OmaQ" "$root/docs/INSTALLATION.md" >"$tmp/installation-update.sh"
@@ -68,29 +95,57 @@ EOF
 cat >"$tmp/bin/git" <<'EOF'
 #!/bin/sh
 set -eu
-[ "$#" -eq 7 ] && [ "$1" = clone ] && [ "$2" = --branch ] && \
-  [ "$3" = main ] && [ "$4" = --single-branch ] && [ "$5" = -- ] && \
-  [ "$6" = https://github.com/HANCORE-linux/OmaQ.git ] || {
-  printf 'unexpected git command: %s\n' "$*" >&2
-  exit 98
-}
-source_tree=$7
-case "$source_tree" in
-  "$HOME"/.omaq-source-install.??????) ;;
-  *) echo "git clone did not use a private home staging path" >&2; exit 96 ;;
+expected='-c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= -c http.extraHeader= -c http.sslVerify=true -c http.followRedirects=false -c protocol.file.allow=never clone --no-hardlinks --branch main --single-branch -- https://github.com/HANCORE-linux/OmaQ.git'
+case "$*" in
+  "$expected "*) ;;
+  *)
+    printf 'unexpected git command: %s\n' "$*" >&2
+    exit 98
+    ;;
 esac
+[ "$PATH" = /usr/bin:/bin ] && [ "$LANG" = C.UTF-8 ] && \
+  [ "$GIT_ATTR_NOSYSTEM" = 1 ] && \
+  [ "$GIT_CONFIG_GLOBAL" = /dev/null ] && \
+  [ "$GIT_CONFIG_NOSYSTEM" = 1 ] && \
+  [ "$GIT_NO_REPLACE_OBJECTS" = 1 ] && \
+  [ "$GIT_OPTIONAL_LOCKS" = 0 ] && [ "$GIT_TERMINAL_PROMPT" = 0 ] && \
+  [ "$GIT_CEILING_DIRECTORIES" = "$(dirname -- "$HOME")" ] && \
+  [ "$PWD" = "$HOME" ] || {
+  echo "git clone did not receive the sanitized environment" >&2
+  exit 94
+}
+[ "${GIT_CONFIG_COUNT+x}" != x ] && [ "${GIT_DIR+x}" != x ] && \
+  [ "${GIT_WORK_TREE+x}" != x ] && [ "${GIT_SSL_NO_VERIFY+x}" != x ] && \
+  [ "${GIT_ASKPASS+x}" != x ] && [ "${HTTPS_PROXY+x}" != x ] || {
+  echo "git clone inherited a poisoned environment variable" >&2
+  exit 93
+}
+source_tree=
+for argument do
+  source_tree=$argument
+done
+install_home=$(dirname -- "$HOME")
+[ "$HOME" = "$install_home/.omaq-source-install.network-home" ] && \
+  [ "$source_tree" = "$install_home/.omaq-source-install" ] || {
+  echo "git clone did not use the private source and network-home paths" >&2
+  exit 96
+}
 [ -d "$source_tree" ] && [ ! -L "$source_tree" ] && \
-  [ "$(stat -c '%a' -- "$source_tree")" = 700 ] || {
-  echo "git clone staging directory is not a private real directory" >&2
+  [ "$(stat -c '%a' -- "$source_tree")" = 700 ] && \
+  [ -d "$HOME" ] && [ ! -L "$HOME" ] && \
+  [ "$(stat -c '%a' -- "$HOME")" = 700 ] || {
+  echo "git clone staging path is not a private real directory" >&2
   exit 95
 }
-printf 'clone\n' >>"$OMAQ_INSTALL_TEST_LOG"
-[ "${OMAQ_CLONE_STATUS:-0}" -eq 0 ] || exit "$OMAQ_CLONE_STATUS"
+printf 'clone\n' >>"$install_home/.install-test.log"
+clone_status=$(cat "$install_home/.clone-status")
+[ "$clone_status" -eq 0 ] || exit "$clone_status"
 mkdir -p "$source_tree/scripts"
 cat >"$source_tree/scripts/install-omaq.sh" <<'INSTALLER'
 #!/bin/sh
 set -eu
-[ "$*" = "--yes" ] || exit 97
+[ "$*" = "--section right --yes" ] || exit 97
+[ ! -e "$HOME/.omaq-source-install.network-home" ] || exit 92
 printf 'install\n' >>"$OMAQ_INSTALL_TEST_LOG"
 exit "${OMAQ_INSTALLER_STATUS:-0}"
 INSTALLER
@@ -104,33 +159,65 @@ exit "${OMAQ_UPDATE_STATUS:-0}"
 EOF
 chmod 755 "$tmp/bin/omarchy" "$tmp/bin/git" \
   "$tmp/home/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh"
-mkdir -p "$tmp/home/.local/state"
-ln -s "$tmp/home/.config/omarchy/plugins" \
-  "$tmp/home/.local/state/omaq-source-bootstrap"
+test_path="$tmp/bin:$PATH"
 
 run_install_case() {
-  name=$1
-  package_status=$2
-  clone_status=$3
-  installer_status=$4
-  expected_status=$5
-  expected_log=$6
-  log="$tmp/install-$name.log"
+  shell_name=$1
+  shell_path=$2
+  name=$3
+  package_status=$4
+  clone_status=$5
+  installer_status=$6
+  expected_status=$7
+  expected_log=$8
+  source_tree="$tmp/home/.omaq-source-install"
+  network_home="$tmp/home/.omaq-source-install.network-home"
+  log="$tmp/home/.install-test.log"
+  error_log="$tmp/install-$shell_name-$name.stderr"
   plugins_dir="$tmp/home/.config/omarchy/plugins"
+  case_home="$tmp/home"
+  if [ "$name" = relative-home ]; then
+    case_home=..
+  fi
   : >"$log"
-  find "$tmp/home" -maxdepth 1 -name '.omaq-source-install.*' \
-    -exec rm -rf -- {} +
-  rm -rf "$plugins_dir/OmaQ"
+  : >"$error_log"
+  printf '%s\n' "$clone_status" >"$tmp/home/.clone-status"
+  rm -rf "$source_tree" "$network_home" "$plugins_dir/OmaQ"
+  case "$name" in
+    existing-directory)
+      mkdir -m 700 -- "$source_tree"
+      ;;
+    existing-symlink)
+      ln -s "$plugins_dir" "$source_tree"
+      ;;
+    existing-network-home)
+      mkdir -m 700 -- "$network_home"
+      ;;
+  esac
 
   if (
     cd "$plugins_dir"
-    HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
-      OMAQ_INSTALL_TEST_LOG="$log" \
-      OMAQ_PACKAGE_STATUS="$package_status" \
-      OMAQ_CLONE_STATUS="$clone_status" \
-      OMAQ_INSTALLER_STATUS="$installer_status" \
-      bash "$tmp/readme-install.sh"
-  ); then
+    HOME="$case_home"
+    PATH=$test_path
+    OMAQ_INSTALL_TEST_LOG="$log"
+    OMAQ_PACKAGE_STATUS="$package_status"
+    OMAQ_CLONE_STATUS="$clone_status"
+    OMAQ_INSTALLER_STATUS="$installer_status"
+    GIT_CONFIG_COUNT=1
+    GIT_DIR=/tmp/poisoned-git-dir
+    GIT_WORK_TREE=/tmp/poisoned-git-work-tree
+    GIT_SSL_NO_VERIFY=1
+    GIT_ASKPASS=/tmp/poisoned-askpass
+    HTTPS_PROXY=http://127.0.0.1:1
+    export HOME PATH OMAQ_INSTALL_TEST_LOG OMAQ_PACKAGE_STATUS \
+      OMAQ_CLONE_STATUS OMAQ_INSTALLER_STATUS GIT_CONFIG_COUNT GIT_DIR \
+      GIT_WORK_TREE GIT_SSL_NO_VERIFY GIT_ASKPASS HTTPS_PROXY
+    if [ "$shell_name" = fish ]; then
+      "$shell_path" --no-config "$tmp/readme-install-test.sh"
+    else
+      "$shell_path" "$tmp/readme-install-test.sh"
+    fi
+  ) 2>"$error_log"; then
     actual_status=0
   else
     actual_status=$?
@@ -139,11 +226,13 @@ run_install_case() {
   [ "$actual_status" -eq "$expected_status" ] || {
     printf 'update-order: install %s returned %s, expected %s\n' \
       "$name" "$actual_status" "$expected_status" >&2
+    cat "$error_log" >&2
     exit 1
   }
-  printf '%b' "$expected_log" >"$tmp/install-$name.expected"
-  cmp -s "$log" "$tmp/install-$name.expected" || {
+  printf '%b' "$expected_log" >"$tmp/install-$shell_name-$name.expected"
+  cmp -s "$log" "$tmp/install-$shell_name-$name.expected" || {
     printf 'update-order: install %s order mismatch\n' "$name" >&2
+    cat "$error_log" >&2
     exit 1
   }
   [ ! -e "$plugins_dir/OmaQ" ] || {
@@ -152,10 +241,31 @@ run_install_case() {
   }
 }
 
-run_install_case success 0 0 0 0 'packages\nclone\ninstall\n'
-run_install_case package-failure 21 0 0 21 'packages\n'
-run_install_case clone-failure 0 22 0 22 'packages\nclone\n'
-run_install_case installer-failure 0 0 23 23 'packages\nclone\ninstall\n'
+run_install_suite() {
+  shell_name=$1
+  shell_path=$2
+  run_install_case "$shell_name" "$shell_path" \
+    success 0 0 0 0 'packages\nclone\ninstall\n'
+  run_install_case "$shell_name" "$shell_path" \
+    package-failure 21 0 0 21 'packages\n'
+  run_install_case "$shell_name" "$shell_path" \
+    clone-failure 0 22 0 22 'packages\nclone\n'
+  run_install_case "$shell_name" "$shell_path" \
+    installer-failure 0 0 23 23 'packages\nclone\ninstall\n'
+  run_install_case "$shell_name" "$shell_path" \
+    existing-directory 0 0 0 1 'packages\n'
+  run_install_case "$shell_name" "$shell_path" \
+    existing-symlink 0 0 0 1 'packages\n'
+  run_install_case "$shell_name" "$shell_path" \
+    existing-network-home 0 0 0 1 'packages\n'
+  run_install_case "$shell_name" "$shell_path" \
+    relative-home 0 0 0 1 'packages\n'
+}
+
+run_install_suite bash /usr/bin/bash
+if [ -x /usr/bin/fish ]; then
+  run_install_suite fish /usr/bin/fish
+fi
 
 run_update_case() {
   name=$1
@@ -163,7 +273,7 @@ run_update_case() {
   expected=$3
   log="$tmp/update-$name.log"
   : >"$log"
-  if HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  if HOME="$tmp/home" PATH="$test_path" \
       OMAQ_UPDATE_TEST_LOG="$log" OMAQ_UPDATE_STATUS="$status" \
       bash "$tmp/readme-update.sh"; then
     actual=0
@@ -186,7 +296,7 @@ run_update_case failure 31 31
 
 rollback_log="$tmp/rollback.log"
 : >"$rollback_log"
-HOME="$tmp/home" PATH="$tmp/bin:$PATH" OMAQ_UPDATE_TEST_LOG="$rollback_log" \
+HOME="$tmp/home" PATH="$test_path" OMAQ_UPDATE_TEST_LOG="$rollback_log" \
   OMAQ_UPDATE_STATUS=0 bash "$tmp/rollback.sh"
 [ "$(cat "$rollback_log")" = "--rollback-helper --yes" ] || {
   echo "update-order: helper rollback does not use the shell-off updater" >&2
@@ -218,6 +328,37 @@ grep -Fq '<summary>Pin a reviewed commit and limit acquisition</summary>' \
   exit 1
 }
 
+if grep -Eq '<sub>|<br[ >]' "$root/README.md"; then
+  echo "update-order: README introduction changes the subtitle size or line" >&2
+  exit 1
+fi
+[ "$(grep -Fc '<td width="25%" align="center"><a href="docs/images/guide/' \
+  "$root/README.md")" -eq 4 ] || {
+  echo "update-order: README showcase does not contain four equal cells" >&2
+  exit 1
+}
+for image in 15-direct-chat-overview.png 20-direct-image-preview.png \
+    22-group-chat-overview.png 35-demo-window.png; do
+  grep -Fq "docs/images/guide/$image" "$root/README.md" || {
+    echo "update-order: README showcase image is missing: $image" >&2
+    exit 1
+  }
+done
+grep -Fq 'the updater builds outside the monitored plugin tree' \
+  "$root/README.md" || {
+  echo "update-order: concise README update safety summary is missing" >&2
+  exit 1
+}
+if grep -Fq 'The updater returns without staging or stopping the shell' \
+    "$root/README.md"; then
+  echo "update-order: verbose README update explanation remains" >&2
+  exit 1
+fi
+
+grep -Fq '## 16. Git (public)' "$root/docs/PLAN.md" || {
+  echo "update-order: architecture still describes a private repository" >&2
+  exit 1
+}
 grep -Fq 'mv -T --exchange --no-copy' "$root/docs/PLAN.md" || {
   echo "update-order: architecture omits the atomic no-copy exchange" >&2
   exit 1

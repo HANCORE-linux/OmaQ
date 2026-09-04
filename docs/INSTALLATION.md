@@ -9,7 +9,7 @@ This guide covers source installation, shell-off updates, helper status, rollbac
 > [!IMPORTANT]
 > OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
 
-The source install requires authenticated Git access to the private repository, an unlocked Omarchy session, and no existing `~/.config/omarchy/plugins/hancore.omaq` path. If Git cannot authenticate, run `gh auth login --hostname github.com`, then `/usr/bin/gh auth setup-git --hostname github.com` once.
+Run the source install as your desktop user while the Omarchy shell is running and the session is unlocked. The installer rejects root, a stopped shell, a locked session, or an existing `~/.config/omarchy/plugins/hancore.omaq`; use the [update section](#update-omaq) for an existing installation.
 
 Install the dependencies, clone OmaQ, and run the installer:
 
@@ -17,28 +17,47 @@ Install the dependencies, clone OmaQ, and run the installer:
 omarchy pkg add \
   toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
   ttf-material-symbols-variable qrencode &&
-source_root=$(mktemp -d "$HOME/.omaq-source-install.XXXXXX") &&
-git clone --branch main --single-branch -- \
-  https://github.com/HANCORE-linux/OmaQ.git "$source_root" &&
-"$source_root/scripts/install-omaq.sh" --yes
+/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
+  /usr/bin/python3 -I -c \
+  'import os,sys;h=os.environ["HOME"];sys.exit(0 if os.path.isabs(h) and os.pathsep not in h else "HOME must be absolute and contain no Git path-list separator")' &&
+mkdir -m 700 -- "$HOME/.omaq-source-install" &&
+mkdir -m 700 -- "$HOME/.omaq-source-install.network-home" &&
+/usr/bin/env -i -C "$HOME/.omaq-source-install.network-home" \
+  HOME="$HOME/.omaq-source-install.network-home" PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+  GIT_TERMINAL_PROMPT=0 \
+  GIT_CEILING_DIRECTORIES="$HOME" \
+  /usr/bin/git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+  -c credential.helper= -c http.extraHeader= -c http.sslVerify=true \
+  -c http.followRedirects=false -c protocol.file.allow=never \
+  clone --no-hardlinks --branch main --single-branch -- \
+  https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
+/usr/bin/rmdir -- "$HOME/.omaq-source-install.network-home" &&
+"$HOME/.omaq-source-install/scripts/install-omaq.sh" --section right --yes
 ```
 
-`mktemp` creates the private staging directory atomically under your home directory. This keeps the clone outside Omarchy's monitored plugin directory, even when you run the command from that directory. The installer builds the omitted Signal-enabled `helper/omaq` before the checkout becomes visible to Omarchy. It then moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, so the temporary source path no longer exists after installation.
+The private staging directories are direct children of your home directory, outside Omarchy's monitored plugin tree. Network Git runs with fixed system commands, sanitized configuration, and an empty temporary `HOME`; installation stops if Git writes into that home or any command fails. The installer builds the Signal-enabled helper there, stops the shell, atomically moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and enables it once in the selected section. Use `--section left`, `center`, or `right`; omitting the option uses OmaQ's manifest default of `right`. The bar disappears during this step and returns after OmaQ passes discovery and activation.
 
-The standard command trusts authenticated GitHub and your Git client to acquire the current `main` branch. Use the following bootstrap when you need pre-execution commit pinning and acquisition limits.
+Shibumi V2 consumes the same Omarchy bar layout and hosts OmaQ without a separate integration path. Shibumi V1 adoption of newly enabled third-party widgets remains a Shibumi compatibility boundary rather than an OmaQ-specific installer action.
+
+If installation fails and `.omaq-source-install` or `.omaq-source-install.network-home` remains in your home directory, inspect the reported error before removing those paths and starting again. The command refuses to reuse the retained checkout.
+
+The standard command trusts public GitHub and your Git client to acquire the current `main` branch. Use the following bootstrap when you need pre-execution commit pinning and acquisition limits.
 
 <details>
 <summary>Pin a reviewed commit and limit acquisition</summary>
 
 ### Use the bounded exact-commit bootstrap
 
-Set `expected_commit` to a reviewed 40-character commit hash, or leave it empty to select current canonical `main`:
+Start a Bash session, set `install_section` to the preferred bar section, then set `expected_commit` to a reviewed 40-character commit hash. Leave the commit empty to select current canonical `main`:
 
 ```bash
 (
   set -euo pipefail; umask 077
   mode=install # Use mode=update only for the older-update bootstrap below.
   expected_commit="" # Or set one complete reviewed lowercase 40-hex commit.
+  install_section=right # Use left, center, or right.
   state_home=${XDG_STATE_HOME:-$HOME/.local/state}
   case "$state_home" in
     /*) ;;
@@ -51,36 +70,34 @@ Set `expected_commit` to a reviewed 40-character commit hash, or leave it empty 
   esac
   bootstrap=$(/usr/bin/mktemp -d \
     "$state_home/omaq-source-bootstrap.XXXXXX")
-  trap '/usr/bin/rm -rf -- "$bootstrap"' EXIT
-  /usr/bin/gh auth status --hostname github.com
-  token=$(/usr/bin/gh auth token --hostname github.com)
-  authorization=$(builtin printf 'x-access-token:%s' "$token" | /usr/bin/base64 -w0)
-  export OMAQ_BOOTSTRAP_AUTH="Authorization: Basic $authorization"
-  unset token authorization
+  trap '/usr/bin/rm -rf -- "$bootstrap" "${bootstrap}.network-home"' EXIT
   /usr/bin/python3 -I - "$bootstrap" "$expected_commit" <<'PY'
 import os, re, resource, shutil, signal, stat, subprocess, sys, time
 
 root = sys.argv[1]
 expected = sys.argv[2]
-auth = os.environ.pop("OMAQ_BOOTSTRAP_AUTH")
+network_home = root + ".network-home"
+os.mkdir(network_home, mode=0o700)
 maximum_output = 1024 * 1024
 maximum_entries = 50000
 maximum_tree = 512 * 1024 * 1024
+network_parent = os.path.dirname(network_home)
+if os.pathsep in network_parent:
+    raise SystemExit("Bootstrap path contains the Git path separator")
 env = {
-    "HOME": os.path.expanduser("~"),
+    "HOME": network_home,
     "PATH": "/usr/bin:/bin",
+    "GIT_CEILING_DIRECTORIES": network_parent,
     "GIT_ATTR_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_TERMINAL_PROMPT": "0",
-    "GIT_CONFIG_COUNT": "1",
-    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
-    "GIT_CONFIG_VALUE_0": auth,
 }
 git = [
     "/usr/bin/git", "-c", "core.hooksPath=/dev/null",
+    "-c", "credential.helper=", "-c", "http.extraHeader=",
     "-c", "http.sslVerify=true", "-c", "http.followRedirects=false",
     "-c", "protocol.file.allow=never",
 ]
@@ -133,7 +150,7 @@ def run(args, timeout, monitor=False):
     try:
         process = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=output_fd, stderr=output_fd,
-            env=env,
+            env=env, cwd=network_home,
             preexec_fn=limit_tree_file_size if monitor else limit_output_size,
             start_new_session=True,
         )
@@ -209,15 +226,20 @@ status = run(
 if (head != remote[0] or (expected and head != expected)
         or url != origin or branch != "main" or status):
     raise SystemExit("Bootstrap checkout identity mismatch")
+try:
+    os.rmdir(network_home)
+except OSError as error:
+    raise SystemExit(f"Bootstrap network home changed: {error}")
 PY
-  unset OMAQ_BOOTSTRAP_AUTH
   case "$mode" in
     install)
       if [[ -n $expected_commit ]]; then
         "$bootstrap/scripts/install-omaq.sh" \
-          --expect-commit "$expected_commit" --yes
+          --expect-commit "$expected_commit" \
+          --section "$install_section" --yes
       else
-        "$bootstrap/scripts/install-omaq.sh" --yes
+        "$bootstrap/scripts/install-omaq.sh" \
+          --section "$install_section" --yes
       fi
       ;;
     update)
@@ -235,7 +257,7 @@ PY
 )
 ```
 
-The bootstrap keeps the GitHub token in memory, limits clone size and command output, and terminates the process group after a timeout or limit failure. It rejects a changed canonical ref before cloning or executing downloaded code. The installer repeats the commit check before and after the build.
+The bootstrap uses an isolated credential-free home for anonymous public GitHub access, limits clone size and command output, and terminates the process group after a timeout or limit failure. It rejects a changed canonical ref before cloning or executing downloaded code. The installer repeats the commit check before and after the build.
 
 </details>
 
@@ -256,7 +278,7 @@ The supported updater keeps every source fetch and helper build outside the moni
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
-The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. Private GitHub access also requires an authenticated GitHub CLI session from `gh auth login`; the updater passes its token only as a GitHub-scoped in-memory Git header. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
+The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
 
 ### Bootstrap an older installation
 
