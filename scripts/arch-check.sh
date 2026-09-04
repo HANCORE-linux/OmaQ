@@ -68,9 +68,10 @@ if find . -name '*.qml' | grep -q .; then
 	fi
 fi
 
-for runtime_script in scripts/float-omaq.sh scripts/uninstall-omaq.sh scripts/paste-image.sh \
-	scripts/update-helper.sh scripts/helper-runtime.py scripts/install-omaq.sh \
-	scripts/install-omaq.py scripts/update-omaq.sh scripts/update-omaq.py; do
+for runtime_script in install.sh scripts/float-omaq.sh scripts/uninstall-omaq.sh \
+	scripts/paste-image.sh scripts/update-helper.sh scripts/helper-runtime.py \
+	scripts/install-omaq.sh scripts/install-omaq.py scripts/update-omaq.sh \
+	scripts/update-omaq.py; do
 	if [ ! -f "$runtime_script" ] || [ ! -x "$runtime_script" ]; then
 		die "missing executable runtime script: $runtime_script"
 	fi

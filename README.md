@@ -43,30 +43,13 @@ OmaQ runs no servers and has no operator access to your identity, contacts, or m
 > OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
 
 ```bash
-omarchy pkg add \
-  toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
-  ttf-material-symbols-variable qrencode &&
-/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
-  /usr/bin/python3 -I -c \
-  'import os,sys;h=os.environ["HOME"];sys.exit(0 if os.path.isabs(h) and os.pathsep not in h else "HOME must be absolute and contain no Git path-list separator")' &&
 mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-mkdir -m 700 -- "$HOME/.omaq-source-install.network-home" &&
-/usr/bin/env -i -C "$HOME/.omaq-source-install.network-home" \
-  HOME="$HOME/.omaq-source-install.network-home" PATH=/usr/bin:/bin \
-  LANG=C.UTF-8 GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-  GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
-  GIT_TERMINAL_PROMPT=0 \
-  GIT_CEILING_DIRECTORIES="$HOME" \
-  /usr/bin/git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-  -c credential.helper= -c http.extraHeader= -c http.sslVerify=true \
-  -c http.followRedirects=false -c protocol.file.allow=never \
-  clone --no-hardlinks --branch main --single-branch -- \
+/usr/bin/git clone --no-hardlinks --branch main --single-branch -- \
   https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
-/usr/bin/rmdir -- "$HOME/.omaq-source-install.network-home" &&
-"$HOME/.omaq-source-install/scripts/install-omaq.sh" --section right --yes
+"$HOME/.omaq-source-install/install.sh" --section right --yes
 ```
 
-The final command builds the omitted Signal-enabled `helper/omaq` outside the monitored plugin directory, moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and places OmaQ in the right bar section. Change `--section right` to `left` or `center` if preferred. Shibumi V2 follows the same layout without a separate OmaQ installation path. Direct messaging remains unavailable when the helper is missing. See the [installation lifecycle](docs/INSTALLATION.md) for exact-commit pinning, verification, and recovery.
+`install.sh` installs the required packages, builds the omitted Signal-enabled `helper/omaq` outside the monitored plugin directory, moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and places OmaQ in the right bar section. Change `--section right` to `left` or `center` if preferred. Shibumi V2 follows the same layout without a separate OmaQ installation path. Direct messaging remains unavailable when the helper is missing. See the [installation lifecycle](docs/INSTALLATION.md) for the bounded exact-commit bootstrap, verification, and recovery.
 
 ## Update
 

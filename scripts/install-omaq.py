@@ -686,7 +686,7 @@ class Installer:
         finally:
             self.shell_stopped = False
 
-    def preflight_and_build(self) -> tuple[core.StagedTree, core.ShellProcesses]:
+    def preflight(self) -> tuple[str, int, core.ShellProcesses]:
         if os.geteuid() == 0:
             fail("refusing to install OmaQ as root")
         self.shell.refuse_locked_session()
@@ -713,6 +713,13 @@ class Installer:
         if os.path.lexists(self.source / "helper/omaq") or ignored_records(self.source):
             fail("installer checkout is not a pristine unbuilt clone")
 
+        require_persisted_plugin_disabled()
+        self.shell.assert_same_shell(initial_shell)
+        preflight_install_support(self.source, self.root)
+        return head, required, initial_shell
+
+    def preflight_and_build(self) -> tuple[core.StagedTree, core.ShellProcesses]:
+        head, required, initial_shell = self.preflight()
         core.run_tree_bounded(
             [
                 core.command_path("make"),
@@ -975,23 +982,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--expect-commit",
-        default="",
+        default=None,
         help="require this exact checkout and canonical origin/main commit",
     )
     parser.add_argument(
         "--section",
         choices=("left", "center", "right"),
-        default="",
+        default=None,
         help="place OmaQ in this bar section (default: manifest setting)",
     )
     parser.add_argument(
         "--yes", action="store_true", help="confirm the temporary shell stop"
     )
+    parser.add_argument(
+        "--preflight-only", action="store_true", help=argparse.SUPPRESS
+    )
     args = parser.parse_args(argv)
-    if args.expect_commit and not core.HEX_40.fullmatch(args.expect_commit):
+    if args.expect_commit is not None and not core.HEX_40.fullmatch(
+        args.expect_commit
+    ):
         parser.error("--expect-commit requires a lowercase 40-hex commit")
     if not args.yes:
         parser.error("refusing to stop the shell without confirmation; pass --yes")
+    args.expect_commit = args.expect_commit or ""
+    args.section = args.section or ""
     return args
 
 
@@ -1008,7 +1022,11 @@ def main(argv: list[str] | None = None) -> int:
     installer = None
     try:
         installer = Installer(args.expect_commit, args.section)
-        installer.install()
+        if args.preflight_only:
+            head, _required, _initial_shell = installer.preflight()
+            print(f"source: preflight ok ({head})")
+        else:
+            installer.install()
         return 0
     except (core.UpdateError, OSError, ValueError) as error:
         print(f"install-omaq: {error}", file=sys.stderr)
