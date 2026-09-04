@@ -269,9 +269,13 @@ verify-4: test arch helper
 	test -f sounds/phone.oga
 	test -f sounds/ATTRIBUTION.md
 	test -f sounds/PIXABAY-CONTENT-LICENSE.md
+	test -f sounds/LICENSES/Apache-2.0.txt
+	test -f sounds/LICENSES/ICQ-NOTICE.md
 	test -f sounds/LICENSES/CC-BY-SA-4.0.txt
 	test -f sounds/LICENSES/CC0-1.0.txt
 	printf '%s\n' \
+		'074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff  sounds/LICENSES/Apache-2.0.txt' \
+		'19c9990f3f4e032a9ef207154de9e5e667adefd0c791451ad6aad30afc8d6216  sounds/LICENSES/ICQ-NOTICE.md' \
 		'22626d303bd0939c5ad0afd6300669922426cd9bbe7155d2815faff56c05a17d  sounds/LICENSES/CC-BY-SA-4.0.txt' \
 		'a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  sounds/LICENSES/CC0-1.0.txt' \
 		'9dd354243ce155dff84ebba498dcd8c4abd8c2e6fa8b143f4fad2f8b11a53929  sounds/PIXABAY-CONTENT-LICENSE.md' \

@@ -13,6 +13,19 @@
 - Transformation: decoded, metadata removed, and encoded as 48 kHz stereo Ogg Vorbis
 - Retrieved: August 25, 2026
 
+## UHOH notification
+
+`sounds/icq-message.mp3` is a transcoded derivative of the ICQ Desktop incoming-message sound. ICQ identifies the source only; OmaQ does not claim ICQ endorsement or trademark rights.
+
+- Source: [`products/icq/app/resources/sounds/incoming.wav`](https://github.com/mail-ru-im/im-desktop/blob/78924d804fc38a5746a073d5bdb71c1c4cc97780/products/icq/app/resources/sounds/incoming.wav)
+- Source commit: `78924d804fc38a5746a073d5bdb71c1c4cc97780`
+- Copyright: Copyright (C) 2016 ICQ LLC (Mail.Ru Group)
+- License: Apache License 2.0 (`LICENSES/Apache-2.0.txt`)
+- Upstream notice: `LICENSES/ICQ-NOTICE.md`
+- Original WAV SHA-256: `6060dfb8fc8fdc1b58bd9482f57c491a3b73a61f4289dbc8d2b5c7d4d54f406f`
+- OmaQ `icq-message.mp3` SHA-256: `14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1`
+- Transformation: transcoded from 44.1 kHz stereo 16-bit PCM to 48 kHz stereo MP3, with leading and trailing silence
+
 ## Notification presets
 
 The notification presets below are unmodified audio files from KDE's Ocean Sound Theme. The `qq.oga` and `msn.oga` compatibility filenames are presented as `PING` and `MAIL` in OmaQ.

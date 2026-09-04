@@ -47,7 +47,7 @@ omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --yes &&
 ~/.config/omarchy/plugins/hancore.omaq/install.sh --yes
 ```
 
-Omarchy installs the plugin checkout. `install.sh` installs the required packages, builds the helper, enables OmaQ in its manifest's right bar section, restarts the shell, and verifies the running helper. Pass `--section left` or `--section center` to `install.sh` to choose another section.
+Omarchy installs the plugin checkout. `install.sh` installs the required packages, builds the helper, enables OmaQ in its manifest's right bar section, and waits for reactive plugin activation and any in-flight watched-tree reload to expose working OmaQ IPC and a matching running helper. It does not force a second shell restart while asynchronous plugin loaders may still be finalizing. Pass `--section left` or `--section center` to `install.sh` to choose another section.
 
 ## Update
 
