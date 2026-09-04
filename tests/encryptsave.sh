@@ -11,6 +11,7 @@ sa=$(mktemp -d /tmp/omaq-encs-XXXXXX)
 out=$(mktemp /tmp/omaq-enco-XXXXXX)
 hold=$(mktemp -u /tmp/omaq-encf-XXXXXX)
 pid=""
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
 	exec 3>&- 2>/dev/null || true
 	[ -n "${pid:-}" ] && kill "$pid" 2>/dev/null || true

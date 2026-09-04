@@ -75,7 +75,7 @@ Second review (hexagonal / seams):
 | — | This is hexagonal, not full Clean Architecture — and that is right | **Use.** No rings, no Vtables. |
 | 1 | Split `roles.c` (pure) from `group.c` | **Use.** Gold in `verify-1-offline`. |
 | 2 | flock belongs in the helper; Service only exec + connect | **Use.** Verified: Quickshell.Io has Process, Socket, FileView — no flock. |
-| 3 | `make arch` grep as a mechanical Dependency Rule | **Use.** In `verify-0`. |
+| 3 | `make arch` grep as a textual direct-dependency guard | **Use.** In `verify-0`; aliases, macros, and indirect calls still require review. |
 | 4 | `message` vs `store` — `store.h` seam | **Use.** |
 | 5 | `surfaces.json` has no owner | **Use helper ownership.** `surface.set`/`get`. Discard QML last-writer-wins. |
 | 6 | sanitizers + mutation corpus on `json_io` / invite | **Use.** Discard a full fuzzing product in phase 0. |
@@ -145,16 +145,16 @@ ChatSurface.qml                # unpinned overlay + pinned terminal window
 
 New capability = new module + new `op`/`event` **and** a gold test, then code.
 
-**Mechanical (not prose):** `make arch` in `verify-0` (~grep):
+**Textual guard (not a complete parser):** `make arch` in `verify-0` rejects these source patterns:
 
 - only `tox_adapt.c` may include `<tox/tox.h>`, `<tox/toxav.h>`, or `<tox/toxencryptsave.h>`
 - only `ratchet_adapt.c` may include Signal protocol headers (`<signal/…>`)
 - only `store.c` may open `$OMAQ_HOME/history`
-- `roles.c`, `invite.c`, `conversation.c` contain no `open(`, `fopen`, `socket`, `tox_`
+- pure-policy modules contain no complete `open`, `fopen`, or `socket` identifier tokens and no direct toxcore references
 - `Model.js` contains no `Qt`, `Quickshell`, `XMLHttpRequest`
 - no QML file contains `tox`
 
-Do not put domain rules in QML. Do not invert the arrow. `make arch` fails the build if that erodes.
+Do not put domain rules in QML. Do not invert the arrow. `make arch` rejects the include, path, and identifier patterns above; review remains responsible for aliases, macros, indirect calls, and semantic dependency flow.
 
 This is hexagonal / ports-and-adapters. Not four-ring Clean Architecture: no DI container, no Vtables, one UI, one file store. The process boundary is the main port.
 
@@ -425,7 +425,7 @@ omaq/
   pages/
   helper/
   tests/gold/invite/ tests/gold/json/ tests/gold/store/
-  tests/run.sh
+  tests/*.sh tests/*.py     # native, fixture, lifecycle, and source checks
   tests/two-clients.sh      # two socket clients, assert one helper
   packaging/PKGBUILD
   docs/PLAN.md

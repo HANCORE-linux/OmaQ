@@ -166,6 +166,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_TOX_RELAY_RETRY_TEST); fi
 	@if [ "$(SIG_OK)" = "yes" ]; then ./$(BIN_RATCHET_PREKEY_TEST); fi
 	python3 tests/tcp_relay_retry_source_test.py
+	sh tests/arch-check.sh
 	sh tests/float-script.sh
 	sh tests/nonblocking-invite.sh
 	sh tests/input-mask.sh

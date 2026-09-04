@@ -232,6 +232,102 @@ class SourceInstallTests(unittest.TestCase):
             bootstrap.index("os.mkdir(network_home, mode=0o700)"),
             bootstrap.index('[*git, "ls-remote"'),
         )
+        self.assertNotIn(
+            "trap '/usr/bin/rm -rf -- \"$bootstrap\"",
+            documentation,
+        )
+
+    def test_documented_bootstrap_cleanup_retains_failures_only(self):
+        documentation = (ROOT / "docs/INSTALLATION.md").read_text(encoding="utf-8")
+        function_start = documentation.index("  cleanup_bootstrap() {\n")
+        trap_line = "  trap cleanup_bootstrap EXIT\n"
+        function_end = documentation.index(trap_line, function_start) + len(trap_line)
+        cleanup = documentation[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as parent:
+            failed_checkout = Path(parent) / "failed checkout"
+            failed_network_home = Path(f"{failed_checkout}.network-home")
+            failed_checkout.mkdir()
+            failed_network_home.mkdir()
+            failed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"set -euo pipefail\nbootstrap=$1\n{cleanup}\nexit 42\n",
+                    "bootstrap-cleanup-test",
+                    str(failed_checkout),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(failed.returncode, 42)
+            self.assertTrue(failed_checkout.is_dir())
+            self.assertTrue(failed_network_home.is_dir())
+            self.assertIn(
+                f"retained temporary checkout at {failed_checkout}",
+                failed.stderr,
+            )
+
+            closed_checkout = Path(parent) / "closed stderr checkout"
+            closed_network_home = Path(f"{closed_checkout}.network-home")
+            closed_checkout.mkdir()
+            closed_network_home.mkdir()
+            closed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"set -euo pipefail\nbootstrap=$1\n{cleanup}\nexec 2>&-\nexit 42\n",
+                    "bootstrap-cleanup-test",
+                    str(closed_checkout),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            self.assertEqual(closed.returncode, 42)
+            self.assertTrue(closed_checkout.is_dir())
+            self.assertTrue(closed_network_home.is_dir())
+
+            placed_checkout = Path(parent) / "placed checkout"
+            placed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"set -euo pipefail\nbootstrap=$1\n{cleanup}\nexit 23\n",
+                    "bootstrap-cleanup-test",
+                    str(placed_checkout),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(placed.returncode, 23)
+            self.assertNotIn("retained temporary checkout", placed.stderr)
+            self.assertIn("failed after checkout placement", placed.stderr)
+
+            successful_checkout = Path(parent) / "successful checkout"
+            successful_network_home = Path(f"{successful_checkout}.network-home")
+            successful_checkout.mkdir()
+            successful_network_home.mkdir()
+            succeeded = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f"set -euo pipefail\nbootstrap=$1\n{cleanup}\ntrue\n",
+                    "bootstrap-cleanup-test",
+                    str(successful_checkout),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
+            self.assertFalse(successful_checkout.exists())
+            self.assertFalse(successful_network_home.exists())
 
     def test_public_bootstrap_home_does_not_send_netrc_credentials(self):
         class CredentialHandler(http.server.BaseHTTPRequestHandler):

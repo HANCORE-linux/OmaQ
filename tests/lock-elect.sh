@@ -1,13 +1,14 @@
 #!/bin/sh
 # Two helpers, one home: exactly one keeps the lock. No network, no toxcore.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "lock-elect: missing helper/omaq" >&2; exit 1; }
 
 real_home="${HOME}/.local/share/omaq"
 home=$(mktemp -d /tmp/omaq-lock-XXXXXX)
 state=$(mktemp -d /tmp/omaq-state-XXXXXX)
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() { kill "$pid" 2>/dev/null || true; rm -rf "$home" "$state"; }
 trap cleanup EXIT
 
