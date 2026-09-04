@@ -1,5 +1,6 @@
 #!/bin/sh
-# Mechanical architecture law. Fail if a layer leak appears.
+# Textual guard for architecture leaks. This is not a complete C parser:
+# aliases, macros, and indirect calls still require review.
 # Missing files are not failures (phase 0 has no helper sources yet).
 
 set -eu
@@ -40,12 +41,27 @@ if [ -d helper ]; then
 	fi
 fi
 
-# Pure policy: no IO, no tox.
+# Pure policy: conservatively reject complete IO identifier tokens. This catches
+# whitespace-, comment-, newline-, and parenthesis-separated direct calls.
+policy_io_pattern='(^|[^[:alnum:]_])(open|fopen|socket)([^[:alnum:]_]|$)'
+for sample in 'fopen("file", "r")' 'fopen ("file", "r")' \
+	'fopen/*comment*/("file", "r")' '(fopen)("file", "r")' \
+	'open("file", 0)' 'open ("file", 0)' 'socket(0, 0, 0)' 'socket (0, 0, 0)'; do
+	if ! printf '%s\n' "$sample" | grep -Eq "$policy_io_pattern"; then
+		die "pure-policy IO matcher missed fixture: $sample"
+	fi
+done
+if ! printf 'fopen\n("file", "r")\n' | grep -Eq "$policy_io_pattern"; then
+	die "pure-policy IO matcher missed a newline-separated fixture"
+fi
+if printf '%s\n' 'void my_fopen (void);' | grep -Eq "$policy_io_pattern"; then
+	die "pure-policy IO matcher rejected an identifier suffix"
+fi
 for f in helper/roles.c helper/invite.c helper/conversation.c helper/rate.c helper/safety.c; do
 	[ -f "$f" ] || continue
-	if grep -En '([^[:alnum:]_](open|fopen|socket)\()' "$f" >/dev/null; then
-		die "$f contains IO"
-		grep -En '([^[:alnum:]_](open|fopen|socket)\()' "$f" >&2 || true
+	if grep -En "$policy_io_pattern" "$f" >/dev/null; then
+		die "$f contains direct IO"
+		grep -En "$policy_io_pattern" "$f" >&2 || true
 	fi
 	if grep -En '#include[[:space:]]*[<"]tox/|tox_friend|tox_new|tox_iterate|tox_group' "$f" >/dev/null; then
 		die "$f talks to toxcore"

@@ -47,7 +47,27 @@ Start a Bash session, set `install_section` to the preferred bar section, then s
   esac
   bootstrap=$(/usr/bin/mktemp -d \
     "$state_home/omaq-source-bootstrap.XXXXXX")
-  trap '/usr/bin/rm -rf -- "$bootstrap" "${bootstrap}.network-home"' EXIT
+  cleanup_bootstrap() {
+    status=$?
+    trap - EXIT
+    if (( status == 0 )); then
+      /usr/bin/rm -rf -- "$bootstrap" "${bootstrap}.network-home" || status=$?
+    else
+      if [[ -d $bootstrap ]]; then
+        printf 'Bootstrap failed; retained temporary checkout at %s\n' \
+          "$bootstrap" >&2 || :
+      else
+        printf '%s\n' \
+          'Bootstrap failed after checkout placement; follow the installer recovery diagnostic above.' >&2 || :
+      fi
+      if [[ -d ${bootstrap}.network-home ]]; then
+        printf 'Retained isolated network home at %s\n' \
+          "${bootstrap}.network-home" >&2 || :
+      fi
+    fi
+    exit "$status"
+  }
+  trap cleanup_bootstrap EXIT
   /usr/bin/python3 -I - "$bootstrap" "$expected_commit" <<'PY'
 import os, re, resource, shutil, signal, stat, subprocess, sys, time
 
@@ -233,11 +253,11 @@ PY
 )
 ```
 
-The bootstrap uses an isolated credential-free home for anonymous public GitHub access, limits clone size and command output, and terminates the process group after a timeout or limit failure. It rejects a changed canonical ref before cloning or executing downloaded code. The installer repeats the commit check before and after the build.
+The bootstrap uses an isolated credential-free home for anonymous public GitHub access, limits clone size and command output, and terminates the process group after a timeout or limit failure. It rejects a changed canonical ref before cloning or executing downloaded code. The installer repeats the commit check before and after the build. Successful runs remove the temporary checkout and network home. Failed runs retain and print any temporary paths that still exist; remove them manually after inspection. If failure happens after checkout placement, follow the installer's live-tree recovery diagnostic instead.
 
 </details>
 
-The installer validates the complete Git checkout, builds the helper outside the monitored plugin tree, stops the shell, and places the checkout with `renameat2(RENAME_NOREPLACE)`. It then restarts the shell, waits for startup discovery, and enables OmaQ once. See the [source installation transaction](stages/safe-source-install.md) for security boundaries and failure recovery.
+The external installer used by that bootstrap validates the complete Git checkout, builds the helper outside the monitored plugin tree, stops the shell, and places the checkout with `renameat2(RENAME_NOREPLACE)`. It then restarts the shell, waits for startup discovery, and enables OmaQ once. See the [source installation transaction](stages/safe-source-install.md) for security boundaries and failure recovery.
 
 Verify the plugin and helper after installation:
 

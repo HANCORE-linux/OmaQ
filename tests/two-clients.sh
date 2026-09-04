@@ -1,7 +1,7 @@
 #!/bin/sh
 # Two Unix-socket clients, one helper. No network required.
 set -eu
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
 [ -x "$bin" ] || { echo "two-clients: missing helper/omaq" >&2; exit 1; }
 
@@ -11,6 +11,7 @@ state=$(mktemp -d /tmp/omaq-2cs-XXXXXX)
 hold=$(mktemp -u /tmp/omaq-2cf-XXXXXX)
 out=$(mktemp /tmp/omaq-2co-XXXXXX)
 pid=""
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
 	exec 3>&- 2>/dev/null || true
 	[ -n "${pid:-}" ] && kill "$pid" 2>/dev/null || true
