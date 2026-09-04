@@ -2,8 +2,8 @@
 
 **Authority:** `AGENTS.md` and this file define repository work. If they disagree, `AGENTS.md` wins; stop and reconcile them before writing code.
 
-**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. The live plugin is installed under `~/.config/omarchy/plugins/hancore.omaq`; source remains `/home/hancore/Projects/omaq`. Snapshot: [`CURRENT.md`](CURRENT.md).
-**Tree:** `/home/hancore/Projects/omaq`  
+**Status:** Phases 0–6 and 8 are done. Phase 7 (AUR) is halted. Snapshot: [`CURRENT.md`](CURRENT.md).
+**Tree:** repository root
 **Id:** `hancore.omaq`
 
 OmaQ is a Quattro bar plugin. Tox carries the messages. Invite by link or QR. No account. Direct chat first, groups later. Not Discord.
@@ -49,7 +49,7 @@ Each item requires its own regression-preserving change and review. Do not combi
 
 ### Review disposition
 
-External review of PLAN + `OmaQ.md` vs the live Quattro shell. Verdicts:
+Architecture review of PLAN + `OmaQ.md`. Verdicts:
 
 | # | Claim | Use? |
 |---|---|---|
@@ -188,7 +188,7 @@ Source updates use an external shell-off transaction. Runtime and state staging 
 
 The complete old Git checkout becomes the external source backup. Before any replaceable-tree work, the controller copies its validated `helper-runtime.py` into the private runtime lock directory and uses that bound copy for the whole transaction. Before and after the exchange, `helper-runtime.py backup` copies the bound `/proc/<pid>/exe` image rather than the path contents. The post-exchange copy becomes the new tree's `helper/omaq.prev`. The updater tolerates only the restart wrapper's exact readiness-timeout result, waits for exactly one ready launcher, Quickshell process, and watcher, rechecks the session lock after that timeout, and keeps every other restart error fail-closed. It then binds their PIDs, start times, parent, executable, arguments, and session environment through every consumer poll. It requires the Omarchy plugin list, the OmaQ IPC target, running and available helper hashes, protocol compatibility, and the exact post-start journal cursor to pass before helper activation. A consumer failure stops the shell and exchanges the old tree back before activation; the stop terminates every exact replacement supervisor observed before its deadline so launcher backoff cannot strand the transaction. Explicit activation continues to use only `helper.shutdown_if_no_groups` with `--expect-sha256`; a blocked, uncertain, or unsupported result reports `update-pending: old helper, new tree`. The updater then repeats the bound-shell, helper-hash, and protocol checks; an inactive, substituted, or incompatible helper is never a successful terminal state. The staged `requiredHelperProtocol` must not exceed the running helper protocol, so this mixed state cannot turn into QML's hard protocol refusal. A degraded helper activation uses `helper-runtime.py restore` only while the shell watcher is stopped. There is no signal fallback, binary hot-swap, copy-based tree replacement, timer, or crash-recovery journal.
 
-First installation uses the same source/helper locks and process boundary. The short source command trusts the user's Git configuration; the bounded bootstrap instead verifies a canonical external full clone before executing `install.sh`. The root entry point runs a complete preflight before dependency installation, and the controller repeats that preflight before building. The installer requires the target and any enabled shell-config reference to be absent, validates and builds the helper externally, proves same-device and same-mount placement plus `renameat2(RENAME_NOREPLACE)` support, stops the shell supervisor and watcher, and atomically renames that same complete checkout into the plugin directory without copy or overwrite fallback. The restarted shell performs discovery once; only after OmaQ is present as a disabled third-party bar widget does the installer enable it and bind plugin IPC, helper hash, protocol, process generation, and journal acceptance. Because that shell-config mutation can reload the IPC handler before it replies, only the exact trusted `omarchy-shell is not responding` result is treated as an uncertain enable outcome; it becomes successful only if every normal consumer, persisted-config, process, and journal postcondition subsequently passes. An optional `--section left|center|right` value is passed only to that single Omarchy enable call; omission retains the manifest's `right` default. Pre-enable failures return the tree to its external path. Post-enable failures retain the tree and disable OmaQ because the detached helper may already have started.
+First installation normally uses `omarchy plugin add <canonical-url> --yes` to clone, validate, install, and rescan without either interactive question or requested enablement, followed by the installed root `install.sh --yes`. The root entry point first requires a disabled third-party OmaQ bar widget, then installs dependencies through `omarchy pkg add`, builds the helper in the live checkout, enables OmaQ once, explicitly restarts the shell, and requires matching available and running helper images. Keeping activation in the root installer prevents an interrupted add-time enable response from skipping the helper build. Dependency cleanup remains a separate manual, non-recursive `pacman -R` command and is never run by the uninstaller. The bounded exact-commit bootstrap remains a separate external mode: it verifies a canonical full clone before executing `install.sh`, repeats preflight before building, proves same-device and same-mount placement plus `renameat2(RENAME_NOREPLACE)` support, stops the shell supervisor and watcher, and atomically renames that checkout into the plugin directory without copy or overwrite fallback. Its restarted shell performs discovery once, enables OmaQ once, and binds plugin IPC, helper hash, protocol, process generation, and journal acceptance. Only the exact trusted `omarchy-shell is not responding` result is an uncertain enable outcome, and it succeeds only after every normal postcondition passes. Pre-enable failures return the tree to its external path; post-enable failures retain and disable the installed tree.
 
 **Lock contention is `verify-1-offline`:** two helper processes, one temp home, no network, no toxcore. Exactly one stays up, the other exits 2. `verify-1-tox` still asserts one process when Tox is on.
 
@@ -456,7 +456,7 @@ ln -s /usr/share/omaq/plugin ~/.config/omarchy/plugins/hancore.omaq
 
 `verify-7` must perform that enable into a **temp** `HOME`/`XDG_CONFIG_HOME` and run `omarchy plugin validate` on the result. If we cannot automate `plugin add`, verify the symlink path.
 
-Source installations do not use `omarchy plugin add <git-url>`: its visible-tree move plus rescan precedes OmaQ's ignored local helper build. The root `install.sh` installs dependencies and delegates to the external `scripts/install-omaq.sh` transaction. Any future package activation path remains a separate Phase 7 design and must not discard or reclone its packaged helper.
+Source installations use `omarchy plugin add <git-url> --yes` without requested enablement, then run the installed root `install.sh` to install dependencies, build the ignored local helper, enable OmaQ, restart the shell, and verify the helper. A future packaged activation path remains a separate Phase 7 design and must not discard or rebuild its packaged helper.
 
 No `install=` daemon. No `Restart=always`.
 

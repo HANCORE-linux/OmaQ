@@ -6,9 +6,9 @@ usage() {
   cat <<'EOF'
 Usage: uninstall-omaq.sh [--yes]
 
-Unloads and removes the OmaQ plugin. Private data, local state, received files,
-optional deployment backups, dependency packages, and any Omarchy plugin backup
-are retained and can be inspected or removed manually later.
+Unloads and removes the OmaQ plugin. In an interactive run, each remaining OmaQ
+data directory is offered separately for removal with No as the default. --yes
+retains all data. Dependency cleanup remains a separate manual Pacman command.
 EOF
 }
 
@@ -36,7 +36,7 @@ if (( ! assume_yes )); then
     echo "uninstall-omaq: refusing to continue without confirmation; pass --yes" >&2
     exit 1
   fi
-  gum confirm "Remove the OmaQ plugin? Private and downloaded data will be retained." || exit 1
+  gum confirm "Remove the OmaQ plugin? Data cleanup will be offered separately." || exit 1
 fi
 
 plugin_root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -587,48 +587,255 @@ then
   echo "uninstall-omaq: runtime rule cleanup refused; inspect $rule_dir manually" >&2
 fi
 
-cat <<'EOF'
+safe_delete_directory() {
+  PATH=/usr/bin:/bin /usr/bin/python3 - "$1" "$HOME" <<'PY'
+import os
+import shutil
+import stat
+import sys
 
-OmaQ was unloaded, but your private and downloaded data was not deleted.
-The following paths may remain:
-  ~/.local/share/omaq/                 identity, contacts, groups, avatars, history, Ratchet state
-  ~/.local/state/omaq/                 preferences, unread state, receipts, surfaces, recovery state
-  ~/Downloads/omaq/                    received files
-  ~/.local/state/omaq-deploy-backups/  deployment backups, when present
+path, home = sys.argv[1:]
+uid = os.geteuid()
+if (not os.path.isabs(path) or os.path.normpath(path) != path or
+        os.path.realpath(path) != path or os.path.realpath(home) != home or
+        path in {"/", home}):
+    raise SystemExit("uninstall-omaq: refusing unsafe data path")
+parent, leaf = os.path.split(path)
+if not leaf or leaf in {".", ".."}:
+    raise SystemExit("uninstall-omaq: refusing unsafe data path")
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+parent_fd = os.open(parent, flags)
+try:
+    parent_info = os.fstat(parent_fd)
+    if parent_info.st_uid != uid or stat.S_IMODE(parent_info.st_mode) & 0o022:
+        raise OSError("unsafe data parent")
+    entry = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(entry.st_mode) or entry.st_uid != uid:
+        raise OSError("data path is not an owner-controlled directory")
+    quarantine = f".{leaf}.omaq-delete.{os.getpid()}.{os.urandom(8).hex()}"
+    os.rename(leaf, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    moved = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+    if (moved.st_dev, moved.st_ino) != (entry.st_dev, entry.st_ino):
+        try:
+            os.rename(quarantine, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        finally:
+            raise OSError("data path changed before deletion")
+    quarantine_path = os.path.join(parent, quarantine)
+    try:
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise OSError("safe recursive deletion is unavailable")
+        def mount_id(descriptor):
+            metadata = os.open(
+                f"/proc/self/fdinfo/{descriptor}",
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            try:
+                raw = os.read(metadata, 4097)
+                if len(raw) > 4096:
+                    raise OSError("oversized descriptor metadata")
+            finally:
+                os.close(metadata)
+            values = []
+            for line in raw.splitlines():
+                if line.startswith(b"mnt_id:\t"):
+                    value = line.removeprefix(b"mnt_id:\t")
+                    if not value.isdigit():
+                        raise OSError("malformed mount identity")
+                    values.append(int(value))
+            if len(values) != 1:
+                raise OSError("missing or ambiguous mount identity")
+            return values[0]
 
-Keep these files if you may reinstall OmaQ or need the identity or chat history.
-To permanently erase selected data later, inspect it first:
-  ls -la -- "$HOME/.local/share/omaq"
-  ls -la -- "$HOME/.local/state/omaq"
-  ls -la -- "$HOME/Downloads/omaq"
-  ls -la -- "$HOME/.local/state/omaq-deploy-backups"
-Then manually run only the corresponding deletion command. Each is independent
-and irreversible:
-  rm -rf -- "$HOME/.local/share/omaq"
-  rm -rf -- "$HOME/.local/state/omaq"
-  rm -rf -- "$HOME/Downloads/omaq"
-  rm -rf -- "$HOME/.local/state/omaq-deploy-backups"
-EOF
+        entries = 0
+        root_mount = None
+        for _root, directories, files, directory_fd in os.fwalk(
+                quarantine_path, topdown=True, follow_symlinks=False):
+            directory = os.fstat(directory_fd)
+            current_mount = mount_id(directory_fd)
+            if root_mount is None:
+                root_mount = current_mount
+            if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != uid or
+                    directory.st_dev != entry.st_dev or current_mount != root_mount or
+                    stat.S_IMODE(directory.st_mode) & 0o022 or
+                    (stat.S_IMODE(directory.st_mode) & 0o700) != 0o700):
+                raise OSError("unsafe, mounted, or non-removable data subdirectory")
+            for name in directories + files:
+                child = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                child_fd = os.open(
+                    name, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    child_mount = mount_id(child_fd)
+                finally:
+                    os.close(child_fd)
+                if child.st_uid != uid:
+                    raise OSError("data tree contains an entry owned by another user")
+                if child.st_dev != entry.st_dev or child_mount != root_mount:
+                    raise OSError("data tree crosses a filesystem or mount boundary")
+                entries += 1
+                if entries > 1000000:
+                    raise OSError("data tree exceeds the cleanup entry limit")
+        shutil.rmtree(quarantine_path)
+        os.fsync(parent_fd)
+    except Exception:
+        if os.path.lexists(quarantine_path) and not os.path.lexists(path):
+            os.rename(quarantine, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        raise
+finally:
+    os.close(parent_fd)
+PY
+}
 
-if [[ -n $plugin_backup ]]; then
-  printf '\nOmarchy retained the plain plugin folder at:\n  %s\n' "$plugin_backup"
-  printf 'Inspect it later with:\n  ls -la -- %q\n' "$plugin_backup"
-  printf 'Delete it later with:\n  rm -rf -- %q\n' "$plugin_backup"
+cleanup_paths=()
+cleanup_labels=()
+protected_paths=()
+declare -A cleanup_seen=()
+record_protected_path() {
+  local protected=$1
+  [[ -n $protected ]] || return 0
+  [[ -z ${cleanup_seen["protected:$protected"]+set} ]] || return 0
+  cleanup_seen["protected:$protected"]=1
+  protected_paths+=("$protected")
+}
+protect_cleanup_candidate() {
+  local candidate=$1 parent leaf physical physical_parent
+  while [[ $candidate == */ && $candidate != / ]]; do
+    candidate=${candidate%/}
+  done
+  [[ -e $candidate || -L $candidate ]] || return 0
+  parent=${candidate%/*}
+  leaf=${candidate##*/}
+  [[ -n $parent && -n $leaf ]] || return 0
+  physical_parent=$(unset CDPATH; cd -- "$parent" 2>/dev/null && pwd -P) || return 0
+  record_protected_path "$physical_parent/$leaf"
+  if physical=$(unset CDPATH; cd -- "$candidate" 2>/dev/null && pwd -P); then
+    record_protected_path "$physical"
+  fi
+}
+add_cleanup_directory() {
+  local path=${1%/} label=$2 physical
+  [[ -n $path && $path == /* && $path != / && $path != "$HOME" &&
+      $path != *$'\n'* ]] || {
+    protect_cleanup_candidate "$path"
+    [[ ! -e $path && ! -L $path ]] ||
+      printf 'Retained unsafe or unsupported path: %q\n' "$path" >&2
+    return
+  }
+  [[ -d $path && ! -L $path ]] || {
+    protect_cleanup_candidate "$path"
+    [[ ! -e $path && ! -L $path ]] ||
+      printf 'Retained non-directory or symlink path: %q\n' "$path" >&2
+    return
+  }
+  physical=$(unset CDPATH; cd -- "$path" 2>/dev/null && pwd -P) || {
+    protect_cleanup_candidate "$path"
+    printf 'Retained inaccessible path: %q\n' "$path" >&2
+    return
+  }
+  [[ $physical == "$path" ]] || {
+    protect_cleanup_candidate "$path"
+    printf 'Retained non-canonical path: %q\n' "$path" >&2
+    return
+  }
+  [[ -z ${cleanup_seen[$path]+set} ]] || return 0
+  cleanup_seen[$path]=1
+  cleanup_paths+=("$path")
+  cleanup_labels+=("$label")
+}
+
+state_home=${XDG_STATE_HOME:-"$HOME/.local/state"}
+download_dir=${OMAQ_DOWNLOAD_DIR:-}
+[[ $download_dir == /* ]] || download_dir=${XDG_DOWNLOAD_DIR:-}
+[[ $download_dir == /* ]] || download_dir="$HOME/Downloads"
+if (( ! assume_yes && remove_status == 0 )); then
+  add_cleanup_directory "${OMAQ_HOME:-"$HOME/.local/share/omaq"}" \
+    "private identity, contacts, groups, avatars, history, and Ratchet state"
+  add_cleanup_directory "$download_dir/omaq" "received files"
+  add_cleanup_directory "$state_home/omaq-deploy-backups" "deployment backups"
+  add_cleanup_directory "$state_home/omaq-source-updates" "retained source-update trees"
+  add_cleanup_directory "$HOME/.omaq-source-install" "retained source checkout"
+  [[ -z $plugin_backup ]] ||
+    add_cleanup_directory "$plugin_backup" "Omarchy plugin backup"
+  add_cleanup_directory "$state_dir" \
+    "preferences, unread state, receipts, surfaces, and recovery state"
 fi
-
-cat <<'EOF'
-
-Dependency packages are retained because other applications may use them:
-  toxcore  libsignal-protocol-c  libpulse  libpng  libjpeg-turbo  libwebp
-  ttf-material-symbols-variable  qrencode
-The optional verification tool zbar may also remain when it was installed for testing.
-Inspect ownership and dependencies first:
-  pacman -Qi toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode zbar
-Only after confirming that no other application needs them, they can be removed with:
-  omarchy pkg drop toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode zbar
-EOF
 
 if (( remove_status != 0 )); then
   echo "uninstall-omaq: plugin removal completed, but Omarchy reported a later error" >&2
+  echo "uninstall-omaq: all data was retained and dependency packages were untouched" >&2
   exit "$remove_status"
 fi
+
+selected_paths=()
+declined_paths=()
+if (( ! assume_yes )); then
+  for index in "${!cleanup_paths[@]}"; do
+    path=${cleanup_paths[$index]}
+    label=${cleanup_labels[$index]}
+    printf -v display_path '%q' "$path"
+    if gum confirm --default=false \
+        "Permanently delete $display_path ($label)?"; then
+      selected_paths+=("$path")
+    else
+      declined_paths+=("$path")
+      printf 'Retained: %q\n' "$path"
+    fi
+  done
+else
+  echo "uninstall-omaq: --yes retains all private data, downloads, and backups"
+fi
+
+# A confirmed parent must never override No for a nested data directory.
+deletable_paths=()
+for path in "${selected_paths[@]}"; do
+  blocked=0
+  for retained in "${declined_paths[@]}" "${protected_paths[@]}"; do
+    if [[ $retained == "$path" || $retained == "$path"/* ]]; then
+      blocked=1
+      break
+    fi
+  done
+  if (( blocked )); then
+    printf 'Retained: %q (contains a declined or protected data directory)\n' "$path"
+  else
+    deletable_paths+=("$path")
+  fi
+done
+selected_paths=()
+for path in "${deletable_paths[@]}"; do
+  covered=0
+  for parent in "${deletable_paths[@]}"; do
+    if [[ $path != "$parent" && $path == "$parent"/* ]]; then
+      covered=1
+      break
+    fi
+  done
+  (( covered )) || selected_paths+=("$path")
+done
+
+cleanup_failed=0
+for path in "${selected_paths[@]}"; do
+  if safe_delete_directory "$path"; then
+    printf 'Deleted: %q\n' "$path"
+  else
+    parent=${path%/*}
+    leaf=${path##*/}
+    printf 'uninstall-omaq: deletion failed for %q; cleanup may be partial; inspect that path and %q for a hidden .%s.omaq-delete.* remainder\n' \
+      "$path" "$parent" "$leaf" >&2
+    cleanup_failed=1
+    break
+  fi
+done
+
+cat <<'EOF'
+
+OmaQ was unloaded. Unselected data was retained.
+Dependency packages are never removed automatically. If you have verified that
+none were installed before OmaQ and no other application needs them, the
+non-recursive removal command is:
+
+  sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode
+EOF
+(( cleanup_failed == 0 )) || exit 1

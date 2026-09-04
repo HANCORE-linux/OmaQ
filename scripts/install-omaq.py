@@ -36,6 +36,10 @@ class ActivationPossibleError(InstallError):
     """The installed tree may already have an active consumer."""
 
 
+class ShellIpcTransitionError(core.UpdateError):
+    """A shell IPC request hit the one trusted reload transition."""
+
+
 def fail(message: str) -> None:
     raise InstallError(message)
 
@@ -139,13 +143,34 @@ def require_persisted_plugin_enabled() -> None:
         fail("persisted shell config does not enable OmaQ")
 
 
+def shell_ipc_response_was_lost(result: subprocess.CompletedProcess) -> bool:
+    return (
+        result.returncode == 1
+        and result.stdout == b""
+        and result.stderr == b"omarchy-shell is not responding\n"
+    )
+
+
 def plugin_entries(shell: core.ShellController) -> list[dict]:
     result = core.run(
         [shell.omarchy, "plugin", "list", "--json"],
+        check=False,
         capture=True,
         timeout=5,
         env=shell.ipc_env,
     )
+    if result.returncode != 0:
+        if shell_ipc_response_was_lost(result):
+            raise ShellIpcTransitionError(
+                "plugin list crossed an Omarchy shell reload"
+            )
+        stdout = core.bounded_text(result.stdout, "plugin list stdout").strip()
+        stderr = core.bounded_text(result.stderr, "plugin list stderr").strip()
+        detail = stderr or stdout
+        suffix = f": {detail}" if detail else ""
+        core.fail(
+            f"command failed ({result.returncode}): {shell.omarchy}{suffix}"
+        )
     value = core.strict_json(
         core.bounded_text(result.stdout, "plugin list"), "plugin list"
     )
@@ -154,20 +179,50 @@ def plugin_entries(shell: core.ShellController) -> list[dict]:
     return [item for item in value if item.get("id") == core.PLUGIN_ID]
 
 
-def require_plugin_absent(shell: core.ShellController) -> None:
-    if plugin_entries(shell):
-        fail("the running shell already knows an OmaQ plugin")
+def running_shell_config(shell: core.ShellController) -> object:
     result = core.run(
         [shell.omarchy, "shell", "shell", "listShellConfig"],
+        check=False,
         capture=True,
         timeout=5,
         env=shell.ipc_env,
     )
-    config = core.strict_json(
+    if result.returncode != 0:
+        if shell_ipc_response_was_lost(result):
+            raise ShellIpcTransitionError(
+                "shell config request crossed an Omarchy shell reload"
+            )
+        stdout = core.bounded_text(result.stdout, "shell config stdout").strip()
+        stderr = core.bounded_text(result.stderr, "shell config stderr").strip()
+        detail = stderr or stdout
+        suffix = f": {detail}" if detail else ""
+        core.fail(
+            f"command failed ({result.returncode}): {shell.omarchy}{suffix}"
+        )
+    return core.strict_json(
         core.bounded_text(result.stdout, "shell config"), "shell config"
     )
-    if plugin_enabled_in_shell_config(config):
-        fail("shell config still enables OmaQ while its source tree is absent")
+
+
+def require_plugin_absent(
+    shell: core.ShellController, *, timeout: float = 20
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            entries = plugin_entries(shell)
+            if entries:
+                fail("the running shell already knows an OmaQ plugin")
+            config = running_shell_config(shell)
+            if plugin_enabled_in_shell_config(config):
+                fail(
+                    "shell config still enables OmaQ while its source tree is absent"
+                )
+            return
+        except ShellIpcTransitionError:
+            if time.monotonic() >= deadline:
+                fail("plugin absence did not stabilize after the shell reload")
+            time.sleep(0.1)
 
 
 def validate_plugin_entries(entries: list[dict], *, enabled: bool) -> None:
@@ -208,11 +263,7 @@ def enable_plugin(shell: core.ShellController, section: str) -> None:
         return
     stdout = core.bounded_text(result.stdout, "plugin enable stdout").strip()
     stderr = core.bounded_text(result.stderr, "plugin enable stderr").strip()
-    if (
-        result.returncode == 1
-        and result.stdout == b""
-        and result.stderr == b"omarchy-shell is not responding\n"
-    ):
+    if shell_ipc_response_was_lost(result):
         # Enabling the plugin rewrites shell.json and can reload the IPC handler
         # before its reply arrives. This result is uncertain, not successful;
         # the caller must still prove every consumer and persisted postcondition.
@@ -236,7 +287,11 @@ def wait_plugin_state(
         failed_line = shell.journal_failed(cursor)
         if failed_line:
             fail(f"new shell reported an OmaQ loader failure: {failed_line}")
-        entries = plugin_entries(shell)
+        try:
+            entries = plugin_entries(shell)
+        except ShellIpcTransitionError:
+            time.sleep(0.1)
+            continue
         if not entries:
             time.sleep(0.1)
             continue

@@ -110,7 +110,7 @@ run_case() {
     echo "uninstall: allowlisted runtime rules were not cleaned" >&2
     exit 1
   }
-  grep -q 'private and downloaded data was not deleted' "$case_root/uninstall.out"
+  grep -q 'Unselected data was retained' "$case_root/uninstall.out"
 }
 
 run_case graceful
@@ -761,5 +761,225 @@ wait "$unsafe_socket_pid" 2>/dev/null || true
   echo "uninstall: marker remained after stale runtime cleanup" >&2
   exit 1
 }
+
+interactive="$tmp/interactive-cleanup"
+interactive_home="$interactive/home"
+interactive_plugin="$interactive_home/.config/omarchy/plugins/hancore.omaq"
+interactive_state="$interactive_home/.local/state/omaq"
+interactive_data="$interactive_home/.local/share/omaq"
+interactive_download_base="$interactive/external-received-files"
+interactive_downloads="$interactive_download_base/omaq"
+interactive_runtime="$interactive/runtime"
+mkdir -p "$interactive/bin" "$interactive_plugin/scripts" \
+  "$interactive_plugin/helper" "$interactive_state" "$interactive_data" \
+  "$interactive_downloads" "$interactive_runtime"
+printf 'private\n' >"$interactive_data/private"
+printf 'download\n' >"$interactive_downloads/received"
+cp "$root/scripts/uninstall-omaq.sh" \
+  "$interactive_plugin/scripts/uninstall-omaq.sh"
+cp "$helper" "$interactive_plugin/helper/omaq"
+cat >"$interactive/bin/omarchy" <<'EOF'
+#!/bin/sh
+[ "$*" = "plugin remove hancore.omaq --yes" ] || exit 2
+printf 'Removed hancore.omaq.\n'
+EOF
+cat >"$interactive/bin/gum" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$OMAQ_TEST_GUM_LOG"
+case "$*" in
+  *"Remove the OmaQ plugin?"*) exit 0 ;;
+  *"Permanently delete $OMAQ_TEST_DELETE_PATH ("*) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$interactive/bin/pacman" <<'EOF'
+#!/bin/sh
+printf 'pacman %s\n' "$*" >>"$OMAQ_TEST_PACKAGE_LOG"
+exit 99
+EOF
+cat >"$interactive/bin/sudo" <<'EOF'
+#!/bin/sh
+printf 'sudo %s\n' "$*" >>"$OMAQ_TEST_PACKAGE_LOG"
+exit 99
+EOF
+chmod 755 "$interactive_plugin/scripts/uninstall-omaq.sh" \
+  "$interactive_plugin/helper/omaq" "$interactive/bin/omarchy" \
+  "$interactive/bin/gum" "$interactive/bin/pacman" "$interactive/bin/sudo"
+: >"$interactive/gum.log"
+: >"$interactive/package.log"
+interactive_command="HOME=$interactive_home PATH=$interactive/bin:/usr/bin:/bin OMAQ_HOME=$interactive_data OMAQ_STATE=$interactive_state XDG_STATE_HOME=$interactive_home/.local/state OMAQ_DOWNLOAD_DIR=$interactive_download_base XDG_DOWNLOAD_DIR=relative-value XDG_RUNTIME_DIR=$interactive_runtime OMAQ_TEST_DELETE_PATH=$interactive_data OMAQ_TEST_GUM_LOG=$interactive/gum.log OMAQ_TEST_PACKAGE_LOG=$interactive/package.log $interactive_plugin/scripts/uninstall-omaq.sh"
+/usr/bin/script -qefc "$interactive_command" /dev/null \
+  >"$interactive/uninstall.out" 2>"$interactive/uninstall.err"
+[ ! -e "$interactive_data" ] || {
+  echo "uninstall: confirmed private data was not deleted" >&2
+  exit 1
+}
+[ -f "$interactive_downloads/received" ] || {
+  echo "uninstall: declined download deletion was not retained" >&2
+  exit 1
+}
+grep -Fq -- "Permanently delete $interactive_downloads" \
+  "$interactive/gum.log" || {
+  echo "uninstall: configured download directory was not offered" >&2
+  exit 1
+}
+grep -Fq -- '--default=false Permanently delete' "$interactive/gum.log" || {
+  echo "uninstall: data deletion did not default to No" >&2
+  exit 1
+}
+tr -d '\r' <"$interactive/uninstall.out" >"$interactive/uninstall.normalized"
+grep -Fxq -- '  sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp ttf-material-symbols-variable qrencode' \
+  "$interactive/uninstall.normalized" || {
+  echo "uninstall: exact manual non-recursive package command is missing" >&2
+  exit 1
+}
+[ ! -s "$interactive/package.log" ] || {
+  echo "uninstall: dependency package command was executed automatically" >&2
+  exit 1
+}
+
+nested_data="$interactive_home/nested-omaq"
+nested_download_base="$nested_data/downloads"
+nested_downloads="$nested_download_base/omaq"
+mkdir -p "$nested_downloads"
+printf 'parent\n' >"$nested_data/parent-value"
+printf 'nested download\n' >"$nested_downloads/value"
+nested_command="HOME=$interactive_home PATH=$interactive/bin:/usr/bin:/bin OMAQ_HOME=$nested_data OMAQ_STATE=$interactive_state XDG_STATE_HOME=$interactive_home/.local/state OMAQ_DOWNLOAD_DIR=$nested_download_base/ XDG_RUNTIME_DIR=$interactive_runtime OMAQ_TEST_DELETE_PATH=$nested_data OMAQ_TEST_GUM_LOG=$interactive/gum-nested.log $interactive_plugin/scripts/uninstall-omaq.sh"
+/usr/bin/script -qefc "$nested_command" /dev/null \
+  >"$interactive/nested.out" 2>"$interactive/nested.err"
+[ -f "$nested_data/parent-value" ] && [ -f "$nested_downloads/value" ] || {
+  echo "uninstall: confirmed parent overrode declined nested data" >&2
+  exit 1
+}
+grep -Fq 'contains a declined or protected data directory' \
+  "$interactive/nested.out" || {
+  echo "uninstall: nested data conflict was not reported" >&2
+  exit 1
+}
+
+protected_state_home="$interactive_home/protected-state"
+protected_parent="$protected_state_home/omaq-deploy-backups"
+mkdir -p "$protected_parent/private"
+printf 'protected\n' >"$protected_parent/private/value"
+protected_command="HOME=$interactive_home PATH=$interactive/bin:/usr/bin:/bin OMAQ_HOME=$protected_parent//// OMAQ_STATE=$interactive_state XDG_STATE_HOME=$protected_state_home XDG_RUNTIME_DIR=$interactive_runtime OMAQ_TEST_DELETE_PATH=$protected_parent OMAQ_TEST_GUM_LOG=$interactive/gum-protected.log $interactive_plugin/scripts/uninstall-omaq.sh"
+/usr/bin/script -qefc "$protected_command" /dev/null \
+  >"$interactive/protected.out" 2>"$interactive/protected.err"
+[ -f "$protected_parent/private/value" ] || {
+  echo "uninstall: confirmed parent removed a protected path alias" >&2
+  exit 1
+}
+grep -Fq 'contains a declined or protected data directory' \
+  "$interactive/protected.out" || {
+  echo "uninstall: protected path conflict was not reported" >&2
+  exit 1
+}
+
+failure_data="$interactive_home/.local/share/omaq-failure"
+mkdir -p "$failure_data/first" "$failure_data/locked"
+printf 'first\n' >"$failure_data/first/value"
+printf 'locked\n' >"$failure_data/locked/value"
+chmod 777 "$failure_data/locked"
+failure_command="HOME=$interactive_home PATH=$interactive/bin:/usr/bin:/bin OMAQ_HOME=$failure_data OMAQ_STATE=$interactive_state XDG_STATE_HOME=$interactive_home/.local/state XDG_RUNTIME_DIR=$interactive_runtime OMAQ_TEST_DELETE_PATH=$failure_data OMAQ_TEST_GUM_LOG=$interactive/gum-failure.log $interactive_plugin/scripts/uninstall-omaq.sh"
+if /usr/bin/script -qefc "$failure_command" /dev/null \
+    >"$interactive/failure.out" 2>"$interactive/failure.err"; then
+  echo "uninstall: unsafe selected data tree was deleted" >&2
+  exit 1
+fi
+[ -f "$failure_data/first/value" ] &&
+  [ -f "$failure_data/locked/value" ] || {
+  echo "uninstall: cleanup validation failure partially deleted data" >&2
+  exit 1
+}
+chmod 700 "$failure_data/locked"
+chmod 777 "$failure_data"
+if /usr/bin/script -qefc "$failure_command" /dev/null \
+    >"$interactive/failure-root.out" 2>"$interactive/failure-root.err"; then
+  echo "uninstall: group-writable selected data root was deleted" >&2
+  exit 1
+fi
+[ -f "$failure_data/first/value" ] &&
+  [ -f "$failure_data/locked/value" ] || {
+  echo "uninstall: unsafe root validation partially deleted data" >&2
+  exit 1
+}
+chmod 700 "$failure_data"
+
+mount_case="$tmp/mount-boundary"
+mkdir -p "$mount_case"
+cat >"$mount_case/run.sh" <<'EOF'
+#!/bin/sh
+set -eu
+base=$1
+source_root=$2
+helper=$3
+home="$base/home"
+plugin="$home/.config/omarchy/plugins/hancore.omaq"
+data="$home/data"
+state="$home/state"
+runtime="$home/runtime"
+source="$home/source"
+mkdir -p "$base/bin" "$plugin/scripts" "$plugin/helper" \
+  "$data/mounted" "$state" "$runtime" "$source"
+cp "$source_root/scripts/uninstall-omaq.sh" "$plugin/scripts/uninstall-omaq.sh"
+cp "$helper" "$plugin/helper/omaq"
+printf 'inside selected tree\n' >"$data/value"
+printf 'outside sentinel\n' >"$source/sentinel"
+cat >"$base/bin/omarchy" <<'SH'
+#!/bin/sh
+[ "$*" = "plugin remove hancore.omaq --yes" ] || exit 2
+printf 'Removed hancore.omaq.\n'
+SH
+cat >"$base/bin/gum" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod 755 "$plugin/scripts/uninstall-omaq.sh" "$plugin/helper/omaq" \
+  "$base/bin/omarchy" "$base/bin/gum"
+mount --bind "$source" "$data/mounted"
+if HOME="$home" PATH="$base/bin:/usr/bin:/bin" OMAQ_HOME="$data" \
+    OMAQ_STATE="$state" XDG_STATE_HOME="$home/other-state" \
+    XDG_RUNTIME_DIR="$runtime" "$plugin/scripts/uninstall-omaq.sh"; then
+  echo "uninstall: mounted data tree was accepted for deletion" >&2
+  umount "$data/mounted"
+  exit 1
+fi
+[ -f "$data/value" ] && [ -f "$source/sentinel" ] || {
+  echo "uninstall: mount-boundary refusal deleted data" >&2
+  umount "$data/mounted" 2>/dev/null || true
+  exit 1
+}
+umount "$data/mounted"
+
+file_data="$home/file-data"
+file_source="$source/file-source"
+file_mount="$file_data/mounted-file"
+mkdir -p "$file_data"
+printf 'inside file tree\n' >"$file_data/value"
+printf 'outside file sentinel\n' >"$file_source"
+: >"$file_mount"
+mount --bind "$file_source" "$file_mount"
+if HOME="$home" PATH="$base/bin:/usr/bin:/bin" OMAQ_HOME="$file_data" \
+    OMAQ_STATE="$state" XDG_STATE_HOME="$home/other-state" \
+    XDG_RUNTIME_DIR="$runtime" "$plugin/scripts/uninstall-omaq.sh"; then
+  echo "uninstall: mounted file tree was accepted for deletion" >&2
+  umount "$file_mount"
+  exit 1
+fi
+[ -f "$file_data/value" ] &&
+  [ "$(cat "$file_source")" = "outside file sentinel" ] || {
+  echo "uninstall: mounted-file refusal deleted data" >&2
+  umount "$file_mount" 2>/dev/null || true
+  exit 1
+}
+umount "$file_mount"
+EOF
+chmod 755 "$mount_case/run.sh"
+if unshare --user --map-root-user --mount true 2>/dev/null; then
+  /usr/bin/script -qefc \
+    "unshare --user --map-root-user --mount $mount_case/run.sh $mount_case/ns $root $helper" \
+    /dev/null >"$mount_case/out" 2>"$mount_case/err"
+else
+  echo "uninstall: mount-boundary check skipped (user mount namespace unavailable)"
+fi
 
 echo "uninstall: ok"

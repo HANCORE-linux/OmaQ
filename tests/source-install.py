@@ -745,6 +745,114 @@ class SourceInstallTests(unittest.TestCase):
                     timeout=1,
                 )
 
+    def test_startup_discovery_retries_only_exact_shell_transition_error(self):
+        events: list[str] = []
+        shell = FakeShell(events)
+        valid = {
+            "id": MODULE.core.PLUGIN_ID,
+            "enabled": False,
+            "firstParty": False,
+            "kinds": ["bar-widget"],
+        }
+        success = subprocess.CompletedProcess(
+            [],
+            0,
+            b'[{"id":"hancore.omaq","enabled":false,'
+            b'"firstParty":false,"kinds":["bar-widget"]}]\n',
+            b"",
+        )
+        transient = subprocess.CompletedProcess(
+            [], 1, b"", b"omarchy-shell is not responding\n"
+        )
+        with mock.patch.object(
+            MODULE.core, "run", side_effect=[transient, success]
+        ) as listed:
+            MODULE.wait_plugin_state(
+                shell,
+                enabled=False,
+                expected_shell=shell.started,
+                cursor="cursor",
+                timeout=2,
+            )
+        self.assertEqual(listed.call_count, 2)
+
+        for returncode, stdout, stderr in (
+            (2, b"", b"omarchy-shell is not responding\n"),
+            (1, b"", b"omarchy-shell is not responding"),
+            (1, b"", b"omarchy-shell is not responding \n"),
+            (1, b"unexpected\n", b"omarchy-shell is not responding\n"),
+            (1, b"", b"unexpected\n"),
+        ):
+            with self.subTest(
+                returncode=returncode, stdout=stdout, stderr=stderr
+            ), mock.patch.object(
+                MODULE.core,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    [], returncode, stdout, stderr
+                ),
+            ):
+                with self.assertRaises(MODULE.core.UpdateError):
+                    MODULE.wait_plugin_state(
+                        shell,
+                        enabled=False,
+                        expected_shell=shell.started,
+                        cursor="cursor",
+                        timeout=1,
+                    )
+
+    def test_plugin_absence_retries_only_the_exact_shell_transition(self):
+        events: list[str] = []
+        shell = FakeShell(events)
+        transient = MODULE.ShellIpcTransitionError(
+            "plugin list crossed an Omarchy shell reload"
+        )
+        transient_result = subprocess.CompletedProcess(
+            [], 1, b"", b"omarchy-shell is not responding\n"
+        )
+        shell_config = subprocess.CompletedProcess([], 0, b"{}\n", b"")
+        with mock.patch.object(
+            MODULE, "plugin_entries", side_effect=[transient, [], []]
+        ) as listed, mock.patch.object(
+            MODULE.core, "run", side_effect=[transient_result, shell_config]
+        ) as configured:
+            MODULE.require_plugin_absent(shell, timeout=1)
+        self.assertEqual(listed.call_count, 3)
+        self.assertEqual(configured.call_count, 2)
+
+        unexpected = MODULE.core.UpdateError("unexpected plugin-list failure")
+        with mock.patch.object(
+            MODULE, "plugin_entries", side_effect=unexpected
+        ) as listed:
+            with self.assertRaisesRegex(
+                MODULE.core.UpdateError, "unexpected plugin-list failure"
+            ):
+                MODULE.require_plugin_absent(shell, timeout=1)
+        self.assertEqual(listed.call_count, 1)
+
+        nonexact_result = subprocess.CompletedProcess(
+            [], 1, b"", b"omarchy-shell is not responding"
+        )
+        with mock.patch.object(
+            MODULE, "plugin_entries", return_value=[]
+        ) as listed, mock.patch.object(
+            MODULE.core, "run", return_value=nonexact_result
+        ) as configured:
+            with self.assertRaises(MODULE.core.UpdateError):
+                MODULE.require_plugin_absent(shell, timeout=1)
+        self.assertEqual(listed.call_count, 1)
+        self.assertEqual(configured.call_count, 1)
+
+        with mock.patch.object(
+            MODULE, "plugin_entries", side_effect=transient
+        ) as listed:
+            with self.assertRaisesRegex(
+                MODULE.InstallError,
+                "plugin absence did not stabilize after the shell reload",
+            ):
+                MODULE.require_plugin_absent(shell, timeout=0)
+        self.assertEqual(listed.call_count, 1)
+
     def test_install_uses_startup_discovery_then_one_enable(self):
         source_text = MODULE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("rescanPlugins", source_text)

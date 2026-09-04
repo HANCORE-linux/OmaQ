@@ -7,24 +7,20 @@ This guide covers source installation, shell-off updates, helper status, rollbac
 ## Install OmaQ
 
 > [!IMPORTANT]
-> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, use the source installation below. This path does not install an OmaQ package through Pacman.
+> OmaQ is not published in the Arch User Repository (AUR) yet. Until an OmaQ package is available, install it through Omarchy's normal plugin command.
 
-Run the source install as your desktop user while the Omarchy shell is running and the session is unlocked. The installer rejects root, a stopped shell, a locked session, or an existing `~/.config/omarchy/plugins/hancore.omaq`; use the [update section](#update-omaq) for an existing installation.
-
-Clone OmaQ and run its installer:
+Run the installation as your desktop user while the Omarchy shell is running and the session is unlocked:
 
 ```bash
-mkdir -m 700 -- "$HOME/.omaq-source-install" &&
-git clone --no-hardlinks --branch main --single-branch -- \
-  https://github.com/HANCORE-linux/OmaQ.git "$HOME/.omaq-source-install" &&
-"$HOME/.omaq-source-install/install.sh" --section right --yes
+omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --yes &&
+~/.config/omarchy/plugins/hancore.omaq/install.sh --yes
 ```
 
-The private checkout is a direct child of your home directory, outside Omarchy's monitored plugin tree. `install.sh` validates its arguments and runs the checkout, target, session, and shell preflight before installing the required packages through `omarchy pkg add`; it then delegates to the verified shell-off installer, which repeats the preflight before building. That installer builds the Signal-enabled helper, stops the shell, atomically moves the complete checkout to `~/.config/omarchy/plugins/hancore.omaq`, and enables it once in the selected section. Use `--section left`, `center`, or `right`; omitting the option uses OmaQ's manifest default of `right`. The bar disappears during this step and returns after OmaQ passes discovery and activation.
+Review the exact repository URL before running the command: `--yes` suppresses Omarchy's clone and enable questions, so the normal path leaves the checkout disabled for the next step. Omarchy clones, validates, and installs that checkout. The installed `install.sh` verifies that OmaQ is a disabled third-party bar widget before installing packages; it refuses a stale shell-layout reference that enabled OmaQ during discovery. It then installs the required dependencies through `omarchy pkg add`, builds the Signal-enabled helper, enables OmaQ, runs `omarchy restart shell`, and succeeds only after the available and running helper images match. It accepts `--section left`, `center`, or `right`; omission uses the manifest's `right` default. Keeping enablement inside `install.sh` ensures the helper exists before activation and avoids treating an interrupted `omarchy plugin add --enable` response as a failed clone. The bar disappears briefly during the restart.
 
-If `.omaq-source-install` remains after a failure, inspect the error, then remove it with `rm -rf -- "$HOME/.omaq-source-install"`. If the error says the installed tree remains, do not rerun this command; follow the reported recovery state. Successfully installed dependency packages remain available.
+A package, build, enable, restart, or readiness error stops the command and retains the plugin checkout for inspection. A pre-build enabled-state error must be corrected with `omarchy plugin disable hancore.omaq` before retrying. Use the [update section](#update-omaq) for an existing installation.
 
-The short command trusts the user's Git configuration and environment, including URL rewrites, proxies, credential helpers, and TLS settings; it does not independently prove before execution that the checkout came from public GitHub. Use the following bootstrap when acquisition must ignore user Git configuration, bind a reviewed commit before execution, and enforce resource limits.
+The normal command uses Omarchy's Git acquisition and therefore trusts the user's Git configuration and environment, including URL rewrites, proxies, credential helpers, and TLS settings. It does not independently prove before execution that the checkout came from public GitHub. Use the following bootstrap when acquisition must ignore user Git configuration, bind a reviewed commit before execution, and enforce resource limits.
 
 <details>
 <summary>Pin a reviewed commit and limit acquisition</summary>
@@ -258,6 +254,8 @@ The supported updater keeps every source fetch and helper build outside the moni
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
+Do not run `omarchy plugin update hancore.omaq --yes` or include OmaQ in an all-plugins `omarchy plugin update --yes` operation. Omarchy's generic updater fast-forwards the source checkout but has no OmaQ lifecycle hook to rebuild and verify the native helper. Use only the OmaQ updater above.
+
 The update requires an enabled OmaQ plugin, a clean Git checkout on `main`, the canonical OmaQ `origin`, an unlocked session, and a running Protocol-9-or-newer helper. `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` must resolve outside `~/.config/omarchy/plugins/`. The updater refuses symlinked roots, local source changes, non-fast-forward history, malformed manifests, ambiguous protocol declarations, and a staged QML requirement newer than the running helper.
 
 ### Bootstrap an older installation
@@ -348,27 +346,27 @@ Omarchy deletes a Git-managed plugin directory, including local source changes i
 
 ## Review retained data
 
-Plugin removal intentionally retains these locations:
+After removing the plugin, an interactive wrapper run offers each existing OmaQ directory separately:
 
 - `~/.local/share/omaq/`: identity, contacts, groups, avatars, history, Ratchet state, and managed custom sounds
 - `~/.local/state/omaq/`: identity recovery, preferences, unread state, receipts, surfaces, and journals
 - `~/Downloads/omaq/`: received files
 - `~/.local/state/omaq-deploy-backups/`: deployment backups, when present
-- the exact Omarchy plugin backup path printed by the wrapper, when present
+- `~/.local/state/omaq-source-updates/`: retained source-update trees, when present
+- `~/.omaq-source-install/`: a retained legacy source checkout, when present
+- the exact Omarchy plugin backup path reported during removal, when present
 
-Keep retained data if you may reinstall OmaQ or still need the identity or history. Inspect every path before deleting it:
+Absolute `OMAQ_HOME`, `OMAQ_STATE`, `OMAQ_DOWNLOAD_DIR`, `XDG_DOWNLOAD_DIR`, and `XDG_STATE_HOME` overrides are offered at their configured locations when their paths are canonical and owner-controlled.
 
-```bash
-rm -rf -- "$HOME/.local/share/omaq"                 # Identity and chats
-rm -rf -- "$HOME/.local/state/omaq"                 # Preferences and state
-rm -rf -- "$HOME/Downloads/omaq"                    # Received files
-rm -rf -- "$HOME/.local/state/omaq-deploy-backups"  # Deployment backups
-```
-
-Each deletion is irreversible. Run only the individual commands for data you intend to erase.
+Every destructive answer defaults to No. A confirmed parent is retained when it contains another candidate that was declined or withheld as unsafe. Each remaining accepted directory is renamed within its owner-controlled parent, fully checked for ownership, permissions, device and mount boundaries, and entry count, and only then passed to symlink-resistant recursive deletion. Top-level symlink candidates and unsafe trees are retained without deletion; nested symlinks are unlinked without following their targets. An unexpected deletion error reports that cleanup may be partial, identifies the parent where a hidden quarantine remainder may exist, and stops before processing another selected path. `uninstall-omaq.sh --yes` is non-interactive and retains every data directory.
 
 ## Remove unused packages
 
-OmaQ leaves dependency packages installed because another application may use them. This includes `toxcore`, `libsignal-protocol-c`, `libpulse`, `libpng`, `libjpeg-turbo`, `libwebp`, `ttf-material-symbols-variable`, and `qrencode`.
+OmaQ never removes dependency packages automatically because the uninstaller cannot reliably determine whether they were installed for another application. After removal, the wrapper prints this optional command:
 
-The optional `zbar` verification package also remains when installed for testing. Inspect each package with `pacman -Qi` before removing it. The wrapper prints one combined `omarchy pkg drop` command; edit that command to include only dependencies confirmed unused.
+```bash
+sudo pacman -R toxcore libsignal-protocol-c libpulse libpng libjpeg-turbo libwebp \
+  ttf-material-symbols-variable qrencode
+```
+
+Run it only after confirming that none of those packages predated OmaQ and no other application needs them. `pacman -R` is intentionally used without `-s`: it targets only the listed packages and refuses the complete operation when another installed package requires one. If Pacman reports a dependency conflict, leave the packages installed rather than forcing removal. `zbar` is not an OmaQ installation dependency and is not included.
