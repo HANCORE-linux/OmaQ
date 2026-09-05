@@ -84,13 +84,13 @@ Panel preferences use the active OmaQ and Omarchy visual system. Message scaling
 </tr></tbody>
 </table>
 
-Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Per-conversation **Auto-off** disables automatic opening for that conversation and changes to **Auto-open** so you can enable it again.
+Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Each floating chat shows **Pop up: On** or **Pop up: Off** for its per-conversation automatic-opening preference.
 
 Omarchy plugin settings also control badges, right-side notifications, desktop notifications, separate or bundled cards, unread animation, the default theme, message scale, sound, and formatting-toolbar visibility.
 
 ## Send DirectChat messages
 
-New DirectChat and GroupChat windows use the compositor's standard opening animation. When a chat is floating, drag its toolbar handle to move it. Tiled windows retain their compositor-managed position.
+New DirectChat and GroupChat windows use the compositor's standard opening animation. When a chat is floating, drag the blank toolbar area beside **Pop up** to move it. Tiled windows retain their compositor-managed position.
 
 <table>
 <thead><tr><th>DirectChat</th><th>Formatting tools</th><th>Emoji picker</th><th>Clear chat</th></tr></thead>

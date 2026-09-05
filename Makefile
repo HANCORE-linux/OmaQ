@@ -181,6 +181,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/confirmed-hangup.sh
 	sh tests/correlated-clear-chat.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/live-name-refresh.sh
+	sh tests/floating-window-presentation.sh
 	sh tests/group-chat-parity.sh
 	sh tests/panel-request-focus.sh
 	sh tests/redeem-feedback.sh

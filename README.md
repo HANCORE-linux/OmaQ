@@ -43,6 +43,8 @@ Clear Chat is immediate, never queued for reconnect, and applies a helper result
 
 Open DirectChat and GroupChat windows update names as peers change them.
 
+Floating chats expose their per-conversation automatic-opening preference as **Pop up: On** or **Pop up: Off** while retaining a blank draggable toolbar area.
+
 DirectChat call controls remain fail-closed and report unavailable actions without claiming that a peer received an undeliverable cancellation.
 
 See the [illustrated user guide](docs/USER-GUIDE.md) for daily use and the [current status](docs/CURRENT.md) for capability and validation details.

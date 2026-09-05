@@ -1814,16 +1814,6 @@ Item {
             enabled: placement.settled && !pinWin.placeOnMap &&
               pinWin.compositorFloating && !pinWin.closing
 
-            SafeText {
-              anchors.centerIn: parent
-              text: "drag_indicator"
-              color: chatDragHandle.enabled ? root.theme().fg : "transparent"
-              opacity: 0.55
-              font.family: "Material Symbols Rounded"
-              font.pixelSize: Style.font.body
-              font.variableAxes: ({ "FILL": 0, "wght": 400 })
-            }
-
             MouseArea {
               anchors.fill: parent
               enabled: chatDragHandle.enabled
@@ -1842,9 +1832,9 @@ Item {
             }
           }
           SurfaceBtn {
-            text: pinPage.autoOpenEnabled ? "Auto-off" : "Auto-open"
+            text: "Pop up: " + (pinPage.autoOpenEnabled ? "On" : "Off")
             helpText: pinPage.autoOpenEnabled
-              ? "Auto-open chat: on" : "Auto-open chat: off"
+              ? "Pop up for new messages: on" : "Pop up for new messages: off"
             onClicked: pinPage.autoOpenToggled()
           }
           SurfaceBtn {

@@ -29,6 +29,7 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`correlated-clear-chat.md`](correlated-clear-chat.md) | Capability-gated, request-correlated DirectChat and GroupChat history clearing |
 | [`live-name-refresh.md`](live-name-refresh.md) | Event-driven DirectChat and GroupChat name refresh |
 | [`invite-redemption-feedback.md`](invite-redemption-feedback.md) | Persistent, user-edit-aware invite redemption feedback |
+| [`floating-window-presentation.md`](floating-window-presentation.md) | Pop up labels and a quiet retained drag surface |
 | [`search-timestamps-security.md`](search-timestamps-security.md) | Per-chat search, local timestamps, PlainText, and helper security |
 | [`helper-updater-validation.md`](helper-updater-validation.md) | Manual helper updater and earlier validation rounds |
 | [`trigger-free-updates.md`](trigger-free-updates.md) | External staging, shell-off source exchange, consumer checks, and rollback |
