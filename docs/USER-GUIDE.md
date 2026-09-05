@@ -45,7 +45,7 @@ Hover or keyboard-focus an action-rail icon to display its label. Use the rail t
 
 Close the panel with `Escape`, another press on the OmaQ bar action, or a click outside. The panel intentionally has no redundant Close button and never keeps a desktop-sized invisible input region.
 
-Friend names use the panel's width-driven grid and show online, away, and offline state. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
+Friend names use the panel's width-driven grid and show online, away, and offline state. Name changes appear immediately in the panel and every open DirectChat. Group peer-name changes also refresh member rows, message sender labels, and typing labels in every open GroupChat. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
 
 ## Create and redeem invitations
 

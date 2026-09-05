@@ -5392,6 +5392,13 @@ static void hook_friend_status(void *ud, uint32_t friend, int online)
 	emit_friends();
 }
 
+static void hook_friend_name(void *ud, uint32_t friend)
+{
+	(void)ud;
+	(void)friend;
+	emit_friends();
+}
+
 static void hook_typing(void *ud, uint32_t friend, int typing)
 {
 	char key[65], event[240];
@@ -9014,6 +9021,7 @@ static void attach_hooks(void)
 	omaq_tox_set_hooks(g_tox, hook_req, hook_msg, NULL);
 	omaq_tox_set_presence_hook(g_tox, hook_presence, NULL);
 	omaq_tox_set_friend_status_hook(g_tox, hook_friend_status, NULL);
+	omaq_tox_set_friend_name_hook(g_tox, hook_friend_name, NULL);
 	omaq_tox_set_typing_hook(g_tox, hook_typing, NULL);
 	omaq_tox_set_group_hooks(g_tox, hook_ginv, hook_gmsg, hook_gpeer, NULL);
 	omaq_tox_set_group_packet_hook(g_tox, hook_group_file_packet, NULL);
