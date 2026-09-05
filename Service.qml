@@ -275,6 +275,7 @@ Item {
   property string lastCallStopConv: ""
   property string lastCallStopId: ""
   property string lastCallStopCode: ""
+  property bool lastCallStopConfirmed: false
   property bool lastCallStopCancelAttempted: false
   property bool lastCallStopCancelAccepted: false
   property bool lastCallStopAudioAvailable: true
@@ -365,6 +366,7 @@ Item {
     root.lastCallStopCode = cancelAttempted && !cancelAccepted
       ? "cancel_unconfirmed" : (!audioAvailable ? "audio_unavailable" :
         String(reason || "ended"))
+    root.lastCallStopConfirmed = true
     root.pendingCallStopRequest = ""
     root.pendingCallStopConv = ""
     root.pendingCallStopKey = ""
@@ -395,6 +397,7 @@ Item {
     root.lastCallStopId = String((stopDebt ? root.pendingCallStopId : "") ||
       (ownerDebt ? root.callOwnerCallId : "") || root.lastCallId || "")
     root.lastCallStopCode = "call_result_unknown"
+    root.lastCallStopConfirmed = false
     if (stopDebt) {
       root.pendingCallStopRequest = ""
       root.pendingCallStopConv = ""
@@ -431,6 +434,7 @@ Item {
       root.callOwnerConv || "")
     root.lastCallStopId = String(root.lastCallId || root.pendingCallStopId || "")
     root.lastCallStopCode = String(reason || "helper_restarted")
+    root.lastCallStopConfirmed = false
     root.incomingCall = false
     root.lastCallState = ""
     root.lastCallConv = ""
@@ -2205,6 +2209,7 @@ Item {
         root.lastCallStopConv = failedCallConv
         root.lastCallStopId = failedCallId
         root.lastCallStopCode = String(ev.code || "call_stop_failed")
+        root.lastCallStopConfirmed = false
         root.pendingCallStopRequest = ""
         root.pendingCallStopConv = ""
         root.pendingCallStopKey = ""
@@ -2226,6 +2231,7 @@ Item {
         root.lastCallStopId = failedCallId
         root.lastCallStopCode = failedCallOp === "start"
           ? "call_start_failed" : "call_answer_failed"
+        root.lastCallStopConfirmed = false
         root.callStopTick = root.callStopTick + 1
       }
     }
@@ -3587,6 +3593,7 @@ Item {
       root.lastCallStopConv = c
       root.lastCallStopId = root.lastCallId
       root.lastCallStopCode = "call_control_unavailable"
+      root.lastCallStopConfirmed = false
       root.callStopTick = root.callStopTick + 1
       return false
     }
@@ -3778,6 +3785,7 @@ Item {
     root.lastCallStopConv = ""
     root.lastCallStopId = ""
     root.lastCallStopCode = ""
+    root.lastCallStopConfirmed = false
     root.lastCallStopCancelAttempted = false
     root.lastCallStopCancelAccepted = false
     root.lastCallStopAudioAvailable = true

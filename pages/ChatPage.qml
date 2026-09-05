@@ -2709,31 +2709,32 @@ FocusScope {
       if (!root.service ||
           !root.sameConv(root.service.lastCallStopConv || ""))
         return
-      var code = String(root.service.lastCallStopCode || "ended")
-      if (code === "cancel_unconfirmed")
-        root.callFeedback = "Call ended locally; peer notification was not confirmed"
-      else if (code === "audio_unavailable")
-        root.callFeedback = "Call ended; calling is temporarily unavailable"
-      else if (code === "control_lost" || code === "lease_expired" ||
-               code === "snapshot")
-        root.callFeedback = "Call ended after the control connection was lost"
-      else if (code === "call_control_unavailable")
+      var code = String(root.service.lastCallStopCode || "")
+      if (root.service.lastCallStopConfirmed) {
+        if (code === "cancel_unconfirmed")
+          root.callFeedback = "Call ended locally; peer notification was not confirmed"
+        else if (code === "audio_unavailable")
+          root.callFeedback = "Call ended; calling is temporarily unavailable"
+        else if (code === "control_lost" || code === "lease_expired" ||
+                 code === "snapshot")
+          root.callFeedback = "Call ended after the control connection was lost"
+        else
+          root.callFeedback = "Call ended"
+      } else if (code === "call_control_unavailable") {
         root.callFeedback = "Call control unavailable"
-      else if (code === "call_result_unknown")
+      } else if (code === "call_result_unknown") {
         root.callFeedback = "Call result unavailable after reconnect"
-      else if (code === "helper_restarted")
+      } else if (code === "helper_restarted") {
         root.callFeedback = "Call state was reset after the helper restarted"
-      else if (code === "helper_incompatible")
+      } else if (code === "helper_incompatible") {
         root.callFeedback = "Call state was reset because the helper is incompatible"
-      else if (code === "call_start_failed")
+      } else if (code === "call_start_failed") {
         root.callFeedback = "Call could not be started"
-      else if (code === "call_answer_failed")
+      } else if (code === "call_answer_failed") {
         root.callFeedback = "Call could not be answered"
-      else if (code === "stale_call" || code === "call_stop_failed" ||
-               code === "busy" || code === "forbidden")
+      } else {
         root.callFeedback = "Call could not be ended"
-      else
-        root.callFeedback = "Call ended"
+      }
       callFeedbackTimer.restart()
     }
     function onUnreadTickChanged() {

@@ -23,6 +23,7 @@ contracts = {
         'function completeCallStop(conversation, callId, reason, cancelAttempted,',
         'function resolveCallControlUnknown(preserveSnapshot)',
         'function resetCallAfterHelperRestart(reason)',
+        'property bool lastCallStopConfirmed: false',
         'ev.event === "call.replay.complete"',
         "root.callReplaySnapshotOwnerRequest",
         'var replayOwnerDebt = replayHasOwner && root.callOwnerCallId === ""',
@@ -33,7 +34,9 @@ contracts = {
     "pages/ChatPage.qml": [
         "readonly property bool callEnding:",
         "root.service.callEndingFor(root.conversation)",
+        "root.service.lastCallStopConfirmed",
         'root.callFeedback = "Call ended"',
+        'root.callFeedback = "Call could not be ended"',
         "function clearCallFeedback()",
         "onIncomingChanged:",
         "onInCallChanged:",
@@ -86,6 +89,16 @@ for name, needles in contracts.items():
     for needle in needles:
         if needle not in source:
             raise SystemExit(f"confirmed-hangup: missing {name} contract: {needle}")
+
+feedback_start = page.index("function onCallStopTickChanged()")
+feedback_end = page.index("function onUnreadTickChanged()", feedback_start)
+feedback = page[feedback_start:feedback_end]
+confirmed_branch = feedback.index("if (root.service.lastCallStopConfirmed)")
+failed_branch = feedback.index("} else if (code === \"call_control_unavailable\")")
+success_text = feedback.index('root.callFeedback = "Call ended"')
+failure_text = feedback.rindex('root.callFeedback = "Call could not be ended"')
+if not confirmed_branch < success_text < failed_branch < failure_text:
+    raise SystemExit("confirmed-hangup: call success feedback is not confirmation-gated")
 
 stop = helper.index("static int begin_call_end(")
 stop_end = helper.index("static int set_call_owner(", stop)
@@ -166,6 +179,7 @@ ShellRoot {
       var offlineRejected = !service.stopCall("0", key) &&
         service.pendingOps.length === 0 &&
         service.pendingCallStopRequest === "" &&
+        !service.lastCallStopConfirmed &&
         service.lastCallStopCode === "call_control_unavailable" &&
         service.callStopTick === stopTick + 1
 
@@ -200,7 +214,7 @@ ShellRoot {
         localStopped: true, transportClosed: true, cancelAttempted: true,
         cancelAccepted: false, audioAvailable: true }))
       var correlatedStopAccepted = service.pendingCallStopRequest === "" &&
-        service.lastCallState === "ended" &&
+        service.lastCallState === "ended" && service.lastCallStopConfirmed &&
         service.lastCallStopCode === "cancel_unconfirmed" &&
         service.lastCallStopCancelAttempted &&
         !service.lastCallStopCancelAccepted &&
@@ -211,6 +225,23 @@ ShellRoot {
         localStopped: true, transportClosed: true, cancelAttempted: true,
         cancelAccepted: false, audioAvailable: true }))
       var duplicateTerminalIgnored = service.callStopTick === stopTick
+
+      service.lastCallState = "active"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callB
+      service.pendingCallStopRequest = "rejected-stop"
+      service.pendingCallStopConv = "0"
+      service.pendingCallStopKey = key
+      service.pendingCallStopId = callB
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.action.failed", op: "stop",
+        conversation: "0", key: key, callId: callB, request: "rejected-stop",
+        code: "identity_primary_uncertain" }))
+      var rejectedStopNotConfirmed = service.lastCallState === "active" &&
+        service.pendingCallStopRequest === "" && !service.lastCallStopConfirmed &&
+        service.lastCallStopCode === "identity_primary_uncertain" &&
+        service.callStopTick === stopTick + 1
 
       service.lastCallState = "active"
       service.lastCallConv = "0"
@@ -626,7 +657,8 @@ ShellRoot {
 
       var valid = capabilityGate && offlineRejected && missingCorrelationRejected &&
         staleCallRejected && endingVisible && correlatedStopAccepted &&
-        duplicateTerminalIgnored && emptySnapshotWaitsForTerminal &&
+        duplicateTerminalIgnored && rejectedStopNotConfirmed &&
+        emptySnapshotWaitsForTerminal &&
         bareEndedRejected && reconnectTerminalAccepted && leaseFailedClosed &&
         duplicateActionsBlocked && staleBindingFailureAccepted &&
         failedActionReplayAccepted && failedActionMarkerNoop &&

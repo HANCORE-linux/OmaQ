@@ -22,9 +22,9 @@ QML_POLICY_SHA256 = {
     "Panel.qml": "201fb007e8c5ff1960a72d930aaf86a421c6691c34b0189e707cb070a086e71b",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
-    "Service.qml": "41b79733f49adafe804e498e5989a4a49662ffd7d74de9cee84fbd09c69e5842",
+    "Service.qml": "1aed0a91a2874d0fd825a0fe85436cc413166a48604299059394bdc794cb167c",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "268e5e022958c09d1ef808bf5c8efe364784745ee162203be189a67ba95becc1",
+    "pages/ChatPage.qml": "ed3b4b2fbf4b155d4ce224564bb2fde7241570a75e39901b555863a4bb8c0211",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -147,8 +147,8 @@ COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
     "ChatSurface.qml": "76f3165f9d8bb0324f3793b9d5587571cc5af0f6f5d6d64c25f4fbbf48fb686a",
     "Panel.qml": "edfd5835cd46f89bce5ce2c0ace5b4fbfc946875acead1180828cb24b3473938",
-    "Service.qml": "ac9e4248f0a9385eeb4d0db01357229005f49a10d74c5a85226366a8d92f8124",
-    "pages/ChatPage.qml": "179f2865c6e3118ce2243aef366d3900c2102a58969baed5507d0382dcfc2b00",
+    "Service.qml": "ab36bfc42a6f07640e9cbae242e26dc0fad6cdec1041fbed0a17d242c3bb5e6f",
+    "pages/ChatPage.qml": "b1748d32665fe9aa27b40ad8ef6ec6647adf3fc21978ada34fd28197a5f647db",
 }
 FUNCTION_PARAMETERS = re.compile(
     r"\bfunction(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\((?P<params>[^)]*)\)"
