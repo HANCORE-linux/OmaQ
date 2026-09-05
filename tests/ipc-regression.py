@@ -19,9 +19,9 @@ OLD_URGENT_LIMIT = 4096 * 1024
 BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
-EVENT = b'{"event":"snapshot","protocol":14,"unread":0,"conversations":[],"call":null}\n'
+EVENT = b'{"event":"snapshot","protocol":15,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
-STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":14,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":15,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 UNSUPPORTED_EVENT = b'{"event":"error","code":"unsupported"}\n'
 FORBIDDEN_EVENT = b'{"event":"error","code":"forbidden"}\n'
 DUPLICATE_COMMANDS = (
@@ -429,6 +429,30 @@ def main() -> int:
             if response != MESSAGE_ESCAPED_CONV_EVENT:
                 raise RuntimeError(f"escaped conversation correlation mismatch: {response!r}")
 
+        # A half-close can arrive with more than one read buffer of final input.
+        # Drain it before dropping the client, and return every complete response.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as closing_client:
+            closing_client.settimeout(5)
+            closing_client.connect(str(socket_path))
+            closing_client.sendall(
+                b" " * 520
+                + b'{"op":"status","id":"half-close-1"}\n'
+                + b'{"op":"status","id":"half-close-2"}\n'
+            )
+            closing_client.shutdown(socket.SHUT_WR)
+            response = b""
+            while response.count(b"\n") < 2:
+                chunk = closing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            expected = (
+                EVENT[:-2] + b',"request":"half-close-1"}\n'
+                + EVENT[:-2] + b',"request":"half-close-2"}\n'
+            )
+            if normalize_instances(response) != expected:
+                raise RuntimeError(f"half-closed socket lost buffered commands: {response!r}")
+
         # The first command deliberately crosses separate stdin reads.
         first.stdin.write(b'{"op":"sta')
         first.stdin.flush()
@@ -574,6 +598,8 @@ def main() -> int:
             + MESSAGE_REJECT_EVENT
             + MESSAGE_MISSING_ID_EVENT
             + MESSAGE_ESCAPED_CONV_EVENT
+            + EVENT[:-2] + b',"request":"half-close-1"}\n'
+            + EVENT[:-2] + b',"request":"half-close-2"}\n'
             + EVENT
             + b"".join(test_event(i) for i in range(BATCH_EVENTS))
             + EVENT
@@ -590,7 +616,7 @@ def main() -> int:
         # A fresh helper stdout stream discards the old stream's incomplete JSONL tail.
         combined = first_complete + replayed
         instances = INSTANCE_FIELD.findall(combined)
-        if len(instances) != 7 or len(set(instances)) < 2:
+        if len(instances) != 9 or len(set(instances)) < 2:
             raise RuntimeError(f"helper instance ids missing or not rotated: {instances!r}")
         if normalize_instances(combined) != expected:
             raise RuntimeError(

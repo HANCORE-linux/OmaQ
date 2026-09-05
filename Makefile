@@ -178,6 +178,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/stable-direct-state.sh
+	sh tests/confirmed-hangup.sh
 	sh tests/group-chat-parity.sh
 	sh tests/panel-request-focus.sh
 	sh tests/emoji-parity.sh

@@ -138,6 +138,10 @@ int omaq_tox_av_call(struct omaq_tox *t, uint32_t friend);
 int omaq_tox_av_answer(struct omaq_tox *t, uint32_t friend);
 int omaq_tox_av_hangup(struct omaq_tox *t, uint32_t friend);
 int omaq_tox_av_available(const struct omaq_tox *t);
+/* Destroying the old session and creating its replacement are separate facts.
+ * destroy() returning zero proves that no old ToxAV call context remains. */
+int omaq_tox_av_destroy(struct omaq_tox *t);
+int omaq_tox_av_create(struct omaq_tox *t);
 int omaq_tox_av_reset(struct omaq_tox *t);
 int omaq_tox_av_audio_send(struct omaq_tox *t, uint32_t friend,
 			   const int16_t *pcm, size_t samples,

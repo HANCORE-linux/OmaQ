@@ -20,6 +20,10 @@ mkdir -m 700 "$tmp/home" "$tmp/state" "$tmp/helper"
 cp "$root/Service.qml" "$tmp/Service.qml"
 
 make -s -C "$root" \
+	BIN_HELP="$tmp/helper/omaq-protocol14" \
+	HARDEN_CFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fPIE -DOMAQ_PROTOCOL_VERSION=14" \
+	helper
+make -s -C "$root" \
 	BIN_IPC_TEST_HELPER="$tmp/helper/omaq" \
 	SANFLAGS="-DOMAQ_PROTOCOL_VERSION=7" \
 	"$tmp/helper/omaq"
@@ -227,6 +231,10 @@ ShellRoot {
               "/custom-sounds/22222222222222222222222222222222.audio", size: 48 }] }))
         var staleSoundRejected = service.customSounds.length === 0 &&
           !service.pendingSoundRequests["sound-late"]
+        service.activeHelperProtocol = 14
+        var confirmedHangupGate = !service.supportsConfirmedHangup
+        service.activeHelperProtocol = 15
+        confirmedHangupGate = confirmedHangupGate && service.supportsConfirmedHangup
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -245,7 +253,8 @@ ShellRoot {
             bindingChecks && groupAttachmentGate && groupInviteWired &&
             legacySurfaceCompatible && handshakeSurfaceQueued && handshake14Geometry &&
             modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
-            correlatedGroups && groupTypingProjected && wrongGroupRequestIgnored &&
+            confirmedHangupGate && correlatedGroups && groupTypingProjected &&
+            wrongGroupRequestIgnored &&
             incompleteGroupsPreserved && reusePurged &&
             bufferedUntilFriends && replayedAfterFriends && chatSearchSignaled &&
             reboundContentPurged && delayedSearchRejected &&
