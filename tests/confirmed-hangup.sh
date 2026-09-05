@@ -21,7 +21,12 @@ contracts = {
         'root.rejectBoundOperation(operation, "call_control_unavailable")',
         'return immediate ? root.sendImmediateOp(op) : root.sendOp(op)',
         'function completeCallStop(conversation, callId, reason, cancelAttempted,',
+        'function resolveCallControlUnknown(preserveSnapshot)',
         'function resetCallAfterHelperRestart(reason)',
+        'ev.event === "call.replay.complete"',
+        "root.callReplaySnapshotOwnerRequest",
+        'var replayOwnerDebt = replayHasOwner && root.callOwnerCallId === ""',
+        "replaySnapshotOwnerRequest === root.callOwnerRequest",
         'root.resetCallAfterHelperRestart("helper_incompatible")',
         'root.lastCallState = "ending"',
     ],
@@ -48,6 +53,13 @@ contracts = {
         'emit_bound_call_action_failed(op, "direct_state_migration_failed")',
         'emit_bound_call_action_failed(op, "locked")',
         "g_call_end_results[CALL_END_RESULT_MAX]",
+        "g_call_action_results[CALL_ACTION_RESULT_MAX]",
+        "g_call_action_result_overflow = 1",
+        "request_len >= sizeof(result.request)",
+        "replay_call_results(op->id);",
+        "call.replay.complete",
+        "g_call_end.owner_request",
+        "ownerRequest",
         "g_call_end_alias_requests[MAX_CLIENTS][80]",
         "add_call_end_alias_request(g_call_owner_request)",
         "emit_bound_call_action_failed(op, \"identity_changed\")",
@@ -87,6 +99,13 @@ reset_end = helper.index("static void pump_call_audio(", reset)
 reset_block = helper[reset:reset_end]
 if reset_block.index("omaq_tox_av_destroy(g_tox)") > reset_block.index("finalize_call_end("):
     raise SystemExit("confirmed-hangup: terminal confirmation can precede transport destruction")
+replay = helper.index("static void replay_call_results(")
+replay_end = helper.index("static const call_end_record *find_call_end_result(", replay)
+replay_block = helper[replay:replay_end]
+if not (replay_block.index("replay_call_action_results();") <
+        replay_block.index("replay_last_call_end();") <
+        replay_block.index("call.replay.complete")):
+    raise SystemExit("confirmed-hangup: replay completion can precede a call result")
 poll = helper.index("pr = poll(pf")
 hup_drop = helper.index("if (revents & (POLLHUP | POLLERR | POLLNVAL))", poll)
 drop = helper.index("drop_client(i);", hup_drop)
@@ -265,6 +284,242 @@ ShellRoot {
       service.lastCallConv = ""
       service.lastCallKey = ""
       service.lastCallId = ""
+      service.callOwnerRequest = "failed-start-replay"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = ""
+      service.scheduleRestart()
+      service.applyCallSnapshot(null)
+      service.helperInstance = "11111111111111111111111111111111"
+      service.callReplayRequest = "failed-action-status"
+      service.callReplayInstance = service.helperInstance
+      service.callReplaySnapshotState = ""
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.action.failed", op: "start",
+        conversation: "0", key: key, request: "failed-start-replay",
+        code: "busy" }))
+      var failedActionReplayAccepted = service.callOwnerRequest === "" &&
+        service.lastCallStopCode === "call_start_failed" &&
+        service.pendingDirectEvents.length === 0 &&
+        service.callStopTick === stopTick + 1
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "failed-action-status",
+        actionOverflow: false, terminalOverflow: false }))
+      var failedActionMarkerNoop = service.callStopTick === stopTick + 1 &&
+        service.lastCallStopCode === "call_start_failed"
+
+      service.lastCallState = ""
+      service.lastCallConv = ""
+      service.lastCallKey = ""
+      service.lastCallId = ""
+      service.callOwnerRequest = "evicted-start-result"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = ""
+      service.callReplayRequest = "overflow-status"
+      service.callReplayInstance = service.helperInstance
+      service.callReplaySnapshotState = ""
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "wrong-status",
+        actionOverflow: true, terminalOverflow: false }))
+      var staleReplayMarkerRejected = service.callOwnerRequest ===
+        "evicted-start-result" && service.callStopTick === stopTick
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "overflow-status",
+        actionOverflow: true, terminalOverflow: false }))
+      var overflowDebtResolved = service.callOwnerRequest === "" &&
+        service.lastCallStopCode === "call_result_unknown" &&
+        service.callStopTick === stopTick + 1
+
+      service.lastCallState = "ending"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callB
+      service.callOwnerRequest = "evicted-foreign-start"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = ""
+      service.pendingCallStopRequest = "foreign-stop"
+      service.pendingCallStopConv = "0"
+      service.pendingCallStopKey = key
+      service.pendingCallStopId = callB
+      service.awaitingHelperInstance = true
+      service.helperStatusNonce = "foreign-ending-status"
+      service.handleLine(JSON.stringify({ event: "snapshot", protocol: 15,
+        instance: service.helperInstance, request: "foreign-ending-status",
+        call: { conversation: "0", key: key, callId: callB, state: "ending",
+          request: "foreign-stop", ownerRequest: "foreign-owner" } }))
+      service.handleLine(JSON.stringify({ event: "friend.list.begin",
+        generation: "foreign-generation" }))
+      service.handleLine(JSON.stringify({ event: "friend.info",
+        generation: "foreign-generation", id: "0", key: key,
+        name: "Fixture friend", online: true }))
+      service.handleLine(JSON.stringify({ event: "friend.list.end",
+        generation: "foreign-generation" }))
+      var foreignSnapshotParsed = service.callReplaySnapshotRequest ===
+        "foreign-stop" && service.callReplaySnapshotOwnerRequest ===
+        "foreign-owner" && service.lastCallState === "ending" &&
+        service.lastCallId === callB
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "foreign-ending-status",
+        actionOverflow: true, terminalOverflow: true }))
+      var foreignEndingDebtResolved = service.callOwnerRequest === "" &&
+        service.pendingCallStopRequest === "" &&
+        service.lastCallState === "ending" && service.lastCallId === callB &&
+        service.lastCallStopCode === "call_result_unknown" &&
+        service.callStopTick === stopTick + 1
+      service.handleLine(JSON.stringify({ event: "call.stopped",
+        conversation: "0", key: key, callId: callB, request: "foreign-stop",
+        reason: "local", localStopped: true, transportClosed: true,
+        cancelAttempted: true, cancelAccepted: true, audioAvailable: true }))
+      var foreignEndingTerminalAccepted = service.lastCallState === "ended" &&
+        service.lastCallId === callB && service.callStopTick === stopTick + 2
+
+      service.lastCallState = "ending"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callA
+      service.callOwnerRequest = "represented-start"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = callA
+      service.pendingCallStopRequest = "represented-stop"
+      service.pendingCallStopConv = "0"
+      service.pendingCallStopKey = key
+      service.pendingCallStopId = callA
+      service.awaitingHelperInstance = true
+      service.helperStatusNonce = "represented-ending-status"
+      service.handleLine(JSON.stringify({ event: "snapshot", protocol: 15,
+        instance: service.helperInstance, request: "represented-ending-status",
+        call: { conversation: "0", key: key, callId: callA, state: "ending",
+          request: "represented-stop", ownerRequest: "represented-start" } }))
+      service.handleLine(JSON.stringify({ event: "friend.list.begin",
+        generation: "represented-generation" }))
+      service.handleLine(JSON.stringify({ event: "friend.info",
+        generation: "represented-generation", id: "0", key: key,
+        name: "Fixture friend", online: true }))
+      service.handleLine(JSON.stringify({ event: "friend.list.end",
+        generation: "represented-generation" }))
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "represented-ending-status",
+        actionOverflow: true, terminalOverflow: true }))
+      var representedEndingPreserved = service.callOwnerRequest ===
+        "represented-start" && service.pendingCallStopRequest ===
+        "represented-stop" && service.lastCallState === "ending" &&
+        service.lastCallId === callA && service.callStopTick === stopTick
+      service.pendingCallStopRequest = ""
+      service.pendingCallStopConv = ""
+      service.pendingCallStopKey = ""
+      service.pendingCallStopId = ""
+
+      service.lastCallState = "ending"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callA
+      service.callOwnerRequest = "known-ending-owner"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = callA
+      service.awaitingHelperInstance = true
+      service.helperStatusNonce = "wrong-ending-owner-status"
+      service.handleLine(JSON.stringify({ event: "snapshot", protocol: 15,
+        instance: service.helperInstance, request: "wrong-ending-owner-status",
+        call: { conversation: "0", key: key, callId: callA, state: "ending",
+          request: "other-stop", ownerRequest: "other-owner" } }))
+      service.handleLine(JSON.stringify({ event: "friend.list.begin",
+        generation: "wrong-ending-owner-generation" }))
+      service.handleLine(JSON.stringify({ event: "friend.info",
+        generation: "wrong-ending-owner-generation", id: "0", key: key,
+        name: "Fixture friend", online: true }))
+      service.handleLine(JSON.stringify({ event: "friend.list.end",
+        generation: "wrong-ending-owner-generation" }))
+      stopTick = service.callStopTick
+      var endingOwnerStopCode = service.lastCallStopCode
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "wrong-ending-owner-status",
+        actionOverflow: true, terminalOverflow: true }))
+      var wrongEndingOwnerCleared = service.callOwnerRequest === "" &&
+        service.lastCallState === "ending" && service.lastCallId === callA &&
+        service.lastCallStopCode === endingOwnerStopCode &&
+        service.callStopTick === stopTick
+
+      service.callOwnerRequest = "missing-ending-owner"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = callA
+      service.awaitingHelperInstance = true
+      service.helperStatusNonce = "missing-ending-owner-status"
+      service.handleLine(JSON.stringify({ event: "snapshot", protocol: 15,
+        instance: service.helperInstance, request: "missing-ending-owner-status",
+        call: { conversation: "0", key: key, callId: callA, state: "ending",
+          request: "other-stop" } }))
+      service.handleLine(JSON.stringify({ event: "friend.list.begin",
+        generation: "missing-ending-owner-generation" }))
+      service.handleLine(JSON.stringify({ event: "friend.info",
+        generation: "missing-ending-owner-generation", id: "0", key: key,
+        name: "Fixture friend", online: true }))
+      service.handleLine(JSON.stringify({ event: "friend.list.end",
+        generation: "missing-ending-owner-generation" }))
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "missing-ending-owner-status",
+        actionOverflow: true, terminalOverflow: true }))
+      var missingEndingOwnerCleared = service.callOwnerRequest === "" &&
+        service.lastCallState === "ending" && service.lastCallId === callA &&
+        service.lastCallStopCode === endingOwnerStopCode &&
+        service.callStopTick === stopTick
+
+      service.lastCallState = "active"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callA
+      service.callOwnerRequest = "live-owner-start"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = callA
+      service.callOwnerConnectionLost = true
+      service.awaitingHelperInstance = true
+      service.helperStatusNonce = "live-owner-status"
+      service.handleLine(JSON.stringify({ event: "snapshot", protocol: 15,
+        instance: service.helperInstance, request: "live-owner-status",
+        call: { conversation: "0", key: key, callId: callA, state: "active",
+          ownerRequest: "live-owner-start" } }))
+      service.handleLine(JSON.stringify({ event: "friend.list.begin",
+        generation: "live-owner-generation" }))
+      service.handleLine(JSON.stringify({ event: "friend.info",
+        generation: "live-owner-generation", id: "0", key: key,
+        name: "Fixture friend", online: true }))
+      service.handleLine(JSON.stringify({ event: "friend.list.end",
+        generation: "live-owner-generation" }))
+      var liveOwnerSnapshotParsed = service.callReplaySnapshotState === "active" &&
+        service.callReplaySnapshotId === callA &&
+        service.callReplaySnapshotOwnerRequest === "live-owner-start"
+      stopTick = service.callStopTick
+      var liveStopCode = service.lastCallStopCode
+      service.handleLine(JSON.stringify({ event: "call.replay.complete",
+        instance: service.helperInstance, request: "live-owner-status",
+        actionOverflow: true, terminalOverflow: true }))
+      var liveOwnerPreserved = service.callOwnerRequest === "live-owner-start" &&
+        service.callOwnerCallId === callA && !service.callOwnerConnectionLost &&
+        service.lastCallState === "active" && service.lastCallId === callA &&
+        service.lastCallStopCode === liveStopCode &&
+        service.callStopTick === stopTick
+      service.pendingOps = []
+
+      service.lastCallState = ""
+      service.lastCallConv = ""
+      service.lastCallKey = ""
+      service.lastCallId = ""
       service.callOwnerRequest = "start-before-disconnect"
       service.callOwnerOperation = "start"
       service.callOwnerConv = "0"
@@ -374,7 +629,13 @@ ShellRoot {
         duplicateTerminalIgnored && emptySnapshotWaitsForTerminal &&
         bareEndedRejected && reconnectTerminalAccepted && leaseFailedClosed &&
         duplicateActionsBlocked && staleBindingFailureAccepted &&
-        unresolvedStartPreserved && foreignStopWaitsForOwnerResult &&
+        failedActionReplayAccepted && failedActionMarkerNoop &&
+        staleReplayMarkerRejected && overflowDebtResolved &&
+        foreignSnapshotParsed && foreignEndingDebtResolved &&
+        foreignEndingTerminalAccepted && representedEndingPreserved &&
+        wrongEndingOwnerCleared && missingEndingOwnerCleared &&
+        liveOwnerSnapshotParsed && liveOwnerPreserved && unresolvedStartPreserved &&
+        foreignStopWaitsForOwnerResult &&
         unresolvedStartTerminalAccepted &&
         unresolvedAnswerPreserved && unresolvedAnswerTerminalAccepted &&
         incomingSnapshotPreserved && incomingTerminalAccepted && restartReset &&

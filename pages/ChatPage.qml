@@ -2719,6 +2719,8 @@ FocusScope {
         root.callFeedback = "Call ended after the control connection was lost"
       else if (code === "call_control_unavailable")
         root.callFeedback = "Call control unavailable"
+      else if (code === "call_result_unknown")
+        root.callFeedback = "Call result unavailable after reconnect"
       else if (code === "helper_restarted")
         root.callFeedback = "Call state was reset after the helper restarted"
       else if (code === "helper_incompatible")

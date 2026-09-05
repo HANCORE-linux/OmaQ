@@ -279,6 +279,14 @@ Item {
   property bool lastCallStopCancelAccepted: false
   property bool lastCallStopAudioAvailable: true
   property int callStopTick: 0
+  property string callReplayRequest: ""
+  property string callReplayInstance: ""
+  property string callReplaySnapshotState: ""
+  property string callReplaySnapshotConv: ""
+  property string callReplaySnapshotKey: ""
+  property string callReplaySnapshotId: ""
+  property string callReplaySnapshotRequest: ""
+  property string callReplaySnapshotOwnerRequest: ""
   readonly property bool callActionPending: root.supportsConfirmedHangup &&
     root.callOwnerRequest !== "" && root.callOwnerCallId === ""
   property bool callToneSuppressed: false
@@ -370,6 +378,43 @@ Item {
     if (matchesCurrent) {
       root.incomingCall = false
       root.lastCallState = "ended"
+      root.callToneSuppressed = true
+      root.callDurationSeconds = 0
+    }
+    root.callStopTick = root.callStopTick + 1
+    return true
+  }
+
+  function resolveCallControlUnknown(preserveSnapshot) {
+    var ownerDebt = root.callOwnerRequest !== "" && root.callOwnerCallId === ""
+    var stopDebt = root.pendingCallStopRequest !== ""
+    if (!ownerDebt && !stopDebt)
+      return false
+    root.lastCallStopConv = String((stopDebt ? root.pendingCallStopConv : "") ||
+      (ownerDebt ? root.callOwnerConv : "") || root.lastCallConv || "")
+    root.lastCallStopId = String((stopDebt ? root.pendingCallStopId : "") ||
+      (ownerDebt ? root.callOwnerCallId : "") || root.lastCallId || "")
+    root.lastCallStopCode = "call_result_unknown"
+    if (stopDebt) {
+      root.pendingCallStopRequest = ""
+      root.pendingCallStopConv = ""
+      root.pendingCallStopKey = ""
+      root.pendingCallStopId = ""
+    }
+    if (ownerDebt) {
+      root.callOwnerRequest = ""
+      root.callOwnerOperation = ""
+      root.callOwnerConv = ""
+      root.callOwnerKey = ""
+      root.callOwnerCallId = ""
+      root.callOwnerConnectionLost = false
+    }
+    if (!preserveSnapshot) {
+      root.incomingCall = false
+      root.lastCallState = ""
+      root.lastCallConv = ""
+      root.lastCallKey = ""
+      root.lastCallId = ""
       root.callToneSuppressed = true
       root.callDurationSeconds = 0
     }
@@ -873,14 +918,47 @@ Item {
 
   function eventNeedsFriendProjection(event) {
     var ev = event || ({})
+    var eventName = String(ev.event || "")
+    var eventConv = String(ev.conversation || "")
+    var eventKey = String(ev.key || "")
+    var eventRequest = String(ev.request || "")
+    var eventCallId = String(ev.callId || "")
     if (!root.supportsStableDirectState || root.friendsReady ||
-        !/^(0|[1-9][0-9]*)$/.test(String(ev.conversation || "")))
+        !/^(0|[1-9][0-9]*)$/.test(eventConv))
       return false
+    if (eventName === "call.action.failed") {
+      var eventOperation = String(ev.op || "")
+      var ownerFailureBound = (eventOperation === "start" ||
+        eventOperation === "answer") && eventRequest !== "" &&
+        eventRequest === root.callOwnerRequest &&
+        eventOperation === root.callOwnerOperation &&
+        eventConv === root.callOwnerConv && eventKey === root.callOwnerKey
+      var stopFailureBound = eventOperation === "stop" && eventRequest !== "" &&
+        eventRequest === root.pendingCallStopRequest &&
+        eventConv === root.pendingCallStopConv &&
+        eventKey === root.pendingCallStopKey && eventCallId === root.pendingCallStopId
+      if (ownerFailureBound || stopFailureBound)
+        return false
+    }
+    if (eventName === "call.stopped") {
+      var stoppedCurrentBound = root.lastCallState !== "ended" &&
+        eventCallId !== "" && eventCallId === root.lastCallId &&
+        eventConv === String(root.lastCallConv || "") &&
+        eventKey === String(root.lastCallKey || "")
+      var stoppedPendingBound = root.pendingCallStopRequest !== "" &&
+        eventCallId === root.pendingCallStopId &&
+        eventConv === root.pendingCallStopConv && eventKey === root.pendingCallStopKey
+      var stoppedOwnerBound = root.callOwnerRequest !== "" &&
+        eventRequest === root.callOwnerRequest && eventConv === root.callOwnerConv &&
+        eventKey === root.callOwnerKey &&
+        (root.callOwnerCallId === "" || eventCallId === root.callOwnerCallId)
+      if (stoppedCurrentBound || stoppedPendingBound || stoppedOwnerBound)
+        return false
+    }
     return ["unread", "message", "message.updated", "message.reaction", "history",
       "search", "receipt", "receipt.sent", "typing", "file.offer", "file.sending",
       "file.done", "file.canceled", "file.failed", "call.incoming",
-      "call.state", "call.stopped", "call.action.failed"].indexOf(
-        String(ev.event || "")) >= 0
+      "call.state", "call.stopped", "call.action.failed"].indexOf(eventName) >= 0
   }
 
   function bufferDirectEvent(line) {
@@ -991,6 +1069,34 @@ Item {
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
         root.activeHelperProtocol = snapshotProtocol
+        root.callReplayRequest = snapshotProtocol >= 15 ? String(ev.request || "") : ""
+        root.callReplayInstance = snapshotProtocol >= 15 ? nextInstance : ""
+        root.callReplaySnapshotState = ""
+        root.callReplaySnapshotConv = ""
+        root.callReplaySnapshotKey = ""
+        root.callReplaySnapshotId = ""
+        root.callReplaySnapshotRequest = ""
+        root.callReplaySnapshotOwnerRequest = ""
+        if (snapshotProtocol >= 15 && ev.call && typeof ev.call === "object") {
+          var replayCallConv = String(ev.call.conversation || "")
+          var replayCallKey = String(ev.call.key || "")
+          var replayCallId = String(ev.call.callId || "")
+          var replayCallState = String(ev.call.state || "")
+          var replayCallRequest = String(ev.call.request || "")
+          var replayCallOwnerRequest = String(ev.call.ownerRequest || "")
+          if (/^(0|[1-9][0-9]*)$/.test(replayCallConv) &&
+              /^[0-9a-f]{64}$/.test(replayCallKey) &&
+              /^[0-9a-f]{16}$/.test(replayCallId) &&
+              ["incoming", "ringing", "active", "ending"].indexOf(
+                replayCallState) >= 0) {
+            root.callReplaySnapshotState = replayCallState
+            root.callReplaySnapshotConv = replayCallConv
+            root.callReplaySnapshotKey = replayCallKey
+            root.callReplaySnapshotId = replayCallId
+            root.callReplaySnapshotRequest = replayCallRequest
+            root.callReplaySnapshotOwnerRequest = replayCallOwnerRequest
+          }
+        }
         if (!root.supportsCustomSounds) {
           if (root.customSounds.length > 0) {
             root.customSounds = []
@@ -1078,6 +1184,74 @@ Item {
     }
     if (root.eventNeedsFriendProjection(ev)) {
       root.bufferDirectEvent(line)
+      return
+    }
+    if (ev.event === "call.replay.complete") {
+      if (!root.supportsConfirmedHangup ||
+          !/^[0-9a-f]{32}$/.test(String(ev.instance || "")) ||
+          String(ev.instance || "") !== root.callReplayInstance ||
+          root.callReplayInstance !== root.helperInstance ||
+          String(ev.request || "") !== root.callReplayRequest ||
+          root.callReplayRequest === "" ||
+          typeof ev.actionOverflow !== "boolean" ||
+          typeof ev.terminalOverflow !== "boolean")
+        return
+      var replaySnapshotState = root.callReplaySnapshotState
+      var replaySnapshotConv = root.callReplaySnapshotConv
+      var replaySnapshotKey = root.callReplaySnapshotKey
+      var replaySnapshotId = root.callReplaySnapshotId
+      var replaySnapshotRequest = root.callReplaySnapshotRequest
+      var replaySnapshotOwnerRequest = root.callReplaySnapshotOwnerRequest
+      var replayHasOwner = root.callOwnerRequest !== ""
+      var replayOwnerDebt = replayHasOwner && root.callOwnerCallId === ""
+      var replayStopDebt = root.pendingCallStopRequest !== ""
+      var replayOwnerRepresented = replayHasOwner &&
+        replaySnapshotOwnerRequest === root.callOwnerRequest &&
+        replaySnapshotConv === root.callOwnerConv &&
+        replaySnapshotKey === root.callOwnerKey &&
+        (root.callOwnerCallId === "" || replaySnapshotId === root.callOwnerCallId)
+      var replayStopRepresented = replayStopDebt &&
+        replaySnapshotState === "ending" &&
+        replaySnapshotRequest === root.pendingCallStopRequest &&
+        replaySnapshotConv === root.pendingCallStopConv &&
+        replaySnapshotKey === root.pendingCallStopKey &&
+        replaySnapshotId === root.pendingCallStopId
+      root.callReplayRequest = ""
+      root.callReplayInstance = ""
+      root.callReplaySnapshotState = ""
+      root.callReplaySnapshotConv = ""
+      root.callReplaySnapshotKey = ""
+      root.callReplaySnapshotId = ""
+      root.callReplaySnapshotRequest = ""
+      root.callReplaySnapshotOwnerRequest = ""
+      if (replayHasOwner && !replayOwnerDebt && !replayOwnerRepresented) {
+        root.callOwnerRequest = ""
+        root.callOwnerOperation = ""
+        root.callOwnerConv = ""
+        root.callOwnerKey = ""
+        root.callOwnerCallId = ""
+        root.callOwnerConnectionLost = false
+      }
+      if (replaySnapshotState === "ending") {
+        if ((replayOwnerDebt && !replayOwnerRepresented) ||
+            (replayStopDebt && !replayStopRepresented))
+          root.resolveCallControlUnknown(true)
+        return
+      }
+      if (replaySnapshotState === "") {
+        if (replayHasOwner && !replayOwnerDebt)
+          root.resetCallAfterHelperRestart("call_result_unknown")
+        else if (!root.resolveCallControlUnknown(false))
+          root.resetCallAfterHelperRestart("call_result_unknown")
+        return
+      }
+      if (replayOwnerRepresented) {
+        root.callOwnerCallId = replaySnapshotId
+        root.callOwnerConnectionLost = false
+      }
+      if ((replayOwnerDebt && !replayOwnerRepresented) ||
+          (replayStopDebt && !replayStopRepresented))
+        root.resolveCallControlUnknown(true)
       return
     }
     if (ev.event === "connection" && !root.awaitingHelperInstance) {
@@ -2394,6 +2568,14 @@ Item {
     root.resetCallAfterHelperRestart("helper_incompatible")
     root.awaitingHelperInstance = false
     root.helperStatusNonce = ""
+    root.callReplayRequest = ""
+    root.callReplayInstance = ""
+    root.callReplaySnapshotState = ""
+    root.callReplaySnapshotConv = ""
+    root.callReplaySnapshotKey = ""
+    root.callReplaySnapshotId = ""
+    root.callReplaySnapshotRequest = ""
+    root.callReplaySnapshotOwnerRequest = ""
     root.failActiveOutgoingFiles("helper_incompatible")
     root.failQueuedMessages("helper_incompatible")
     root.failQueuedGroupInvites("helper_incompatible")
@@ -2425,6 +2607,14 @@ Item {
   function requestHelperStatus() {
     root.friendsReady = false
     root.groupsReady = false
+    root.callReplayRequest = ""
+    root.callReplayInstance = ""
+    root.callReplaySnapshotState = ""
+    root.callReplaySnapshotConv = ""
+    root.callReplaySnapshotKey = ""
+    root.callReplaySnapshotId = ""
+    root.callReplaySnapshotRequest = ""
+    root.callReplaySnapshotOwnerRequest = ""
     root.groupProjectionFailed = false
     root.helperStatusSequence = root.helperStatusSequence + 1
     root.helperStatusNonce = Date.now().toString(36) + "-status-" +
@@ -3669,6 +3859,14 @@ Item {
     root.legacySnapshotSeen = false
     root.awaitingHelperInstance = false
     root.helperStatusNonce = ""
+    root.callReplayRequest = ""
+    root.callReplayInstance = ""
+    root.callReplaySnapshotState = ""
+    root.callReplaySnapshotConv = ""
+    root.callReplaySnapshotKey = ""
+    root.callReplaySnapshotId = ""
+    root.callReplaySnapshotRequest = ""
+    root.callReplaySnapshotOwnerRequest = ""
     root.pendingDirectEvents = []
     root.pendingDirectEventBytes = 0
     root.pendingDirectEventOverflow = false

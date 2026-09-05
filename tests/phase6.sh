@@ -19,6 +19,7 @@ calla=$(mktemp -u /tmp/omaq-p6ca-XXXXXX)
 callb=$(mktemp -u /tmp/omaq-p6cb-XXXXXX)
 audio_a=$(mktemp /tmp/omaq-p6-audio-a-XXXXXX.raw)
 audio_b=$(mktemp /tmp/omaq-p6-audio-b-XXXXXX.raw)
+call_replay=$(mktemp /tmp/omaq-p6-call-replay-XXXXXX.jsonl)
 pa=""
 pb=""
 call_bridge_a=""
@@ -44,7 +45,8 @@ cleanup() {
 		pactl unload-module "$module" 2>/dev/null || true
 	done
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$fa" "$fb" "$src" "$holda" "$holdb" \
-		"$calla" "$callb" "$audio_a" "$audio_b" "$fa.err" "$fb.err"
+		"$calla" "$callb" "$audio_a" "$audio_b" "$call_replay" \
+		"$fa.err" "$fb.err"
 }
 trap cleanup EXIT
 
@@ -545,7 +547,13 @@ done
 [ "$ok" -eq 1 ] || { echo "phase6: no call.incoming" >&2; tail -20 "$fb" >&2; exit 1; }
 call_id_b=$(grep -a '"event":"call.incoming"' "$fb" | tail -1 |
 	sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
-[ ${#call_id_b} -eq 16 ] || { echo "phase6: incoming call id missing" >&2; exit 1; }
+call_id_a=$(grep -a '"event":"call.state"' "$fa" | grep -a '"state":"ringing"' |
+	tail -1 | sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+[ ${#call_id_a} -eq 16 ] && [ ${#call_id_b} -eq 16 ] || {
+	echo "phase6: first call ids missing" >&2
+	exit 1
+}
+first_call_id_a=$call_id_a
 first_call_id_b=$call_id_b
 
 ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
@@ -629,6 +637,151 @@ lease_a_pid=$!
 	done
 ) &
 lease_b_pid=$!
+same_socket_status="phase6-live-owner-status"
+same_socket_stopped_before=$(grep -a '"event":"call.stopped"' "$fa" |
+	grep -a -c "\"callId\":\"$call_id_a\"" || true)
+printf '{"op":"status","id":"%s"}\n' "$same_socket_status" >&5
+i=0
+while [ "$i" -lt 20 ]; do
+	if grep -a '"event":"call.replay.complete"' "$fa" |
+	   grep -a -q "\"request\":\"$same_socket_status\""; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: same-socket call status incomplete" >&2; exit 1; }
+python3 - "$fa" "$same_socket_status" "$call_start_a_2" "$call_id_a" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8", errors="strict") as source:
+    events = [json.loads(line) for line in source if line.strip()]
+snapshots = [event for event in events
+             if event.get("event") == "snapshot" and event.get("request") == sys.argv[2]]
+markers = [index for index, event in enumerate(events)
+           if event.get("event") == "call.replay.complete" and
+           event.get("request") == sys.argv[2]]
+if len(snapshots) != 1 or len(markers) != 1:
+    raise SystemExit("phase6: same-socket owner snapshot or marker missing")
+call = snapshots[0].get("call")
+if not isinstance(call, dict) or call.get("state") != "active" or \
+        call.get("ownerRequest") != sys.argv[3] or call.get("callId") != sys.argv[4]:
+    raise SystemExit("phase6: same-socket live owner correlation missing")
+PY
+same_socket_stopped_after=$(grep -a '"event":"call.stopped"' "$fa" |
+	grep -a -c "\"callId\":\"$call_id_a\"" || true)
+[ "$same_socket_stopped_after" -eq "$same_socket_stopped_before" ] || {
+	echo "phase6: same-socket status ended the live call" >&2
+	exit 1
+}
+failed_call_request="phase6-failed-start-replay"
+failed_call_first="${failed_call_request}-0"
+failed_call_last="${failed_call_request}-8"
+python3 - "$sa/omaq.sock" "$friend_key_a" "$failed_call_request" <<'PY'
+import json
+import socket
+import sys
+import time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(40):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: failed-action socket unavailable")
+commands = []
+for index in range(9):
+    payload = {"op": "call.start", "conversation": "0", "key": sys.argv[2],
+               "request": f"{sys.argv[3]}-{index}"}
+    commands.append(json.dumps(payload, separators=(",", ":")) + "\n")
+commands.append(commands[-1])
+client.sendall("".join(commands).encode())
+client.shutdown(socket.SHUT_WR)
+client.close()
+PY
+i=0
+while [ "$i" -lt 20 ]; do
+	failed_first_before=$(grep -a '"event":"call.action.failed"' "$fa" |
+		grep -a -c "\"request\":\"$failed_call_first\"" || true)
+	failed_last_before=$(grep -a '"event":"call.action.failed"' "$fa" |
+		grep -a -c "\"request\":\"$failed_call_last\"" || true)
+	[ "$failed_first_before" -eq 1 ] && [ "$failed_last_before" -eq 2 ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: failed call actions were not recorded" >&2; exit 1; }
+python3 - "$sa/omaq.sock" "$call_replay" "$failed_call_first" \
+	"$failed_call_last" "$call_start_a_2" "$call_id_a" <<'PY'
+import json
+import socket
+import sys
+import time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+for _ in range(40):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: failed-action replay socket unavailable")
+request = "phase6-failed-action-replay"
+client.sendall((json.dumps({"op": "status", "id": request},
+                           separators=(",", ":")) + "\n").encode())
+client.shutdown(socket.SHUT_WR)
+buffer = b""
+events = []
+while True:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    buffer += chunk
+    while b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
+        if not line:
+            continue
+        event = json.loads(line)
+        events.append(event)
+        if event.get("event") == "call.replay.complete" and event.get("request") == request:
+            break
+    else:
+        continue
+    break
+client.close()
+with open(sys.argv[2], "w", encoding="utf-8") as output:
+    for event in events:
+        output.write(json.dumps(event, separators=(",", ":")) + "\n")
+markers = [index for index, event in enumerate(events)
+           if event.get("event") == "call.replay.complete" and
+           event.get("request") == request]
+actions = [index for index, event in enumerate(events)
+           if event.get("event") == "call.action.failed"]
+stopped = [index for index, event in enumerate(events)
+           if event.get("event") == "call.stopped"]
+if len(markers) != 1 or not actions or not stopped:
+    raise SystemExit("phase6: incomplete failed-action replay response")
+marker = events[markers[0]]
+snapshots = [event for event in events
+             if event.get("event") == "snapshot" and event.get("request") == request]
+if len(snapshots) != 1:
+    raise SystemExit("phase6: live-call status snapshot missing")
+snapshot_call = snapshots[0].get("call")
+if not isinstance(snapshot_call, dict) or snapshot_call.get("state") != "active" or \
+        snapshot_call.get("ownerRequest") != sys.argv[5] or \
+        snapshot_call.get("callId") != sys.argv[6]:
+    raise SystemExit("phase6: live-call owner correlation missing")
+if not (max(actions) < min(stopped) < markers[0] == len(events) - 1):
+    raise SystemExit("phase6: call replay completion preceded a replay record")
+if marker.get("actionOverflow") is not True or marker.get("terminalOverflow") is not False:
+    raise SystemExit("phase6: failed-action overflow marker mismatch")
+requests = [event.get("request") for event in events
+            if event.get("event") == "call.action.failed"]
+if sys.argv[3] in requests or requests.count(sys.argv[4]) != 1:
+    raise SystemExit("phase6: failed-action eviction or deduplication mismatch")
+PY
 busy_before=$(grep -a -c '"code":"busy"' "$fa" || true)
 printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$friend_key_a" >&3
 i=0
@@ -751,6 +904,78 @@ while [ "$i" -lt 20 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 20 ] || { echo "phase6: alias terminal result was not replayed" >&2; exit 1; }
+terminal_retry_prefix="phase6-terminal-overflow"
+for terminal_retry_index in 0 1 2 3 4 5; do
+	printf '{"op":"call.stop","conversation":"0","key":"%s","callId":"%s","request":"%s-%s"}\n' \
+		"$friend_key_a" "$call_id_a" "$terminal_retry_prefix" \
+		"$terminal_retry_index" >&5
+done
+i=0
+while [ "$i" -lt 20 ]; do
+	if grep -a '"event":"call.stopped"' "$fa" |
+	   grep -a -q "\"request\":\"$terminal_retry_prefix-5\""; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: terminal overflow records missing" >&2; exit 1; }
+python3 - "$sa/omaq.sock" "$call_replay" "$first_call_id_a" \
+	"$terminal_retry_prefix-5" <<'PY'
+import json
+import socket
+import sys
+import time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+for _ in range(40):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: terminal-overflow replay socket unavailable")
+request = "phase6-terminal-overflow-status"
+client.sendall((json.dumps({"op": "status", "id": request},
+                           separators=(",", ":")) + "\n").encode())
+client.shutdown(socket.SHUT_WR)
+buffer = b""
+events = []
+while True:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    buffer += chunk
+    while b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
+        if not line:
+            continue
+        event = json.loads(line)
+        events.append(event)
+        if event.get("event") == "call.replay.complete" and event.get("request") == request:
+            break
+    else:
+        continue
+    break
+client.close()
+with open(sys.argv[2], "w", encoding="utf-8") as output:
+    for event in events:
+        output.write(json.dumps(event, separators=(",", ":")) + "\n")
+markers = [index for index, event in enumerate(events)
+           if event.get("event") == "call.replay.complete" and
+           event.get("request") == request]
+stopped = [event for event in events if event.get("event") == "call.stopped"]
+if len(markers) != 1 or markers[0] != len(events) - 1 or len(stopped) != 9:
+    raise SystemExit("phase6: terminal replay count or completion order mismatch")
+marker = events[markers[0]]
+if marker.get("terminalOverflow") is not True:
+    raise SystemExit("phase6: terminal overflow was not reported")
+if any(event.get("callId") == sys.argv[3] for event in stopped):
+    raise SystemExit("phase6: evicted terminal result was replayed")
+if sum(event.get("request") == sys.argv[4] for event in stopped) != 1:
+    raise SystemExit("phase6: retained terminal result was missing or duplicated")
+PY
 probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b" no
 echo '{"op":"status","id":"phase6-post-hangup"}' >&4
 i=0

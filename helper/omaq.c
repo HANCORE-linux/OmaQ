@@ -336,6 +336,7 @@ typedef struct {
 	char key[65];
 	char call_id[CALL_ID_HEX + 1];
 	char request[80];
+	char owner_request[80];
 	char reason[24];
 } call_end_record;
 static call_end_record g_call_end;
@@ -345,6 +346,23 @@ static size_t g_call_end_alias_count;
 static call_end_record g_call_end_results[CALL_END_RESULT_MAX];
 static size_t g_call_end_result_next;
 static size_t g_call_end_result_count;
+static int g_call_end_result_overflow;
+#if OMAQ_PROTOCOL_VERSION >= 15
+#define CALL_ACTION_RESULT_MAX MAX_CLIENTS
+typedef struct {
+	int used;
+	char operation[8];
+	char conversation[16];
+	char key[65];
+	char call_id[CALL_ID_HEX + 1];
+	char request[80];
+	char code[40];
+} call_action_result;
+static call_action_result g_call_action_results[CALL_ACTION_RESULT_MAX];
+static size_t g_call_action_result_next;
+static size_t g_call_action_result_count;
+static int g_call_action_result_overflow;
+#endif
 #endif
 static int g_identity_requires_ready;
 static int g_stdin_identity_ready = 1;
@@ -3684,6 +3702,13 @@ static void reset_identity_runtime_state(void)
 	memset(g_call_end_results, 0, sizeof(g_call_end_results));
 	g_call_end_result_next = 0;
 	g_call_end_result_count = 0;
+	g_call_end_result_overflow = 0;
+#if OMAQ_PROTOCOL_VERSION >= 15
+	memset(g_call_action_results, 0, sizeof(g_call_action_results));
+	g_call_action_result_next = 0;
+	g_call_action_result_count = 0;
+	g_call_action_result_overflow = 0;
+#endif
 	group_file_reset();
 	omaq_group_reset();
 	omaq_file_reset();
@@ -8328,26 +8353,103 @@ static void emit_call_state(uint32_t friend, const char *state,
 }
 
 #if OMAQ_PROTOCOL_VERSION >= 15
+static void emit_call_action_result(const call_action_result *result)
+{
+	char escaped_request[80 * 6 + 1], event[1100];
+
+	if (!result || !result->used || !direct_id_ok(result->conversation) ||
+	    !lower_hex_key_ok(result->key) ||
+	    !omaq_message_id_ok(result->request) ||
+	    omaq_json_escape(result->request, escaped_request,
+			     sizeof(escaped_request)) != 0)
+		return;
+	if (call_id_ok(result->call_id))
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 result->operation, result->conversation, result->key,
+			 result->call_id, escaped_request, result->code);
+	else
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 result->operation, result->conversation, result->key,
+			 escaped_request, result->code);
+	emit(event);
+}
+
+static const call_action_result *remember_call_action_result(
+	const call_action_result *result)
+{
+	call_action_result copy;
+	call_action_result *stored;
+
+	if (!result || !result->used)
+		return NULL;
+	copy = *result;
+	for (size_t offset = 0; offset < g_call_action_result_count; offset++) {
+		size_t index = (g_call_action_result_next + CALL_ACTION_RESULT_MAX - 1 -
+				offset) % CALL_ACTION_RESULT_MAX;
+		stored = &g_call_action_results[index];
+		if (strcmp(stored->operation, copy.operation) == 0 &&
+		    strcmp(stored->conversation, copy.conversation) == 0 &&
+		    strcmp(stored->key, copy.key) == 0 &&
+		    strcmp(stored->call_id, copy.call_id) == 0 &&
+		    strcmp(stored->request, copy.request) == 0) {
+			*stored = copy;
+			return stored;
+		}
+	}
+	if (g_call_action_result_count == CALL_ACTION_RESULT_MAX)
+		g_call_action_result_overflow = 1;
+	stored = &g_call_action_results[g_call_action_result_next];
+	*stored = copy;
+	g_call_action_result_next =
+		(g_call_action_result_next + 1) % CALL_ACTION_RESULT_MAX;
+	if (g_call_action_result_count < CALL_ACTION_RESULT_MAX)
+		g_call_action_result_count++;
+	return stored;
+}
+
+static void replay_call_action_results(void)
+{
+	for (size_t offset = 0; offset < g_call_action_result_count; offset++) {
+		size_t index = (g_call_action_result_next + CALL_ACTION_RESULT_MAX -
+				g_call_action_result_count + offset) %
+				CALL_ACTION_RESULT_MAX;
+		emit_call_action_result(&g_call_action_results[index]);
+	}
+}
+
 static void emit_call_action_failed_record(const char *operation,
 					   const char *conversation, const char *key,
 					   const char *call_id, const char *request,
 					   const char *code)
 {
-	char escaped_request[80 * 6 + 1], event[1100];
+	call_action_result result = { .used = 1 };
+	const call_action_result *stored;
+	size_t operation_len, conversation_len, request_len, code_len;
 
-	if (!operation || !direct_id_ok(conversation) || !lower_hex_key_ok(key) ||
-	    !omaq_message_id_ok(request) || !code ||
-	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+	if (!operation || !conversation || !code ||
+	    !direct_id_ok(conversation) || !lower_hex_key_ok(key) ||
+	    !omaq_message_id_ok(request))
 		return;
+	operation_len = strlen(operation);
+	conversation_len = strlen(conversation);
+	request_len = strlen(request);
+	code_len = strlen(code);
+	if (operation_len == 0 || operation_len >= sizeof(result.operation) ||
+	    conversation_len >= sizeof(result.conversation) ||
+	    request_len >= sizeof(result.request) ||
+	    code_len == 0 || code_len >= sizeof(result.code))
+		return;
+	memcpy(result.operation, operation, operation_len + 1);
+	memcpy(result.conversation, conversation, conversation_len + 1);
+	memcpy(result.key, key, sizeof(result.key));
 	if (call_id_ok(call_id))
-		snprintf(event, sizeof(event),
-			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
-			 operation, conversation, key, call_id, escaped_request, code);
-	else
-		snprintf(event, sizeof(event),
-			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
-			 operation, conversation, key, escaped_request, code);
-	emit(event);
+		memcpy(result.call_id, call_id, sizeof(result.call_id));
+	memcpy(result.request, request, request_len + 1);
+	memcpy(result.code, code, code_len + 1);
+	stored = remember_call_action_result(&result);
+	emit_call_action_result(stored);
 }
 
 static void emit_call_action_failed(const char *operation, uint32_t friend,
@@ -8419,6 +8521,8 @@ static const call_end_record *remember_call_end_result(const call_end_record *re
 		    strcmp(g_call_end_results[index].request, copy.request) == 0)
 			return &g_call_end_results[index];
 	}
+	if (g_call_end_result_count == CALL_END_RESULT_MAX)
+		g_call_end_result_overflow = 1;
 	stored = &g_call_end_results[g_call_end_result_next];
 	*stored = copy;
 	g_call_end_result_next = (g_call_end_result_next + 1) % CALL_END_RESULT_MAX;
@@ -8437,6 +8541,24 @@ static void replay_last_call_end(void)
 }
 
 #if OMAQ_PROTOCOL_VERSION >= 15
+static void replay_call_results(const char *request)
+{
+	char escaped_request[80 * 6 + 1], event[800];
+
+	replay_call_action_results();
+	replay_last_call_end();
+	if (!omaq_message_id_ok(request) ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+		return;
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"call.replay.complete\",\"instance\":\"%s\",\"request\":\"%s\",\"actionOverflow\":%s,\"terminalOverflow\":%s}",
+		 g_instance_id, escaped_request,
+		 g_call_action_result_overflow ? "true" : "false",
+		 g_call_end_result_overflow ? "true" : "false");
+	emit(event);
+}
+
+
 static const call_end_record *find_call_end_result(const char *call_id,
 						   const char *request)
 {
@@ -8495,6 +8617,9 @@ static int queue_call_end(uint32_t friend, const char *key, const char *request,
 	if (request)
 		snprintf(g_call_end.request, sizeof(g_call_end.request), "%s", request);
 #if OMAQ_PROTOCOL_VERSION >= 15
+	if (g_call_owner_request[0])
+		snprintf(g_call_end.owner_request, sizeof(g_call_end.owner_request),
+			 "%s", g_call_owner_request);
 	if (g_call_owner_request[0] &&
 	    strcmp(g_call_owner_request, g_call_end.request) != 0 &&
 	    add_call_end_alias_request(g_call_owner_request) != 0) {
@@ -10375,24 +10500,58 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				 ",\"request\":\"%s\"", escaped_request);
 		}
 #ifdef HAVE_TOX
-		char addr[77], nickname[129], escaped_nickname[260], call_field[400];
-		char ev[1400];
+		char addr[77], nickname[129], escaped_nickname[260], call_field[1300];
+		char ev[2600];
 		uint32_t call_friend = UINT32_MAX;
 		const char *call_state = NULL;
 
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (g_call_end.used) {
+			char escaped_end_request[80 * 6 + 1];
+			char escaped_owner_request[80 * 6 + 1];
+			char end_request_field[80 * 6 + 32];
+			char owner_request_field[80 * 6 + 32];
+
+			end_request_field[0] = '\0';
+			owner_request_field[0] = '\0';
+			if (g_call_end.request[0] &&
+			    omaq_json_escape(g_call_end.request, escaped_end_request,
+					     sizeof(escaped_end_request)) == 0)
+				snprintf(end_request_field, sizeof(end_request_field),
+					 ",\"request\":\"%s\"", escaped_end_request);
+			if (g_call_end.owner_request[0] &&
+			    omaq_json_escape(g_call_end.owner_request,
+					     escaped_owner_request,
+					     sizeof(escaped_owner_request)) == 0)
+				snprintf(owner_request_field, sizeof(owner_request_field),
+					 ",\"ownerRequest\":\"%s\"",
+					 escaped_owner_request);
 			snprintf(call_field, sizeof(call_field),
-				 ",\"call\":{\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"ending\"}",
-				 g_call_end.conversation, g_call_end.key, g_call_end.call_id);
+				 ",\"call\":{\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"ending\"%s%s}",
+				 g_call_end.conversation, g_call_end.key, g_call_end.call_id,
+				 end_request_field, owner_request_field);
 		} else if (omaq_av_status(&call_friend, &call_state)) {
 			if (call_friend != g_call_friend || strlen(g_call_key) != 64 ||
-			    !call_id_ok(g_call_id))
+			    !call_id_ok(g_call_id)) {
 				snprintf(call_field, sizeof(call_field), ",\"call\":null");
-			else
+			} else {
+				char escaped_live_owner_request[80 * 6 + 1];
+				char live_owner_request_field[80 * 6 + 32];
+
+				live_owner_request_field[0] = '\0';
+				if (g_call_owner_request[0] &&
+				    omaq_json_escape(g_call_owner_request,
+						     escaped_live_owner_request,
+						     sizeof(escaped_live_owner_request)) == 0)
+					snprintf(live_owner_request_field,
+						 sizeof(live_owner_request_field),
+						 ",\"ownerRequest\":\"%s\"",
+						 escaped_live_owner_request);
 				snprintf(call_field, sizeof(call_field),
-					 ",\"call\":{\"conversation\":\"%u\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"%s\"}",
-					 call_friend, g_call_key, g_call_id, call_state);
+					 ",\"call\":{\"conversation\":\"%u\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"%s\"%s}",
+					 call_friend, g_call_key, g_call_id, call_state,
+					 live_owner_request_field);
+			}
 		} else {
 			snprintf(call_field, sizeof(call_field), ",\"call\":null");
 		}
@@ -10421,7 +10580,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			if (g_identity_primary_uncertain)
 				emit_error("identity_primary_uncertain");
 			replay_sound_results();
+#if OMAQ_PROTOCOL_VERSION >= 15
+			replay_call_results(op->id);
+#else
 			replay_last_call_end();
+#endif
 			return 0;
 		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
@@ -10458,7 +10621,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			replay_group_invite_results();
 #endif
 			replay_sound_results();
+#if OMAQ_PROTOCOL_VERSION >= 15
+			replay_call_results(op->id);
+#else
 			replay_last_call_end();
+#endif
 			return 0;
 		}
 #endif
@@ -10478,7 +10645,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #endif
 			replay_sound_results();
 #ifdef HAVE_TOX
+#if OMAQ_PROTOCOL_VERSION >= 15
+			replay_call_results(op->id);
+#else
 			replay_last_call_end();
+#endif
 #endif
 		}
 		return 0;
