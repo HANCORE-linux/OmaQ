@@ -61,6 +61,11 @@
 #ifndef OMAQ_PROTOCOL_VERSION
 #define OMAQ_PROTOCOL_VERSION 15
 #endif
+#if OMAQ_PROTOCOL_VERSION >= 15
+#define OMAQ_HISTORY_CLEAR_VERSION 2
+#else
+#define OMAQ_HISTORY_CLEAR_VERSION 1
+#endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -2082,8 +2087,9 @@ static void emit_locked_status(void)
 	char ev[320];
 
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null}",
-		 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id);
+		 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null}",
+		 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+		 omaq_unread_total(&g_unread), g_instance_id);
 	emit(ev);
 	emit_invite_state("", 0, "status", NULL);
 	emit_all_unread();
@@ -2300,6 +2306,48 @@ static void emit_history_failed(const char *conversation, const char *request)
 	snprintf(ev, sizeof(ev),
 		 "{\"event\":\"history.failed\",\"conversation\":\"%s\",\"request\":\"%s\",\"code\":\"history_failed\"}",
 		 esc_conv, esc_request);
+	emit(ev);
+}
+
+static int history_clear_key_ok(const char *key)
+{
+	if (!key || strlen(key) != 64)
+		return 0;
+	for (size_t i = 0; i < 64; i++)
+		if (!((key[i] >= '0' && key[i] <= '9') ||
+		      (key[i] >= 'a' && key[i] <= 'f')))
+			return 0;
+	return 1;
+}
+
+static void emit_history_clear_result(const char *conversation, const char *key,
+				      const char *request, const char *code)
+{
+	char esc_conv[128], esc_request[OMAQ_JSON_STR_MAX];
+	char key_field[96], ev[1200];
+
+	if (!conversation || !request || !request[0] ||
+	    omaq_json_escape(conversation, esc_conv, sizeof(esc_conv)) != 0 ||
+	    omaq_json_escape(request, esc_request, sizeof(esc_request)) != 0)
+		return;
+	key_field[0] = '\0';
+	if (key && key[0]) {
+		if (!history_clear_key_ok(key))
+			return;
+		snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"", key);
+	}
+	if (code && code[0]) {
+		char esc_code[192];
+		if (omaq_json_escape(code, esc_code, sizeof(esc_code)) != 0)
+			return;
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"history.clear.failed\",\"conversation\":\"%s\"%s,\"request\":\"%s\",\"instance\":\"%s\",\"code\":\"%s\"}",
+			 esc_conv, key_field, esc_request, g_instance_id, esc_code);
+	} else {
+		snprintf(ev, sizeof(ev),
+			 "{\"event\":\"history.clear.succeeded\",\"conversation\":\"%s\"%s,\"request\":\"%s\",\"instance\":\"%s\"}",
+			 esc_conv, key_field, esc_request, g_instance_id);
+	}
 	emit(ev);
 }
 
@@ -2540,6 +2588,31 @@ static int direct_invite_redeem_op(const omaq_op *op)
 static int direct_reinvite_clear_op(const omaq_op *op)
 {
 	return op && strcmp(op->op, "direct.reinvite.clear") == 0 && op->id[0];
+}
+
+static int correlated_history_clear_op(const omaq_op *op)
+{
+#if OMAQ_PROTOCOL_VERSION >= 15
+	return op && strcmp(op->op, "history.clear") == 0 &&
+		omaq_message_id_ok(op->id);
+#else
+	(void)op;
+	return 0;
+#endif
+}
+
+static int reject_correlated_history_clear(const omaq_op *op, const char *code)
+{
+	const char *conversation;
+	const char *key;
+
+	if (!correlated_history_clear_op(op))
+		return 0;
+	conversation = op->conversation[0] ? op->conversation : "0";
+	key = direct_id_ok(conversation) ? op->key : "";
+	emit_history_clear_result(conversation, key, op->id,
+				  code && code[0] ? code : "history_clear_failed");
+	return 1;
 }
 
 static int targeted_group_invite_op(const omaq_op *op)
@@ -10221,6 +10294,8 @@ static void reject_direct_operation_binding(const omaq_op *op)
 		emit_file_rejected(conversation, op->id, "identity_changed");
 	else if (strcmp(op->op, "history") == 0)
 		emit_history_failed(conversation, op->id);
+	else if (reject_correlated_history_clear(op, "identity_changed"))
+		return;
 	else if (strcmp(op->op, "conversation.read") == 0 ||
 		 strcmp(op->op, "unread.clear") == 0)
 		emit_conversation_read("conversation.read.failed", conversation,
@@ -10317,6 +10392,8 @@ static void begin_helper_shutdown(int owner_fd, const char *escaped_request)
 static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 {
 	if (shutdown_requested()) {
+		if (reject_correlated_history_clear(op, "helper_unavailable"))
+			return 0;
 #if defined(HAVE_TOX) && OMAQ_PROTOCOL_VERSION >= 15
 		emit_bound_call_action_failed(op, "call_control_unavailable");
 #endif
@@ -10404,6 +10481,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 #ifdef HAVE_TOX
 	if (g_identity_recovery_required) {
+		if (reject_correlated_history_clear(op, "identity_changed"))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, "identity_changed");
@@ -10570,9 +10649,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #endif
 		if (g_locked && !g_tox) {
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
-				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id,
-				 request_field);
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 omaq_unread_total(&g_unread), g_instance_id, request_field);
 			emit(ev);
 			emit_invite_state("", 0, "status", NULL);
 			emit_identity_primary_state(NULL);
@@ -10592,8 +10671,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			    omaq_json_escape(nickname, escaped_nickname, sizeof(escaped_nickname)) != 0)
 				escaped_nickname[0] = '\0';
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s%s}",
-				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread),
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 omaq_unread_total(&g_unread),
 				 omaq_tox_online(g_tox) ? "true" : "false", addr,
 				 escaped_nickname, omaq_identity_protected(g_tox) ? "true" : "false",
 				 g_instance_id, call_field, request_field);
@@ -10630,11 +10710,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		}
 #endif
 		{
-			char ev[640];
+			char ev[768];
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"conversations\":[],\"instance\":\"%s\",\"call\":null%s}",
-				 OMAQ_PROTOCOL_VERSION, omaq_unread_total(&g_unread), g_instance_id,
-				 request_field);
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"conversations\":[],\"instance\":\"%s\",\"call\":null%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 omaq_unread_total(&g_unread), g_instance_id, request_field);
 			emit(ev);
 			emit_all_unread();
 #ifdef HAVE_TOX
@@ -10656,6 +10736,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 #ifdef HAVE_TOX
 	if (g_identity_primary_uncertain && !identity_uncertainty_allowed_op(op)) {
+		if (reject_correlated_history_clear(op, "identity_primary_uncertain"))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, "identity_primary_uncertain");
@@ -10676,6 +10758,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (g_identity_guard_error && strcmp(op->op, "identity.inspect") != 0 &&
 	    !(strcmp(op->op, "identity.import") == 0 &&
 	      identity_guard_import_allowed())) {
+		if (reject_correlated_history_clear(op, identity_guard_error_code()))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, identity_guard_error_code());
@@ -10691,6 +10775,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (g_direct_state_migration_failed &&
 	    strncmp(op->op, "identity.", 9) != 0 &&
 	    strcmp(op->op, "invite.revoke") != 0) {
+		if (reject_correlated_history_clear(op,
+					    "direct_state_migration_failed"))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, "direct_state_migration_failed");
@@ -10718,6 +10805,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		return 0;
 	}
 	if (g_identity_requires_ready && (!identity_ready || !*identity_ready)) {
+		if (reject_correlated_history_clear(op, "identity_changed"))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, "identity_changed");
@@ -10739,6 +10828,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 	if (g_locked && !g_tox &&
 	    strcmp(op->op, "identity.unlock") != 0) {
+		if (reject_correlated_history_clear(op, "locked"))
+			return 0;
 #if OMAQ_PROTOCOL_VERSION >= 15
 		if (correlated_call_action(op))
 			emit_bound_call_action_failed(op, "locked");
@@ -12613,46 +12704,104 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (strcmp(op->op, "history.clear") == 0) {
 		const char *cid = op->conversation[0] ? op->conversation : "0";
 		const char *history_cid = cid;
-		char esc_cid[128], key_field[96] = "", ev[300];
+		const char *event_key = direct_id_ok(cid) ? op->key : "";
+		int correlated = correlated_history_clear_op(op);
 #ifdef HAVE_TOX
 		char state_cid[OMAQ_DIRECT_STATE_ID_MAX];
 #endif
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (!correlated) {
+			emit_error_conv("request_required", cid);
+			return 0;
+		}
+		{
+			uint64_t expected = OMAQ_JSON_FIELD_OP |
+				OMAQ_JSON_FIELD_CONVERSATION | OMAQ_JSON_FIELD_ID;
+
+			if (direct_id_ok(cid))
+				expected |= OMAQ_JSON_FIELD_KEY;
+			if (op->field_mask != expected) {
+				emit_history_clear_result(cid, event_key, op->id, "forbidden");
+				return 0;
+			}
+		}
+#endif
 		if (!conversation_id_ok(cid)) {
-			emit_error_conv("forbidden", cid);
+			if (correlated)
+				emit_history_clear_result(cid, direct_id_ok(cid) ? op->key : "",
+							  op->id, "forbidden");
+			else
+				emit_error_conv("forbidden", cid);
 			return 0;
 		}
 #ifdef HAVE_TOX
 		if (g_tox && storage_conversation(cid, state_cid, sizeof(state_cid)) != 0) {
-			emit_error_conv("forbidden", cid);
+			if (correlated)
+				emit_history_clear_result(cid, direct_id_ok(cid) ? op->key : "",
+							  op->id, "forbidden");
+			else
+				emit_error_conv("forbidden", cid);
 			return 0;
 		}
-		if (g_tox)
+		if (g_tox) {
 			history_cid = state_cid;
+			if (direct_id_ok(cid))
+				event_key = history_cid + 2;
+		}
 		if (recover_receipt_transaction() != 0) {
-			emit_error_conv("receipt_state_failed", cid);
+			if (correlated)
+				emit_history_clear_result(cid, event_key, op->id,
+							  "receipt_state_failed");
+			else
+				emit_error_conv("receipt_state_failed", cid);
 			return 0;
 		}
 #endif
-		if (omaq_store_clear(home_dir(), history_cid) != 0) {
-			emit_error_conv("forbidden", cid);
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (clear_unread(cid) != 0) {
+			emit_history_clear_result(cid, event_key, op->id,
+						  "unread_persist_failed");
 			return 0;
 		}
+#ifdef HAVE_TOX
+		if (receipt_outbox_drop_conversation(history_cid) != 0) {
+			emit_history_clear_result(cid, event_key, op->id,
+						  "receipt_state_failed");
+			return 0;
+		}
+#endif
+#endif
+		if (omaq_store_clear(home_dir(), history_cid) != 0) {
+			if (correlated)
+				emit_history_clear_result(cid, event_key, op->id,
+							  "result_unknown");
+			else
+				emit_error_conv("forbidden", cid);
+			return 0;
+		}
+#if OMAQ_PROTOCOL_VERSION < 15
 		if (clear_unread(cid) != 0)
 			emit_unread_failed(cid, "unread_persist_failed");
 #ifdef HAVE_TOX
 		if (receipt_outbox_drop_conversation(history_cid) != 0)
 			emit_error_conv("receipt_state_failed", cid);
 #endif
-		if (history_cid[0] == 'd' && history_cid[1] == ':')
-			snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"",
-				 history_cid + 2);
-		if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
-			emit("{\"event\":\"history\",\"conversation\":\"0\",\"cleared\":true,\"items\":[]}");
-		else {
-			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"history\",\"conversation\":\"%s\"%s,\"cleared\":true,\"items\":[]}",
-				 esc_cid, key_field);
-			emit(ev);
+#endif
+		if (correlated) {
+			emit_history_clear_result(cid, event_key, op->id, NULL);
+		} else {
+			char esc_cid[128], key_field[96] = "", ev[300];
+			if (history_cid[0] == 'd' && history_cid[1] == ':')
+				snprintf(key_field, sizeof(key_field), ",\"key\":\"%s\"",
+					 history_cid + 2);
+			if (omaq_json_escape(cid, esc_cid, sizeof(esc_cid)) != 0)
+				emit("{\"event\":\"history\",\"conversation\":\"0\",\"cleared\":true,\"items\":[]}");
+			else {
+				snprintf(ev, sizeof(ev),
+					 "{\"event\":\"history\",\"conversation\":\"%s\"%s,\"cleared\":true,\"items\":[]}",
+					 esc_cid, key_field);
+				emit(ev);
+			}
 		}
 		return 0;
 	}
