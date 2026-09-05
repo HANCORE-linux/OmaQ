@@ -9,6 +9,7 @@ import sys
 root = Path(sys.argv[1])
 service = (root / "Service.qml").read_text(encoding="utf-8")
 page = (root / "pages/ChatPage.qml").read_text(encoding="utf-8")
+panel = (root / "Panel.qml").read_text(encoding="utf-8")
 surface = (root / "ChatSurface.qml").read_text(encoding="utf-8")
 helper = (root / "helper/omaq.c").read_text(encoding="utf-8")
 av = (root / "helper/av.c").read_text(encoding="utf-8")
@@ -30,6 +31,16 @@ contracts = {
         "replaySnapshotOwnerRequest === root.callOwnerRequest",
         'root.resetCallAfterHelperRestart("helper_incompatible")',
         'root.lastCallState = "ending"',
+        "function restoreIncomingCallTone()",
+        "property var deferredAnswerTerminal: null",
+        'root.handleLine(JSON.stringify(deferredTerminal))',
+        'replayEventsToApply = identityChanged || processChanged || replayOverflowToReport',
+        "ownerRequestMatches",
+        "terminalPredatesAnswer",
+    ],
+    "Panel.qml": [
+        'root.callFeedback = "Call control unavailable"',
+        "function onCallStopTickChanged()",
     ],
     "pages/ChatPage.qml": [
         "readonly property bool callEnding:",
@@ -41,6 +52,7 @@ contracts = {
         "onIncomingChanged:",
         "onInCallChanged:",
         "function onCallStopTickChanged()",
+        'root.showCallFeedback("Call control unavailable")',
     ],
     "ChatSurface.qml": [
         '? "Ending…" : (toolbar.page ? toolbar.page.callFeedback : "")',
@@ -80,6 +92,7 @@ contracts = {
 for name, needles in contracts.items():
     source = {
         "Service.qml": service,
+        "Panel.qml": panel,
         "pages/ChatPage.qml": page,
         "ChatSurface.qml": surface,
         "helper/omaq.c": helper,
@@ -270,7 +283,15 @@ ShellRoot {
         key: key, callId: callB, reason: "control_lost", localStopped: true,
         transportClosed: true, cancelAttempted: true, cancelAccepted: true,
         audioAvailable: true }))
-      var reconnectTerminalAccepted = service.lastCallState === "ended" &&
+      var missingReconnectOwnerRejected = service.lastCallState === "ending" &&
+        service.pendingCallStopRequest === "stop-request-b" &&
+        service.callStopTick === stopTick
+      service.handleLine(JSON.stringify({ event: "call.stopped", conversation: "0",
+        key: key, callId: callB, request: "stop-request-b", reason: "control_lost",
+        localStopped: true, transportClosed: true, cancelAttempted: true,
+        cancelAccepted: true, audioAvailable: true }))
+      var reconnectTerminalAccepted = missingReconnectOwnerRejected &&
+        service.lastCallState === "ended" &&
         service.lastCallStopCode === "control_lost" &&
         service.pendingCallStopRequest === ""
 
@@ -655,6 +676,82 @@ ShellRoot {
         service.lastCallStopCode === "helper_incompatible" &&
         service.callStopTick === stopTick + 1
 
+      service.helperCompatibility = "compatible"
+      service.activeHelperProtocol = 15
+      service.friendsReady = true
+      service.friends = [{ id: "0", key: key }]
+      service.lastCallState = "incoming"
+      service.incomingCall = true
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callA
+      service.callOwnerRequest = "answer-race"
+      service.callOwnerOperation = "answer"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = ""
+      service.callToneSuppressed = true
+      service.lastCallStopConfirmed = false
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.stopped", conversation: "0",
+        key: key, callId: callA, reason: "remote", localStopped: true,
+        transportClosed: true, cancelAttempted: false, cancelAccepted: false,
+        audioAvailable: true }))
+      var answerTerminalDeferred = service.lastCallState === "ending" &&
+        service.deferredAnswerTerminal !== null && service.callStopTick === stopTick
+      service.handleLine(JSON.stringify({ event: "call.action.failed", op: "answer",
+        conversation: "0", key: key, callId: callA, request: "answer-race",
+        code: "stale_call" }))
+      var deferredTerminalAccepted = service.lastCallState === "ended" &&
+        service.lastCallStopConfirmed && service.callStopTick === stopTick + 1 &&
+        service.deferredAnswerTerminal === null
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.state", conversation: "0",
+        key: key, callId: callA, request: "answer-race", state: "active" }))
+      var endedIsMonotonic = service.lastCallState === "ended" &&
+        service.callStopTick === stopTick
+      service.handleLine(JSON.stringify({ event: "call.incoming", conversation: "0",
+        key: key, callId: callB }))
+      var newCallResetsTerminalConfirmation = service.lastCallState === "incoming" &&
+        !service.lastCallStopConfirmed
+
+      service.lastCallState = "active"
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callB
+      service.callOwnerRequest = "known-owner"
+      service.callOwnerOperation = "start"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = callB
+      service.lastCallStopConfirmed = false
+      stopTick = service.callStopTick
+      service.handleLine(JSON.stringify({ event: "call.stopped", conversation: "0",
+        key: key, callId: callB, request: "foreign-owner", reason: "remote",
+        localStopped: true, transportClosed: true, cancelAttempted: false,
+        cancelAccepted: false, audioAvailable: true }))
+      var foreignOwnerRejected = service.callStopTick === stopTick &&
+        service.callOwnerRequest === "known-owner" && service.lastCallState === "active"
+
+      service.lastCallState = "incoming"
+      service.incomingCall = true
+      service.lastCallConv = "0"
+      service.lastCallKey = key
+      service.lastCallId = callA
+      service.callOwnerRequest = "answer-failure"
+      service.callOwnerOperation = "answer"
+      service.callOwnerConv = "0"
+      service.callOwnerKey = key
+      service.callOwnerCallId = ""
+      service.callToneSuppressed = true
+      service.lastCallStopConfirmed = false
+      service.handleLine(JSON.stringify({ event: "call.action.failed", op: "answer",
+        conversation: "0", key: key, callId: callA, request: "answer-failure",
+        code: "call_answer_failed" }))
+      var rejectedAnswerRingsAgain = service.lastCallState === "incoming" &&
+        service.incomingCall && !service.callToneSuppressed &&
+        service.lastCallStopCode === "call_answer_failed"
+
       var valid = capabilityGate && offlineRejected && missingCorrelationRejected &&
         staleCallRejected && endingVisible && correlatedStopAccepted &&
         duplicateTerminalIgnored && rejectedStopNotConfirmed &&
@@ -671,9 +768,21 @@ ShellRoot {
         unresolvedStartTerminalAccepted &&
         unresolvedAnswerPreserved && unresolvedAnswerTerminalAccepted &&
         incomingSnapshotPreserved && incomingTerminalAccepted && restartReset &&
-        queuedCallRejected && incompatibleReset
-      console.log(valid ? "OMAQ_CONFIRMED_HANGUP_OK" :
-        "OMAQ_CONFIRMED_HANGUP_BAD")
+        queuedCallRejected && incompatibleReset && answerTerminalDeferred &&
+        deferredTerminalAccepted && endedIsMonotonic &&
+        newCallResetsTerminalConfirmation && foreignOwnerRejected &&
+        rejectedAnswerRingsAgain
+      if (!valid)
+        console.log("OMAQ_CONFIRMED_HANGUP_BAD " + JSON.stringify({
+          answerTerminalDeferred: answerTerminalDeferred,
+          deferredTerminalAccepted: deferredTerminalAccepted,
+          endedIsMonotonic: endedIsMonotonic,
+          newCallResetsTerminalConfirmation: newCallResetsTerminalConfirmation,
+          foreignOwnerRejected: foreignOwnerRejected,
+          rejectedAnswerRingsAgain: rejectedAnswerRingsAgain
+        }))
+      else
+        console.log("OMAQ_CONFIRMED_HANGUP_OK")
       Qt.quit()
     }
   }

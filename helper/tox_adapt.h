@@ -53,6 +53,7 @@ int omaq_tox_online(const struct omaq_tox *t);
 
 typedef void (*omaq_on_request)(void *ud, const uint8_t *pk32, const char *msg);
 typedef void (*omaq_on_presence)(void *ud, uint32_t friend, int online);
+typedef void (*omaq_on_friend_name)(void *ud, uint32_t friend);
 typedef void (*omaq_on_typing)(void *ud, uint32_t friend, int typing);
 typedef void (*omaq_on_message)(void *ud, uint32_t friend, const char *text);
 typedef void (*omaq_on_group_invite)(void *ud, uint32_t friend, const uint8_t *data, size_t len);
@@ -67,6 +68,8 @@ void omaq_tox_set_hooks(struct omaq_tox *t, omaq_on_request req, omaq_on_message
 void omaq_tox_set_presence_hook(struct omaq_tox *t, omaq_on_presence cb, void *ud);
 void omaq_tox_set_friend_status_hook(struct omaq_tox *t, omaq_on_presence cb,
 				     void *ud);
+void omaq_tox_set_friend_name_hook(struct omaq_tox *t, omaq_on_friend_name cb,
+				   void *ud);
 void omaq_tox_set_typing_hook(struct omaq_tox *t, omaq_on_typing cb, void *ud);
 int omaq_tox_set_typing(struct omaq_tox *t, uint32_t friend_number, int typing);
 void omaq_tox_set_group_hooks(struct omaq_tox *t, omaq_on_group_invite inv,

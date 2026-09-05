@@ -45,7 +45,7 @@ Hover or keyboard-focus an action-rail icon to display its label. Use the rail t
 
 Close the panel with `Escape`, another press on the OmaQ bar action, or a click outside. The panel intentionally has no redundant Close button and never keeps a desktop-sized invisible input region.
 
-Friend names use the panel's width-driven grid and show online, away, and offline state. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
+Friend names use the panel's width-driven grid and show online, away, and offline state. Name changes appear immediately in the panel and every open DirectChat. Group peer-name changes also refresh member rows, message sender labels, and typing labels in every open GroupChat. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
 
 ## Create and redeem invitations
 
@@ -55,7 +55,7 @@ A direct connection starts with a one-use `omaq://` invitation shared through a 
 <thead><tr><th>Create an invitation</th><th>Redeem an invitation</th><th>Verify identity</th><th>Incoming call</th></tr></thead>
 <tbody><tr>
 <td><a href="images/guide/04-panel-active-invite.png"><img src="images/guide/04-panel-active-invite.png" alt="Active OmaQ invitation" width="220"></a><br>The Invite view shows a QR code, shortened link, exact lifetime, concise share/redeem/accept instructions, Copy link, New link, and Revoke.</td>
-<td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly.</td>
+<td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly. A successful result remains visible until you edit the invitation field again.</td>
 <td><strong>Safety code</strong><br>Select a direct contact, display its safety code, and compare it with that contact through another trusted channel. Message search stays inside the matching chat window.</td>
 <td><a href="images/guide/27-panel-incoming-call.png"><img src="images/guide/27-panel-incoming-call.png" alt="Incoming direct voice call" width="220"></a><br>An incoming DirectCall offers Answer and Decline. Opening the caller's chat never answers automatically.</td>
 </tr></tbody>
@@ -84,13 +84,13 @@ Panel preferences use the active OmaQ and Omarchy visual system. Message scaling
 </tr></tbody>
 </table>
 
-Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Per-conversation **Auto-off** disables automatic opening for that conversation and changes to **Auto-open** so you can enable it again.
+Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Each floating chat shows **Pop up: On** or **Pop up: Off** for its per-conversation automatic-opening preference.
 
 Omarchy plugin settings also control badges, right-side notifications, desktop notifications, separate or bundled cards, unread animation, the default theme, message scale, sound, and formatting-toolbar visibility.
 
 ## Send DirectChat messages
 
-New DirectChat and GroupChat windows use the compositor's standard opening animation. When a chat is floating, drag its toolbar handle to move it. Tiled windows retain their compositor-managed position.
+New DirectChat and GroupChat windows use the compositor's standard opening animation. When a chat is floating, drag the blank toolbar area beside **Pop up** to move it. Tiled windows retain their compositor-managed position.
 
 <table>
 <thead><tr><th>DirectChat</th><th>Formatting tools</th><th>Emoji picker</th><th>Clear chat</th></tr></thead>
@@ -98,7 +98,7 @@ New DirectChat and GroupChat windows use the compositor's standard opening anima
 <td><a href="images/guide/15-direct-chat-overview.png"><img src="images/guide/15-direct-chat-overview.png" alt="DirectChat messages and receipts" width="220"></a><br>The header keeps the contact name beside online, offline, reconnecting, or typing state. The history shows incoming and outgoing bubbles, receipts, reactions, and unread separation.</td>
 <td><a href="images/guide/16-direct-formatting.png"><img src="images/guide/16-direct-formatting.png" alt="DirectChat formatting toolbar" width="220"></a><br>Toggle Heading, Bold, Italic, Quote, Code, Link, unordered list, numbered list, and task list tools.</td>
 <td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation. A message's React action shows the five most-used reactions in the loaded conversation at the same size as this picker.</td>
-<td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Clear requires confirmation and removes only the current local conversation history.</td>
+<td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Clear requires confirmation immediately before execution and removes only the current local conversation history. OmaQ never queues this destructive action for reconnect, and it applies success or failure only to the exact DirectChat or GroupChat request.</td>
 </tr></tbody>
 </table>
 

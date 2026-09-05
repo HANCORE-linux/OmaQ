@@ -21,6 +21,7 @@ BarWidget {
   property string redeemRequest: ""
   property string redeemFeedback: ""
   property string redeemFeedbackRequest: ""
+  property string callFeedback: ""
   property bool nospamConfirm: false
   property bool removeContactConfirm: false
   property bool removeContactPickerOpen: false
@@ -657,6 +658,8 @@ BarWidget {
     root.redeemRequest = ""
     root.redeemFeedback = ""
     root.redeemFeedbackRequest = ""
+    root.callFeedback = ""
+    panelCallFeedbackTimer.stop()
     root.chatPickerOpen = false
     root.inviteOpen = false
     root.inviteConfirmMode = ""
@@ -2058,6 +2061,12 @@ BarWidget {
     onTriggered: root.safetyCopied = false
   }
 
+  Timer {
+    id: panelCallFeedbackTimer
+    interval: 6000
+    onTriggered: root.callFeedback = ""
+  }
+
   Connections {
     target: omaq
     function onFriendsChanged() {
@@ -2071,6 +2080,13 @@ BarWidget {
     }
     function onGroupsChanged() {
       root.clearStaleGroupInviteSelection()
+    }
+    function onCallStopTickChanged() {
+      if (!omaq.incomingCall || omaq.lastCallStopConfirmed)
+        return
+      root.callFeedback = omaq.lastCallStopCode === "call_answer_failed"
+        ? "Call could not be answered" : "Call control unavailable"
+      panelCallFeedbackTimer.restart()
     }
     function onSoundTickChanged() {
       if (root.soundActionRequest === "" ||
@@ -4200,8 +4216,14 @@ BarWidget {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (omaq.answerCall(omaq.lastCallConv, omaq.lastCallKey))
+                  if (omaq.answerCall(omaq.lastCallConv, omaq.lastCallKey)) {
+                    root.callFeedback = ""
+                    panelCallFeedbackTimer.stop()
                     OmaQ.CallTone.stopAll()
+                  } else {
+                    root.callFeedback = "Call control unavailable"
+                    panelCallFeedbackTimer.restart()
+                  }
                 }
               }
               TokenButton {
@@ -4212,10 +4234,26 @@ BarWidget {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (omaq.stopCall(omaq.lastCallConv, omaq.lastCallKey))
+                  if (omaq.stopCall(omaq.lastCallConv, omaq.lastCallKey)) {
+                    root.callFeedback = ""
+                    panelCallFeedbackTimer.stop()
                     OmaQ.CallTone.stopAll()
+                  } else {
+                    root.callFeedback = "Call control unavailable"
+                    panelCallFeedbackTimer.restart()
+                  }
                 }
               }
+            }
+
+            SafeText {
+              visible: omaq.incomingCall && root.callFeedback !== ""
+              width: parent.width
+              text: root.callFeedback
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             Column {
@@ -4427,7 +4465,7 @@ BarWidget {
                 placeholderText: "Paste omaq:// invite"
                 text: root.redeemDraft
                 enabled: root.redeemRequest === ""
-                onTextChanged: {
+                onTextEdited: {
                   root.redeemDraft = text
                   if (root.redeemRequest === "") {
                     root.redeemFeedback = ""

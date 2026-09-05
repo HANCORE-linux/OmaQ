@@ -174,6 +174,12 @@ FocusScope {
     !!(root.service && root.service.directBindingMatches(root.conversation, root.peerKey))
   readonly property bool directConversation: (root.demo || !root.groupConversation) &&
     root.directBindingValid
+  readonly property bool historyClearPending: !root.demo && !!root.service &&
+    typeof root.service.historyClearPending === "function" &&
+    root.service.historyClearPending(root.conversation)
+  readonly property bool historyClearReloadRequired: !root.demo && !!root.service &&
+    typeof root.service.historyClearReloadRequired === "function" &&
+    root.service.historyClearReloadRequired(root.conversation)
   readonly property bool incoming: {
     if (!root.directConversation)
       return false
@@ -1008,7 +1014,21 @@ FocusScope {
     root.clearConfirm = false
     if (!root.directBindingValid)
       return
-    root.service.clearHistory(root.conversation, root.peerKey)
+    if (!root.service.supportsCorrelatedHistoryClear) {
+      root.reactionStatus = "Restart the OmaQ helper before clearing this chat"
+      reactionStatusTimer.interval = 6000
+      reactionStatusTimer.restart()
+      return
+    }
+    if (!root.service.clearHistory(root.conversation, root.peerKey)) {
+      root.reactionStatus = "Chat history could not be cleared"
+      reactionStatusTimer.interval = 6000
+      reactionStatusTimer.restart()
+      return
+    }
+    root.reactionStatus = "Clearing chat…"
+    reactionStatusTimer.interval = 10000
+    reactionStatusTimer.restart()
   }
 
   function newLocalMessageKey() {
@@ -1700,6 +1720,20 @@ FocusScope {
 
   function applyHistory(items, cleared) {
     var keep = []
+    if (cleared) {
+      root.stopTyping()
+      root.clearReply()
+      root.clearEdit()
+      root.clearDeleteConfirm()
+      root.closeSearch()
+      mediaPlayer.stop()
+      root.activeAudioPath = ""
+      root.audioErrorPath = ""
+      root.audioError = ""
+      fileStatusTimer.stop()
+      root.fileStatus = ""
+      root.fileStatusPath = ""
+    }
     var unreadCount = 0
     var incomingIndexes = []
     var markerAt = -1
@@ -2009,6 +2043,12 @@ FocusScope {
     root.callFeedback = ""
   }
 
+  function showCallFeedback(message) {
+    root.callFeedback = String(message || "")
+    if (root.callFeedback !== "")
+      callFeedbackTimer.restart()
+  }
+
   function formatCallDuration(value) {
     var seconds = Math.max(0, Math.floor(Number(value || 0)))
     var minutes = Math.floor(seconds / 60)
@@ -2030,6 +2070,8 @@ FocusScope {
     }
     if (service && service.startCall(root.conversation, root.peerKey))
       root.clearCallFeedback()
+    else
+      root.showCallFeedback("Call control unavailable")
   }
 
   function answerCall() {
@@ -2047,6 +2089,8 @@ FocusScope {
     if (service && service.answerCall(root.conversation, root.peerKey)) {
       root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
+    } else {
+      root.showCallFeedback("Call control unavailable")
     }
   }
 
@@ -2065,8 +2109,7 @@ FocusScope {
       root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
     } else {
-      root.callFeedback = "Call control unavailable"
-      callFeedbackTimer.restart()
+      root.showCallFeedback("Call control unavailable")
     }
   }
 
@@ -2885,6 +2928,25 @@ FocusScope {
         return
       root.applyHistory(root.service.lastHistoryItems, root.service.lastHistoryCleared)
     }
+    function onHistoryClearTickChanged() {
+      if (!root.service || !root.sameConv(root.service.lastHistoryClearConv))
+        return
+      reactionStatusTimer.stop()
+      if (root.service.lastHistoryClearSucceeded) {
+        root.reactionStatus = "Chat cleared"
+        reactionStatusTimer.interval = 2500
+      } else {
+        var code = String(root.service.lastHistoryClearCode || "result_unknown")
+        root.reactionStatus = code === "result_unknown" || code === "helper_restarted" ||
+          code === "helper_incompatible"
+          ? "Clear result unknown; reload this chat before trying again"
+          : (code === "identity_changed"
+            ? "Chat identity changed before it could be cleared"
+            : "Chat history could not be cleared")
+        reactionStatusTimer.interval = 6000
+      }
+      reactionStatusTimer.restart()
+    }
     function onHistoryFailedTickChanged() {
       if (!root.service || !root.sameConv(root.service.lastHistoryFailedConv))
         return
@@ -2930,11 +2992,9 @@ FocusScope {
     function onLastErrorTickChanged() {
       if (root.service && root.sameConv(root.service.lastErrorConv) &&
           root.service.lastError === "history_failed") {
-        root.restoreOutgoingFileStatus()
-        root.fileStatus = "File received, but chat history could not be saved"
-        root.fileStatusPath = String(root.service.lastFilePath || "")
-        fileStatusTimer.interval = 6000
-        fileStatusTimer.restart()
+        root.reactionStatus = "An item could not be added to chat history"
+        reactionStatusTimer.interval = 6000
+        reactionStatusTimer.restart()
       }
     }
     function onLastFileTickChanged() {
@@ -3289,15 +3349,21 @@ FocusScope {
         FormatBtn {
           visible: !root.demo && root.clearConfirm
           materialIcon: "check"
-          helpText: "Clear this chat"
+          helpText: root.historyClearPending ? "Clearing this chat"
+            : (root.historyClearReloadRequired ? "Reload chat before clearing again"
+              : "Clear this chat")
           selected: true
+          enabled: !root.historyClearPending && !root.historyClearReloadRequired
           onClicked: root.clearChat()
         }
 
         FormatBtn {
           visible: !root.demo && !root.clearConfirm && !root.groupLeaveConfirm
           materialIcon: "delete"
-          helpText: "Clear messages in this chat"
+          helpText: root.historyClearPending ? "Clearing this chat"
+            : (root.historyClearReloadRequired ? "Reload chat before clearing again"
+              : "Clear messages in this chat")
+          enabled: !root.historyClearPending && !root.historyClearReloadRequired
           onClicked: {
             root.groupLeaveConfirm = false
             root.clearGroupMemberAction()

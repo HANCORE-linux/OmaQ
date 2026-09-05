@@ -45,6 +45,7 @@ struct omaq_tox {
 	omaq_on_avatar on_avatar;
 	omaq_on_presence on_presence;
 	omaq_on_presence on_friend_status;
+	omaq_on_friend_name on_friend_name;
 	omaq_on_typing on_typing;
 	omaq_on_call on_call;
 	omaq_on_audio on_audio;
@@ -479,6 +480,18 @@ static void on_friend_status(Tox *tox, uint32_t friend_number,
 				    connection != TOX_CONNECTION_NONE);
 }
 
+static void on_friend_name(Tox *tox, uint32_t friend_number,
+			   const uint8_t *name, size_t length, void *ud)
+{
+	struct omaq_tox *t = ud;
+
+	(void)tox;
+	(void)name;
+	(void)length;
+	if (t->on_friend_name)
+		t->on_friend_name(t->ud, friend_number);
+}
+
 static void on_friend_typing(Tox *tox, uint32_t friend_number, bool typing, void *ud)
 {
 	struct omaq_tox *t = ud;
@@ -840,6 +853,7 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	tox_callback_self_connection_status(t->tox, on_status);
 	tox_callback_friend_connection_status(t->tox, on_friend_conn);
 	tox_callback_friend_status(t->tox, on_friend_status);
+	tox_callback_friend_name(t->tox, on_friend_name);
 	tox_callback_friend_typing(t->tox, on_friend_typing);
 	tox_callback_friend_request(t->tox, on_req);
 	tox_callback_friend_message(t->tox, on_msg);
@@ -1245,6 +1259,16 @@ void omaq_tox_set_friend_status_hook(struct omaq_tox *t, omaq_on_presence cb,
 	if (!t)
 		return;
 	t->on_friend_status = cb;
+	if (ud)
+		t->ud = ud;
+}
+
+void omaq_tox_set_friend_name_hook(struct omaq_tox *t, omaq_on_friend_name cb,
+				   void *ud)
+{
+	if (!t)
+		return;
+	t->on_friend_name = cb;
 	if (ud)
 		t->ud = ud;
 }

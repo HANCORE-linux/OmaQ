@@ -55,7 +55,9 @@ if "readonly property bool supportsGroupAttachments: root.activeHelperProtocol >
     raise SystemExit("group-chat-parity: Protocol-12 capability gate missing")
 if '"file.accept", "file.cancel"' not in service:
     raise SystemExit("group-chat-parity: Group operations do not admit file lifecycle operations")
-if "groupById(c)" in service:
+send_file = service[service.index("function sendFile("):
+                    service.index("function cancelOutgoingFile(")]
+if "groupById(c)" in send_file:
     raise SystemExit("group-chat-parity: transient QML group projection still authorizes file operations")
 if 'import "../Emoji.js" as Emoji' not in page or \
         "Emoji.splitEmojiOnly" not in page:

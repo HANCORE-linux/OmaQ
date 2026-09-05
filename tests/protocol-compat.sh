@@ -27,6 +27,58 @@ make -s -C "$root" \
 	BIN_IPC_TEST_HELPER="$tmp/helper/omaq" \
 	SANFLAGS="-DOMAQ_PROTOCOL_VERSION=7" \
 	"$tmp/helper/omaq"
+make -s -C "$root" \
+	BIN_IPC_TEST_HELPER="$tmp/helper/omaq-protocol14-ipc" \
+	SANFLAGS="-DOMAQ_PROTOCOL_VERSION=14" \
+	"$tmp/helper/omaq-protocol14-ipc"
+
+python3 - "$tmp/helper/omaq-protocol14-ipc" "$tmp/home" "$tmp/state" <<'PY'
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+helper, home, state = sys.argv[1:]
+env = os.environ.copy()
+env.update({"OMAQ_HOME": home, "OMAQ_STATE": state})
+proc = subprocess.Popen([helper], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, env=env)
+commands = [
+    {"op": "status"},
+    {"op": "history.clear", "conversation": "0", "id": "legacy-clear"},
+]
+proc.stdin.write(b"".join((json.dumps(value, separators=(",", ":")) + "\n").encode()
+                         for value in commands))
+proc.stdin.flush()
+buffer = b""
+events = []
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and not any(event.get("event") == "history"
+                                               for event in events):
+    ready, _, _ = select.select([proc.stdout], [], [],
+                                max(0, deadline - time.monotonic()))
+    if not ready:
+        break
+    chunk = os.read(proc.stdout.fileno(), 65536)
+    if not chunk:
+        break
+    buffer += chunk
+    while b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
+        if line:
+            events.append(json.loads(line))
+snapshot = next((event for event in events if event.get("event") == "snapshot"), None)
+cleared = next((event for event in events if event.get("event") == "history"), None)
+if not snapshot or snapshot.get("protocol") != 14 or snapshot.get("historyClear") != 1:
+    raise SystemExit("protocol-compat: Protocol-14 clear capability changed")
+if (not cleared or cleared.get("conversation") != "0" or
+        cleared.get("cleared") is not True or "request" in cleared):
+    raise SystemExit("protocol-compat: Protocol-14 legacy clear changed")
+proc.terminate()
+proc.wait(timeout=5)
+PY
 
 cat >"$tmp/shell.qml" <<'QML'
 import QtQuick

@@ -61,6 +61,7 @@ Item {
   readonly property bool supportsGroupTyping: root.activeHelperProtocol >= 13
   readonly property bool supportsCustomSounds: root.activeHelperProtocol >= 14
   readonly property bool supportsConfirmedHangup: root.activeHelperProtocol >= 15
+  property bool supportsCorrelatedHistoryClear: false
   onActiveHelperProtocolChanged: {
     if (root.supportsCustomSounds)
       return
@@ -190,6 +191,14 @@ Item {
   property var historyRequestByConversation: ({})
   property var historyKeyByConversation: ({})
   property int historyRequestSequence: 0
+  property var pendingHistoryClears: ({})
+  property var historyClearReloadRequiredByConversation: ({})
+  property int historyClearRequestSequence: 0
+  property string lastHistoryClearConv: ""
+  property string lastHistoryClearRequest: ""
+  property string lastHistoryClearCode: ""
+  property bool lastHistoryClearSucceeded: false
+  property int historyClearTick: 0
   property int reconnectGeneration: 0
   property int helperInstanceGeneration: 0
   property bool peerTyping: false
@@ -288,6 +297,7 @@ Item {
   property string callReplaySnapshotId: ""
   property string callReplaySnapshotRequest: ""
   property string callReplaySnapshotOwnerRequest: ""
+  property var deferredAnswerTerminal: null
   readonly property bool callActionPending: root.supportsConfirmedHangup &&
     root.callOwnerRequest !== "" && root.callOwnerCallId === ""
   property bool callToneSuppressed: false
@@ -371,6 +381,9 @@ Item {
     root.pendingCallStopConv = ""
     root.pendingCallStopKey = ""
     root.pendingCallStopId = ""
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.deferredAnswerTerminal = null
     root.callOwnerRequest = ""
     root.callOwnerOperation = ""
     root.callOwnerConv = ""
@@ -385,6 +398,12 @@ Item {
     }
     root.callStopTick = root.callStopTick + 1
     return true
+  }
+
+  function restoreIncomingCallTone() {
+    if ((root.lastCallState === "incoming" || root.lastCallState === "ringing") &&
+        !root.lastCallStopConfirmed)
+      root.callToneSuppressed = false
   }
 
   function resolveCallControlUnknown(preserveSnapshot) {
@@ -421,6 +440,7 @@ Item {
       root.callToneSuppressed = true
       root.callDurationSeconds = 0
     }
+    root.restoreIncomingCallTone()
     root.callStopTick = root.callStopTick + 1
     return true
   }
@@ -450,6 +470,9 @@ Item {
     root.callOwnerKey = ""
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
     root.callToneSuppressed = true
     root.callDurationSeconds = 0
     root.callStopTick = root.callStopTick + 1
@@ -504,6 +527,13 @@ Item {
       root.lastCallState = "ending"
       return
     }
+    if (previousCallState === "ended" && previousCallId !== "" &&
+        previousCallId === callId && previousConv === conv)
+      return
+    if (state !== "" &&
+        (previousCallState === "" || previousCallState === "ended" ||
+         previousCallId !== callId || previousConv !== conv))
+      root.lastCallStopConfirmed = false
     if (state === "active" &&
         (root.lastCallState !== "active" || String(root.lastCallConv || "") !== conv ||
          root.lastCallId !== callId))
@@ -791,6 +821,11 @@ Item {
       root.historyRequestByConversation, id)
     root.historyKeyByConversation = root.withoutConversation(
       root.historyKeyByConversation, id)
+    root.setHistoryClearReloadRequired(id, false)
+    if (root.pendingHistoryClears[id])
+      root.completeHistoryClear(id,
+        String(root.pendingHistoryClears[id].request || ""), false,
+        "identity_changed")
     if (String(root.lastChatConv || "") === id) {
       root.lastChatText = ""
       root.lastChatId = ""
@@ -1066,6 +1101,7 @@ Item {
           root.failActiveOutgoingFiles("helper_restarted")
           root.failQueuedGroupInvites("helper_restarted")
           root.failPendingSoundRequests("helper_restarted")
+          root.failPendingHistoryClears("helper_restarted")
           root.resetCallAfterHelperRestart()
           root.helperInstanceGeneration = root.helperInstanceGeneration + 1
         }
@@ -1073,6 +1109,7 @@ Item {
           root.resetStateForIdentity()
         root.helperInstance = nextInstance
         root.activeHelperProtocol = snapshotProtocol
+        root.supportsCorrelatedHistoryClear = Number(ev.historyClear) === 2
         root.callReplayRequest = snapshotProtocol >= 15 ? String(ev.request || "") : ""
         root.callReplayInstance = snapshotProtocol >= 15 ? nextInstance : ""
         root.callReplaySnapshotState = ""
@@ -1134,7 +1171,7 @@ Item {
         root.refreshCustomSounds()
         root.retryAttachmentCleanupDebts()
         replayOverflowToReport = !identityChanged && root.handshakeEventOverflow
-        replayEventsToApply = identityChanged || replayOverflowToReport
+        replayEventsToApply = identityChanged || processChanged || replayOverflowToReport
           ? [] : root.pendingHandshakeEvents
         root.pendingHandshakeEvents = []
         root.pendingHandshakeBytes = 0
@@ -1235,6 +1272,8 @@ Item {
         root.callOwnerKey = ""
         root.callOwnerCallId = ""
         root.callOwnerConnectionLost = false
+        root.deferredAnswerTerminal = null
+        root.restoreIncomingCallTone()
       }
       if (replaySnapshotState === "ending") {
         if ((replayOwnerDebt && !replayOwnerRepresented) ||
@@ -1252,6 +1291,7 @@ Item {
       if (replayOwnerRepresented) {
         root.callOwnerCallId = replaySnapshotId
         root.callOwnerConnectionLost = false
+        root.deferredAnswerTerminal = null
       }
       if ((replayOwnerDebt && !replayOwnerRepresented) ||
           (replayStopDebt && !replayStopRepresented))
@@ -1564,6 +1604,18 @@ Item {
         : "Unread state could not be saved."
       root.unreadFailedTick = root.unreadFailedTick + 1
     }
+    if (ev.event === "history.clear.succeeded" ||
+        ev.event === "history.clear.failed") {
+      if (!root.historyClearEventMatches(ev))
+        return
+      var clearCode = String(ev.code || "")
+      if (ev.event === "history.clear.failed" &&
+          !/^[a-z][a-z0-9_]{0,47}$/.test(clearCode))
+        return
+      root.completeHistoryClear(String(ev.conversation || ""),
+        String(ev.request || ""), ev.event === "history.clear.succeeded",
+        clearCode)
+    }
     if (ev.event === "history.failed") {
       var failedHistoryConv = String(ev.conversation || "")
       var expectedFailedHistoryRequest = String(root.historyRequestByConversation[failedHistoryConv] || "")
@@ -1593,7 +1645,7 @@ Item {
       root.historyFailedTick = root.historyFailedTick + 1
     }
     if (ev.event === "history") {
-      if (!root.directEventBindingValid(ev))
+      if (!!ev.cleared || !root.directEventBindingValid(ev))
         return
       var historyConv = String(ev.conversation || "")
       var expectedHistoryRequest = String(root.historyRequestByConversation[historyConv] || "")
@@ -1612,6 +1664,7 @@ Item {
         if (historyBindingKey !== historyConv)
           historyKeyNext[historyBindingKey] = root.historyKeyByConversation[historyBindingKey]
       root.historyKeyByConversation = historyKeyNext
+      root.setHistoryClearReloadRequired(historyConv, false)
       var historyQueue = root.pendingHistoryUnread[historyConv] || []
       var historyUnread = ev.unread !== undefined
         ? Math.max(0, Number(ev.unread || 0))
@@ -2140,6 +2193,8 @@ Item {
         return
       root.incomingCall = true
       root.callToneSuppressed = false
+      root.lastCallStopConfirmed = false
+      root.deferredAnswerTerminal = null
       root.callDurationSeconds = 0
       root.lastCallState = "incoming"
       root.lastCallId = incomingCallId
@@ -2160,34 +2215,55 @@ Item {
       var stoppedReason = String(ev.reason || "")
       var stoppedConv = String(ev.conversation || "")
       var stoppedKey = String(ev.key || "")
+      var stoppedCurrentExact = root.lastCallState !== "ended" &&
+        stoppedCallId === root.lastCallId &&
+        stoppedConv === String(root.lastCallConv || "") &&
+        stoppedKey === String(root.lastCallKey || "")
       var stoppedBindingValid = root.directEventBindingValid(ev) ||
-        (root.lastCallState !== "ended" && stoppedCallId === root.lastCallId &&
-         stoppedConv === String(root.lastCallConv || "") &&
-         stoppedKey === String(root.lastCallKey || "")) ||
+        stoppedCurrentExact ||
         (root.pendingCallStopRequest !== "" &&
          stoppedConv === root.pendingCallStopConv &&
          stoppedKey === root.pendingCallStopKey) ||
         (root.callOwnerRequest !== "" && stoppedConv === root.callOwnerConv &&
          stoppedKey === root.callOwnerKey)
+      var trackedOwner = root.callOwnerRequest !== ""
+      var unresolvedOwner = trackedOwner && root.callOwnerCallId === ""
+      var ownerRequestMatches = !trackedOwner ||
+        (stoppedRequest === root.callOwnerRequest &&
+         stoppedConv === root.callOwnerConv && stoppedKey === root.callOwnerKey) ||
+        (root.pendingCallStopRequest !== "" &&
+         stoppedRequest === root.pendingCallStopRequest &&
+         stoppedConv === root.pendingCallStopConv &&
+         stoppedKey === root.pendingCallStopKey)
       var pendingRequestConflict = root.pendingCallStopRequest !== "" &&
         (stoppedReason === "local"
           ? stoppedRequest !== root.pendingCallStopRequest
           : (stoppedRequest !== "" &&
              stoppedRequest !== root.pendingCallStopRequest &&
              stoppedRequest !== root.callOwnerRequest))
-      var unresolvedOwner = root.callOwnerRequest !== "" &&
-        root.callOwnerCallId === ""
       if (!stoppedBindingValid || !/^[0-9a-f]{16}$/.test(stoppedCallId) ||
+          stoppedRequest.length > 79 ||
           ["local", "remote", "control_lost", "lease_expired", "audio_error",
            "control_unavailable"].indexOf(stoppedReason) === -1 ||
           ev.localStopped !== true || ev.transportClosed !== true ||
           typeof ev.cancelAttempted !== "boolean" ||
           typeof ev.cancelAccepted !== "boolean" ||
-          typeof ev.audioAvailable !== "boolean" || pendingRequestConflict ||
-          (unresolvedOwner &&
-           (stoppedRequest !== root.callOwnerRequest ||
-            stoppedConv !== root.callOwnerConv || stoppedKey !== root.callOwnerKey)))
+          typeof ev.audioAvailable !== "boolean" || pendingRequestConflict)
         return
+      if (!ownerRequestMatches) {
+        var terminalPredatesAnswer = unresolvedOwner &&
+          root.callOwnerOperation === "answer" && stoppedRequest === "" &&
+          stoppedCurrentExact &&
+          (root.lastCallState === "incoming" || root.lastCallState === "ringing" ||
+           root.lastCallState === "ending")
+        if (terminalPredatesAnswer) {
+          root.deferredAnswerTerminal = ev
+          root.incomingCall = false
+          root.callToneSuppressed = true
+          root.lastCallState = "ending"
+        }
+        return
+      }
       if (unresolvedOwner)
         root.callOwnerCallId = stoppedCallId
       root.completeCallStop(stoppedConv, stoppedCallId, ev.reason,
@@ -2214,6 +2290,7 @@ Item {
         root.pendingCallStopConv = ""
         root.pendingCallStopKey = ""
         root.pendingCallStopId = ""
+        root.restoreIncomingCallTone()
         root.callStopTick = root.callStopTick + 1
       } else if ((failedCallOp === "start" || failedCallOp === "answer") &&
                  failedCallRequest !== "" &&
@@ -2221,17 +2298,26 @@ Item {
                  failedCallOp === root.callOwnerOperation &&
                  failedCallConv === root.callOwnerConv &&
                  failedCallKey === root.callOwnerKey) {
+        var deferredTerminal = failedCallOp === "answer"
+          ? root.deferredAnswerTerminal : null
+        root.deferredAnswerTerminal = null
         root.callOwnerRequest = ""
         root.callOwnerOperation = ""
         root.callOwnerConv = ""
         root.callOwnerKey = ""
         root.callOwnerCallId = ""
         root.callOwnerConnectionLost = false
+        if (deferredTerminal && typeof deferredTerminal === "object") {
+          root.handleLine(JSON.stringify(deferredTerminal))
+          if (root.lastCallStopConfirmed)
+            return
+        }
         root.lastCallStopConv = failedCallConv
         root.lastCallStopId = failedCallId
         root.lastCallStopCode = failedCallOp === "start"
           ? "call_start_failed" : "call_answer_failed"
         root.lastCallStopConfirmed = false
+        root.restoreIncomingCallTone()
         root.callStopTick = root.callStopTick + 1
       }
     }
@@ -2244,6 +2330,10 @@ Item {
         if (!/^[0-9a-f]{16}$/.test(stateCallId) ||
             ["ringing", "active", "ending", "ended"].indexOf(nextCallState) === -1)
           return
+        if (root.lastCallState === "ended" && stateCallId === root.lastCallId &&
+            String(ev.conversation || "") === String(root.lastCallConv || "") &&
+            String(ev.key || "") === String(root.lastCallKey || ""))
+          return
         if (root.lastCallId !== "" && stateCallId !== root.lastCallId &&
             root.lastCallState !== "" && root.lastCallState !== "ended")
           return
@@ -2253,6 +2343,7 @@ Item {
             String(ev.key || "") === root.callOwnerKey) {
           root.callOwnerCallId = stateCallId
           root.callOwnerConnectionLost = false
+          root.deferredAnswerTerminal = null
         }
         if (nextCallState === "ended")
           return
@@ -2586,6 +2677,8 @@ Item {
     root.failQueuedMessages("helper_incompatible")
     root.failQueuedGroupInvites("helper_incompatible")
     root.failPendingSoundRequests("helper_incompatible")
+    root.failPendingHistoryClears("helper_incompatible")
+    root.supportsCorrelatedHistoryClear = false
     root.helperInstanceGeneration = root.helperInstanceGeneration + 1
     root.pendingOps = []
     root.pendingHandshakeEvents = []
@@ -2876,6 +2969,138 @@ Item {
     }
   }
 
+  function historyClearPending(conv) {
+    var conversation = String(conv || "")
+    return conversation !== "" && !!root.pendingHistoryClears[conversation]
+  }
+
+  function historyClearReloadRequired(conv) {
+    var conversation = String(conv || "")
+    return conversation !== "" &&
+      !!root.historyClearReloadRequiredByConversation[conversation]
+  }
+
+  function setHistoryClearReloadRequired(conv, required) {
+    var conversation = String(conv || "")
+    if (conversation === "")
+      return
+    var next = {}
+    for (var key in root.historyClearReloadRequiredByConversation)
+      if (String(key) !== conversation)
+        next[key] = root.historyClearReloadRequiredByConversation[key]
+    if (required)
+      next[conversation] = true
+    root.historyClearReloadRequiredByConversation = next
+  }
+
+  function historyClearEventMatches(event) {
+    var ev = event || ({})
+    var conversation = String(ev.conversation || "")
+    var pendingClear = root.pendingHistoryClears[conversation]
+    if (!pendingClear || !root.supportsCorrelatedHistoryClear ||
+        String(ev.instance || "") !== String(pendingClear.instance || "") ||
+        String(ev.instance || "") !== root.helperInstance ||
+        String(ev.request || "") !== String(pendingClear.request || ""))
+      return false
+    if (/^(0|[1-9][0-9]*)$/.test(conversation))
+      return String(ev.key || "") === String(pendingClear.key || "") &&
+        root.directBindingMatches(conversation, String(pendingClear.key || ""))
+    return /^g:[0-9a-f]{64}$/.test(conversation) &&
+      String(pendingClear.key || "") === "" && String(ev.key || "") === ""
+  }
+
+  function completeHistoryClear(conversation, request, succeeded, code) {
+    var c = String(conversation || "")
+    root.pendingHistoryClears = root.withoutConversation(
+      root.pendingHistoryClears, c)
+    root.lastHistoryClearConv = c
+    root.lastHistoryClearRequest = String(request || "")
+    root.lastHistoryClearCode = String(code || "")
+    root.lastHistoryClearSucceeded = !!succeeded
+    if (succeeded)
+      root.setHistoryClearReloadRequired(c, false)
+    else if (String(code || "") === "result_unknown" ||
+             String(code || "") === "helper_restarted" ||
+             String(code || "") === "helper_incompatible")
+      root.setHistoryClearReloadRequired(c, true)
+    if (succeeded) {
+      root.pendingHistoryUnread = root.withoutConversation(
+        root.pendingHistoryUnread, c)
+      root.historyRetryTickByConversation = root.withoutConversation(
+        root.historyRetryTickByConversation, c)
+      root.historyRequestByConversation = root.withoutConversation(
+        root.historyRequestByConversation, c)
+      root.historyKeyByConversation = root.withoutConversation(
+        root.historyKeyByConversation, c)
+      root.fileNotices = root.withoutConversation(root.fileNotices, c)
+      root.lastHistoryUnreadConv = c
+      root.lastHistoryUnreadCount = 0
+      root.lastHistoryCleared = true
+      root.lastHistoryConv = c
+      root.lastHistoryItems = []
+      root.historyTick = root.historyTick + 1
+      root.unreadByConversation = root.withoutConversation(
+        root.unreadByConversation, c)
+      root.unreadCount = root.localUnreadTotal()
+      if (String(root.lastChatConv || "") === c) {
+        root.lastChatText = ""
+        root.lastChatId = ""
+        root.lastChatReply = ""
+        root.lastChatDir = ""
+        root.lastChatKind = ""
+        root.lastChatSender = ""
+        root.lastChatTimestamp = 0
+        root.lastChatRequest = ""
+        root.lastChatKey = ""
+        root.lastChatConv = ""
+        root.messageTick = root.messageTick + 1
+      }
+    }
+    root.historyClearTick = root.historyClearTick + 1
+  }
+
+  function failPendingHistoryClears(code) {
+    var pending = root.pendingHistoryClears
+    var failureCode = String(code || "result_unknown")
+    root.pendingHistoryClears = ({})
+    for (var conversation in pending) {
+      var entry = pending[conversation] || ({})
+      if (failureCode === "result_unknown" || failureCode === "helper_restarted" ||
+          failureCode === "helper_incompatible")
+        root.setHistoryClearReloadRequired(conversation, true)
+      root.lastHistoryClearConv = String(conversation)
+      root.lastHistoryClearRequest = String(entry.request || "")
+      root.lastHistoryClearCode = failureCode
+      root.lastHistoryClearSucceeded = false
+      root.historyClearTick = root.historyClearTick + 1
+    }
+  }
+
+  function expirePendingHistoryClears() {
+    var now = Date.now()
+    var pending = root.pendingHistoryClears
+    var next = {}
+    var expired = []
+    for (var conversation in pending) {
+      var entry = pending[conversation] || ({})
+      if (Number(entry.expiresAt || 0) <= now)
+        expired.push({ conversation: conversation, request: String(entry.request || "") })
+      else
+        next[conversation] = entry
+    }
+    if (expired.length === 0)
+      return
+    root.pendingHistoryClears = next
+    for (var i = 0; i < expired.length; i++) {
+      root.setHistoryClearReloadRequired(expired[i].conversation, true)
+      root.lastHistoryClearConv = String(expired[i].conversation)
+      root.lastHistoryClearRequest = String(expired[i].request)
+      root.lastHistoryClearCode = "result_unknown"
+      root.lastHistoryClearSucceeded = false
+      root.historyClearTick = root.historyClearTick + 1
+    }
+  }
+
   function nextHistoryRequestId() {
     root.historyRequestSequence = root.historyRequestSequence + 1
     return Date.now().toString(36) + "-history-" +
@@ -2978,10 +3203,45 @@ Item {
   }
   function clearHistory(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
-    if (!c)
+    var group = /^g:[0-9a-f]{64}$/.test(c)
+    var bindingKey = group ? "" : String(expectedKey || "")
+    if (!root.supportsCorrelatedHistoryClear) {
+      root.lastError = "helper_update_required"
+      root.lastErrorConv = c
+      root.lastErrorTick = root.lastErrorTick + 1
       return false
-    return root.sendConversationOp({ op: "history.clear", conversation: c },
-      expectedKey, false)
+    }
+    if ((!group && !root.directBindingMatches(c, bindingKey)) ||
+        (group && (!root.groupsReady || !root.groupById(c))) ||
+        root.historyClearPending(c) || root.historyClearReloadRequired(c) ||
+        root.awaitingHelperInstance ||
+        root.helperCompatibility !== "compatible")
+      return false
+    root.historyClearRequestSequence = root.historyClearRequestSequence + 1
+    var request = Date.now().toString(36) + "-clear-" +
+      root.historyClearRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+    var pending = {}
+    for (var conversation in root.pendingHistoryClears)
+      pending[conversation] = root.pendingHistoryClears[conversation]
+    pending[c] = { request: request, key: bindingKey,
+      instance: root.helperInstance, expiresAt: Date.now() + 10000 }
+    root.pendingHistoryClears = pending
+    if (!root.sendConversationOp({ op: "history.clear", conversation: c,
+          id: request }, bindingKey, true)) {
+      root.pendingHistoryClears = root.withoutConversation(
+        root.pendingHistoryClears, c)
+      return false
+    }
+    root.pendingHistoryUnread = root.withoutConversation(
+      root.pendingHistoryUnread, c)
+    root.historyRetryTickByConversation = root.withoutConversation(
+      root.historyRetryTickByConversation, c)
+    root.historyRequestByConversation = root.withoutConversation(
+      root.historyRequestByConversation, c)
+    root.historyKeyByConversation = root.withoutConversation(
+      root.historyKeyByConversation, c)
+    return true
   }
   function markConversationRead(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
@@ -3548,6 +3808,8 @@ Item {
     root.callOwnerKey = String(expectedKey || "")
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.lastCallStopConfirmed = false
     root.callToneSuppressed = false
     return true
   }
@@ -3573,6 +3835,8 @@ Item {
     root.callOwnerKey = String(expectedKey || "")
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.lastCallStopConfirmed = false
     root.callToneSuppressed = true
     return true
   }
@@ -3643,6 +3907,7 @@ Item {
   }
 
   function resetStateForIdentity(expectedImport) {
+    root.failPendingHistoryClears("identity_changed")
     root.failActiveOutgoingFiles("identity_replaced")
     root.failInFlightMessages("delivery_unknown")
     root.failQueuedMessages("identity_changed")
@@ -3666,10 +3931,17 @@ Item {
     root.historyRetryTickByConversation = ({})
     root.historyRequestByConversation = ({})
     root.historyKeyByConversation = ({})
+    root.pendingHistoryClears = ({})
+    root.historyClearReloadRequiredByConversation = ({})
+    root.supportsCorrelatedHistoryClear = false
     root.lastHistoryItems = []
     root.lastHistoryConv = ""
     root.lastHistoryFailedConv = ""
     root.lastHistoryFailedCode = ""
+    root.lastHistoryClearConv = ""
+    root.lastHistoryClearRequest = ""
+    root.lastHistoryClearCode = ""
+    root.lastHistoryClearSucceeded = false
     root.lastHistoryUnreadConv = ""
     root.lastHistoryUnreadCount = 0
     root.lastNicknameRequest = ""
@@ -3778,6 +4050,7 @@ Item {
     root.callOwnerKey = ""
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
     root.pendingCallStopRequest = ""
     root.pendingCallStopConv = ""
     root.pendingCallStopKey = ""
@@ -3861,6 +4134,8 @@ Item {
     root.failActiveIncomingFiles()
     root.failInFlightMessages("delivery_unknown")
     root.failQueuedGroupInvites("helper_restarted")
+    root.failPendingHistoryClears("result_unknown")
+    root.supportsCorrelatedHistoryClear = false
     root.reconnectGeneration = root.reconnectGeneration + 1
     root.helperCompatibility = "unknown"
     root.legacyHandshakeAttempts = 0
@@ -4012,6 +4287,13 @@ Item {
       !root.callOwnerConnectionLost && root.pendingCallStopRequest === "" &&
       (root.lastCallState === "ringing" || root.lastCallState === "active")
     onTriggered: root.renewCallLease()
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    running: Object.keys(root.pendingHistoryClears).length > 0
+    onTriggered: root.expirePendingHistoryClears()
   }
 
   Timer {
