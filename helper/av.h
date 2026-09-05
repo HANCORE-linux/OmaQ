@@ -10,6 +10,7 @@
 int omaq_av_start(struct omaq_tox *t, uint32_t friend);
 int omaq_av_answer(struct omaq_tox *t, uint32_t friend);
 int omaq_av_stop(struct omaq_tox *t, uint32_t friend);
+int omaq_av_local_stopped(void);
 int omaq_av_busy(void);
 int omaq_av_note_incoming(uint32_t friend);
 int omaq_av_note_active(uint32_t friend);

@@ -86,6 +86,7 @@ FocusScope {
   property string activeAudioPath: ""
   property string audioErrorPath: ""
   property string audioError: ""
+  property string callFeedback: ""
   property bool readRequestPending: false
   property bool readRetryBlocked: false
   property int readRetryAttempts: 0
@@ -193,6 +194,19 @@ FocusScope {
       return false
     var s = service.lastCallState || ""
     return s !== "" && s !== "ended"
+  }
+  readonly property bool callEnding: !root.demo && !!root.service &&
+    typeof root.service.callEndingFor === "function" &&
+    root.service.callEndingFor(root.conversation)
+  readonly property bool callActionPending: !root.demo && !!root.service &&
+    !!root.service.callActionPending
+  onIncomingChanged: {
+    if (root.incoming)
+      root.clearCallFeedback()
+  }
+  onInCallChanged: {
+    if (root.inCall)
+      root.clearCallFeedback()
   }
   readonly property bool callActive: root.directConversation &&
     (root.demo ? root.demoInCall :
@@ -1990,6 +2004,11 @@ FocusScope {
       root.sendPendingImage()
   }
 
+  function clearCallFeedback() {
+    callFeedbackTimer.stop()
+    root.callFeedback = ""
+  }
+
   function formatCallDuration(value) {
     var seconds = Math.max(0, Math.floor(Number(value || 0)))
     var minutes = Math.floor(seconds / 60)
@@ -2001,6 +2020,7 @@ FocusScope {
     if (!root.directConversation)
       return
     if (root.demo) {
+      root.clearCallFeedback()
       root.demoCallDurationSeconds = 0
       root.demoIncomingCall = false
       root.demoInCall = true
@@ -2008,14 +2028,15 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service)
-      service.startCall(root.conversation, root.peerKey)
+    if (service && service.startCall(root.conversation, root.peerKey))
+      root.clearCallFeedback()
   }
 
   function answerCall() {
     if (!root.directConversation)
       return
     if (root.demo) {
+      root.clearCallFeedback()
       root.demoCallDurationSeconds = 0
       root.demoIncomingCall = false
       root.demoInCall = true
@@ -2023,8 +2044,10 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service && service.answerCall(root.conversation, root.peerKey))
+    if (service && service.answerCall(root.conversation, root.peerKey)) {
+      root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
+    }
   }
 
   function hangUp() {
@@ -2038,8 +2061,13 @@ FocusScope {
       list.positionViewAtEnd()
       return
     }
-    if (service && service.stopCall(root.conversation, root.peerKey))
+    if (service && service.stopCall(root.conversation, root.peerKey)) {
+      root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
+    } else {
+      root.callFeedback = "Call control unavailable"
+      callFeedbackTimer.restart()
+    }
   }
 
   function attachFile() {
@@ -2421,6 +2449,13 @@ FocusScope {
   }
 
   Timer {
+    id: callFeedbackTimer
+    interval: 6000
+    repeat: false
+    onTriggered: root.callFeedback = ""
+  }
+
+  Timer {
     id: searchTimeout
     interval: 10000
     repeat: false
@@ -2666,7 +2701,38 @@ FocusScope {
       root.clearReply()
       root.clearEdit()
       root.clearDeleteConfirm()
+      callFeedbackTimer.stop()
+      root.callFeedback = ""
       lines.clear()
+    }
+    function onCallStopTickChanged() {
+      if (!root.service ||
+          !root.sameConv(root.service.lastCallStopConv || ""))
+        return
+      var code = String(root.service.lastCallStopCode || "ended")
+      if (code === "cancel_unconfirmed")
+        root.callFeedback = "Call ended locally; peer notification was not confirmed"
+      else if (code === "audio_unavailable")
+        root.callFeedback = "Call ended; calling is temporarily unavailable"
+      else if (code === "control_lost" || code === "lease_expired" ||
+               code === "snapshot")
+        root.callFeedback = "Call ended after the control connection was lost"
+      else if (code === "call_control_unavailable")
+        root.callFeedback = "Call control unavailable"
+      else if (code === "helper_restarted")
+        root.callFeedback = "Call state was reset after the helper restarted"
+      else if (code === "helper_incompatible")
+        root.callFeedback = "Call state was reset because the helper is incompatible"
+      else if (code === "call_start_failed")
+        root.callFeedback = "Call could not be started"
+      else if (code === "call_answer_failed")
+        root.callFeedback = "Call could not be answered"
+      else if (code === "stale_call" || code === "call_stop_failed" ||
+               code === "busy" || code === "forbidden")
+        root.callFeedback = "Call could not be ended"
+      else
+        root.callFeedback = "Call ended"
+      callFeedbackTimer.restart()
     }
     function onUnreadTickChanged() {
       if (root.readActive && !root.readRetryBlocked && root.service &&
@@ -2946,6 +3012,8 @@ FocusScope {
     if (chatSearchField)
       chatSearchField.text = ""
     fileStatusTimer.stop()
+    callFeedbackTimer.stop()
+    root.callFeedback = ""
     root.followLatest = true
     root.clearConfirm = false
     root.clearDeleteConfirm()

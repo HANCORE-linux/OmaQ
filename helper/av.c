@@ -362,6 +362,8 @@ static void audio_stop(void)
 		(void)pthread_join(g_audio_thread, NULL);
 	g_audio_started = 0;
 	pthread_mutex_lock(&g_audio_lock);
+	memset(g_capture_ring, 0, sizeof(g_capture_ring));
+	memset(g_playback_ring, 0, sizeof(g_playback_ring));
 	g_capture_head = 0;
 	g_capture_count = 0;
 	g_playback_head = 0;
@@ -489,6 +491,17 @@ int omaq_av_note_end(uint32_t friend)
 	note_recent_call(friend);
 	clear_audio_error();
 	return 1;
+}
+
+int omaq_av_local_stopped(void)
+{
+	int stopped;
+
+	pthread_mutex_lock(&g_audio_lock);
+	stopped = !g_audio_running && !g_audio_started &&
+		g_capture_count == 0 && g_playback_count == 0;
+	pthread_mutex_unlock(&g_audio_lock);
+	return stopped && g_call == UINT32_MAX && !g_active && !g_incoming;
 }
 
 void omaq_av_receive(uint32_t friend, const int16_t *pcm, size_t samples,

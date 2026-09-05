@@ -15,10 +15,16 @@ fb=$(mktemp /tmp/omaq-p6ob-XXXXXX)
 src=$(mktemp /tmp/omaq-p6-XXXXXX.bin)
 holda=$(mktemp -u /tmp/omaq-p6fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p6fb-XXXXXX)
+calla=$(mktemp -u /tmp/omaq-p6ca-XXXXXX)
+callb=$(mktemp -u /tmp/omaq-p6cb-XXXXXX)
 audio_a=$(mktemp /tmp/omaq-p6-audio-a-XXXXXX.raw)
 audio_b=$(mktemp /tmp/omaq-p6-audio-b-XXXXXX.raw)
 pa=""
 pb=""
+call_bridge_a=""
+call_bridge_b=""
+lease_a_pid=""
+lease_b_pid=""
 pulse_modules=""
 pulse_tag="omaq_p6_$$"
 cap_a="${pulse_tag}_cap_a"
@@ -27,14 +33,18 @@ cap_b="${pulse_tag}_cap_b"
 out_b="${pulse_tag}_out_b"
 # shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
-	exec 3>&- 4>&- 2>/dev/null || true
+	exec 3>&- 4>&- 5>&- 6>&- 2>/dev/null || true
+	[ -n "${lease_a_pid:-}" ] && kill "$lease_a_pid" 2>/dev/null || true
+	[ -n "${lease_b_pid:-}" ] && kill "$lease_b_pid" 2>/dev/null || true
+	[ -n "${call_bridge_a:-}" ] && kill "$call_bridge_a" 2>/dev/null || true
+	[ -n "${call_bridge_b:-}" ] && kill "$call_bridge_b" 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
 	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
 	for module in $pulse_modules; do
 		pactl unload-module "$module" 2>/dev/null || true
 	done
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$fa" "$fb" "$src" "$holda" "$holdb" \
-		"$audio_a" "$audio_b" "$fa.err" "$fb.err"
+		"$calla" "$callb" "$audio_a" "$audio_b" "$fa.err" "$fb.err"
 }
 trap cleanup EXIT
 
@@ -42,6 +52,7 @@ probe_call_audio() {
 	capture_sink=$1
 	playback_monitor=$2
 	capture_file=$3
+	expect_audio=$4
 	: >"$capture_file"
 	timeout 5 parec --raw --format=s16le --rate=48000 --channels=1 \
 		--latency-msec=20 --process-time-msec=20 \
@@ -60,7 +71,7 @@ PY
 	sleep 1
 	kill "$recorder" 2>/dev/null || true
 	wait "$recorder" 2>/dev/null || true
-	python3 - "$capture_file" <<'PY'
+	python3 - "$capture_file" "$expect_audio" <<'PY'
 import array
 import sys
 samples = array.array("h")
@@ -69,8 +80,37 @@ with open(sys.argv[1], "rb") as source:
 if sys.byteorder != "little":
     samples.byteswap()
 peak = max((abs(sample) for sample in samples), default=0)
-if peak < 100:
+if sys.argv[2] == "yes" and peak < 100:
     raise SystemExit(f"phase6: transported audio peak too low: {peak}")
+if sys.argv[2] == "no" and peak >= 100:
+    raise SystemExit(f"phase6: audio remained after confirmed hangup: {peak}")
+PY
+}
+
+start_call_bridge() {
+	socket_path=$1
+	command_fifo=$2
+	python3 - "$socket_path" "$command_fifo" <<'PY'
+import socket
+import sys
+import time
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: call IPC socket unavailable")
+with open(sys.argv[2], "rb", buffering=0) as commands:
+    while True:
+        data = commands.read(4096)
+        if not data:
+            break
+        client.sendall(data)
+client.close()
 PY
 }
 
@@ -92,7 +132,7 @@ for sink in "$cap_a" "$out_a" "$cap_b" "$out_b"; do
 	pulse_modules="$module $pulse_modules"
 done
 
-mkfifo "$holda" "$holdb"
+mkfifo "$holda" "$holdb" "$calla" "$callb"
 PULSE_SOURCE="${cap_a}.monitor" PULSE_SINK="$out_a" \
 	OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
 pa=$!
@@ -102,6 +142,12 @@ PULSE_SOURCE="${cap_b}.monitor" PULSE_SINK="$out_b" \
 pb=$!
 exec 3>"$holda"
 exec 4>"$holdb"
+start_call_bridge "$sa/omaq.sock" "$calla" &
+call_bridge_a=$!
+start_call_bridge "$sb/omaq.sock" "$callb" &
+call_bridge_b=$!
+exec 5>"$calla"
+exec 6>"$callb"
 sleep 0.4
 
 echo '{"op":"status"}' >&3
@@ -483,57 +529,106 @@ grep -a '"event":"file.canceled"' "$fb" | tail -1 | grep -a -q '"dir":"in"' || {
 	exit 1
 }
 
-printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
+call_start_a_1="phase6-call-start-a-1"
+printf '{"op":"call.start","conversation":"0","key":"%s","request":"%s"}\n' \
+	"$friend_key_a" "$call_start_a_1" >&5
 ok=0
 i=0
-while [ "$i" -lt 40 ]; do
+while [ "$i" -lt 60 ]; do
 	if grep -a -q '"call.incoming"' "$fb"; then
 		ok=1
-		break
-	fi
-	printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
-	i=$((i + 1))
-	sleep 0.5
-done
-[ "$ok" -eq 1 ] || { echo "phase6: no call.incoming" >&2; tail -20 "$fb" >&2; exit 1; }
-
-ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
-printf '{"op":"call.stop","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
-i=0
-while [ "$i" -lt 40 ]; do
-	ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
-	if [ "$ended_after" -gt "$ended_before" ]; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 0.1
 done
-[ "$i" -lt 40 ] || { echo "phase6: incoming decline did not end caller" >&2; exit 1; }
-sleep 0.5
-incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+[ "$ok" -eq 1 ] || { echo "phase6: no call.incoming" >&2; tail -20 "$fb" >&2; exit 1; }
+call_id_b=$(grep -a '"event":"call.incoming"' "$fb" | tail -1 |
+	sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+[ ${#call_id_b} -eq 16 ] || { echo "phase6: incoming call id missing" >&2; exit 1; }
+first_call_id_b=$call_id_b
+
+ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
+local_stopped_before=$(grep -a -c '"event":"call.stopped"' "$fb" || true)
+printf '{"op":"call.stop","conversation":"0","key":"%s","callId":"%s","request":"phase6-decline-b-1"}\n' \
+	"$friend_key_b" "$call_id_b" >&6
 i=0
 while [ "$i" -lt 40 ]; do
-	printf '{"op":"call.start","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
-	sleep 0.2
-	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
-	if [ "$incoming_after" -gt "$incoming_before" ]; then
+	ended_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ended"' || true)
+	local_stopped_after=$(grep -a -c '"event":"call.stopped"' "$fb" || true)
+	if [ "$ended_after" -gt "$ended_before" ] &&
+	   [ "$local_stopped_after" -gt "$local_stopped_before" ]; then
 		break
 	fi
 	i=$((i + 1))
+	sleep 0.1
 done
-[ "$i" -lt 40 ] || { echo "phase6: second incoming call missing" >&2; exit 1; }
+[ "$i" -lt 40 ] || { echo "phase6: confirmed incoming decline failed" >&2; exit 1; }
+grep -a '"event":"call.stopped"' "$fb" | tail -1 |
+	grep -a -q '"localStopped":true,"transportClosed":true' || {
+	echo "phase6: incoming decline lacked local stop proof" >&2
+	exit 1
+}
 
-printf '{"op":"call.answer","conversation":"0","key":"%s"}\n' "$friend_key_b" >&4
+sleep 2
+incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+ringing_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ringing"' || true)
+call_start_a_2="phase6-call-start-a-2"
+printf '{"op":"call.start","conversation":"0","key":"%s","request":"%s"}\n' \
+	"$friend_key_a" "$call_start_a_2" >&5
+i=0
+while [ "$i" -lt 60 ]; do
+	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+	ringing_after=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"state":"ringing"' || true)
+	if [ "$incoming_after" -gt "$incoming_before" ] &&
+	   [ "$ringing_after" -gt "$ringing_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 60 ] || { echo "phase6: second incoming call missing" >&2; exit 1; }
+call_id_a=$(grep -a '"event":"call.state"' "$fa" | grep -a '"state":"ringing"' |
+	tail -1 | sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+call_id_b=$(grep -a '"event":"call.incoming"' "$fb" | tail -1 |
+	sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+[ ${#call_id_a} -eq 16 ] && [ ${#call_id_b} -eq 16 ] || {
+	echo "phase6: active call ids missing" >&2
+	exit 1
+}
+call_answer_b_2="phase6-call-answer-b-2"
+printf '{"op":"call.answer","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+	"$friend_key_b" "$call_id_b" "$call_answer_b_2" >&6
 i=0
 while [ "$i" -lt 40 ]; do
-	if grep -a '"event":"call.state"' "$fa" | grep -a -q '"state":"active"' &&
-	   grep -a '"event":"call.state"' "$fb" | grep -a -q '"state":"active"'; then
+	if grep -a '"event":"call.state"' "$fa" | grep -a "\"callId\":\"$call_id_a\"" |
+	   grep -a -q '"state":"active"' &&
+	   grep -a '"event":"call.state"' "$fb" | grep -a "\"callId\":\"$call_id_b\"" |
+	   grep -a -q '"state":"active"'; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 0.1
 done
 [ "$i" -lt 40 ] || { echo "phase6: call did not become active on both peers" >&2; exit 1; }
+(
+	exec 6>&-
+	while :; do
+		printf '{"op":"call.lease","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+			"$friend_key_a" "$call_id_a" "$call_start_a_2" >&5 || exit 0
+		sleep 1
+	done
+) &
+lease_a_pid=$!
+(
+	exec 5>&-
+	while :; do
+		printf '{"op":"call.lease","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+			"$friend_key_b" "$call_id_b" "$call_answer_b_2" >&6 || exit 0
+		sleep 1
+	done
+) &
+lease_b_pid=$!
 busy_before=$(grep -a -c '"code":"busy"' "$fa" || true)
 printf '{"op":"contact.remove","id":"0","key":"%s"}\n' "$friend_key_a" >&3
 i=0
@@ -544,18 +639,20 @@ while [ "$i" -lt 20 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 20 ] || { echo "phase6: contact removal ignored active call" >&2; exit 1; }
-probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b"
-probe_call_audio "$cap_b" "${out_a}.monitor" "$audio_a"
+probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b" yes
+probe_call_audio "$cap_b" "${out_a}.monitor" "$audio_a" yes
 if grep -a -q '"code":"audio_unavailable"' "$fa" "$fb"; then
 	echo "phase6: audio backend unavailable" >&2
 	exit 1
 fi
 ended_before=$(grep -a '"event":"call.state"' "$fa" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
-printf '{"op":"call.stop","conversation":"999","key":"%s"}\n' "$friend_key_a" >&3
+printf '{"op":"call.stop","conversation":"999","key":"%s","callId":"%s","request":"phase6-stale-stop"}\n' \
+	"$friend_key_a" "$call_id_a" >&5
 i=0
 while [ "$i" -lt 20 ]; do
-	if grep -a '"event":"error"' "$fa" | grep -a '"code":"identity_changed"' |
-	   grep -a -q '"conversation":"999"'; then
+	if grep -a '"event":"call.action.failed"' "$fa" |
+	   grep -a '"code":"identity_changed"' |
+	   grep -a -q '"request":"phase6-stale-stop"'; then
 		break
 	fi
 	i=$((i + 1))
@@ -571,17 +668,90 @@ if [ "$peak_b" -gt "$peak" ]; then
 	peak=$peak_b
 fi
 remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
-printf '{"op":"call.stop","conversation":"0","key":"%s"}\n' "$friend_key_a" >&3
+local_stopped_before=$(grep -a -c '"event":"call.stopped"' "$fa" || true)
+alias_stop_request="phase6-stop-a-2-alias"
+python3 - "$sa/omaq.sock" "$friend_key_a" "$call_id_a" "$alias_stop_request" <<'PY'
+import json
+import socket
+import sys
+import time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(40):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: alias stop socket unavailable")
+payload = {"op": "call.stop", "conversation": "0", "key": sys.argv[2],
+           "callId": sys.argv[3], "request": sys.argv[4]}
+client.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+client.shutdown(socket.SHUT_WR)
+client.close()
+PY
+printf '{"op":"call.stop","conversation":"0","key":"%s","callId":"%s","request":"phase6-stop-a-2"}\n' \
+	"$friend_key_a" "$call_id_a" >&5
 i=0
-while [ "$i" -lt 40 ]; do
+while [ "$i" -lt 60 ]; do
 	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
-	if [ "$remote_ended_after" -gt "$remote_ended_before" ]; then
+	local_stopped_after=$(grep -a -c '"event":"call.stopped"' "$fa" || true)
+	if [ "$remote_ended_after" -gt "$remote_ended_before" ] &&
+	   [ "$local_stopped_after" -gt "$local_stopped_before" ]; then
 		break
 	fi
 	i=$((i + 1))
 	sleep 0.1
 done
-[ "$i" -lt 40 ] || { echo "phase6: active hangup did not end remote" >&2; exit 1; }
+[ "$i" -lt 60 ] || { echo "phase6: confirmed active hangup failed" >&2; exit 1; }
+kill "$lease_a_pid" "$lease_b_pid" 2>/dev/null || true
+wait "$lease_a_pid" "$lease_b_pid" 2>/dev/null || true
+lease_a_pid=""
+lease_b_pid=""
+grep -a '"event":"call.stopped"' "$fa" | tail -1 |
+	grep -a -q '"localStopped":true,"transportClosed":true,"cancelAttempted":true' || {
+	echo "phase6: active hangup lacked local transport proof" >&2
+	exit 1
+}
+for terminal_request in "$alias_stop_request" phase6-stop-a-2 "$call_start_a_2"; do
+	grep -a '"event":"call.stopped"' "$fa" |
+		grep -a -q "\"request\":\"$terminal_request\"" || {
+		echo "phase6: one stop requester lacked a terminal result" >&2
+		exit 1
+	}
+done
+alias_replay_before=$(grep -a '"event":"call.stopped"' "$fa" |
+	grep -a -c "\"request\":\"$alias_stop_request\"" || true)
+python3 - "$sa/omaq.sock" <<'PY'
+import json
+import socket
+import sys
+import time
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(40):
+    try:
+        client.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("phase6: alias reconnect socket unavailable")
+client.sendall((json.dumps({"op": "status", "id": "phase6-alias-reconnect"},
+                           separators=(",", ":")) + "\n").encode())
+client.shutdown(socket.SHUT_WR)
+time.sleep(0.2)
+client.close()
+PY
+i=0
+while [ "$i" -lt 20 ]; do
+	alias_replay_after=$(grep -a '"event":"call.stopped"' "$fa" |
+		grep -a -c "\"request\":\"$alias_stop_request\"" || true)
+	[ "$alias_replay_after" -gt "$alias_replay_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 20 ] || { echo "phase6: alias terminal result was not replayed" >&2; exit 1; }
+probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b" no
 echo '{"op":"status","id":"phase6-post-hangup"}' >&4
 i=0
 while [ "$i" -lt 20 ]; do
@@ -592,6 +762,164 @@ while [ "$i" -lt 20 ]; do
 	sleep 0.1
 done
 [ "$i" -lt 20 ] || { echo "phase6: remote helper blocked after hangup" >&2; exit 1; }
+
+incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+call_start_a_3="phase6-call-start-a-3"
+printf '{"op":"call.start","conversation":"0","key":"%s","request":"%s"}\n' \
+	"$friend_key_a" "$call_start_a_3" >&5
+i=0
+while [ "$i" -lt 60 ]; do
+	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+	[ "$incoming_after" -gt "$incoming_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 60 ] || { echo "phase6: IPC-loss call did not ring" >&2; exit 1; }
+call_id_b=$(grep -a '"event":"call.incoming"' "$fb" | tail -1 |
+	sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+call_id_a=$(grep -a '"event":"call.state"' "$fa" | grep -a '"state":"ringing"' |
+	tail -1 | sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+[ ${#call_id_a} -eq 16 ] && [ ${#call_id_b} -eq 16 ] || {
+	echo "phase6: IPC-loss call ids missing" >&2
+	exit 1
+}
+call_answer_b_3="phase6-call-answer-b-3"
+printf '{"op":"call.answer","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+	"$friend_key_b" "$call_id_b" "$call_answer_b_3" >&6
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"call.state"' "$fa" | grep -a "\"callId\":\"$call_id_a\"" |
+	   grep -a -q '"state":"active"' &&
+	   grep -a '"event":"call.state"' "$fb" | grep -a "\"callId\":\"$call_id_b\"" |
+	   grep -a -q '"state":"active"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: IPC-loss call did not become active" >&2; exit 1; }
+(
+	exec 5>&-
+	while :; do
+		printf '{"op":"call.lease","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+			"$friend_key_b" "$call_id_b" "$call_answer_b_3" >&6 || exit 0
+		sleep 1
+	done
+) &
+lease_b_pid=$!
+remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+control_lost_before=$(grep -a '"event":"call.stopped"' "$fa" | grep -a -c '"reason":"control_lost"' || true)
+# Put a final valid lease immediately before EOF so the server can observe
+# POLLIN|POLLHUP together. The HUP must still win before another transport pump.
+printf '{"op":"call.lease","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+	"$friend_key_a" "$call_id_a" "$call_start_a_3" >&5
+exec 5>&-
+wait "$call_bridge_a"
+call_bridge_a=""
+i=0
+while [ "$i" -lt 60 ]; do
+	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+	control_lost_after=$(grep -a '"event":"call.stopped"' "$fa" | grep -a -c '"reason":"control_lost"' || true)
+	if [ "$remote_ended_after" -gt "$remote_ended_before" ] &&
+	   [ "$control_lost_after" -gt "$control_lost_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+kill "$lease_b_pid" 2>/dev/null || true
+wait "$lease_b_pid" 2>/dev/null || true
+lease_b_pid=""
+[ "$i" -lt 60 ] || { echo "phase6: owner IPC loss did not end both call states" >&2; exit 1; }
+probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b" no
+
+rm -f "$calla"
+mkfifo "$calla"
+start_call_bridge "$sa/omaq.sock" "$calla" &
+call_bridge_a=$!
+exec 5>"$calla"
+sleep 2
+incoming_before=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+call_start_a_4="phase6-call-start-a-4"
+printf '{"op":"call.start","conversation":"0","key":"%s","request":"%s"}\n' \
+	"$friend_key_a" "$call_start_a_4" >&5
+i=0
+while [ "$i" -lt 60 ]; do
+	incoming_after=$(grep -a -c '"event":"call.incoming"' "$fb" || true)
+	[ "$incoming_after" -gt "$incoming_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 60 ] || { echo "phase6: lease-expiry call did not ring" >&2; exit 1; }
+call_id_b=$(grep -a '"event":"call.incoming"' "$fb" | tail -1 |
+	sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+call_id_a=$(grep -a '"event":"call.state"' "$fa" | grep -a '"state":"ringing"' |
+	tail -1 | sed -n 's/.*"callId":"\([0-9a-f]*\)".*/\1/p')
+[ ${#call_id_a} -eq 16 ] && [ ${#call_id_b} -eq 16 ] || {
+	echo "phase6: lease-expiry call ids missing" >&2
+	exit 1
+}
+call_answer_b_4="phase6-call-answer-b-4"
+printf '{"op":"call.answer","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+	"$friend_key_b" "$call_id_b" "$call_answer_b_4" >&6
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"event":"call.state"' "$fa" | grep -a "\"callId\":\"$call_id_a\"" |
+	   grep -a -q '"state":"active"' &&
+	   grep -a '"event":"call.state"' "$fb" | grep -a "\"callId\":\"$call_id_b\"" |
+	   grep -a -q '"state":"active"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: lease-expiry call did not become active" >&2; exit 1; }
+(
+	exec 5>&-
+	while :; do
+		printf '{"op":"call.lease","conversation":"0","key":"%s","callId":"%s","request":"%s"}\n' \
+			"$friend_key_b" "$call_id_b" "$call_answer_b_4" >&6 || exit 0
+		sleep 1
+	done
+) &
+lease_b_pid=$!
+remote_ended_before=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+lease_expired_before=$(grep -a '"event":"call.stopped"' "$fa" | grep -a -c '"reason":"lease_expired"' || true)
+i=0
+while [ "$i" -lt 80 ]; do
+	remote_ended_after=$(grep -a '"event":"call.state"' "$fb" | grep -a -c '"conversation":"0".*"state":"ended"' || true)
+	lease_expired_after=$(grep -a '"event":"call.stopped"' "$fa" | grep -a -c '"reason":"lease_expired"' || true)
+	if [ "$remote_ended_after" -gt "$remote_ended_before" ] &&
+	   [ "$lease_expired_after" -gt "$lease_expired_before" ]; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+kill "$lease_b_pid" 2>/dev/null || true
+wait "$lease_b_pid" 2>/dev/null || true
+lease_b_pid=""
+[ "$i" -lt 80 ] || { echo "phase6: expired control lease did not end both call states" >&2; exit 1; }
+probe_call_audio "$cap_a" "${out_b}.monitor" "$audio_b" no
+
+first_replay_before=$(grep -a '"event":"call.stopped"' "$fb" |
+	grep -a -c "\"callId\":\"$first_call_id_b\"" || true)
+printf '%s\n' '{"op":"status","id":"phase6-call-result-ring"}' >&6
+i=0
+while [ "$i" -lt 40 ]; do
+	first_replay_after=$(grep -a '"event":"call.stopped"' "$fb" |
+		grep -a -c "\"callId\":\"$first_call_id_b\"" || true)
+	[ "$first_replay_after" -gt "$first_replay_before" ] && break
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 40 ] || { echo "phase6: bounded call-result replay lost an earlier call" >&2; exit 1; }
+grep -a '"event":"call.stopped"' "$fb" |
+	grep -a "\"callId\":\"$first_call_id_b\"" |
+	grep -a -q '"request":"phase6-decline-b-1"' || {
+	echo "phase6: replayed call result lost request correlation" >&2
+	exit 1
+}
 
 if [ "$peak" -gt 40960 ]; then
 	echo "phase6: call peak rss ${peak} kB > 40960" >&2

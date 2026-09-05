@@ -18,13 +18,13 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
-    "ChatSurface.qml": "074974012929bc8e3e8aeeac2d9eef6d9c394d78548b68a1c3e0c34353fe11c6",
-    "Panel.qml": "6445b219d6d77b090359d18593df65ac71c3cbdf0d244c6a1727dbd0ec9ca299",
+    "ChatSurface.qml": "4511c3f3fd2b3838c52c5d574f13b420c0e200da5eb363362b645ee3fa9436a9",
+    "Panel.qml": "201fb007e8c5ff1960a72d930aaf86a421c6691c34b0189e707cb070a086e71b",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
-    "Service.qml": "8d89679c5e6a1ead4c1c7d1479e804d6ee0bc8cddf982e4523629122d48d94dc",
+    "Service.qml": "de7daa5b656280aeef39d1d393f326c44f1d14d4103ab33e2f05b3bf2a0fb0d3",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "75117cba5d4530967abffea470cfe761f77b8c10ae0275f9fb139ec269fd6fd1",
+    "pages/ChatPage.qml": "12f512d0a0ea2409f0fb6240902ec441efbfeff0fbfb53f822cc6bedeb8a69d1",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -145,10 +145,10 @@ COMPUTED_WRITE_ALLOWLIST = {
 REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
-    "ChatSurface.qml": "3f853b765fd570d05f915fccd9ae1503becf3c02af2926841207445472a7f222",
-    "Panel.qml": "394b5bcc6f09ddfe997135fb701aefa7d961bdaa72fd009c319f5131208863a0",
-    "Service.qml": "90015a29d7e7cdc9c52ad81bf1b748ebc042cf33805a1f1f90e59f5ea5f51b2d",
-    "pages/ChatPage.qml": "ba714366e6928a4fed978235118d4bc95065cf41b48e75b4d1b57dce6d80caf3",
+    "ChatSurface.qml": "76f3165f9d8bb0324f3793b9d5587571cc5af0f6f5d6d64c25f4fbbf48fb686a",
+    "Panel.qml": "edfd5835cd46f89bce5ce2c0ace5b4fbfc946875acead1180828cb24b3473938",
+    "Service.qml": "4faaa45341b922fd3d43d8994c8abc1ddcd110bdbfe282a311b846cc7106a6fa",
+    "pages/ChatPage.qml": "a0de71bec0f5d80dd4031c36265feeebbd02d2633a374de2a7b0579800bcb028",
 }
 FUNCTION_PARAMETERS = re.compile(
     r"\bfunction(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\((?P<params>[^)]*)\)"

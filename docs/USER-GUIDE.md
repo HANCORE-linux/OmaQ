@@ -149,7 +149,9 @@ The helper limits attachments to 8 MiB, rejects symlink destinations, and writes
 
 VoiceCall is available only in DirectChat. The bar icon pulses while a call rings, and one process-wide tone owner prevents layered ringing across monitors.
 
-Select the call action to ring a contact. The recipient can Answer, Decline, or Hang up while ringing. An active call shows elapsed time and retains Hang up.
+Select the call action to ring a contact. The recipient can Answer, Decline, or Hang up while ringing. An active call shows elapsed time and retains Hang up. After you select Hang up, the chat shows **Ending…** until the helper confirms that local capture, buffered audio, and the old call transport have stopped. It then shows **Call ended** or a more specific local result.
+
+This confirmation covers the local stop. A network failure can prevent the other person from receiving the cancellation.
 
 OmaQ captures and plays 48 kHz mono audio through the PulseAudio client library. PipeWire-Pulse supplies desktop devices. OmaQ keeps call audio in bounded memory and does not record it.
 

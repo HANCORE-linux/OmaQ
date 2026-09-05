@@ -4193,6 +4193,8 @@ BarWidget {
               spacing: root.btnGap
               TokenButton {
                 text: "Answer"
+                enabled: !omaq.callEndingFor(omaq.lastCallConv) &&
+                  !omaq.callActionPending
                 bordered: true
                 focusable: true
                 foreground: root.foreground
@@ -4203,7 +4205,9 @@ BarWidget {
                 }
               }
               TokenButton {
-                text: "Decline call"
+                text: omaq.callEndingFor(omaq.lastCallConv) ? "Ending…" : "Decline call"
+                enabled: !omaq.callEndingFor(omaq.lastCallConv) &&
+                  !omaq.callActionPending
                 focusable: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily

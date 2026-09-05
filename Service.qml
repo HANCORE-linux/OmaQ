@@ -60,6 +60,7 @@ Item {
   readonly property bool supportsCorrelatedGroupProjection: root.activeHelperProtocol >= 13
   readonly property bool supportsGroupTyping: root.activeHelperProtocol >= 13
   readonly property bool supportsCustomSounds: root.activeHelperProtocol >= 14
+  readonly property bool supportsConfirmedHangup: root.activeHelperProtocol >= 15
   onActiveHelperProtocolChanged: {
     if (root.supportsCustomSounds)
       return
@@ -259,6 +260,27 @@ Item {
   property string lastCallState: ""
   property string lastCallConv: ""
   property string lastCallKey: ""
+  property string lastCallId: ""
+  property int callRequestSequence: 0
+  property string callOwnerRequest: ""
+  property string callOwnerOperation: ""
+  property string callOwnerConv: ""
+  property string callOwnerKey: ""
+  property string callOwnerCallId: ""
+  property bool callOwnerConnectionLost: false
+  property string pendingCallStopRequest: ""
+  property string pendingCallStopConv: ""
+  property string pendingCallStopKey: ""
+  property string pendingCallStopId: ""
+  property string lastCallStopConv: ""
+  property string lastCallStopId: ""
+  property string lastCallStopCode: ""
+  property bool lastCallStopCancelAttempted: false
+  property bool lastCallStopCancelAccepted: false
+  property bool lastCallStopAudioAvailable: true
+  property int callStopTick: 0
+  readonly property bool callActionPending: root.supportsConfirmedHangup &&
+    root.callOwnerRequest !== "" && root.callOwnerCallId === ""
   property bool callToneSuppressed: false
   property int callDurationSeconds: 0
   property bool locked: false
@@ -302,26 +324,140 @@ Item {
     return total
   }
 
+  function callEndingFor(conversation) {
+    var conv = String(conversation || "")
+    if (!conv || String(root.lastCallConv || "") !== conv)
+      return false
+    return root.lastCallState === "ending" ||
+      (root.pendingCallStopRequest !== "" && root.pendingCallStopConv === conv &&
+       root.pendingCallStopId === root.lastCallId) ||
+      (root.callOwnerConnectionLost && root.callOwnerRequest !== "" &&
+       (root.callOwnerCallId === "" || root.callOwnerCallId === root.lastCallId))
+  }
+
+  function completeCallStop(conversation, callId, reason, cancelAttempted,
+                            cancelAccepted, audioAvailable) {
+    var conv = String(conversation || "")
+    var id = String(callId || "")
+    var matchesCurrent = root.lastCallState !== "ended" &&
+      id !== "" && id === root.lastCallId &&
+      conv === String(root.lastCallConv || "")
+    var matchesPending = id !== "" && id === root.pendingCallStopId &&
+      conv === root.pendingCallStopConv
+    var matchesOwner = root.callOwnerRequest !== "" && id !== "" &&
+      conv === root.callOwnerConv &&
+      (root.callOwnerCallId === "" || id === root.callOwnerCallId)
+    if (!matchesCurrent && !matchesPending && !matchesOwner)
+      return false
+    root.lastCallStopConv = conv
+    root.lastCallStopId = id
+    root.lastCallStopCancelAttempted = !!cancelAttempted
+    root.lastCallStopCancelAccepted = !!cancelAccepted
+    root.lastCallStopAudioAvailable = !!audioAvailable
+    root.lastCallStopCode = cancelAttempted && !cancelAccepted
+      ? "cancel_unconfirmed" : (!audioAvailable ? "audio_unavailable" :
+        String(reason || "ended"))
+    root.pendingCallStopRequest = ""
+    root.pendingCallStopConv = ""
+    root.pendingCallStopKey = ""
+    root.pendingCallStopId = ""
+    root.callOwnerRequest = ""
+    root.callOwnerOperation = ""
+    root.callOwnerConv = ""
+    root.callOwnerKey = ""
+    root.callOwnerCallId = ""
+    root.callOwnerConnectionLost = false
+    if (matchesCurrent) {
+      root.incomingCall = false
+      root.lastCallState = "ended"
+      root.callToneSuppressed = true
+      root.callDurationSeconds = 0
+    }
+    root.callStopTick = root.callStopTick + 1
+    return true
+  }
+
+  function resetCallAfterHelperRestart(reason) {
+    var hadCall = (root.lastCallState !== "" && root.lastCallState !== "ended") ||
+      root.pendingCallStopRequest !== "" || root.callOwnerRequest !== ""
+    if (!hadCall)
+      return false
+    root.lastCallStopConv = String(root.lastCallConv || root.pendingCallStopConv ||
+      root.callOwnerConv || "")
+    root.lastCallStopId = String(root.lastCallId || root.pendingCallStopId || "")
+    root.lastCallStopCode = String(reason || "helper_restarted")
+    root.incomingCall = false
+    root.lastCallState = ""
+    root.lastCallConv = ""
+    root.lastCallKey = ""
+    root.lastCallId = ""
+    root.pendingCallStopRequest = ""
+    root.pendingCallStopConv = ""
+    root.pendingCallStopKey = ""
+    root.pendingCallStopId = ""
+    root.callOwnerRequest = ""
+    root.callOwnerOperation = ""
+    root.callOwnerConv = ""
+    root.callOwnerKey = ""
+    root.callOwnerCallId = ""
+    root.callOwnerConnectionLost = false
+    root.callToneSuppressed = true
+    root.callDurationSeconds = 0
+    root.callStopTick = root.callStopTick + 1
+    return true
+  }
+
   function applyCallSnapshot(snapshotCall) {
+    var previousConv = String(root.lastCallConv || "")
+    var previousCallId = String(root.lastCallId || "")
+    var previousCallState = String(root.lastCallState || "")
     var conv = ""
     var key = ""
+    var callId = ""
     var state = ""
     if (snapshotCall && typeof snapshotCall === "object") {
       conv = String(snapshotCall.conversation || "")
       key = String(snapshotCall.key || "")
+      callId = String(snapshotCall.callId || "")
       state = String(snapshotCall.state || "")
+      var allowedStates = root.supportsConfirmedHangup
+        ? ["incoming", "ringing", "active", "ending"]
+        : ["incoming", "ringing", "active"]
       if (!/^(0|[1-9][0-9]*)$/.test(conv) ||
-          ["incoming", "ringing", "active"].indexOf(state) === -1 ||
+          allowedStates.indexOf(state) === -1 ||
+          (root.supportsConfirmedHangup && !/^[0-9a-f]{16}$/.test(callId)) ||
           (root.supportsStableDirectState &&
            (!/^[0-9a-f]{64}$/.test(key) ||
             (root.friendsReady && !root.directBindingMatches(conv, key))))) {
         conv = ""
         key = ""
+        callId = ""
         state = ""
       }
     }
+    if (!state && root.supportsConfirmedHangup &&
+        root.callOwnerRequest !== "" && root.callOwnerCallId === "" &&
+        (root.callOwnerOperation === "start" ||
+         root.callOwnerOperation === "answer")) {
+      root.incomingCall = false
+      root.callToneSuppressed = true
+      root.callDurationSeconds = 0
+      if (previousCallState !== "" && previousCallState !== "ended" &&
+          previousConv === root.callOwnerConv)
+        root.lastCallState = "ending"
+      return
+    }
+    if (!state && root.supportsConfirmedHangup && previousCallId !== "" &&
+        previousCallState !== "" && previousCallState !== "ended") {
+      root.incomingCall = false
+      root.callToneSuppressed = true
+      root.callDurationSeconds = 0
+      root.lastCallState = "ending"
+      return
+    }
     if (state === "active" &&
-        (root.lastCallState !== "active" || String(root.lastCallConv || "") !== conv))
+        (root.lastCallState !== "active" || String(root.lastCallConv || "") !== conv ||
+         root.lastCallId !== callId))
       root.callDurationSeconds = 0
     if (!state)
       root.callDurationSeconds = 0
@@ -330,6 +466,15 @@ Item {
     root.lastCallState = state
     root.lastCallConv = conv
     root.lastCallKey = conv ? (key || root.friendKeyForConversation(conv)) : ""
+    root.lastCallId = state ? callId : ""
+    if (!state) {
+      root.callOwnerRequest = ""
+      root.callOwnerOperation = ""
+      root.callOwnerConv = ""
+      root.callOwnerKey = ""
+      root.callOwnerCallId = ""
+      root.callOwnerConnectionLost = false
+    }
     if (conv) {
       root.lastConversation = conv
       root.lastDirectId = conv
@@ -647,12 +792,31 @@ Item {
       if (String(root.lastConversation || "") === removedDirectId)
         root.lastConversation = ""
       if (String(root.lastCallConv || "") === removedDirectId) {
+        var retainTerminalDebt = root.supportsConfirmedHangup &&
+          root.lastCallState !== "" && root.lastCallState !== "ended" &&
+          /^[0-9a-f]{16}$/.test(root.lastCallId) &&
+          /^[0-9a-f]{64}$/.test(root.lastCallKey)
         root.incomingCall = false
-        root.lastCallState = ""
-        root.lastCallConv = ""
-        root.lastCallKey = ""
         root.callToneSuppressed = true
         root.callDurationSeconds = 0
+        if (retainTerminalDebt) {
+          root.lastCallState = "ending"
+        } else {
+          root.lastCallState = ""
+          root.lastCallConv = ""
+          root.lastCallKey = ""
+          root.lastCallId = ""
+          root.callOwnerRequest = ""
+          root.callOwnerOperation = ""
+          root.callOwnerConv = ""
+          root.callOwnerKey = ""
+          root.callOwnerCallId = ""
+          root.callOwnerConnectionLost = false
+          root.pendingCallStopRequest = ""
+          root.pendingCallStopConv = ""
+          root.pendingCallStopKey = ""
+          root.pendingCallStopId = ""
+        }
       }
     }
     if (!selectedStillValid) {
@@ -715,7 +879,8 @@ Item {
     return ["unread", "message", "message.updated", "message.reaction", "history",
       "search", "receipt", "receipt.sent", "typing", "file.offer", "file.sending",
       "file.done", "file.canceled", "file.failed", "call.incoming",
-      "call.state"].indexOf(String(ev.event || "")) >= 0
+      "call.state", "call.stopped", "call.action.failed"].indexOf(
+        String(ev.event || "")) >= 0
   }
 
   function bufferDirectEvent(line) {
@@ -819,6 +984,7 @@ Item {
           root.failActiveOutgoingFiles("helper_restarted")
           root.failQueuedGroupInvites("helper_restarted")
           root.failPendingSoundRequests("helper_restarted")
+          root.resetCallAfterHelperRestart()
           root.helperInstanceGeneration = root.helperInstanceGeneration + 1
         }
         if (identityChanged)
@@ -1791,10 +1957,14 @@ Item {
     if (ev.event === "call.incoming") {
       if (!root.directEventBindingValid(ev))
         return
+      var incomingCallId = String(ev.callId || "")
+      if (root.supportsConfirmedHangup && !/^[0-9a-f]{16}$/.test(incomingCallId))
+        return
       root.incomingCall = true
       root.callToneSuppressed = false
       root.callDurationSeconds = 0
       root.lastCallState = "incoming"
+      root.lastCallId = incomingCallId
       if (ev.conversation)
         root.lastConversation = ev.conversation
       root.lastCallConv = ev.conversation || root.lastConversation
@@ -1804,32 +1974,111 @@ Item {
         root.lastDirectKey = root.lastCallKey
       }
     }
+    if (ev.event === "call.stopped") {
+      if (!root.supportsConfirmedHangup)
+        return
+      var stoppedCallId = String(ev.callId || "")
+      var stoppedRequest = String(ev.request || "")
+      var stoppedReason = String(ev.reason || "")
+      var stoppedConv = String(ev.conversation || "")
+      var stoppedKey = String(ev.key || "")
+      var stoppedBindingValid = root.directEventBindingValid(ev) ||
+        (root.lastCallState !== "ended" && stoppedCallId === root.lastCallId &&
+         stoppedConv === String(root.lastCallConv || "") &&
+         stoppedKey === String(root.lastCallKey || "")) ||
+        (root.pendingCallStopRequest !== "" &&
+         stoppedConv === root.pendingCallStopConv &&
+         stoppedKey === root.pendingCallStopKey) ||
+        (root.callOwnerRequest !== "" && stoppedConv === root.callOwnerConv &&
+         stoppedKey === root.callOwnerKey)
+      var pendingRequestConflict = root.pendingCallStopRequest !== "" &&
+        (stoppedReason === "local"
+          ? stoppedRequest !== root.pendingCallStopRequest
+          : (stoppedRequest !== "" &&
+             stoppedRequest !== root.pendingCallStopRequest &&
+             stoppedRequest !== root.callOwnerRequest))
+      var unresolvedOwner = root.callOwnerRequest !== "" &&
+        root.callOwnerCallId === ""
+      if (!stoppedBindingValid || !/^[0-9a-f]{16}$/.test(stoppedCallId) ||
+          ["local", "remote", "control_lost", "lease_expired", "audio_error",
+           "control_unavailable"].indexOf(stoppedReason) === -1 ||
+          ev.localStopped !== true || ev.transportClosed !== true ||
+          typeof ev.cancelAttempted !== "boolean" ||
+          typeof ev.cancelAccepted !== "boolean" ||
+          typeof ev.audioAvailable !== "boolean" || pendingRequestConflict ||
+          (unresolvedOwner &&
+           (stoppedRequest !== root.callOwnerRequest ||
+            stoppedConv !== root.callOwnerConv || stoppedKey !== root.callOwnerKey)))
+        return
+      if (unresolvedOwner)
+        root.callOwnerCallId = stoppedCallId
+      root.completeCallStop(stoppedConv, stoppedCallId, ev.reason,
+        ev.cancelAttempted, ev.cancelAccepted, ev.audioAvailable)
+    }
+    if (ev.event === "call.action.failed") {
+      if (!root.supportsConfirmedHangup)
+        return
+      var failedCallRequest = String(ev.request || "")
+      var failedCallOp = String(ev.op || "")
+      var failedCallConv = String(ev.conversation || "")
+      var failedCallKey = String(ev.key || "")
+      var failedCallId = String(ev.callId || "")
+      if (failedCallOp === "stop" && failedCallRequest !== "" &&
+          failedCallRequest === root.pendingCallStopRequest &&
+          failedCallConv === root.pendingCallStopConv &&
+          failedCallKey === root.pendingCallStopKey &&
+          failedCallId === root.pendingCallStopId) {
+        root.lastCallStopConv = failedCallConv
+        root.lastCallStopId = failedCallId
+        root.lastCallStopCode = String(ev.code || "call_stop_failed")
+        root.pendingCallStopRequest = ""
+        root.pendingCallStopConv = ""
+        root.pendingCallStopKey = ""
+        root.pendingCallStopId = ""
+        root.callStopTick = root.callStopTick + 1
+      } else if ((failedCallOp === "start" || failedCallOp === "answer") &&
+                 failedCallRequest !== "" &&
+                 failedCallRequest === root.callOwnerRequest &&
+                 failedCallOp === root.callOwnerOperation &&
+                 failedCallConv === root.callOwnerConv &&
+                 failedCallKey === root.callOwnerKey) {
+        root.callOwnerRequest = ""
+        root.callOwnerOperation = ""
+        root.callOwnerConv = ""
+        root.callOwnerKey = ""
+        root.callOwnerCallId = ""
+        root.callOwnerConnectionLost = false
+        root.lastCallStopConv = failedCallConv
+        root.lastCallStopId = failedCallId
+        root.lastCallStopCode = failedCallOp === "start"
+          ? "call_start_failed" : "call_answer_failed"
+        root.callStopTick = root.callStopTick + 1
+      }
+    }
     if (ev.event === "call.state") {
       if (!root.directEventBindingValid(ev))
         return
       var nextCallState = String(ev.state || "")
-      if (nextCallState === "active" &&
-          (root.lastCallState !== "active" ||
-           String(root.lastCallConv || "") !== String(ev.conversation || "")))
-        root.callDurationSeconds = 0
-      root.lastCallState = nextCallState
-      root.callToneSuppressed = nextCallState !== "incoming" &&
-        nextCallState !== "ringing"
-      if (ev.state === "ended" || ev.state === "") {
-        root.incomingCall = false
-        root.callDurationSeconds = 0
-      } else if (ev.state === "active") {
-        root.incomingCall = false
+      var stateCallId = String(ev.callId || "")
+      if (root.supportsConfirmedHangup) {
+        if (!/^[0-9a-f]{16}$/.test(stateCallId) ||
+            ["ringing", "active", "ending", "ended"].indexOf(nextCallState) === -1)
+          return
+        if (root.lastCallId !== "" && stateCallId !== root.lastCallId &&
+            root.lastCallState !== "" && root.lastCallState !== "ended")
+          return
+        if (String(ev.request || "") !== "" &&
+            String(ev.request) === root.callOwnerRequest &&
+            String(ev.conversation || "") === root.callOwnerConv &&
+            String(ev.key || "") === root.callOwnerKey) {
+          root.callOwnerCallId = stateCallId
+          root.callOwnerConnectionLost = false
+        }
+        if (nextCallState === "ended")
+          return
       }
-      if (ev.conversation)
-        root.lastConversation = ev.conversation
-      if (ev.conversation)
-        root.lastCallConv = ev.conversation
-      if (ev.conversation && String(ev.conversation).charAt(0) !== "g") {
-        root.lastCallKey = String(ev.key || root.friendKeyForConversation(ev.conversation))
-        root.lastDirectId = String(ev.conversation)
-        root.lastDirectKey = root.lastCallKey
-      }
+      root.applyCallSnapshot({ conversation: ev.conversation, key: ev.key,
+        callId: stateCallId, state: nextCallState })
     }
   }
 
@@ -1998,8 +2247,13 @@ Item {
       "message.edit", "message.delete", "message.react", "conversation.read",
       "unread.clear", "receipt.send", "typing.set", "surface.set", "surface.get",
       "file.send", "file.status", "file.accept", "file.cancel", "call.start",
-      "call.answer", "call.stop"].indexOf(
+      "call.answer", "call.stop", "call.lease"].indexOf(
         String(name || "")) >= 0
+  }
+
+  function callOperation(name) {
+    return ["call.start", "call.answer", "call.stop", "call.lease"].indexOf(
+      String(name || "")) >= 0
   }
 
   function groupConversationOperation(name) {
@@ -2052,6 +2306,10 @@ Item {
       }
       if (!root.operationBindingValid(operation)) {
         root.rejectBoundOperation(operation, "identity_changed")
+        continue
+      }
+      if (root.callOperation(operation.op)) {
+        root.rejectBoundOperation(operation, "call_control_unavailable")
         continue
       }
       root.trackInFlightMessage(operation)
@@ -2133,6 +2391,7 @@ Item {
   function markHelperIncompatible() {
     helperStatusTimer.stop()
     groupProjectionTimer.stop()
+    root.resetCallAfterHelperRestart("helper_incompatible")
     root.awaitingHelperInstance = false
     root.helperStatusNonce = ""
     root.failActiveOutgoingFiles("helper_incompatible")
@@ -2186,6 +2445,8 @@ Item {
   }
 
   function sendOp(obj) {
+    if (root.callOperation(obj && obj.op))
+      return root.sendImmediateOp(obj)
     if (root.helperCompatibility === "incompatible") {
       root.lastError = "helper_incompatible"
       root.lastErrorConv = String(obj && obj.conversation || "")
@@ -3065,21 +3326,57 @@ Item {
       root.pendingFile = false
     return true
   }
+  function nextCallRequest(operation) {
+    root.callRequestSequence = root.callRequestSequence + 1
+    return "call-" + String(operation || "action") + "-" +
+      Date.now().toString(36) + "-" + root.callRequestSequence.toString(36) + "-" +
+      Math.floor(Math.random() * 0x100000000).toString(36)
+  }
+
   function startCall(conv, expectedKey) {
     var c = String(conv || root.lastConversation || "")
-    if (!c || c.charAt(0) === "g")
+    if (!c || c.charAt(0) === "g" ||
+        (root.supportsConfirmedHangup && root.callOwnerRequest !== ""))
       return false
+    var operation = { op: "call.start", conversation: c }
+    var request = ""
+    if (root.supportsConfirmedHangup) {
+      request = root.nextCallRequest("start")
+      operation.request = request
+    }
+    if (!root.sendConversationOp(operation, expectedKey, true))
+      return false
+    root.callOwnerRequest = request
+    root.callOwnerOperation = "start"
+    root.callOwnerConv = c
+    root.callOwnerKey = String(expectedKey || "")
+    root.callOwnerCallId = ""
+    root.callOwnerConnectionLost = false
     root.callToneSuppressed = false
-    return root.sendConversationOp({ op: "call.start", conversation: c },
-      expectedKey, false)
+    return true
   }
   function answerCall(conv, expectedKey) {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
-    if (!c || c.charAt(0) === "g")
+    if (!c || c.charAt(0) === "g" ||
+        (root.supportsConfirmedHangup && root.callOwnerRequest !== ""))
       return false
-    if (!root.sendConversationOp({ op: "call.answer", conversation: c },
-          expectedKey, false))
+    var operation = { op: "call.answer", conversation: c }
+    var request = ""
+    if (root.supportsConfirmedHangup) {
+      if (!/^[0-9a-f]{16}$/.test(root.lastCallId))
+        return false
+      request = root.nextCallRequest("answer")
+      operation.request = request
+      operation.callId = root.lastCallId
+    }
+    if (!root.sendConversationOp(operation, expectedKey, true))
       return false
+    root.callOwnerRequest = request
+    root.callOwnerOperation = "answer"
+    root.callOwnerConv = c
+    root.callOwnerKey = String(expectedKey || "")
+    root.callOwnerCallId = ""
+    root.callOwnerConnectionLost = false
     root.callToneSuppressed = true
     return true
   }
@@ -3087,11 +3384,43 @@ Item {
     var c = String(conv || root.lastCallConv || root.lastDirectId || "")
     if (!c || c.charAt(0) === "g")
       return false
-    if (!root.sendConversationOp({ op: "call.stop", conversation: c },
-          expectedKey, false))
+    var operation = { op: "call.stop", conversation: c }
+    var request = ""
+    if (root.supportsConfirmedHangup) {
+      if (!/^[0-9a-f]{16}$/.test(root.lastCallId))
+        return false
+      request = root.nextCallRequest("stop")
+      operation.request = request
+      operation.callId = root.lastCallId
+    }
+    if (!root.sendConversationOp(operation, expectedKey, true)) {
+      root.lastCallStopConv = c
+      root.lastCallStopId = root.lastCallId
+      root.lastCallStopCode = "call_control_unavailable"
+      root.callStopTick = root.callStopTick + 1
       return false
+    }
+    root.pendingCallStopRequest = request
+    root.pendingCallStopConv = c
+    root.pendingCallStopKey = String(expectedKey || "")
+    root.pendingCallStopId = root.lastCallId
     root.callToneSuppressed = true
     return true
+  }
+
+  function renewCallLease() {
+    if (!root.supportsConfirmedHangup || root.callOwnerConnectionLost ||
+        root.callOwnerRequest === "" || !/^[0-9a-f]{16}$/.test(root.callOwnerCallId) ||
+        root.pendingCallStopRequest !== "" ||
+        String(root.lastCallId || "") !== root.callOwnerCallId ||
+        !root.directBindingMatches(root.lastCallConv, root.lastCallKey))
+      return false
+    if (root.sendConversationOp({ op: "call.lease", conversation: root.lastCallConv,
+          callId: root.callOwnerCallId, request: root.callOwnerRequest },
+          root.lastCallKey, true))
+      return true
+    root.callOwnerConnectionLost = true
+    return false
   }
 
   function resetBackoff() {
@@ -3245,6 +3574,23 @@ Item {
     root.lastCallState = ""
     root.lastCallConv = ""
     root.lastCallKey = ""
+    root.lastCallId = ""
+    root.callOwnerRequest = ""
+    root.callOwnerOperation = ""
+    root.callOwnerConv = ""
+    root.callOwnerKey = ""
+    root.callOwnerCallId = ""
+    root.callOwnerConnectionLost = false
+    root.pendingCallStopRequest = ""
+    root.pendingCallStopConv = ""
+    root.pendingCallStopKey = ""
+    root.pendingCallStopId = ""
+    root.lastCallStopConv = ""
+    root.lastCallStopId = ""
+    root.lastCallStopCode = ""
+    root.lastCallStopCancelAttempted = false
+    root.lastCallStopCancelAccepted = false
+    root.lastCallStopAudioAvailable = true
     root.callToneSuppressed = true
     root.callDurationSeconds = 0
     root.friends = []
@@ -3336,7 +3682,24 @@ Item {
     root.recoveringHelper = true
     root.connectionState = "reconnecting"
     root.selfOnline = false
-    root.applyCallSnapshot(null)
+    var callSafeOps = []
+    for (var pendingIndex = 0; pendingIndex < root.pendingOps.length; pendingIndex++) {
+      var pendingOperation = null
+      try { pendingOperation = JSON.parse(root.pendingOps[pendingIndex]) } catch (e) {}
+      if (!pendingOperation || !root.callOperation(pendingOperation.op))
+        callSafeOps.push(root.pendingOps[pendingIndex])
+    }
+    root.pendingOps = callSafeOps
+    var keepCallUntilConfirmed = root.supportsConfirmedHangup &&
+      ((root.lastCallState !== "" && root.lastCallState !== "ended") ||
+       root.pendingCallStopRequest !== "" || root.callOwnerRequest !== "")
+    if (keepCallUntilConfirmed) {
+      if (root.callOwnerRequest !== "" || root.pendingCallStopRequest !== "")
+        root.callOwnerConnectionLost = true
+      root.callToneSuppressed = true
+    } else {
+      root.applyCallSnapshot(null)
+    }
     root.inviteUrl = ""
     root.inviteExpiresAt = 0
     root.qrPath = ""
@@ -3433,6 +3796,16 @@ Item {
     repeat: true
     running: root.lastCallState === "active"
     onTriggered: root.callDurationSeconds = root.callDurationSeconds + 1
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    triggeredOnStart: true
+    running: root.supportsConfirmedHangup && root.callOwnerRequest !== "" &&
+      !root.callOwnerConnectionLost && root.pendingCallStopRequest === "" &&
+      (root.lastCallState === "ringing" || root.lastCallState === "active")
+    onTriggered: root.renewCallLease()
   }
 
   Timer {

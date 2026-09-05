@@ -59,7 +59,7 @@
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 #ifndef OMAQ_PROTOCOL_VERSION
-#define OMAQ_PROTOCOL_VERSION 14
+#define OMAQ_PROTOCOL_VERSION 15
 #endif
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
@@ -68,6 +68,7 @@
 static void emit(const char *value);
 static void emit_error(const char *code);
 static void emit_identity_primary_state(const char *request);
+static int rand_id(char *out, size_t n);
 #ifdef HAVE_TOX
 static void group_file_reset(void);
 static void group_file_pump(void);
@@ -75,6 +76,7 @@ static void group_file_peer_removed(uint32_t group_number, uint32_t peer, int se
 static void hook_group_file_packet(void *ud, uint32_t group_number,
 				   uint32_t peer, const uint8_t *data,
 				   size_t length, int private_packet);
+static void call_control_owner_disconnected(int owner_fd, int last_socket_client);
 #endif
 
 #define ATTACHMENT_STAGE_OWNER_MAX 32
@@ -315,6 +317,34 @@ static omaq_group_file_offer_rate g_group_file_offer_rate;
 static int g_av_reset_requested;
 static int64_t g_av_reset_next;
 static int g_av_reset_reported;
+#define CALL_OWNER_NONE (-2)
+#define CALL_LEASE_MILLIS 4000
+#define CALL_ID_HEX 16
+static int g_call_owner_fd = CALL_OWNER_NONE;
+static int64_t g_call_owner_deadline;
+static char g_call_owner_request[80];
+static char g_call_id[CALL_ID_HEX + 1];
+static uint32_t g_call_friend = UINT32_MAX;
+static char g_call_key[65];
+typedef struct {
+	int used;
+	uint32_t friend;
+	int cancel_attempted;
+	int cancel_accepted;
+	int audio_available;
+	char conversation[16];
+	char key[65];
+	char call_id[CALL_ID_HEX + 1];
+	char request[80];
+	char reason[24];
+} call_end_record;
+static call_end_record g_call_end;
+static char g_call_end_alias_requests[MAX_CLIENTS][80];
+static size_t g_call_end_alias_count;
+#define CALL_END_RESULT_MAX (MAX_CLIENTS + 1)
+static call_end_record g_call_end_results[CALL_END_RESULT_MAX];
+static size_t g_call_end_result_next;
+static size_t g_call_end_result_count;
 #endif
 static int g_identity_requires_ready;
 static int g_stdin_identity_ready = 1;
@@ -3642,6 +3672,18 @@ static void reset_identity_runtime_state(void)
 	g_av_reset_requested = 0;
 	g_av_reset_next = 0;
 	g_av_reset_reported = 0;
+	g_call_owner_fd = CALL_OWNER_NONE;
+	g_call_owner_deadline = 0;
+	g_call_owner_request[0] = '\0';
+	g_call_id[0] = '\0';
+	g_call_friend = UINT32_MAX;
+	g_call_key[0] = '\0';
+	memset(&g_call_end, 0, sizeof(g_call_end));
+	memset(g_call_end_alias_requests, 0, sizeof(g_call_end_alias_requests));
+	g_call_end_alias_count = 0;
+	memset(g_call_end_results, 0, sizeof(g_call_end_results));
+	g_call_end_result_next = 0;
+	g_call_end_result_count = 0;
 	group_file_reset();
 	omaq_group_reset();
 	omaq_file_reset();
@@ -8221,23 +8263,360 @@ static void hook_file_ctrl(void *ud, uint32_t friend, uint32_t fnum, int control
 			  sending ? "out" : "in", request);
 }
 
-static void emit_call_state(uint32_t friend, const char *state)
+static int call_id_ok(const char *call_id)
 {
+	if (!call_id || strlen(call_id) != CALL_ID_HEX)
+		return 0;
+	for (size_t i = 0; i < CALL_ID_HEX; i++)
+		if (!((call_id[i] >= '0' && call_id[i] <= '9') ||
+		      (call_id[i] >= 'a' && call_id[i] <= 'f')))
+			return 0;
+	return 1;
+}
+
+static void emit_call_state_record(const char *conversation, const char *key,
+				   const char *call_id, const char *state,
+				   const char *request, const char *reason)
+{
+	char escaped_request[80 * 6 + 1], request_field[80 * 6 + 32];
+	char reason_field[64], event[1200];
+
+	if (!conversation || !key || !call_id_ok(call_id) || !state)
+		return;
+	request_field[0] = '\0';
+	reason_field[0] = '\0';
+	if (request && request[0]) {
+		if (omaq_json_escape(request, escaped_request,
+				     sizeof(escaped_request)) != 0)
+			return;
+		snprintf(request_field, sizeof(request_field),
+			 ",\"request\":\"%s\"", escaped_request);
+	}
+	if (reason && reason[0])
+		snprintf(reason_field, sizeof(reason_field),
+			 ",\"reason\":\"%s\"", reason);
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"call.state\",\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"%s\"%s%s}",
+		 conversation, key, call_id, state, request_field, reason_field);
+	emit(event);
+}
+
+static void emit_call_state(uint32_t friend, const char *state,
+			    const char *request, const char *reason)
+{
+#if OMAQ_PROTOCOL_VERSION >= 15
+	char conversation[16];
+
+	if (friend != g_call_friend || strlen(g_call_key) != 64 ||
+	    snprintf(conversation, sizeof(conversation), "%u", friend) >=
+		(int)sizeof(conversation))
+		return;
+	emit_call_state_record(conversation, g_call_key, g_call_id, state,
+			       request, reason);
+#else
 	char key[65], event[260];
 
+	(void)request;
+	(void)reason;
 	if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0)
 		return;
 	snprintf(event, sizeof(event),
 		 "{\"event\":\"call.state\",\"conversation\":\"%u\",\"key\":\"%s\",\"state\":\"%s\"}",
 		 friend, key, state);
 	emit(event);
+#endif
+}
+
+#if OMAQ_PROTOCOL_VERSION >= 15
+static void emit_call_action_failed_record(const char *operation,
+					   const char *conversation, const char *key,
+					   const char *call_id, const char *request,
+					   const char *code)
+{
+	char escaped_request[80 * 6 + 1], event[1100];
+
+	if (!operation || !direct_id_ok(conversation) || !lower_hex_key_ok(key) ||
+	    !omaq_message_id_ok(request) || !code ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0)
+		return;
+	if (call_id_ok(call_id))
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 operation, conversation, key, call_id, escaped_request, code);
+	else
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.action.failed\",\"op\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"request\":\"%s\",\"code\":\"%s\"}",
+			 operation, conversation, key, escaped_request, code);
+	emit(event);
+}
+
+static void emit_call_action_failed(const char *operation, uint32_t friend,
+				    const char *call_id, const char *request,
+				    const char *code)
+{
+	char conversation[16], key[65];
+
+	if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0 ||
+	    snprintf(conversation, sizeof(conversation), "%u", friend) >=
+		(int)sizeof(conversation))
+		return;
+	emit_call_action_failed_record(operation, conversation, key, call_id,
+				       request, code);
+}
+
+static int correlated_call_action(const omaq_op *op)
+{
+	return op && (strcmp(op->op, "call.start") == 0 ||
+		      strcmp(op->op, "call.answer") == 0 ||
+		      strcmp(op->op, "call.stop") == 0);
+}
+
+static void emit_bound_call_action_failed(const omaq_op *op, const char *code)
+{
+	if (!correlated_call_action(op))
+		return;
+	emit_call_action_failed_record(op->op + 5, op->conversation, op->key,
+				       op->call_id, op->request, code);
+}
+#endif
+
+static void emit_call_stopped_record(const call_end_record *result)
+{
+	char escaped_request[80 * 6 + 1], request_field[80 * 6 + 32];
+	char event[1400];
+
+	if (!result || !result->used || !call_id_ok(result->call_id))
+		return;
+	request_field[0] = '\0';
+	if (result->request[0]) {
+		if (omaq_json_escape(result->request, escaped_request,
+				     sizeof(escaped_request)) != 0)
+			return;
+		snprintf(request_field, sizeof(request_field),
+			 ",\"request\":\"%s\"", escaped_request);
+	}
+	snprintf(event, sizeof(event),
+		 "{\"event\":\"call.stopped\",\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\"%s,\"reason\":\"%s\",\"localStopped\":true,\"transportClosed\":true,\"cancelAttempted\":%s,\"cancelAccepted\":%s,\"audioAvailable\":%s}",
+		 result->conversation, result->key, result->call_id, request_field,
+		 result->reason, result->cancel_attempted ? "true" : "false",
+		 result->cancel_accepted ? "true" : "false",
+		 result->audio_available ? "true" : "false");
+	emit(event);
+}
+
+static const call_end_record *remember_call_end_result(const call_end_record *result)
+{
+	call_end_record copy;
+	call_end_record *stored;
+
+	if (!result || !result->used || !call_id_ok(result->call_id))
+		return NULL;
+	copy = *result;
+	for (size_t offset = 0; offset < g_call_end_result_count; offset++) {
+		size_t index = (g_call_end_result_next + CALL_END_RESULT_MAX - 1 - offset) %
+				CALL_END_RESULT_MAX;
+		if (strcmp(g_call_end_results[index].call_id, copy.call_id) == 0 &&
+		    strcmp(g_call_end_results[index].request, copy.request) == 0)
+			return &g_call_end_results[index];
+	}
+	stored = &g_call_end_results[g_call_end_result_next];
+	*stored = copy;
+	g_call_end_result_next = (g_call_end_result_next + 1) % CALL_END_RESULT_MAX;
+	if (g_call_end_result_count < CALL_END_RESULT_MAX)
+		g_call_end_result_count++;
+	return stored;
+}
+
+static void replay_last_call_end(void)
+{
+	for (size_t offset = 0; offset < g_call_end_result_count; offset++) {
+		size_t index = (g_call_end_result_next + CALL_END_RESULT_MAX -
+				g_call_end_result_count + offset) % CALL_END_RESULT_MAX;
+		emit_call_stopped_record(&g_call_end_results[index]);
+	}
+}
+
+#if OMAQ_PROTOCOL_VERSION >= 15
+static const call_end_record *find_call_end_result(const char *call_id,
+						   const char *request)
+{
+	const call_end_record *fallback = NULL;
+
+	if (!call_id_ok(call_id))
+		return NULL;
+	for (size_t offset = 0; offset < g_call_end_result_count; offset++) {
+		size_t index = (g_call_end_result_next + CALL_END_RESULT_MAX - 1 - offset) %
+				CALL_END_RESULT_MAX;
+		if (strcmp(g_call_end_results[index].call_id, call_id) != 0)
+			continue;
+		if (!fallback)
+			fallback = &g_call_end_results[index];
+		if (request && request[0] &&
+		    strcmp(g_call_end_results[index].request, request) == 0)
+			return &g_call_end_results[index];
+	}
+	return fallback;
+}
+
+static int add_call_end_alias_request(const char *request)
+{
+	if (!omaq_message_id_ok(request))
+		return -1;
+	if (strcmp(g_call_end.request, request) == 0)
+		return 0;
+	for (size_t i = 0; i < g_call_end_alias_count; i++)
+		if (strcmp(g_call_end_alias_requests[i], request) == 0)
+			return 0;
+	if (g_call_end_alias_count >= MAX_CLIENTS)
+		return -1;
+	snprintf(g_call_end_alias_requests[g_call_end_alias_count],
+		 sizeof(g_call_end_alias_requests[g_call_end_alias_count]), "%s", request);
+	g_call_end_alias_count++;
+	return 0;
+}
+#endif
+
+static int queue_call_end(uint32_t friend, const char *key, const char *request,
+			  const char *reason, int cancel_attempted,
+			  int cancel_accepted)
+{
+	if (g_call_end.used || !key || !call_id_ok(g_call_id) || !reason)
+		return -1;
+	memset(&g_call_end, 0, sizeof(g_call_end));
+	memset(g_call_end_alias_requests, 0, sizeof(g_call_end_alias_requests));
+	g_call_end_alias_count = 0;
+	g_call_end.used = 1;
+	g_call_end.friend = friend;
+	g_call_end.cancel_attempted = cancel_attempted;
+	g_call_end.cancel_accepted = cancel_accepted;
+	snprintf(g_call_end.conversation, sizeof(g_call_end.conversation), "%u", friend);
+	snprintf(g_call_end.key, sizeof(g_call_end.key), "%s", key);
+	snprintf(g_call_end.call_id, sizeof(g_call_end.call_id), "%s", g_call_id);
+	if (request)
+		snprintf(g_call_end.request, sizeof(g_call_end.request), "%s", request);
+#if OMAQ_PROTOCOL_VERSION >= 15
+	if (g_call_owner_request[0] &&
+	    strcmp(g_call_owner_request, g_call_end.request) != 0 &&
+	    add_call_end_alias_request(g_call_owner_request) != 0) {
+		memset(&g_call_end, 0, sizeof(g_call_end));
+		memset(g_call_end_alias_requests, 0, sizeof(g_call_end_alias_requests));
+		g_call_end_alias_count = 0;
+		return -1;
+	}
+#endif
+	snprintf(g_call_end.reason, sizeof(g_call_end.reason), "%s", reason);
+	g_call_owner_fd = CALL_OWNER_NONE;
+	g_call_owner_deadline = 0;
+	g_call_owner_request[0] = '\0';
+	g_av_reset_requested = 1;
+	g_av_reset_next = 0;
+	return 0;
+}
+
+static int begin_call_end(uint32_t friend, const char *request, const char *reason)
+{
+	int stopped;
+
+	if (g_call_end.used || !omaq_av_is_current(friend))
+		return -1;
+	stopped = omaq_av_stop(g_tox, friend);
+	if (stopped < 0 || !omaq_av_local_stopped())
+		return -1;
+	/* Local media is already down. Force transport replacement even if
+	 * cached event metadata is unexpectedly unavailable. */
+	g_av_reset_requested = 1;
+	g_av_reset_next = 0;
+	if (friend != g_call_friend || strlen(g_call_key) != 64 ||
+	    queue_call_end(friend, g_call_key, request, reason, 1, stopped == 0) != 0)
+		return -1;
+	emit_call_state_record(g_call_end.conversation, g_call_end.key,
+			       g_call_end.call_id, "ending", request, reason);
+	return 0;
+}
+
+#if OMAQ_PROTOCOL_VERSION >= 15
+static int set_call_owner(int owner_fd, const char *request)
+{
+	int64_t now;
+
+	if (owner_fd < 0 || !omaq_message_id_ok(request))
+		return -1;
+	now = monotonic_millis();
+	if (now < 0)
+		return -1;
+	g_call_owner_fd = owner_fd;
+	g_call_owner_deadline = now + CALL_LEASE_MILLIS;
+	snprintf(g_call_owner_request, sizeof(g_call_owner_request), "%s", request);
+	return 0;
+}
+#endif
+
+static void call_control_owner_disconnected(int owner_fd, int last_socket_client)
+{
+#if OMAQ_PROTOCOL_VERSION >= 15
+	uint32_t friend = UINT32_MAX;
+	const char *state = NULL;
+
+	if (g_call_end.used || omaq_av_status(&friend, &state) != 1)
+		return;
+	(void)state;
+	if (g_call_owner_fd == owner_fd ||
+	    (g_call_owner_fd == CALL_OWNER_NONE && last_socket_client))
+		(void)begin_call_end(friend,
+				     g_call_owner_request[0] ? g_call_owner_request : NULL,
+				     "control_lost");
+#else
+	(void)owner_fd;
+	(void)last_socket_client;
+#endif
+}
+
+static void end_call_for_dropped_owner(void)
+{
+#if OMAQ_PROTOCOL_VERSION >= 15
+	int live_clients = 0;
+
+	for (size_t i = 0; i < g_ncli; i++)
+		if (!g_drop[i])
+			live_clients++;
+	for (size_t i = 0; i < g_ncli; i++)
+		if (g_drop[i])
+			call_control_owner_disconnected(g_clients[i], live_clients == 0);
+#endif
+}
+
+static void enforce_call_control_lease(void)
+{
+#if OMAQ_PROTOCOL_VERSION >= 15
+	uint32_t friend = UINT32_MAX;
+	const char *state = NULL;
+	int64_t now;
+
+	if (g_call_end.used || omaq_av_status(&friend, &state) != 1)
+		return;
+	(void)state;
+	if (g_call_owner_fd == CALL_OWNER_NONE) {
+		if (g_ncli == 0)
+			(void)begin_call_end(friend, NULL, "control_lost");
+		return;
+	}
+	now = monotonic_millis();
+	if (now < 0 || now >= g_call_owner_deadline)
+		(void)begin_call_end(friend,
+				     g_call_owner_request[0] ? g_call_owner_request : NULL,
+				     "lease_expired");
+#endif
 }
 
 static void hook_call(void *ud, uint32_t friend, int state)
 {
-	char key[65], event[260];
+	char key[65], event[400];
 
 	(void)ud;
+	if (g_call_end.used || g_av_reset_requested) {
+		(void)omaq_tox_av_hangup(g_tox, friend);
+		return;
+	}
 	if (state == OMAQ_TOX_CALL_INCOMING) {
 		int transition = omaq_av_note_incoming(friend);
 		if (transition < 0) {
@@ -8247,11 +8626,33 @@ static void hook_call(void *ud, uint32_t friend, int state)
 		}
 		if (transition != 1)
 			return;
-		if (omaq_tox_friend_pk_hex(g_tox, friend, key) != 0)
+		if (rand_id(g_call_id, sizeof(g_call_id)) != 0 ||
+		    omaq_tox_friend_pk_hex(g_tox, friend, key) != 0) {
+			(void)omaq_av_stop(g_tox, friend);
+			g_av_reset_requested = 1;
+			g_av_reset_next = 0;
+			g_call_id[0] = '\0';
+			g_call_friend = UINT32_MAX;
+			g_call_key[0] = '\0';
 			return;
+		}
+		g_call_friend = friend;
+		snprintf(g_call_key, sizeof(g_call_key), "%s", key);
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (g_ncli == 0) {
+			(void)begin_call_end(friend, NULL, "control_lost");
+			return;
+		}
+#endif
+#if OMAQ_PROTOCOL_VERSION >= 15
+		snprintf(event, sizeof(event),
+			 "{\"event\":\"call.incoming\",\"conversation\":\"%u\",\"key\":\"%s\",\"callId\":\"%s\"}",
+			 friend, key, g_call_id);
+#else
 		snprintf(event, sizeof(event),
 			 "{\"event\":\"call.incoming\",\"conversation\":\"%u\",\"key\":\"%s\"}",
 			 friend, key);
+#endif
 		emit(event);
 		return;
 	}
@@ -8262,13 +8663,26 @@ static void hook_call(void *ud, uint32_t friend, int state)
 			if (!omaq_av_busy())
 				g_av_reset_requested = 1;
 		} else if (transition == 1)
-			emit_call_state(friend, "active");
+			emit_call_state(friend, "active", g_call_owner_request, NULL);
 		return;
 	}
+#if OMAQ_PROTOCOL_VERSION >= 15
+	if (omaq_av_note_end(friend) == 1 && omaq_av_local_stopped()) {
+		g_av_reset_requested = 1;
+		g_av_reset_next = 0;
+		if (friend == g_call_friend && strlen(g_call_key) == 64 &&
+		    queue_call_end(friend, g_call_key,
+				   g_call_owner_request[0] ? g_call_owner_request : NULL,
+				   "remote", 0, 0) == 0)
+			emit_call_state_record(g_call_end.conversation, g_call_end.key,
+					       g_call_end.call_id, "ending", NULL, "remote");
+	}
+#else
 	if (omaq_av_note_end(friend) == 1) {
 		g_av_reset_requested = 1;
-		emit_call_state(friend, "ended");
+		emit_call_state(friend, "ended", NULL, NULL);
 	}
+#endif
 }
 
 static void hook_audio(void *ud, uint32_t friend, const int16_t *pcm,
@@ -8278,14 +8692,57 @@ static void hook_audio(void *ud, uint32_t friend, const int16_t *pcm,
 	omaq_av_receive(friend, pcm, samples, channels, rate);
 }
 
+static void finalize_call_end(int audio_available)
+{
+	call_end_record result;
+	const call_end_record *stored;
+
+	if (!g_call_end.used || !omaq_av_local_stopped())
+		return;
+	result = g_call_end;
+	result.audio_available = audio_available;
+	stored = remember_call_end_result(&result);
+	emit_call_stopped_record(stored);
+	for (size_t i = 0; i < g_call_end_alias_count; i++) {
+		memcpy(result.request, g_call_end_alias_requests[i],
+		       sizeof(result.request));
+		stored = remember_call_end_result(&result);
+		emit_call_stopped_record(stored);
+	}
+	emit_call_state_record(g_call_end.conversation, g_call_end.key,
+			       g_call_end.call_id, "ended", g_call_end.request,
+			       g_call_end.reason);
+	memset(&g_call_end, 0, sizeof(g_call_end));
+	memset(g_call_end_alias_requests, 0, sizeof(g_call_end_alias_requests));
+	g_call_end_alias_count = 0;
+	g_call_id[0] = '\0';
+	g_call_friend = UINT32_MAX;
+	g_call_key[0] = '\0';
+}
+
 static void reset_call_transport(void)
 {
 	int64_t now = (int64_t)time(NULL);
+	int audio_available;
 
-	if (!g_av_reset_requested || !g_tox || omaq_av_busy() ||
-	    now < g_av_reset_next)
+	if (!g_av_reset_requested || !g_tox ||
+	    (omaq_av_busy() && !g_call_end.used) || now < g_av_reset_next)
 		return;
-	if (omaq_tox_av_reset(g_tox) != 0) {
+	if (omaq_tox_av_destroy(g_tox) != 0)
+		return;
+	omaq_av_reset();
+	audio_available = omaq_tox_av_create(g_tox) == 0;
+	if (g_call_end.used) {
+		finalize_call_end(audio_available);
+	} else {
+		g_call_owner_fd = CALL_OWNER_NONE;
+		g_call_owner_deadline = 0;
+		g_call_owner_request[0] = '\0';
+		g_call_id[0] = '\0';
+		g_call_friend = UINT32_MAX;
+		g_call_key[0] = '\0';
+	}
+	if (!audio_available) {
 		g_av_reset_next = now + 2;
 		if (!g_av_reset_reported) {
 			emit_error("audio_unavailable");
@@ -8296,7 +8753,6 @@ static void reset_call_transport(void)
 	g_av_reset_requested = 0;
 	g_av_reset_next = 0;
 	g_av_reset_reported = 0;
-	omaq_av_reset();
 }
 
 static void pump_call_audio(void)
@@ -8304,21 +8760,26 @@ static void pump_call_audio(void)
 	uint32_t friend = UINT32_MAX;
 	char conv[16];
 
-	if (!g_tox)
+	if (!g_tox || g_call_end.used)
 		return;
 	(void)omaq_av_pump(g_tox);
 	if (!omaq_av_take_audio_error(&friend) || friend == UINT32_MAX ||
 	    !omaq_av_is_current(friend))
 		return;
 	snprintf(conv, sizeof(conv), "%u", friend);
-	{
-		int stopped = omaq_av_stop(g_tox, friend);
-		if (stopped < 0)
-			return;
-		g_av_reset_requested = 1;
-	}
+#if OMAQ_PROTOCOL_VERSION >= 15
+	if (begin_call_end(friend,
+			   g_call_owner_request[0] ? g_call_owner_request : NULL,
+			   "audio_error") != 0)
+		return;
 	emit_error_conv("audio_unavailable", conv);
-	emit_call_state(friend, "ended");
+#else
+	if (omaq_av_stop(g_tox, friend) < 0)
+		return;
+	g_av_reset_requested = 1;
+	emit_error_conv("audio_unavailable", conv);
+	emit_call_state(friend, "ended", NULL, NULL);
+#endif
 }
 
 static int rand_id(char *out, size_t n)
@@ -9594,7 +10055,8 @@ static int operation_uses_direct_conversation(const char *name)
 		"message.edit", "message.delete", "message.react",
 		"conversation.read", "unread.clear", "receipt.send", "typing.set",
 		"surface.set", "surface.get", "file.send", "file.status",
-		"file.accept", "file.cancel", "call.start", "call.answer", "call.stop"
+		"file.accept", "file.cancel", "call.start", "call.answer", "call.stop",
+		"call.lease"
 	};
 
 	if (!name)
@@ -9640,6 +10102,12 @@ static void reject_direct_operation_binding(const omaq_op *op)
 				       "identity_changed");
 	else if (strcmp(op->op, "message.react") == 0)
 		emit_message_reaction_failed(conversation, op->id, "identity_changed");
+#if OMAQ_PROTOCOL_VERSION >= 15
+	else if (strcmp(op->op, "call.start") == 0 ||
+		 strcmp(op->op, "call.answer") == 0 ||
+		 strcmp(op->op, "call.stop") == 0)
+		emit_bound_call_action_failed(op, "identity_changed");
+#endif
 	else
 		emit_error_conv("identity_changed", conversation);
 }
@@ -9723,8 +10191,12 @@ static void begin_helper_shutdown(int owner_fd, const char *escaped_request)
 
 static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 {
-	if (shutdown_requested())
+	if (shutdown_requested()) {
+#if defined(HAVE_TOX) && OMAQ_PROTOCOL_VERSION >= 15
+		emit_bound_call_action_failed(op, "call_control_unavailable");
+#endif
 		return 0;
+	}
 	if (strcmp(op->op, "helper.probe") == 0) {
 		char escaped_request[80 * 6 + 1], event[768];
 		if (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
@@ -9807,6 +10279,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 #ifdef HAVE_TOX
 	if (g_identity_recovery_required) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, "identity_changed");
+		else
+#endif
 		if (targeted_group_invite_op(op))
 			emit_group_invite_terminal(op, "identity_changed");
 		else if (direct_invite_action_op(op))
@@ -9898,11 +10375,28 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				 ",\"request\":\"%s\"", escaped_request);
 		}
 #ifdef HAVE_TOX
-		char addr[77], nickname[129], escaped_nickname[260], call_field[260];
-		char ev[1200];
+		char addr[77], nickname[129], escaped_nickname[260], call_field[400];
+		char ev[1400];
 		uint32_t call_friend = UINT32_MAX;
 		const char *call_state = NULL;
 
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (g_call_end.used) {
+			snprintf(call_field, sizeof(call_field),
+				 ",\"call\":{\"conversation\":\"%s\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"ending\"}",
+				 g_call_end.conversation, g_call_end.key, g_call_end.call_id);
+		} else if (omaq_av_status(&call_friend, &call_state)) {
+			if (call_friend != g_call_friend || strlen(g_call_key) != 64 ||
+			    !call_id_ok(g_call_id))
+				snprintf(call_field, sizeof(call_field), ",\"call\":null");
+			else
+				snprintf(call_field, sizeof(call_field),
+					 ",\"call\":{\"conversation\":\"%u\",\"key\":\"%s\",\"callId\":\"%s\",\"state\":\"%s\"}",
+					 call_friend, g_call_key, g_call_id, call_state);
+		} else {
+			snprintf(call_field, sizeof(call_field), ",\"call\":null");
+		}
+#else
 		if (omaq_av_status(&call_friend, &call_state)) {
 			char call_key[65];
 			if (!g_tox || omaq_tox_friend_pk_hex(g_tox, call_friend, call_key) != 0)
@@ -9914,6 +10408,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		} else {
 			snprintf(call_field, sizeof(call_field), ",\"call\":null");
 		}
+#endif
 		if (g_locked && !g_tox) {
 			snprintf(ev, sizeof(ev),
 				 "{\"event\":\"snapshot\",\"protocol\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
@@ -9926,6 +10421,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			if (g_identity_primary_uncertain)
 				emit_error("identity_primary_uncertain");
 			replay_sound_results();
+			replay_last_call_end();
 			return 0;
 		}
 		if (g_tox && omaq_tox_self_addr_hex(g_tox, addr) == 0) {
@@ -9962,6 +10458,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			replay_group_invite_results();
 #endif
 			replay_sound_results();
+			replay_last_call_end();
 			return 0;
 		}
 #endif
@@ -9980,11 +10477,19 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_error("direct_state_migration_failed");
 #endif
 			replay_sound_results();
+#ifdef HAVE_TOX
+			replay_last_call_end();
+#endif
 		}
 		return 0;
 	}
 #ifdef HAVE_TOX
 	if (g_identity_primary_uncertain && !identity_uncertainty_allowed_op(op)) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, "identity_primary_uncertain");
+		else
+#endif
 		if (strcmp(op->op, "msg.send") == 0)
 			emit_message_failed(op->conversation, op->id,
 					    "identity_primary_uncertain", 0);
@@ -10000,6 +10505,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (g_identity_guard_error && strcmp(op->op, "identity.inspect") != 0 &&
 	    !(strcmp(op->op, "identity.import") == 0 &&
 	      identity_guard_import_allowed())) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, identity_guard_error_code());
+		else
+#endif
 		if (strncmp(op->op, "identity.", 9) == 0 || direct_invite_redeem_op(op) ||
 		    direct_reinvite_clear_op(op))
 			emit_identity_error(identity_guard_error_code(), op->id);
@@ -10010,6 +10520,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (g_direct_state_migration_failed &&
 	    strncmp(op->op, "identity.", 9) != 0 &&
 	    strcmp(op->op, "invite.revoke") != 0) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, "direct_state_migration_failed");
+		else
+#endif
 		if (direct_invite_redeem_op(op) || direct_reinvite_clear_op(op))
 			emit_identity_error("direct_state_migration_failed", op->id);
 		else
@@ -10032,6 +10547,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		return 0;
 	}
 	if (g_identity_requires_ready && (!identity_ready || !*identity_ready)) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, "identity_changed");
+		else
+#endif
 		if (strcmp(op->op, "msg.send") == 0)
 			emit_message_failed(op->conversation, op->id, "identity_changed", 0);
 		else if (strncmp(op->op, "identity.", 9) == 0)
@@ -10048,6 +10568,11 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 	if (g_locked && !g_tox &&
 	    strcmp(op->op, "identity.unlock") != 0) {
+#if OMAQ_PROTOCOL_VERSION >= 15
+		if (correlated_call_action(op))
+			emit_bound_call_action_failed(op, "locked");
+		else
+#endif
 		if (strcmp(op->op, "file.send") == 0)
 			emit_file_rejected(op->conversation, op->id, "locked");
 		else if (strcmp(op->op, "msg.send") == 0)
@@ -10853,7 +11378,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				return 0;
 			}
 			if (omaq_file_friend_active(fn) || file_request_friend_busy(fn) ||
-			    omaq_av_friend_busy(fn)) {
+			    omaq_av_friend_busy(fn) ||
+			    (g_call_end.used && g_call_end.friend == fn)) {
 				emit_error_conv("busy", cid);
 				return 0;
 			}
@@ -12312,17 +12838,47 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			uint32_t fn;
+#if OMAQ_PROTOCOL_VERSION >= 15
+			char next_call_id[CALL_ID_HEX + 1];
+#endif
 
 			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
 				return 0;
 			}
 			fn = direct_id_number(cid);
+#if OMAQ_PROTOCOL_VERSION >= 15
+			if (op->field_mask != (OMAQ_JSON_FIELD_OP |
+					       OMAQ_JSON_FIELD_CONVERSATION |
+					       OMAQ_JSON_FIELD_KEY |
+					       OMAQ_JSON_FIELD_REQUEST) ||
+			    owner_fd < 0 || !omaq_message_id_ok(op->request)) {
+				emit_call_action_failed("start", fn, NULL, op->request,
+							"call_control_unavailable");
+				return 0;
+			}
+			if (g_call_end.used || g_av_reset_requested ||
+			    rand_id(next_call_id, sizeof(next_call_id)) != 0 ||
+			    omaq_av_start(g_tox, fn) != 0) {
+				emit_call_action_failed("start", fn, NULL, op->request, "busy");
+				return 0;
+			}
+			snprintf(g_call_id, sizeof(g_call_id), "%s", next_call_id);
+			g_call_friend = fn;
+			memcpy(g_call_key, op->key, sizeof(g_call_key));
+			if (set_call_owner(owner_fd, op->request) != 0) {
+				(void)begin_call_end(fn, op->request, "control_unavailable");
+				emit_call_action_failed("start", fn, g_call_id, op->request,
+							"call_control_unavailable");
+				return 0;
+			}
+#else
 			if (omaq_av_start(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
-			emit_call_state(fn, "ringing");
+#endif
+			emit_call_state(fn, "ringing", op->request, NULL);
 			return 0;
 		}
 #endif
@@ -12340,51 +12896,169 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				return 0;
 			}
 			fn = direct_id_number(cid);
+#if OMAQ_PROTOCOL_VERSION >= 15
+			if (op->field_mask != (OMAQ_JSON_FIELD_OP |
+					       OMAQ_JSON_FIELD_CONVERSATION |
+					       OMAQ_JSON_FIELD_KEY |
+					       OMAQ_JSON_FIELD_REQUEST |
+					       OMAQ_JSON_FIELD_CALL_ID) ||
+			    owner_fd < 0 || !omaq_message_id_ok(op->request) ||
+			    !call_id_ok(op->call_id) || strcmp(op->call_id, g_call_id) != 0) {
+				emit_call_action_failed("answer", fn, op->call_id, op->request,
+							"stale_call");
+				return 0;
+			}
+			if (g_call_end.used || g_av_reset_requested ||
+			    omaq_av_answer(g_tox, fn) != 0) {
+				emit_call_action_failed("answer", fn, g_call_id, op->request,
+							"forbidden");
+				return 0;
+			}
+			if (set_call_owner(owner_fd, op->request) != 0) {
+				(void)begin_call_end(fn, op->request, "control_unavailable");
+				emit_call_action_failed("answer", fn, g_call_id, op->request,
+							"call_control_unavailable");
+				return 0;
+			}
+#else
 			if (omaq_av_answer(g_tox, fn) != 0) {
 				emit_error("forbidden");
 				return 0;
 			}
-			emit_call_state(fn, "active");
+#endif
+			emit_call_state(fn, "active", op->request, NULL);
 			return 0;
 		}
 #endif
 		emit_error("unsupported");
 		return 0;
 	}
-	if (strcmp(op->op, "call.stop") == 0) {
+	if (strcmp(op->op, "call.lease") == 0) {
 #ifdef HAVE_TOX
 		if (g_tox) {
 			const char *cid = op->conversation[0] ? op->conversation : "0";
 			uint32_t fn;
+			int64_t now;
+
+			if (!direct_id_ok(cid))
+				return 0;
+			fn = direct_id_number(cid);
+			if (op->field_mask != (OMAQ_JSON_FIELD_OP |
+					      OMAQ_JSON_FIELD_CONVERSATION |
+					      OMAQ_JSON_FIELD_KEY |
+					      OMAQ_JSON_FIELD_REQUEST |
+					      OMAQ_JSON_FIELD_CALL_ID) ||
+			    owner_fd < 0 || owner_fd != g_call_owner_fd ||
+			    !omaq_message_id_ok(op->request) ||
+			    strcmp(op->request, g_call_owner_request) != 0 ||
+			    !call_id_ok(op->call_id) || strcmp(op->call_id, g_call_id) != 0 ||
+			    !omaq_av_is_current(fn) || g_call_end.used)
+				return 0;
+			now = monotonic_millis();
+			if (now < 0) {
+				(void)begin_call_end(fn, NULL, "lease_expired");
+				return 0;
+			}
+			g_call_owner_deadline = now + CALL_LEASE_MILLIS;
+			return 0;
+		}
+#endif
+		return 0;
+	}
+	if (strcmp(op->op, "call.stop") == 0) {
+#ifdef HAVE_TOX
+		if (g_tox) {
+			const char *cid = op->conversation[0] ? op->conversation : "0";
+			uint32_t fn, active_friend = UINT32_MAX;
+			const char *active_state = NULL;
+			int has_active;
 
 			if (!direct_id_ok(cid)) {
 				emit_error("forbidden");
 				return 0;
 			}
 			fn = direct_id_number(cid);
-			{
-				uint32_t active_friend = UINT32_MAX;
-				const char *active_state = NULL;
-				int has_active = omaq_av_status(&active_friend, &active_state);
-				int stopped;
-
-				(void)active_state;
-				if (has_active == 1 && active_friend != fn) {
-					emit_error_conv("forbidden", cid);
-					return 0;
-				}
-				if (has_active == 0) {
-					emit_call_state(fn, "ended");
-					return 0;
-				}
-				stopped = omaq_av_stop(g_tox, fn);
-				if (stopped < 0) {
-					emit_error_conv("forbidden", cid);
-					return 0;
-				}
-				g_av_reset_requested = 1;
+#if OMAQ_PROTOCOL_VERSION >= 15
+			if (op->field_mask != (OMAQ_JSON_FIELD_OP |
+					       OMAQ_JSON_FIELD_CONVERSATION |
+					       OMAQ_JSON_FIELD_KEY |
+					       OMAQ_JSON_FIELD_REQUEST |
+					       OMAQ_JSON_FIELD_CALL_ID) ||
+			    owner_fd < 0 || !omaq_message_id_ok(op->request) ||
+			    !call_id_ok(op->call_id)) {
+				emit_call_action_failed("stop", fn, op->call_id, op->request,
+							"call_control_unavailable");
+				return 0;
 			}
-			emit_call_state(fn, "ended");
+			if (g_call_end.used) {
+				if (fn != g_call_end.friend ||
+				    strcmp(op->call_id, g_call_end.call_id) != 0 ||
+				    strcmp(op->key, g_call_end.key) != 0) {
+					emit_call_action_failed("stop", fn, op->call_id,
+								op->request, "busy");
+					return 0;
+				}
+				if (!g_call_end.request[0])
+					snprintf(g_call_end.request, sizeof(g_call_end.request),
+						 "%s", op->request);
+				else if (add_call_end_alias_request(op->request) != 0) {
+					emit_call_action_failed("stop", fn, op->call_id,
+								op->request, "busy");
+					return 0;
+				}
+				emit_call_state_record(g_call_end.conversation, g_call_end.key,
+						       g_call_end.call_id, "ending",
+						       op->request, g_call_end.reason);
+				return 0;
+			}
+			has_active = omaq_av_status(&active_friend, &active_state);
+			(void)active_state;
+			if (has_active == 1 && (active_friend != fn ||
+			    strcmp(op->call_id, g_call_id) != 0)) {
+				emit_call_action_failed("stop", fn, op->call_id, op->request,
+							"stale_call");
+				return 0;
+			}
+			if (has_active == 0) {
+				const call_end_record *previous =
+					find_call_end_result(op->call_id, op->request);
+
+				if (previous && previous->friend == fn &&
+				    strcmp(previous->key, op->key) == 0) {
+					call_end_record replay = *previous;
+					const call_end_record *stored;
+
+					snprintf(replay.request, sizeof(replay.request), "%s",
+						 op->request);
+					stored = remember_call_end_result(&replay);
+					emit_call_stopped_record(stored);
+				} else {
+					emit_call_action_failed("stop", fn, op->call_id,
+								op->request, "stale_call");
+				}
+				return 0;
+			}
+			if (begin_call_end(fn, op->request, "local") != 0)
+				emit_call_action_failed("stop", fn, op->call_id, op->request,
+							"call_stop_failed");
+#else
+			has_active = omaq_av_status(&active_friend, &active_state);
+			(void)active_state;
+			if (has_active == 1 && active_friend != fn) {
+				emit_error_conv("forbidden", cid);
+				return 0;
+			}
+			if (has_active == 0) {
+				emit_call_state(fn, "ended", NULL, NULL);
+				return 0;
+			}
+			if (omaq_av_stop(g_tox, fn) < 0) {
+				emit_error_conv("forbidden", cid);
+				return 0;
+			}
+			g_av_reset_requested = 1;
+			emit_call_state(fn, "ended", NULL, NULL);
+#endif
 			return 0;
 		}
 #endif
@@ -12496,7 +13170,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("identity_exists", op->id);
 				return 0;
 			}
-			if (omaq_av_busy() || omaq_file_busy()) {
+			if (omaq_av_busy() || g_call_end.used || omaq_file_busy()) {
 				emit_identity_error("busy", op->id);
 				return 0;
 			}
@@ -12816,6 +13490,9 @@ static void accept_client(void)
 
 static void drop_client(size_t i)
 {
+#ifdef HAVE_TOX
+	call_control_owner_disconnected(g_clients[i], g_ncli == 1);
+#endif
 	attachment_stage_owner_disconnect(g_clients[i]);
 	close(g_clients[i]);
 	if (i + 1 < g_ncli) {
@@ -12830,23 +13507,34 @@ static void drop_client(size_t i)
 	g_ncli--;
 }
 
-static void read_client(size_t i)
+static void read_client(size_t i, int drain)
 {
 	char tmp[512];
-	ssize_t r = read(g_clients[i], tmp, sizeof(tmp));
 
-	if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-		return;
-	if (r <= 0) {
-		drop_client(i);
-		return;
-	}
 	g_input_owner_fd = g_clients[i];
-	if (omaq_line_reader_feed(&g_creader[i], tmp, (size_t)r,
-				  serve_input_line, &g_client_identity_ready[i]) != 0) {
-		g_input_owner_fd = -1;
-		drop_client(i);
-		return;
+	for (;;) {
+		ssize_t r = read(g_clients[i], tmp, sizeof(tmp));
+
+		if (r > 0) {
+			if (omaq_line_reader_feed(&g_creader[i], tmp, (size_t)r,
+					  serve_input_line,
+					  &g_client_identity_ready[i]) != 0) {
+				g_drop[i] = 1;
+				break;
+			}
+			if (!drain)
+				break;
+			continue;
+		}
+		if (r == 0) {
+			g_drop[i] = 1;
+			break;
+		}
+		if (errno == EINTR)
+			continue;
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
+			g_drop[i] = 1;
+		break;
 	}
 	g_input_owner_fd = -1;
 }
@@ -13069,6 +13757,8 @@ int main(int argc, char **argv)
 				retry_group_cleanup();
 				retry_receipt_transaction();
 				retry_receipt_outbox();
+				end_call_for_dropped_owner();
+				enforce_call_control_lease();
 				pump_call_audio();
 				reset_call_transport();
 				sync_connection_state();
@@ -13143,37 +13833,12 @@ int main(int argc, char **argv)
 			nf++;
 		}
 		pr = poll(pf, (nfds_t)nf, ms);
-#ifdef HAVE_TOX
-		if (g_tox && !shutdown_requested() && !g_identity_recovery_required &&
-		    !g_identity_primary_uncertain) {
-			omaq_tox_iterate(g_tox);
-			group_file_pump();
-			flush_receipt_acknowledgements();
-			expire_group_auth_reservation();
-#ifdef HAVE_SIGNAL
-			expire_pending_group_invite();
-			retry_pending_native_group_invite();
-#endif
-			if (omaq_group_take_save_error())
-				emit_error("group_registry_failed");
-			retry_group_binding_proof();
-			retry_group_binding_cleanup();
-			retry_group_registry();
-			retry_group_cleanup();
-			retry_receipt_transaction();
-			retry_receipt_outbox();
-			pump_call_audio();
-			reset_call_transport();
-			sync_connection_state();
-			fail_uncertain_primary();
-			emit_identity_recovery_state(0);
-		}
-#endif
-		if (pr < 0 && errno != EINTR)
-			break;
-		if (pr <= 0)
+		if (pr < 0) {
+			if (errno != EINTR)
+				break;
 			continue;
-		if (stdin_idx >= 0 &&
+		}
+		if (pr > 0 && stdin_idx >= 0 &&
 		    (pf[stdin_idx].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) {
 			if (read_stdin_lines() != 0)
 				g_stdin_closed = 1;
@@ -13200,24 +13865,65 @@ int main(int argc, char **argv)
 					revents |= pf[k].revents;
 			}
 			if (!shutdown_requested() &&
-			    (revents & (POLLIN | POLLHUP | POLLERR)))
-				read_client(i);
+			    (revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+				read_client(i, (revents & (POLLHUP | POLLERR | POLLNVAL)) != 0);
 			if (i >= g_ncli || g_clients[i] != fd)
 				continue;
-			if (revents & POLLOUT)
-				flush_client(i);
+			if (revents & (POLLHUP | POLLERR | POLLNVAL))
+				g_drop[i] = 1;
+			if ((revents & POLLOUT) || (g_drop[i] && g_olen[i] > g_ooff[i])) {
+				size_t previous;
+
+				do {
+					previous = g_ooff[i];
+					flush_client(i);
+				} while (g_olen[i] > g_ooff[i] && g_ooff[i] > previous);
+			}
 			if (g_drop[i]) {
 				drop_client(i);
 				continue;
 			}
 			i++;
 		}
-		for (size_t i = 0; i < g_ncli; ) {
+		for (size_t i = 0; pr > 0 && i < g_ncli; ) {
 			if (g_drop[i])
 				drop_client(i);
 			else
 				i++;
 		}
+#ifdef HAVE_TOX
+		/* Process controlling IPC and destroy an ended transport before any
+		 * further backend/audio pump. */
+		if (g_tox && !shutdown_requested() && !g_identity_recovery_required &&
+		    !g_identity_primary_uncertain) {
+			end_call_for_dropped_owner();
+			enforce_call_control_lease();
+			reset_call_transport();
+			omaq_tox_iterate(g_tox);
+			group_file_pump();
+			flush_receipt_acknowledgements();
+			expire_group_auth_reservation();
+#ifdef HAVE_SIGNAL
+			expire_pending_group_invite();
+			retry_pending_native_group_invite();
+#endif
+			if (omaq_group_take_save_error())
+				emit_error("group_registry_failed");
+			retry_group_binding_proof();
+			retry_group_binding_cleanup();
+			retry_group_registry();
+			retry_group_cleanup();
+			retry_receipt_transaction();
+			retry_receipt_outbox();
+			end_call_for_dropped_owner();
+			enforce_call_control_lease();
+			pump_call_audio();
+			reset_call_transport();
+			sync_connection_state();
+			fail_uncertain_primary();
+			emit_identity_recovery_state(0);
+		}
+#endif
 	}
 #ifdef HAVE_TOX
 	group_file_reset();

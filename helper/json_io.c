@@ -123,7 +123,7 @@ static uint64_t json_key_bit(const char *key)
 		"group", "member", "key", "request", "role", "state", "path",
 		"title", "nickname", "monitor", "passphrase", "ttlSec", "limit",
 		"x", "y", "accept", "replace", "pinned", "enabled", "typing",
-		"width", "height"
+		"width", "height", "callId"
 	};
 
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
@@ -221,6 +221,9 @@ int omaq_json_parse_op(const char *line, omaq_op *out)
 				return -1;
 		} else if (strcmp(key, "request") == 0) {
 			if (parse_string(&p, out->request, sizeof(out->request)) != 0)
+				return -1;
+		} else if (strcmp(key, "callId") == 0) {
+			if (parse_string(&p, out->call_id, sizeof(out->call_id)) != 0)
 				return -1;
 		} else if (strcmp(key, "role") == 0) {
 			if (parse_string(&p, out->role, sizeof(out->role)) != 0)

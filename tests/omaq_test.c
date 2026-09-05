@@ -244,6 +244,7 @@ static void test_json(void)
 		{ "typing", "true", "false" },
 		{ "width", "320", "640" },
 		{ "height", "240", "480" },
+		{ "callId", "\"0123456789abcdef\"", "\"fedcba9876543210\"" },
 	};
 	omaq_op op;
 	uint64_t seen_fields = 0;
@@ -307,7 +308,7 @@ static void test_json(void)
 			fail(failure);
 		}
 	}
-	if (seen_fields != ((UINT64_C(1) << 29) - UINT64_C(1)))
+	if (seen_fields != ((UINT64_C(1) << 30) - UINT64_C(1)))
 		fail("json whitelist field coverage");
 	if (omaq_json_parse_op("{\"id\":\"one\",\"op\":\"status\",\"id\":\"two\"}",
 			       &op) == 0)

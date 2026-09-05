@@ -1788,23 +1788,42 @@ int omaq_tox_av_available(const struct omaq_tox *t)
 	return t && t->av;
 }
 
-int omaq_tox_av_reset(struct omaq_tox *t)
+int omaq_tox_av_destroy(struct omaq_tox *t)
 {
-	Toxav_Err_New err = TOXAV_ERR_NEW_OK;
-
 	if (!t || !t->tox)
 		return -1;
 	if (t->av) {
 		toxav_kill(t->av);
 		t->av = NULL;
 	}
-	t->av = toxav_new(t->tox, &err);
-	if (!t->av || err != TOXAV_ERR_NEW_OK)
+	return 0;
+}
+
+int omaq_tox_av_create(struct omaq_tox *t)
+{
+	Toxav_Err_New err = TOXAV_ERR_NEW_OK;
+	ToxAV *replacement;
+
+	if (!t || !t->tox || t->av)
 		return -1;
+	replacement = toxav_new(t->tox, &err);
+	if (!replacement || err != TOXAV_ERR_NEW_OK) {
+		if (replacement)
+			toxav_kill(replacement);
+		return -1;
+	}
+	t->av = replacement;
 	toxav_callback_audio_receive_frame(t->av, on_av_audio, t);
 	toxav_callback_call(t->av, on_av_call, t);
 	toxav_callback_call_state(t->av, on_av_state, t);
 	return 0;
+}
+
+int omaq_tox_av_reset(struct omaq_tox *t)
+{
+	if (omaq_tox_av_destroy(t) != 0)
+		return -1;
+	return omaq_tox_av_create(t);
 }
 
 int omaq_tox_av_audio_send(struct omaq_tox *t, uint32_t friend,
