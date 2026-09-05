@@ -297,6 +297,7 @@ Item {
   property string callReplaySnapshotId: ""
   property string callReplaySnapshotRequest: ""
   property string callReplaySnapshotOwnerRequest: ""
+  property var deferredAnswerTerminal: null
   readonly property bool callActionPending: root.supportsConfirmedHangup &&
     root.callOwnerRequest !== "" && root.callOwnerCallId === ""
   property bool callToneSuppressed: false
@@ -380,6 +381,9 @@ Item {
     root.pendingCallStopConv = ""
     root.pendingCallStopKey = ""
     root.pendingCallStopId = ""
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
+    root.deferredAnswerTerminal = null
     root.callOwnerRequest = ""
     root.callOwnerOperation = ""
     root.callOwnerConv = ""
@@ -394,6 +398,12 @@ Item {
     }
     root.callStopTick = root.callStopTick + 1
     return true
+  }
+
+  function restoreIncomingCallTone() {
+    if ((root.lastCallState === "incoming" || root.lastCallState === "ringing") &&
+        !root.lastCallStopConfirmed)
+      root.callToneSuppressed = false
   }
 
   function resolveCallControlUnknown(preserveSnapshot) {
@@ -430,6 +440,7 @@ Item {
       root.callToneSuppressed = true
       root.callDurationSeconds = 0
     }
+    root.restoreIncomingCallTone()
     root.callStopTick = root.callStopTick + 1
     return true
   }
@@ -459,6 +470,9 @@ Item {
     root.callOwnerKey = ""
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.pendingCallSnapshot = null
+    root.pendingCallSnapshotSet = false
     root.callToneSuppressed = true
     root.callDurationSeconds = 0
     root.callStopTick = root.callStopTick + 1
@@ -513,6 +527,13 @@ Item {
       root.lastCallState = "ending"
       return
     }
+    if (previousCallState === "ended" && previousCallId !== "" &&
+        previousCallId === callId && previousConv === conv)
+      return
+    if (state !== "" &&
+        (previousCallState === "" || previousCallState === "ended" ||
+         previousCallId !== callId || previousConv !== conv))
+      root.lastCallStopConfirmed = false
     if (state === "active" &&
         (root.lastCallState !== "active" || String(root.lastCallConv || "") !== conv ||
          root.lastCallId !== callId))
@@ -1150,7 +1171,7 @@ Item {
         root.refreshCustomSounds()
         root.retryAttachmentCleanupDebts()
         replayOverflowToReport = !identityChanged && root.handshakeEventOverflow
-        replayEventsToApply = identityChanged || replayOverflowToReport
+        replayEventsToApply = identityChanged || processChanged || replayOverflowToReport
           ? [] : root.pendingHandshakeEvents
         root.pendingHandshakeEvents = []
         root.pendingHandshakeBytes = 0
@@ -1251,6 +1272,8 @@ Item {
         root.callOwnerKey = ""
         root.callOwnerCallId = ""
         root.callOwnerConnectionLost = false
+        root.deferredAnswerTerminal = null
+        root.restoreIncomingCallTone()
       }
       if (replaySnapshotState === "ending") {
         if ((replayOwnerDebt && !replayOwnerRepresented) ||
@@ -1268,6 +1291,7 @@ Item {
       if (replayOwnerRepresented) {
         root.callOwnerCallId = replaySnapshotId
         root.callOwnerConnectionLost = false
+        root.deferredAnswerTerminal = null
       }
       if ((replayOwnerDebt && !replayOwnerRepresented) ||
           (replayStopDebt && !replayStopRepresented))
@@ -2169,6 +2193,8 @@ Item {
         return
       root.incomingCall = true
       root.callToneSuppressed = false
+      root.lastCallStopConfirmed = false
+      root.deferredAnswerTerminal = null
       root.callDurationSeconds = 0
       root.lastCallState = "incoming"
       root.lastCallId = incomingCallId
@@ -2189,34 +2215,55 @@ Item {
       var stoppedReason = String(ev.reason || "")
       var stoppedConv = String(ev.conversation || "")
       var stoppedKey = String(ev.key || "")
+      var stoppedCurrentExact = root.lastCallState !== "ended" &&
+        stoppedCallId === root.lastCallId &&
+        stoppedConv === String(root.lastCallConv || "") &&
+        stoppedKey === String(root.lastCallKey || "")
       var stoppedBindingValid = root.directEventBindingValid(ev) ||
-        (root.lastCallState !== "ended" && stoppedCallId === root.lastCallId &&
-         stoppedConv === String(root.lastCallConv || "") &&
-         stoppedKey === String(root.lastCallKey || "")) ||
+        stoppedCurrentExact ||
         (root.pendingCallStopRequest !== "" &&
          stoppedConv === root.pendingCallStopConv &&
          stoppedKey === root.pendingCallStopKey) ||
         (root.callOwnerRequest !== "" && stoppedConv === root.callOwnerConv &&
          stoppedKey === root.callOwnerKey)
+      var trackedOwner = root.callOwnerRequest !== ""
+      var unresolvedOwner = trackedOwner && root.callOwnerCallId === ""
+      var ownerRequestMatches = !trackedOwner ||
+        (stoppedRequest === root.callOwnerRequest &&
+         stoppedConv === root.callOwnerConv && stoppedKey === root.callOwnerKey) ||
+        (root.pendingCallStopRequest !== "" &&
+         stoppedRequest === root.pendingCallStopRequest &&
+         stoppedConv === root.pendingCallStopConv &&
+         stoppedKey === root.pendingCallStopKey)
       var pendingRequestConflict = root.pendingCallStopRequest !== "" &&
         (stoppedReason === "local"
           ? stoppedRequest !== root.pendingCallStopRequest
           : (stoppedRequest !== "" &&
              stoppedRequest !== root.pendingCallStopRequest &&
              stoppedRequest !== root.callOwnerRequest))
-      var unresolvedOwner = root.callOwnerRequest !== "" &&
-        root.callOwnerCallId === ""
       if (!stoppedBindingValid || !/^[0-9a-f]{16}$/.test(stoppedCallId) ||
+          stoppedRequest.length > 79 ||
           ["local", "remote", "control_lost", "lease_expired", "audio_error",
            "control_unavailable"].indexOf(stoppedReason) === -1 ||
           ev.localStopped !== true || ev.transportClosed !== true ||
           typeof ev.cancelAttempted !== "boolean" ||
           typeof ev.cancelAccepted !== "boolean" ||
-          typeof ev.audioAvailable !== "boolean" || pendingRequestConflict ||
-          (unresolvedOwner &&
-           (stoppedRequest !== root.callOwnerRequest ||
-            stoppedConv !== root.callOwnerConv || stoppedKey !== root.callOwnerKey)))
+          typeof ev.audioAvailable !== "boolean" || pendingRequestConflict)
         return
+      if (!ownerRequestMatches) {
+        var terminalPredatesAnswer = unresolvedOwner &&
+          root.callOwnerOperation === "answer" && stoppedRequest === "" &&
+          stoppedCurrentExact &&
+          (root.lastCallState === "incoming" || root.lastCallState === "ringing" ||
+           root.lastCallState === "ending")
+        if (terminalPredatesAnswer) {
+          root.deferredAnswerTerminal = ev
+          root.incomingCall = false
+          root.callToneSuppressed = true
+          root.lastCallState = "ending"
+        }
+        return
+      }
       if (unresolvedOwner)
         root.callOwnerCallId = stoppedCallId
       root.completeCallStop(stoppedConv, stoppedCallId, ev.reason,
@@ -2243,6 +2290,7 @@ Item {
         root.pendingCallStopConv = ""
         root.pendingCallStopKey = ""
         root.pendingCallStopId = ""
+        root.restoreIncomingCallTone()
         root.callStopTick = root.callStopTick + 1
       } else if ((failedCallOp === "start" || failedCallOp === "answer") &&
                  failedCallRequest !== "" &&
@@ -2250,17 +2298,26 @@ Item {
                  failedCallOp === root.callOwnerOperation &&
                  failedCallConv === root.callOwnerConv &&
                  failedCallKey === root.callOwnerKey) {
+        var deferredTerminal = failedCallOp === "answer"
+          ? root.deferredAnswerTerminal : null
+        root.deferredAnswerTerminal = null
         root.callOwnerRequest = ""
         root.callOwnerOperation = ""
         root.callOwnerConv = ""
         root.callOwnerKey = ""
         root.callOwnerCallId = ""
         root.callOwnerConnectionLost = false
+        if (deferredTerminal && typeof deferredTerminal === "object") {
+          root.handleLine(JSON.stringify(deferredTerminal))
+          if (root.lastCallStopConfirmed)
+            return
+        }
         root.lastCallStopConv = failedCallConv
         root.lastCallStopId = failedCallId
         root.lastCallStopCode = failedCallOp === "start"
           ? "call_start_failed" : "call_answer_failed"
         root.lastCallStopConfirmed = false
+        root.restoreIncomingCallTone()
         root.callStopTick = root.callStopTick + 1
       }
     }
@@ -2273,6 +2330,10 @@ Item {
         if (!/^[0-9a-f]{16}$/.test(stateCallId) ||
             ["ringing", "active", "ending", "ended"].indexOf(nextCallState) === -1)
           return
+        if (root.lastCallState === "ended" && stateCallId === root.lastCallId &&
+            String(ev.conversation || "") === String(root.lastCallConv || "") &&
+            String(ev.key || "") === String(root.lastCallKey || ""))
+          return
         if (root.lastCallId !== "" && stateCallId !== root.lastCallId &&
             root.lastCallState !== "" && root.lastCallState !== "ended")
           return
@@ -2282,6 +2343,7 @@ Item {
             String(ev.key || "") === root.callOwnerKey) {
           root.callOwnerCallId = stateCallId
           root.callOwnerConnectionLost = false
+          root.deferredAnswerTerminal = null
         }
         if (nextCallState === "ended")
           return
@@ -3746,6 +3808,8 @@ Item {
     root.callOwnerKey = String(expectedKey || "")
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.lastCallStopConfirmed = false
     root.callToneSuppressed = false
     return true
   }
@@ -3771,6 +3835,8 @@ Item {
     root.callOwnerKey = String(expectedKey || "")
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
+    root.lastCallStopConfirmed = false
     root.callToneSuppressed = true
     return true
   }
@@ -3984,6 +4050,7 @@ Item {
     root.callOwnerKey = ""
     root.callOwnerCallId = ""
     root.callOwnerConnectionLost = false
+    root.deferredAnswerTerminal = null
     root.pendingCallStopRequest = ""
     root.pendingCallStopConv = ""
     root.pendingCallStopKey = ""

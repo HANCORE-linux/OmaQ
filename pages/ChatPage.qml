@@ -2043,6 +2043,12 @@ FocusScope {
     root.callFeedback = ""
   }
 
+  function showCallFeedback(message) {
+    root.callFeedback = String(message || "")
+    if (root.callFeedback !== "")
+      callFeedbackTimer.restart()
+  }
+
   function formatCallDuration(value) {
     var seconds = Math.max(0, Math.floor(Number(value || 0)))
     var minutes = Math.floor(seconds / 60)
@@ -2064,6 +2070,8 @@ FocusScope {
     }
     if (service && service.startCall(root.conversation, root.peerKey))
       root.clearCallFeedback()
+    else
+      root.showCallFeedback("Call control unavailable")
   }
 
   function answerCall() {
@@ -2081,6 +2089,8 @@ FocusScope {
     if (service && service.answerCall(root.conversation, root.peerKey)) {
       root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
+    } else {
+      root.showCallFeedback("Call control unavailable")
     }
   }
 
@@ -2099,8 +2109,7 @@ FocusScope {
       root.clearCallFeedback()
       OmaQ.CallTone.stopAll()
     } else {
-      root.callFeedback = "Call control unavailable"
-      callFeedbackTimer.restart()
+      root.showCallFeedback("Call control unavailable")
     }
   }
 

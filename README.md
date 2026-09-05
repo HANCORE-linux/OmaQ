@@ -41,6 +41,8 @@ OmaQ runs no servers and has no operator access to your identity, contacts, or m
 
 Clear Chat is immediate, never queued for reconnect, and applies a helper result only to the exact current conversation and request.
 
+DirectChat call controls remain fail-closed and report unavailable actions without claiming that a peer received an undeliverable cancellation.
+
 See the [illustrated user guide](docs/USER-GUIDE.md) for daily use and the [current status](docs/CURRENT.md) for capability and validation details.
 
 ## Install
