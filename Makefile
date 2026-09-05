@@ -183,6 +183,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/live-name-refresh.sh
 	sh tests/group-chat-parity.sh
 	sh tests/panel-request-focus.sh
+	sh tests/redeem-feedback.sh
 	sh tests/emoji-parity.sh
 	sh tests/asset-provenance.sh
 	python3 tests/extract-emoji.py

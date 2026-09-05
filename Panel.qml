@@ -4465,7 +4465,7 @@ BarWidget {
                 placeholderText: "Paste omaq:// invite"
                 text: root.redeemDraft
                 enabled: root.redeemRequest === ""
-                onTextChanged: {
+                onTextEdited: {
                   root.redeemDraft = text
                   if (root.redeemRequest === "") {
                     root.redeemFeedback = ""

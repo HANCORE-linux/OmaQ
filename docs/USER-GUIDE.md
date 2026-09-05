@@ -55,7 +55,7 @@ A direct connection starts with a one-use `omaq://` invitation shared through a 
 <thead><tr><th>Create an invitation</th><th>Redeem an invitation</th><th>Verify identity</th><th>Incoming call</th></tr></thead>
 <tbody><tr>
 <td><a href="images/guide/04-panel-active-invite.png"><img src="images/guide/04-panel-active-invite.png" alt="Active OmaQ invitation" width="220"></a><br>The Invite view shows a QR code, shortened link, exact lifetime, concise share/redeem/accept instructions, Copy link, New link, and Revoke.</td>
-<td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly.</td>
+<td><a href="images/guide/05-panel-add-contact.png"><img src="images/guide/05-panel-add-contact.png" alt="Add contact with OmaQ invitation" width="220"></a><br>Paste the complete private invitation and select Join chat. Invalid, expired, self, duplicate, and changed-identity invitations fail visibly. A successful result remains visible until you edit the invitation field again.</td>
 <td><strong>Safety code</strong><br>Select a direct contact, display its safety code, and compare it with that contact through another trusted channel. Message search stays inside the matching chat window.</td>
 <td><a href="images/guide/27-panel-incoming-call.png"><img src="images/guide/27-panel-incoming-call.png" alt="Incoming direct voice call" width="220"></a><br>An incoming DirectCall offers Answer and Decline. Opening the caller's chat never answers automatically.</td>
 </tr></tbody>

@@ -28,6 +28,7 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`protocol-15.md`](protocol-15.md) | Confirmed local hangup, call control leases, and fail-closed teardown |
 | [`correlated-clear-chat.md`](correlated-clear-chat.md) | Capability-gated, request-correlated DirectChat and GroupChat history clearing |
 | [`live-name-refresh.md`](live-name-refresh.md) | Event-driven DirectChat and GroupChat name refresh |
+| [`invite-redemption-feedback.md`](invite-redemption-feedback.md) | Persistent, user-edit-aware invite redemption feedback |
 | [`search-timestamps-security.md`](search-timestamps-security.md) | Per-chat search, local timestamps, PlainText, and helper security |
 | [`helper-updater-validation.md`](helper-updater-validation.md) | Manual helper updater and earlier validation rounds |
 | [`trigger-free-updates.md`](trigger-free-updates.md) | External staging, shell-off source exchange, consumer checks, and rollback |
