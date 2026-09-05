@@ -1,4 +1,4 @@
-# OmaQ — see docs/PLAN.md.
+# OmaQ
 
 CC       ?= gcc
 CFLAGS   ?= -std=c11 -Wall -Werror -O2

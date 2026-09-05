@@ -487,10 +487,10 @@ grep -Fq '"/usr/bin/git", "-c", "core.hooksPath=/dev/null"' \
 grep -Fq 'the updater builds outside the monitored plugin tree' \
   "$root/README.md" || exit 1
 grep -Fq 'Dependency packages are never removed automatically' "$root/README.md" || exit 1
-grep -Fq '## 16. Git (public)' "$root/docs/PLAN.md" || exit 1
-grep -Fq 'mv -T --exchange --no-copy' "$root/docs/PLAN.md" || exit 1
-grep -Fq 'omarchy-launch-shell' "$root/docs/PLAN.md" || exit 1
-grep -Fq 'update-pending: old helper, new tree' "$root/docs/PLAN.md" || exit 1
+update_stage="$root/docs/stages/trigger-free-updates.md"
+grep -Fq 'mv -T --exchange --no-copy' "$update_stage" || exit 1
+grep -Fq 'omarchy-launch-shell' "$update_stage" || exit 1
+grep -Fq 'update-pending: old helper, new tree' "$update_stage" || exit 1
 grep -Fq 'shell-off source updates' "$root/docs/USER-GUIDE.md" || exit 1
 grep -Fq 'cooperative same-user boundary' "$root/docs/SECURITY.md" || exit 1
 grep -Fq 'Bootstrap an older installation' "$root/docs/INSTALLATION.md" || exit 1
