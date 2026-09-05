@@ -25,6 +25,7 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 |---|---|
 | [`product-hardening.md`](product-hardening.md) | Product, state, interface, and removal hardening |
 | [`protocol-11-14.md`](protocol-11-14.md) | Stable Direct state, GroupChat attachments, restart parity, windows, sounds, Reply, and Copy |
+| [`protocol-15.md`](protocol-15.md) | Confirmed local hangup, call control leases, and fail-closed teardown |
 | [`search-timestamps-security.md`](search-timestamps-security.md) | Per-chat search, local timestamps, PlainText, and helper security |
 | [`helper-updater-validation.md`](helper-updater-validation.md) | Manual helper updater and earlier validation rounds |
 | [`trigger-free-updates.md`](trigger-free-updates.md) | External staging, shell-off source exchange, consumer checks, and rollback |

@@ -57,7 +57,7 @@ if "property string peerKey" not in page or "root.directBindingValid" not in pag
     raise SystemExit("stable-direct-state: ChatPage direct actions are not key-bound")
 
 required_helper = [
-    "#define OMAQ_PROTOCOL_VERSION 14",
+    "#define OMAQ_PROTOCOL_VERSION 15",
     'omaq_state_archive_copy(state_dir(), "surfaces.jsonl")',
     "omaq_surface_discard_legacy_direct(state_dir())",
     'omaq_direct_state_id(current_key, surface.conversation',

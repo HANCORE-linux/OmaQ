@@ -78,7 +78,6 @@ Keep retained data if you may reinstall OmaQ or still need the identity or histo
 - [Installation lifecycle](docs/INSTALLATION.md)
 - [Security and privacy](docs/SECURITY.md)
 - [Current status](docs/CURRENT.md)
-- [Architecture plan](docs/PLAN.md)
 - [Third-party components](THIRD_PARTY.md)
 
 ## License

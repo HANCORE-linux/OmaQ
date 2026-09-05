@@ -706,14 +706,16 @@ Item {
     spacing: Style.space(4)
 
     SurfaceBtn {
-      visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming
+      visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming &&
+        !toolbar.page.callEnding && !toolbar.page.callActionPending
       iconText: "call"
       fontFamily: "Material Symbols Rounded"
       helpText: "Start call with " + (toolbar.page ? toolbar.page.peerName : "contact")
       onClicked: toolbar.page.startCall()
     }
     SurfaceBtn {
-      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
+      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall &&
+        !toolbar.page.callEnding && !toolbar.page.callActionPending
       iconText: "call"
       fontFamily: "Material Symbols Rounded"
       helpText: "Answer call from " + (toolbar.page ? toolbar.page.peerName : "contact")
@@ -722,7 +724,8 @@ Item {
       onClicked: toolbar.page.answerCall()
     }
     SurfaceBtn {
-      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall
+      visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall &&
+        !toolbar.page.callEnding && !toolbar.page.callActionPending
       iconText: "call_end"
       fontFamily: "Material Symbols Rounded"
       helpText: "Decline call from " + (toolbar.page ? toolbar.page.peerName : "contact")
@@ -730,7 +733,8 @@ Item {
       onClicked: toolbar.page.hangUp()
     }
     SurfaceBtn {
-      visible: toolbar.page && toolbar.page.inCall
+      visible: toolbar.page && toolbar.page.inCall && !toolbar.page.callEnding &&
+        !toolbar.page.callActionPending
       iconText: "call_end"
       fontFamily: "Material Symbols Rounded"
       helpText: "End call with " + (toolbar.page ? toolbar.page.peerName : "contact")
@@ -739,13 +743,23 @@ Item {
       onClicked: toolbar.page.hangUp()
     }
     SafeText {
-      visible: toolbar.page && toolbar.page.callActive
+      visible: toolbar.page && toolbar.page.callActive && !toolbar.page.callEnding
       anchors.verticalCenter: parent.verticalCenter
       text: toolbar.page ? toolbar.page.callDurationText : "0:00"
       color: root.theme().fg || Color.foreground
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
       font.features: ({ "tnum": 1 })
+    }
+    SafeText {
+      visible: toolbar.page &&
+        (toolbar.page.callEnding || toolbar.page.callFeedback !== "")
+      anchors.verticalCenter: parent.verticalCenter
+      text: toolbar.page && toolbar.page.callEnding
+        ? "Ending…" : (toolbar.page ? toolbar.page.callFeedback : "")
+      color: root.theme().fg || Color.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
     }
   }
 

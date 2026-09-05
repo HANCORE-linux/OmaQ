@@ -142,10 +142,8 @@ if "omaq_store_update_group_receipt_changed" not in helper or \
 
 # Calls must remain explicitly Direct-only.
 guide = (root / "docs/USER-GUIDE.md").read_text()
-plan = (root / "docs/PLAN.md").read_text()
 if "files remain unavailable in group chats" in guide or \
-        "group file transfer remains unavailable" in guide.lower() or \
-        "group file transfer remains unavailable because" in plan.lower():
+        "group file transfer remains unavailable" in guide.lower():
     raise SystemExit("group-chat-parity: user guide still denies group attachments")
 
 if 'if (!c || c.charAt(0) === "g")' not in service or \

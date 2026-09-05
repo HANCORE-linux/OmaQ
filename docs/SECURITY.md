@@ -58,4 +58,4 @@ Use OmaQ only for lawful private communication with people you trust. Read the [
 
 ## Review the technical contract
 
-The [architecture and verification plan](PLAN.md) defines protocol boundaries, helper authority, fail-closed behavior, and verification gates. The [current product status](CURRENT.md) records the deployed protocol and known limitations.
+The [current product status](CURRENT.md) records the deployed protocol, validation state, and known limitations. Durable implementation decisions remain in the [stage notes](stages/README.md).

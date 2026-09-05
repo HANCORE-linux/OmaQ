@@ -8,7 +8,10 @@
 #define OMAQ_JSON_STR_MAX 512
 #define OMAQ_JSON_FIELD_OP (UINT64_C(1) << 0)
 #define OMAQ_JSON_FIELD_ID (UINT64_C(1) << 3)
+#define OMAQ_JSON_FIELD_CONVERSATION (UINT64_C(1) << 4)
+#define OMAQ_JSON_FIELD_KEY (UINT64_C(1) << 9)
 #define OMAQ_JSON_FIELD_REQUEST (UINT64_C(1) << 10)
+#define OMAQ_JSON_FIELD_CALL_ID (UINT64_C(1) << 29)
 
 typedef struct {
 	uint64_t field_mask;
@@ -23,6 +26,7 @@ typedef struct {
 	char member[80];
 	char key[80];
 	char request[80];
+	char call_id[80];
 	char role[16];
 	char state[16];
 	char path[OMAQ_JSON_STR_MAX];

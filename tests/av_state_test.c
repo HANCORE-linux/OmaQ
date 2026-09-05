@@ -58,7 +58,9 @@ int main(void)
 	const char *status_state = NULL;
 
 	omaq_av_reset();
+	check(omaq_av_local_stopped(), "reset confirms local stop");
 	check(omaq_av_note_incoming(7) == 1, "incoming transition");
+	check(!omaq_av_local_stopped(), "incoming call is not locally stopped");
 	check(omaq_av_note_incoming(7) == 0, "incoming idempotence");
 	check(omaq_av_friend_busy(7) && !omaq_av_friend_busy(8),
 	      "friend-specific call busy state");
@@ -75,6 +77,8 @@ int main(void)
 	check(omaq_av_stop(tox, 7) == 1, "local stop survives hangup failure");
 	check(hangups == 1 && !omaq_av_busy() && !omaq_av_is_current(7),
 	      "failed hangup finalizes local state");
+	check(omaq_av_local_stopped(),
+	      "failed hangup still confirms capture and buffers stopped");
 	check(omaq_av_status(&status_friend, &status_state) == 0,
 	      "failed hangup omitted from status");
 	check(omaq_av_note_active(7) == -1, "delayed active blocked after failed hangup");
@@ -91,7 +95,8 @@ int main(void)
 	omaq_av_reset();
 	hangup_result = 0;
 	check(omaq_av_start(tox, 7) == 0 && omaq_av_stop(tox, 7) == 0 &&
-	      !omaq_av_busy(), "successful cancel enters cooldown");
+	      !omaq_av_busy() && omaq_av_local_stopped(),
+	      "successful cancel confirms local stop and enters cooldown");
 	check(omaq_av_note_active(7) == -1 && omaq_av_note_incoming(7) == -1 &&
 	      omaq_av_start(tox, 7) == -1, "delayed same-friend callbacks blocked");
 	check(omaq_av_start(tox, 8) == 0, "cooldown is friend-specific");

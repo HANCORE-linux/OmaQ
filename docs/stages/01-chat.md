@@ -27,7 +27,7 @@ make verify-1-tox
 ## Measured
 
 - Helper idle RSS (process A during two-homes, no ASan): **6648 kB**
-- This is the historical phase-1 measurement, not the current gate. The current single-helper limit is 51,200 kB in [`../PLAN.md`](../PLAN.md).
+- This is the historical phase-1 measurement, not the current gate. The current single-helper limit is 51,200 kB in [`../CURRENT.md`](../CURRENT.md).
 - The earlier 29,048 kB figure used an ASan-linked helper, not the packaged shape.
 
 ## Stays out

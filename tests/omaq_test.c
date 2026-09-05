@@ -244,6 +244,7 @@ static void test_json(void)
 		{ "typing", "true", "false" },
 		{ "width", "320", "640" },
 		{ "height", "240", "480" },
+		{ "callId", "\"0123456789abcdef\"", "\"fedcba9876543210\"" },
 	};
 	omaq_op op;
 	uint64_t seen_fields = 0;
@@ -264,6 +265,28 @@ static void test_json(void)
 	    strcmp(op.id, "7") != 0 || strcmp(op.key, "abcdef") != 0 ||
 	    strcmp(op.request, "gi-test-1") != 0)
 		fail("json contact key");
+	{
+		char request79[80], request80[81], request96[97], line[160];
+
+		memset(request79, 'a', sizeof(request79) - 1);
+		request79[sizeof(request79) - 1] = '\0';
+		memset(request80, 'b', sizeof(request80) - 1);
+		request80[sizeof(request80) - 1] = '\0';
+		memset(request96, 'c', sizeof(request96) - 1);
+		request96[sizeof(request96) - 1] = '\0';
+		snprintf(line, sizeof(line),
+			 "{\"op\":\"status\",\"request\":\"%s\"}", request79);
+		if (omaq_json_parse_op(line, &op) != 0 || strlen(op.request) != 79)
+			fail("json 79-byte request rejected");
+		snprintf(line, sizeof(line),
+			 "{\"op\":\"status\",\"request\":\"%s\"}", request80);
+		if (omaq_json_parse_op(line, &op) == 0)
+			fail("json 80-byte request accepted");
+		snprintf(line, sizeof(line),
+			 "{\"op\":\"status\",\"request\":\"%s\"}", request96);
+		if (omaq_json_parse_op(line, &op) == 0)
+			fail("json 96-byte request accepted");
+	}
 	if (omaq_json_parse_op("{\"op\":\"nope\"}", &op) != 0)
 		fail("json unknown op still parses");
 	for (size_t i = 0; i < sizeof(key_cases) / sizeof(key_cases[0]); i++) {
@@ -307,7 +330,7 @@ static void test_json(void)
 			fail(failure);
 		}
 	}
-	if (seen_fields != ((UINT64_C(1) << 29) - UINT64_C(1)))
+	if (seen_fields != ((UINT64_C(1) << 30) - UINT64_C(1)))
 		fail("json whitelist field coverage");
 	if (omaq_json_parse_op("{\"id\":\"one\",\"op\":\"status\",\"id\":\"two\"}",
 			       &op) == 0)

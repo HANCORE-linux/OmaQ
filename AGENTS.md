@@ -22,7 +22,7 @@ OmaQ is a minimal, invite-only Omarchy chat plugin. Preserve these qualities:
 - `Model.js`: theme and presentation model helpers
 - `helper/`: C protocol, Tox, Ratchet, storage, avatar, invite, group, and validation logic
 - `tests/`: focused C/unit, build, protocol, and two-instance integration checks
-- `docs/PLAN.md` and `docs/CURRENT.md`: living product and implementation contracts; update them when durable behavior changes
+- `docs/CURRENT.md` and `docs/stages/`: current product status and durable implementation decisions; update them when behavior changes
 - `manifest.json`: plugin metadata and static settings schema
 
 Do not manually edit generated binaries as source. Build `helper/omaq` with the repository Makefile. Do not copy `~/.local/share/omaq/tox.save`, `direct-friends.tsv`, `groups.tsv`, `group-friends.tsv`, `group-registry.pending`, `ratchet/`, Identity files, handshake journals, or local histories to another system.
