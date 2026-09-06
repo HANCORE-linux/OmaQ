@@ -4,6 +4,7 @@
 #include "tox_adapt.h"
 #include "file.h"
 #include "identity_guard.h"
+#include "proxy.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -123,6 +124,11 @@ struct bootstrap_node {
 	const char *key_hex;
 };
 
+/* Every packet traverses these relays because UDP is disabled, so the set is
+ * deliberately wide and spread across independent operators: no single relay
+ * operator sees all OmaQ traffic, and losing one does not remove
+ * connectivity. Public keys are pinned; hostnames are preferred where the
+ * operator publishes one, because pinned bare addresses decay. */
 static const struct bootstrap_node bootstrap_nodes[] = {
 	{ "144.217.167.73", 33445, 3389,
 	  "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C" },
@@ -130,6 +136,20 @@ static const struct bootstrap_node bootstrap_nodes[] = {
 	  "B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506" },
 	{ "139.162.110.188", 33445, 443,
 	  "F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55" },
+	{ "tox.initramfs.io", 33445, 3389,
+	  "3F0A45A268367C1BEA652F258C85F4A66DA76BCAA667A49E770BCC4917AB6A25" },
+	{ "tox.hidemybits.com", 443, 443,
+	  "5D57B95EE4A7F37BA031DAD0CBD9510A9C96FFE09C1CE24A9C33746F39817D6E" },
+	{ "tox2.mf-net.eu", 33445, 3389,
+	  "70EA214FDE161E7432530605213F18F7427DC773E276B3E317A07531F548545F" },
+	{ "172.104.215.182", 33445, 443,
+	  "DA2BD927E01CD05EBCC2574EBE5BEBB10FF59AE0B2105A7D1E2B40E49BB20239" },
+	{ "188.245.84.166", 33445, 443,
+	  "96B66D300BA2B59B98FC42DB1325E7092388F0379593E680ABDBEA03B9C9CE03" },
+	{ "43.198.227.166", 33445, 3389,
+	  "AD13AB0D434BCE6C83FE2649237183964AE3341D0AFB3BE1694B18505E4E135E" },
+	{ "95.181.230.108", 33445, 3389,
+	  "B5FFECB4E4C26409EBB88DB35793E7B39BFA3BA12AC04C096950CB842E3E130A" },
 };
 
 static void bootstrap_tox(struct omaq_tox *t)
@@ -786,6 +806,28 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 	tox_options_set_udp_enabled(opt, false);
 	tox_options_set_local_discovery_enabled(opt, false);
 	tox_options_set_hole_punching_enabled(opt, false);
+	{
+		/* Relay operators see the address contacts cannot. An optional
+		 * SOCKS5/HTTP proxy closes that last exposure; a proxy that is
+		 * configured but unusable must never silently fall back to a
+		 * direct connection. */
+		omaq_proxy proxy;
+		int proxy_rc = omaq_proxy_load(home, &proxy);
+
+		if (proxy_rc < 0) {
+			if (err_out)
+				*err_out = OMAQ_TOX_PROXY_INVALID;
+			goto savedata_fail;
+		}
+		if (proxy_rc == 1 && proxy.type != OMAQ_PROXY_NONE) {
+			tox_options_set_proxy_type(
+				opt, proxy.type == OMAQ_PROXY_SOCKS5
+					     ? TOX_PROXY_TYPE_SOCKS5
+					     : TOX_PROXY_TYPE_HTTP);
+			tox_options_set_proxy_host(opt, proxy.host);
+			tox_options_set_proxy_port(opt, (uint16_t)proxy.port);
+		}
+	}
 	save_path(home, path, sizeof(path));
 	save_fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW);
 	if (save_fd < 0 && errno != ENOENT)

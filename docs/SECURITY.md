@@ -14,7 +14,13 @@ Private Tox New Group Chats use Tox group transport. Group attachments use authe
 
 OmaQ keeps Tox in Transmission Control Protocol (TCP) relay privacy mode. It disables direct User Datagram Protocol (UDP) discovery, local discovery, and hole punching. Contacts therefore do not receive each other's IP addresses through direct Tox connections.
 
-OmaQ connects to public bootstrap and relay nodes run by Tox community volunteers. These nodes help peers discover the network and forward encrypted packets. They cannot read message contents, but relay operators can observe ordinary connection metadata.
+OmaQ connects to public bootstrap and relay nodes run by Tox community volunteers. These nodes help peers discover the network and forward encrypted packets. They cannot read message contents, but relay operators can observe ordinary connection metadata. Because direct UDP is disabled, every packet crosses a relay, so OmaQ spreads its pinned relay set across independent operators: no single operator sees all of a user's traffic, and losing one relay does not remove connectivity.
+
+The address hidden from contacts is still visible to relay operators. To close that gap, route OmaQ through a SOCKS5 or HTTP proxy — for example a local Tor SOCKS port — by creating `~/.local/share/omaq/proxy.conf` with a single directive:
+
+    socks5 127.0.0.1 9050
+
+Use `http <host> <port>` for an HTTP proxy, or `none` to disable. Lines beginning with `#` are comments. The helper fails closed: if the file exists but is malformed, unreadable, a symlink, or group/other-writable, OmaQ refuses to start rather than connecting directly and exposing the address the proxy was meant to hide. Restart OmaQ after editing the file.
 
 OmaQ runs no project-operated server, account service, or recovery service. The project author cannot access, intercept, recover, or delete your messages, identity, or contacts.
 

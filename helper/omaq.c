@@ -10133,6 +10133,15 @@ static int load_tox(const char *pass)
 		g_locked = 1;
 		return 1;
 	}
+	if (err == OMAQ_TOX_PROXY_INVALID) {
+		/* Fail closed: never connect directly when a proxy was requested. */
+		fprintf(stderr,
+			"omaq: %s/proxy.conf is unreadable or malformed; "
+			"refusing to connect without the requested proxy\n",
+			home_dir());
+		emit_error("proxy_invalid");
+		return -1;
+	}
 	g_locked = 0;
 	if (!g_tox) {
 		if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED)

@@ -43,4 +43,42 @@ if iterate.count("bootstrap_tox(t);") != 1:
 if "tox_options_set_udp_enabled(opt, false);" not in open_body:
     raise SystemExit("tcp-relay-retry-source: TCP-only privacy mode changed")
 
-print("tcp-relay-retry-source: ok startup=relays periodic=relays udp=false")
+# Every packet crosses the relay set, so it must stay wide and key-pinned.
+table = re.search(
+    r"static const struct bootstrap_node bootstrap_nodes\[\]\s*=\s*\{(.*?)\n\};",
+    SOURCE,
+    re.S,
+)
+if not table:
+    raise SystemExit("tcp-relay-retry-source: bootstrap node table missing")
+entries = re.findall(r'\{\s*"([^"]+)",\s*(\d+),\s*(\d+),\s*"([0-9A-F]{64})"',
+                     table.group(1))
+if len(entries) < 8:
+    raise SystemExit(
+        "tcp-relay-retry-source: relay set narrowed to %d nodes" % len(entries)
+    )
+hosts = [entry[0] for entry in entries]
+keys = [entry[3] for entry in entries]
+if len(set(hosts)) != len(hosts) or len(set(keys)) != len(keys):
+    raise SystemExit("tcp-relay-retry-source: duplicate relay entry")
+if sum(1 for host in hosts if not re.fullmatch(r"[0-9.]+", host)) < 3:
+    raise SystemExit("tcp-relay-retry-source: too few relays reached by hostname")
+
+# A configured proxy must be applied, and an unusable one must fail closed
+# rather than silently connecting directly.
+for needle in (
+    "omaq_proxy_load(home, &proxy)",
+    "tox_options_set_proxy_type(",
+    "tox_options_set_proxy_host(opt, proxy.host)",
+    "tox_options_set_proxy_port(",
+    "OMAQ_TOX_PROXY_INVALID",
+):
+    if needle not in open_body:
+        raise SystemExit("tcp-relay-retry-source: missing proxy support: %s" % needle)
+if open_body.index("omaq_proxy_load(home, &proxy)") > open_body.index("tox_new(opt"):
+    raise SystemExit("tcp-relay-retry-source: proxy applied after tox_new")
+
+print(
+    "tcp-relay-retry-source: ok startup=relays periodic=relays udp=false "
+    "relays=%d proxy=optional" % len(entries)
+)

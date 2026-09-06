@@ -17,6 +17,7 @@
 #include "../helper/ratchet.h"
 #include "../helper/ratchet_pin.h"
 #include "../helper/presence.h"
+#include "../helper/proxy.h"
 #include "../helper/receipt.h"
 #include "../helper/rate.h"
 #include "../helper/roles.h"
@@ -1496,6 +1497,97 @@ static void test_message_rate(void)
 		"g:1000000000000000000000000000000000000000000000000000000000000000",
 		actor, 10000) == 0)
 		fail("message rate global burst limit");
+}
+
+static void test_proxy_config(void)
+{
+	omaq_proxy proxy;
+	char dir[] = "/tmp/omaq-proxy-XXXXXX";
+	char path[512];
+	FILE *f;
+	int i;
+	static const char *invalid[] = {
+		"",
+		"\n\n# only comments\n",
+		"socks5 127.0.0.1\n",
+		"socks5 127.0.0.1 9050 extra\n",
+		"socks5 127.0.0.1 0\n",
+		"socks5 127.0.0.1 65536\n",
+		"socks5 127.0.0.1 -1\n",
+		"socks5  9050\n",
+		"socks4 127.0.0.1 9050\n",
+		"socks5 bad host 9050\n",
+		"socks5 host;rm 9050\n",
+		"none 127.0.0.1\n",
+		"socks5 127.0.0.1 9050\nhttp 127.0.0.1 8080\n"
+	};
+
+	memset(&proxy, 0, sizeof(proxy));
+	if (omaq_proxy_parse("socks5 127.0.0.1 9050\n", &proxy) != 0 ||
+	    proxy.type != OMAQ_PROXY_SOCKS5 || strcmp(proxy.host, "127.0.0.1") != 0 ||
+	    proxy.port != 9050)
+		fail("proxy socks5");
+	memset(&proxy, 0, sizeof(proxy));
+	if (omaq_proxy_parse("# tor\n\n  http\tproxy.example.internal  8080  \n", &proxy) != 0 ||
+	    proxy.type != OMAQ_PROXY_HTTP ||
+	    strcmp(proxy.host, "proxy.example.internal") != 0 || proxy.port != 8080)
+		fail("proxy http");
+	memset(&proxy, 0, sizeof(proxy));
+	if (omaq_proxy_parse("none\n", &proxy) != 0 || proxy.type != OMAQ_PROXY_NONE)
+		fail("proxy none");
+	memset(&proxy, 0, sizeof(proxy));
+	if (omaq_proxy_parse("socks5 ::1 9050\n", &proxy) != 0 ||
+	    strcmp(proxy.host, "::1") != 0)
+		fail("proxy ipv6");
+	for (i = 0; i < (int)(sizeof(invalid) / sizeof(invalid[0])); i++) {
+		if (omaq_proxy_parse(invalid[i], &proxy) == 0)
+			fail("proxy invalid accepted");
+	}
+
+	if (!mkdtemp(dir)) {
+		fail("proxy tmpdir");
+		return;
+	}
+	/* Absent file means no proxy. */
+	if (omaq_proxy_load(dir, &proxy) != 0)
+		fail("proxy absent");
+	snprintf(path, sizeof(path), "%s/proxy.conf", dir);
+	f = fopen(path, "w");
+	if (!f) {
+		fail("proxy write");
+		return;
+	}
+	fputs("socks5 127.0.0.1 9050\n", f);
+	fclose(f);
+	if (chmod(path, 0600) != 0)
+		fail("proxy chmod");
+	memset(&proxy, 0, sizeof(proxy));
+	if (omaq_proxy_load(dir, &proxy) != 1 || proxy.type != OMAQ_PROXY_SOCKS5 ||
+	    proxy.port != 9050)
+		fail("proxy load");
+	/* A world-writable config is refused, not silently ignored. */
+	if (chmod(path, 0666) != 0)
+		fail("proxy chmod loose");
+	if (omaq_proxy_load(dir, &proxy) != -1)
+		fail("proxy loose accepted");
+	if (chmod(path, 0600) != 0)
+		fail("proxy chmod back");
+	/* A malformed config fails closed instead of connecting directly. */
+	f = fopen(path, "w");
+	if (!f) {
+		fail("proxy rewrite");
+		return;
+	}
+	fputs("socks5 127.0.0.1\n", f);
+	fclose(f);
+	if (omaq_proxy_load(dir, &proxy) != -1)
+		fail("proxy malformed accepted");
+	/* A symlinked config is refused. */
+	unlink(path);
+	if (symlink("/etc/hostname", path) == 0 && omaq_proxy_load(dir, &proxy) != -1)
+		fail("proxy symlink accepted");
+	unlink(path);
+	rmdir(dir);
 }
 
 static void test_safety(void)
@@ -3282,6 +3374,7 @@ int main(void)
 	test_group_file_offer_rate();
 	test_message_rate();
 	test_safety();
+	test_proxy_config();
 	test_group_file_wire();
 	test_group_invite();
 	test_direct_state();

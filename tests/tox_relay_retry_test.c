@@ -94,10 +94,24 @@ static void reset_counts(void)
 	tuple_errors = 0;
 }
 
+#define OMAQ_RELAY_NODE_COUNT \
+	(sizeof(bootstrap_nodes) / sizeof(bootstrap_nodes[0]))
+#define OMAQ_RELAY_FULL_MASK ((1u << OMAQ_RELAY_NODE_COUNT) - 1u)
+
 static void require_stage(const char *stage)
 {
-	if (bootstrap_calls != 3 || relay_calls != 3 ||
-	    bootstrap_mask != 0x7 || relay_mask != 0x7 || tuple_errors != 0) {
+	/* Every pinned node must be contacted on every attempt, and the set must
+	 * stay wide: a narrow relay set concentrates all metadata on a few
+	 * operators and makes a single outage fatal. */
+	if (OMAQ_RELAY_NODE_COUNT < 8) {
+		fprintf(stderr, "tox-relay-retry: relay set narrowed to %u nodes\n",
+			(unsigned)OMAQ_RELAY_NODE_COUNT);
+		exit(1);
+	}
+	if (bootstrap_calls != (unsigned)OMAQ_RELAY_NODE_COUNT ||
+	    relay_calls != (unsigned)OMAQ_RELAY_NODE_COUNT ||
+	    bootstrap_mask != OMAQ_RELAY_FULL_MASK ||
+	    relay_mask != OMAQ_RELAY_FULL_MASK || tuple_errors != 0) {
 		fprintf(stderr,
 			"tox-relay-retry: %s bootstrap=%u relay=%u "
 			"bootstrap_mask=0x%x relay_mask=0x%x tuple_errors=%u\n",
@@ -157,6 +171,9 @@ int main(void)
 		perror("tox-relay-retry: cleanup");
 		return 1;
 	}
-	puts("tox-relay-retry: ok startup=3/3 offline=3/3 online=3/3");
+	printf("tox-relay-retry: ok startup=%u/%u offline=%u/%u online=%u/%u\n",
+	       (unsigned)OMAQ_RELAY_NODE_COUNT, (unsigned)OMAQ_RELAY_NODE_COUNT,
+	       (unsigned)OMAQ_RELAY_NODE_COUNT, (unsigned)OMAQ_RELAY_NODE_COUNT,
+	       (unsigned)OMAQ_RELAY_NODE_COUNT, (unsigned)OMAQ_RELAY_NODE_COUNT);
 	return 0;
 }
