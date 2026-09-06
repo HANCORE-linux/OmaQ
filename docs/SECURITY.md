@@ -22,6 +22,13 @@ The address hidden from contacts is still visible to relay operators. To close t
 
 Use `http <host> <port>` for an HTTP proxy, or `none` to disable. Lines beginning with `#` are comments. The helper fails closed: if the file exists but is malformed, unreadable, a symlink, or group/other-writable, OmaQ refuses to start rather than connecting directly and exposing the address the proxy was meant to hide. Restart OmaQ after editing the file.
 
+To choose the relays themselves, create `~/.local/share/omaq/relays.conf` with one `<host> <udp-port> <tcp-port> <64-hex-public-key>` line per relay (up to 16):
+
+    # your own tox-bootstrapd
+    relay.example.org 33445 443 7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C
+
+These relays are used in addition to the pinned set. Add a line containing only `exclusive` to use *only* the listed relays, which removes the public relay operators from the path entirely. Public keys are required and pinned exactly as the built-in ones are. This file fails closed the same way: a malformed, unreadable, symlinked, or group/other-writable `relays.conf` stops OmaQ instead of quietly falling back to relays you chose to avoid.
+
 OmaQ runs no project-operated server, account service, or recovery service. The project author cannot access, intercept, recover, or delete your messages, identity, or contacts.
 
 ## Protect local data

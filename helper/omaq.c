@@ -10142,6 +10142,15 @@ static int load_tox(const char *pass)
 		emit_error("proxy_invalid");
 		return -1;
 	}
+	if (err == OMAQ_TOX_RELAYS_INVALID) {
+		/* Fail closed: never fall back to relays the user chose to replace. */
+		fprintf(stderr,
+			"omaq: %s/relays.conf is unreadable or malformed; "
+			"refusing to connect through unintended relays\n",
+			home_dir());
+		emit_error("relays_invalid");
+		return -1;
+	}
 	g_locked = 0;
 	if (!g_tox) {
 		if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED)

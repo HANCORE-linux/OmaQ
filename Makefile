@@ -43,7 +43,7 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
 	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/stdout_spool.c helper/state_archive.c helper/store.c helper/message.c \
 	helper/identity.c helper/identity_guard.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/proxy.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/safety.c helper/proxy.c helper/relays.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/file.c helper/avatar.c helper/av.c \
 	helper/presence.c helper/receipt.c helper/message_action.c helper/direct_state.c \
 	helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
@@ -51,7 +51,7 @@ HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
 	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
 	helper/identity_guard.c \
-	helper/rate.c helper/safety.c helper/proxy.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/rate.c helper/safety.c helper/proxy.c helper/relays.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/state_archive.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c \
 	helper/direct_state.c helper/ratchet.c helper/ratchet_pin.c
 
@@ -111,17 +111,17 @@ $(BIN_RATCHET_PREKEY_TEST): tests/ratchet_prekey_test.c helper/ratchet.c helper/
 		tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c \
 		$(shell $(PKG_CONFIG) --libs libsignal-protocol-c libcrypto)
 
-$(BIN_IDENTITY_GUARD_TEST): tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c helper/proxy.c
+$(BIN_IDENTITY_GUARD_TEST): tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c helper/proxy.c helper/relays.c
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX -DOMAQ_TOX_TEST \
 		-DOMAQ_IDENTITY_GUARD_TEST \
 		$(shell $(PKG_CONFIG) --cflags $(TOX_PC)) -o $@ \
-		tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c helper/proxy.c \
+		tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c helper/proxy.c helper/relays.c \
 		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
 
-$(BIN_TOX_RELAY_RETRY_TEST): tests/tox_relay_retry_test.c helper/tox_adapt.c helper/identity_guard.c helper/file.c helper/proxy.c
+$(BIN_TOX_RELAY_RETRY_TEST): tests/tox_relay_retry_test.c helper/tox_adapt.c helper/identity_guard.c helper/file.c helper/proxy.c helper/relays.c
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX \
 		$(shell $(PKG_CONFIG) --cflags $(TOX_PC)) -o $@ \
-		tests/tox_relay_retry_test.c helper/identity_guard.c helper/file.c helper/proxy.c \
+		tests/tox_relay_retry_test.c helper/identity_guard.c helper/file.c helper/proxy.c helper/relays.c \
 		-Wl,--wrap=tox_bootstrap -Wl,--wrap=tox_add_tcp_relay \
 		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
 

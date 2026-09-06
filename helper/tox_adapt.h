@@ -15,6 +15,7 @@ struct omaq_tox;
 
 #define OMAQ_TOX_LOCKED 1
 #define OMAQ_TOX_PROXY_INVALID 2
+#define OMAQ_TOX_RELAYS_INVALID 3
 
 struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err);
 int omaq_tox_protect(struct omaq_tox *t, const char *pass);

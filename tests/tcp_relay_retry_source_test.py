@@ -66,6 +66,17 @@ if sum(1 for host in hosts if not re.fullmatch(r"[0-9.]+", host)) < 3:
 
 # A configured proxy must be applied, and an unusable one must fail closed
 # rather than silently connecting directly.
+# User-supplied relays must extend or replace the pinned set through the same
+# single registration site, and an unusable relay file must fail closed.
+if "omaq_relays_load(home, &relays)" not in open_body:
+    raise SystemExit("tcp-relay-retry-source: relays.conf is not consulted")
+if "OMAQ_TOX_RELAYS_INVALID" not in open_body:
+    raise SystemExit("tcp-relay-retry-source: relay config failure is not fail-closed")
+if "t->relays" not in bootstrap:
+    raise SystemExit("tcp-relay-retry-source: user relays are not registered")
+if "t->relays.exclusive" not in bootstrap:
+    raise SystemExit("tcp-relay-retry-source: exclusive relay mode is not honoured")
+
 for needle in (
     "omaq_proxy_load(home, &proxy)",
     "tox_options_set_proxy_type(",
@@ -80,5 +91,5 @@ if open_body.index("omaq_proxy_load(home, &proxy)") > open_body.index("tox_new(o
 
 print(
     "tcp-relay-retry-source: ok startup=relays periodic=relays udp=false "
-    "relays=%d proxy=optional" % len(entries)
+    "relays=%d proxy=optional user-relays=optional" % len(entries)
 )

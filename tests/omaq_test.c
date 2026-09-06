@@ -19,6 +19,7 @@
 #include "../helper/presence.h"
 #include "../helper/proxy.h"
 #include "../helper/receipt.h"
+#include "../helper/relays.h"
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
@@ -1497,6 +1498,101 @@ static void test_message_rate(void)
 		"g:1000000000000000000000000000000000000000000000000000000000000000",
 		actor, 10000) == 0)
 		fail("message rate global burst limit");
+}
+
+static void test_relays_config(void)
+{
+	omaq_relay_set set;
+	char dir[] = "/tmp/omaq-relays-XXXXXX";
+	char path[512];
+	FILE *f;
+	int i;
+	static const char *valid =
+		"# my own relay\n"
+		"relay.example.internal 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n"
+		"  192.0.2.7\t33445 3389 "
+		"b3e5fa80dc8ebd1149ad2ab35ed8b85bd546dede261ca593234c619249419506\n";
+	static const char *invalid[] = {
+		"",
+		"# only a comment\n",
+		"exclusive\n",
+		"relay.example.internal 33445 443\n",
+		"relay.example.internal 33445 443 short\n",
+		"relay.example.internal 0 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n",
+		"relay.example.internal 33445 70000 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n",
+		"bad host 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n",
+		"relay.example.internal 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C extra\n",
+		"exclusive now\n192.0.2.7 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n",
+		"192.0.2.7 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n"
+		"192.0.2.8 33445 443 "
+		"7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n"
+	};
+
+	memset(&set, 0, sizeof(set));
+	if (omaq_relays_parse(valid, &set) != 0 || set.count != 2 || set.exclusive != 0)
+		fail("relays parse");
+	else if (strcmp(set.entries[0].host, "relay.example.internal") != 0 ||
+		 set.entries[0].udp_port != 33445 || set.entries[0].tcp_port != 443 ||
+		 strcmp(set.entries[1].host, "192.0.2.7") != 0 ||
+		 strcmp(set.entries[1].key_hex,
+			"B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506") != 0)
+		fail("relays fields");
+	memset(&set, 0, sizeof(set));
+	if (omaq_relays_parse("exclusive\n192.0.2.7 33445 443 "
+			      "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C\n",
+			      &set) != 0 || set.exclusive != 1 || set.count != 1)
+		fail("relays exclusive");
+	for (i = 0; i < (int)(sizeof(invalid) / sizeof(invalid[0])); i++) {
+		if (omaq_relays_parse(invalid[i], &set) == 0)
+			fail("relays invalid accepted");
+	}
+
+	if (!mkdtemp(dir)) {
+		fail("relays tmpdir");
+		return;
+	}
+	if (omaq_relays_load(dir, &set) != 0)
+		fail("relays absent");
+	snprintf(path, sizeof(path), "%s/relays.conf", dir);
+	f = fopen(path, "w");
+	if (!f) {
+		fail("relays write");
+		return;
+	}
+	fputs(valid, f);
+	fclose(f);
+	if (chmod(path, 0600) != 0)
+		fail("relays chmod");
+	memset(&set, 0, sizeof(set));
+	if (omaq_relays_load(dir, &set) != 1 || set.count != 2)
+		fail("relays load");
+	if (chmod(path, 0666) != 0)
+		fail("relays chmod loose");
+	if (omaq_relays_load(dir, &set) != -1)
+		fail("relays loose accepted");
+	if (chmod(path, 0600) != 0)
+		fail("relays chmod back");
+	f = fopen(path, "w");
+	if (!f) {
+		fail("relays rewrite");
+		return;
+	}
+	fputs("192.0.2.7 33445 443 nope\n", f);
+	fclose(f);
+	if (omaq_relays_load(dir, &set) != -1)
+		fail("relays malformed accepted");
+	unlink(path);
+	if (symlink("/etc/hostname", path) == 0 && omaq_relays_load(dir, &set) != -1)
+		fail("relays symlink accepted");
+	unlink(path);
+	rmdir(dir);
 }
 
 static void test_proxy_config(void)
@@ -3375,6 +3471,7 @@ int main(void)
 	test_message_rate();
 	test_safety();
 	test_proxy_config();
+	test_relays_config();
 	test_group_file_wire();
 	test_group_invite();
 	test_direct_state();

@@ -13,7 +13,7 @@ static char temporary_home[] = "/tmp/omaq-relay-retry-XXXXXX";
 static int remove_home(void)
 {
 	char path[sizeof(temporary_home) + 16];
-	const char *names[] = { "tox.save", "tox.save.tmp" };
+	const char *names[] = { "tox.save", "tox.save.tmp", "relays.conf" };
 
 	if (!temporary_home[0])
 		return 0;
@@ -167,6 +167,69 @@ int main(void)
 	}
 
 	omaq_tox_close(tox);
+
+	/* A user-supplied relay must be registered alongside the pinned set,
+	 * through the same retry path. */
+	{
+		char path[sizeof(temporary_home) + 32];
+		FILE *config;
+
+		snprintf(path, sizeof(path), "%s/relays.conf", temporary_home);
+		config = fopen(path, "w");
+		if (!config) {
+			perror("tox-relay-retry: relays.conf");
+			return 1;
+		}
+		fputs("192.0.2.55 33445 443 "
+		      "0000000000000000000000000000000000000000000000000000000000000001\n",
+		      config);
+		if (fclose(config) != 0 || chmod(path, 0600) != 0) {
+			fprintf(stderr, "tox-relay-retry: relays.conf write failed\n");
+			return 1;
+		}
+		reset_counts();
+		tox = omaq_tox_open(temporary_home, NULL, &error);
+		if (!tox) {
+			fprintf(stderr, "tox-relay-retry: user relay open failed: %d\n",
+				error);
+			return 1;
+		}
+		if (bootstrap_calls != (unsigned)OMAQ_RELAY_NODE_COUNT + 1u ||
+		    relay_calls != (unsigned)OMAQ_RELAY_NODE_COUNT + 1u ||
+		    bootstrap_mask != OMAQ_RELAY_FULL_MASK ||
+		    relay_mask != OMAQ_RELAY_FULL_MASK || tuple_errors != 2) {
+			fprintf(stderr,
+				"tox-relay-retry: user relay bootstrap=%u relay=%u "
+				"tuple_errors=%u\n",
+				bootstrap_calls, relay_calls, tuple_errors);
+			omaq_tox_close(tox);
+			return 1;
+		}
+		omaq_tox_close(tox);
+
+		/* A malformed relay file must fail closed, not fall back. */
+		config = fopen(path, "w");
+		if (!config) {
+			perror("tox-relay-retry: relays.conf rewrite");
+			return 1;
+		}
+		fputs("192.0.2.55 33445 443 nope\n", config);
+		if (fclose(config) != 0 || chmod(path, 0600) != 0) {
+			fprintf(stderr, "tox-relay-retry: relays.conf rewrite failed\n");
+			return 1;
+		}
+		error = 0;
+		tox = omaq_tox_open(temporary_home, NULL, &error);
+		if (tox || error != OMAQ_TOX_RELAYS_INVALID) {
+			fprintf(stderr,
+				"tox-relay-retry: malformed relays.conf accepted (%d)\n",
+				error);
+			if (tox)
+				omaq_tox_close(tox);
+			return 1;
+		}
+	}
+
 	if (remove_home() != 0) {
 		perror("tox-relay-retry: cleanup");
 		return 1;

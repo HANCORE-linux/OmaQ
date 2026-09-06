@@ -5,6 +5,7 @@
 #include "file.h"
 #include "identity_guard.h"
 #include "proxy.h"
+#include "relays.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -24,6 +25,7 @@
 struct omaq_tox {
 	Tox *tox;
 	ToxAV *av;
+	omaq_relay_set relays;
 	char home[512];
 	char recovery_state[512];
 	int recovery_degraded;
@@ -154,17 +156,42 @@ static const struct bootstrap_node bootstrap_nodes[] = {
 
 static void bootstrap_tox(struct omaq_tox *t)
 {
+	/* User-supplied relays from relays.conf extend the pinned set, or replace
+	 * it entirely when the file says "exclusive". Both lists are walked from
+	 * one registration site so no relay can ever be added on a path that
+	 * skips the retry logic. */
+	size_t pinned = sizeof(bootstrap_nodes) / sizeof(bootstrap_nodes[0]);
+	size_t total;
+
 	if (!t || !t->tox)
 		return;
-	for (size_t i = 0; i < sizeof(bootstrap_nodes) / sizeof(bootstrap_nodes[0]); i++) {
+	if (t->relays.exclusive)
+		pinned = 0;
+	total = pinned + t->relays.count;
+	for (size_t i = 0; i < total; i++) {
+		const char *host;
+		const char *key_hex;
+		uint16_t udp_port, tcp_port;
 		uint8_t key[TOX_PUBLIC_KEY_SIZE];
 		Tox_Err_Bootstrap berr = TOX_ERR_BOOTSTRAP_OK;
-		if (hex_in(bootstrap_nodes[i].key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
+
+		if (i < pinned) {
+			host = bootstrap_nodes[i].host;
+			udp_port = bootstrap_nodes[i].udp_port;
+			tcp_port = bootstrap_nodes[i].tcp_port;
+			key_hex = bootstrap_nodes[i].key_hex;
+		} else {
+			const omaq_relay *relay = &t->relays.entries[i - pinned];
+
+			host = relay->host;
+			udp_port = relay->udp_port;
+			tcp_port = relay->tcp_port;
+			key_hex = relay->key_hex;
+		}
+		if (hex_in(key_hex, key, TOX_PUBLIC_KEY_SIZE) != 0)
 			continue;
-		(void)tox_bootstrap(t->tox, bootstrap_nodes[i].host,
-				    bootstrap_nodes[i].udp_port, key, &berr);
-		(void)tox_add_tcp_relay(t->tox, bootstrap_nodes[i].host,
-					bootstrap_nodes[i].tcp_port, key, &berr);
+		(void)tox_bootstrap(t->tox, host, udp_port, key, &berr);
+		(void)tox_add_tcp_relay(t->tox, host, tcp_port, key, &berr);
 	}
 }
 
@@ -819,6 +846,16 @@ struct omaq_tox *omaq_tox_open(const char *home, const char *pass, int *err_out)
 				*err_out = OMAQ_TOX_PROXY_INVALID;
 			goto savedata_fail;
 		}
+		omaq_relay_set relays;
+		int relay_rc = omaq_relays_load(home, &relays);
+
+		if (relay_rc < 0) {
+			if (err_out)
+				*err_out = OMAQ_TOX_RELAYS_INVALID;
+			goto savedata_fail;
+		}
+		if (relay_rc == 1)
+			t->relays = relays;
 		if (proxy_rc == 1 && proxy.type != OMAQ_PROXY_NONE) {
 			tox_options_set_proxy_type(
 				opt, proxy.type == OMAQ_PROXY_SOCKS5
