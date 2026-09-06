@@ -19,7 +19,7 @@ fd_open=0
 cleanup() {
 	[ "$fd_open" -eq 1 ] && exec 3>&- 2>/dev/null || true
 	[ -n "${pid:-}" ] && kill "$pid" 2>/dev/null || true
-	rm -rf "$home" "$state" "$fifo" "$out" "$out.err"
+	rm -rf "$home" "$state" "$fifo" "$out" "$out.err" "${magic:-}" "${head:-}"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -44,17 +44,37 @@ while [ "$i" -lt 100 ]; do
 done
 [ "$i" -lt 100 ] || { echo "history-seal: helper did not start" >&2; exit 1; }
 
+# The socket is published before the identity finishes loading; identity
+# operations are refused until it exists.
+i=0
+while [ "$i" -lt 200 ]; do
+	[ -s "$home/tox.save" ] && break
+	i=$((i + 1))
+	sleep 0.05
+done
+[ "$i" -lt 200 ] || { echo "history-seal: identity never loaded" >&2; exit 1; }
+
 # Plant a conversation transcript the way the store does.
 mkdir -p "$home/history/7"
 printf '{"id":"m1","from":"peer","text":"attack at dawn"}\n' >"$home/history/7/messages.jsonl"
 chmod 600 "$home/history/7/messages.jsonl"
+
+# Blob headers are binary, so compare bytes rather than shell strings.
+magic=$(mktemp /tmp/omaq-hsm-XXXXXX)
+head=$(mktemp /tmp/omaq-hsh-XXXXXX)
+printf 'OMAQSEAL1' >"$magic"
+
+is_sealed() {
+	head -c 9 -- "$1" >"$head" 2>/dev/null || return 1
+	cmp -s "$head" "$magic"
+}
 
 # Every regular file under $1 must begin with the seal magic.
 assert_sealed() {
 	found=0
 	for f in $(find "$1" -type f 2>/dev/null); do
 		found=1
-		if [ "$(head -c 9 -- "$f")" != "OMAQSEAL1" ]; then
+		if ! is_sealed "$f"; then
 			echo "history-seal: $f is not sealed" >&2
 			exit 1
 		fi
@@ -64,7 +84,7 @@ assert_sealed() {
 
 assert_plaintext() {
 	for f in $(find "$1" -type f 2>/dev/null); do
-		if [ "$(head -c 9 -- "$f")" = "OMAQSEAL1" ]; then
+		if is_sealed "$f"; then
 			echo "history-seal: $f is still sealed" >&2
 			exit 1
 		fi
@@ -84,7 +104,7 @@ wait_for() {
 }
 
 printf '%s\n' '{"op":"identity.protect","passphrase":"a strong passphrase","id":"hs-protect"}' >&3
-wait_for '"request":"hs-protect"'
+wait_for '"op":"protect","request":"hs-protect","protected":true'
 
 [ -f "$home/seal.key" ] || { echo "history-seal: no seal key after protect" >&2; exit 1; }
 mode=$(stat -c %a -- "$home/seal.key")
@@ -110,7 +130,7 @@ fi
 assert_sealed "$home/ratchet"
 
 printf '%s\n' '{"op":"identity.unprotect","passphrase":"a strong passphrase","id":"hs-unprotect"}' >&3
-wait_for '"request":"hs-unprotect"'
+wait_for '"op":"unprotect","request":"hs-unprotect","protected":false'
 
 [ -f "$home/seal.key" ] && { echo "history-seal: seal key survived unprotect" >&2; exit 1; }
 grep -a -q "attack at dawn" "$home/history/7/messages.jsonl" || {
@@ -123,10 +143,9 @@ assert_plaintext "$home/ratchet"
 # store must be moved aside and fresh invitations required - never opened as
 # if it were empty.
 printf '%s\n' '{"op":"identity.protect","passphrase":"a strong passphrase","id":"hs-protect2"}' >&3
-wait_for '"request":"hs-protect2"'
+wait_for '"op":"protect","request":"hs-protect2","protected":true'
 assert_sealed "$home/ratchet"
-sealed_identity=$(head -c 9 -- "$home/ratchet/identity")
-[ "$sealed_identity" = "OMAQSEAL1" ] || {
+is_sealed "$home/ratchet/identity" || {
 	echo "history-seal: identity blob not sealed before quarantine" >&2
 	exit 1
 }
