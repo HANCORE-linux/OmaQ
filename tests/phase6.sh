@@ -32,6 +32,8 @@ call_bridge_b=""
 lease_a_pid=""
 lease_b_pid=""
 pulse_modules=""
+pulse_server_pid=""
+pulse_runtime=""
 pulse_tag="omaq_p6_$$"
 cap_a="${pulse_tag}_cap_a"
 out_a="${pulse_tag}_out_a"
@@ -50,9 +52,12 @@ cleanup() {
 	for module in $pulse_modules; do
 		pactl unload-module "$module" 2>/dev/null || true
 	done
+	[ -n "${pulse_server_pid:-}" ] && kill "$pulse_server_pid" 2>/dev/null || true
+	[ -n "${pulse_server_pid:-}" ] && wait "$pulse_server_pid" 2>/dev/null || true
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$fa" "$fb" "$fc" \
 		"$src" "$holda" "$holdb" "$holdc" "$calla" "$callb" \
 		"$audio_a" "$audio_b" "$call_replay" "$fa.err" "$fb.err" "$fc.err"
+	[ -n "${pulse_runtime:-}" ] && rm -rf "$pulse_runtime"
 }
 trap cleanup EXIT
 
@@ -128,15 +133,43 @@ esac
 
 printf 'omaq-file-probe\n' >"$src"
 
-for tool in pactl pacat parec python3; do
+for tool in pactl pacat parec pipewire python3 wireplumber; do
 	command -v "$tool" >/dev/null 2>&1 || {
 		echo "phase6: missing audio test tool: $tool" >&2
 		exit 1
 	}
 done
-for sink in "$cap_a" "$out_a" "$cap_b" "$out_b"; do
+# Reclaim only historical system-server modules from dead Phase 6 owners,
+# then keep this run's audio graph outside the user's normal device registry.
+sh "$root/tests/phase6-audio-orphans.sh"
+pulse_runtime=$(mktemp -d /tmp/omaq-p6-pulse-XXXXXX)
+chmod 700 "$pulse_runtime"
+python3 "$root/tests/phase6-audio-server.py" "$$" "$pulse_runtime" &
+pulse_server_pid=$!
+i=0
+while [ "$i" -lt 100 ]; do
+	[ -S "$pulse_runtime/pulse/native" ] && [ -f "$pulse_runtime/ready" ] && break
+	kill -0 "$pulse_server_pid" 2>/dev/null || break
+	i=$((i + 1))
+	sleep 0.05
+done
+[ -S "$pulse_runtime/pulse/native" ] && [ -f "$pulse_runtime/ready" ] || {
+	echo "phase6: private PulseAudio server unavailable" >&2
+	exit 1
+}
+PULSE_SERVER="unix:$pulse_runtime/pulse/native"
+export PULSE_SERVER
+pactl info >/dev/null
+for sink_spec in \
+	"$cap_a:OmaQ-Call-Test-A-Capture" \
+	"$out_a:OmaQ-Call-Test-A-Output" \
+	"$cap_b:OmaQ-Call-Test-B-Capture" \
+	"$out_b:OmaQ-Call-Test-B-Output"
+do
+	sink=${sink_spec%%:*}
+	description=${sink_spec#*:}
 	module=$(pactl load-module module-null-sink sink_name="$sink" \
-		sink_properties=device.description=OmaQPhase6)
+		"sink_properties=device.description=$description")
 	pulse_modules="$module $pulse_modules"
 done
 
