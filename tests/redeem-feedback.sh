@@ -17,6 +17,7 @@ for marker in (
     'if (root.redeemRequest === "") {',
     'root.redeemFeedback = ""',
     'root.redeemFeedbackRequest = ""',
+    'root.redeemSafety = ""',
 ):
     if marker not in field:
         raise SystemExit(f"redeem-feedback: input handler lost {marker!r}")
@@ -26,10 +27,21 @@ result = panel[result_start:result_end]
 for marker in (
     'String(omaq.lastRedeemRequest || "") === root.redeemRequest',
     '"Invite checked. Waiting for the other person to accept."',
+    'String(omaq.lastRedeemSafety || "")',
     'root.redeemDraft = ""',
 ):
     if marker not in result:
         raise SystemExit(f"redeem-feedback: correlated result lost {marker!r}")
+safety_start = panel.index("                id: redeemedInviteSafety\n")
+safety_end = panel.index("\n            TokenButton {", safety_start)
+safety = panel[safety_start:safety_end]
+for marker in (
+    'visible: root.redeemSafety !== ""',
+    'root.redeemSafety.replace(" / ", "\\n")',
+    'text: "Compare this code with your friend before they accept"',
+):
+    if marker not in safety:
+        raise SystemExit(f"redeem-feedback: safety result lost {marker!r}")
 PY
 
 qml=/usr/lib/qt6/bin/qml
@@ -54,6 +66,7 @@ ApplicationWindow {
   property string redeemRequest: "request-1"
   property string redeemFeedback: "Checking invite…"
   property string redeemFeedbackRequest: "request-1"
+  property string redeemSafety: ""
   property bool failed: false
 
   function check(value, message) {
@@ -72,6 +85,7 @@ ApplicationWindow {
       if (root.redeemRequest === "") {
         root.redeemFeedback = ""
         root.redeemFeedbackRequest = ""
+        root.redeemSafety = ""
       }
     }
   }
@@ -80,12 +94,15 @@ ApplicationWindow {
     root.redeemRequest = ""
     root.redeemFeedbackRequest = ""
     root.redeemFeedback = "Invite checked. Waiting for the other person to accept."
+    root.redeemSafety = "aaaa / bbbb"
     root.redeemDraft = ""
     Qt.callLater(function() {
       root.check(root.redeemDraft === "", "programmatic draft clear failed")
       root.check(redeemField.text === "", "field did not follow the cleared draft")
       root.check(root.redeemFeedback.indexOf("Waiting") >= 0,
         "programmatic draft clear removed success feedback")
+      root.check(root.redeemSafety === "aaaa / bbbb",
+        "programmatic draft clear removed the safety code")
       redeemField.text = "omaq://invite/next"
       redeemField.textEdited()
       Qt.callLater(function() {
@@ -93,6 +110,8 @@ ApplicationWindow {
           "user edit did not update the draft")
         root.check(root.redeemFeedback === "",
           "user edit did not clear stale feedback")
+        root.check(root.redeemSafety === "",
+          "user edit did not clear the stale safety code")
         Qt.exit(root.failed ? 1 : 42)
       })
     })

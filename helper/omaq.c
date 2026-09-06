@@ -10616,17 +10616,21 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		const char *conflict_key =
 			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 		char request_event[360], conflict_event[144];
+		char redeemed_event[OMAQ_JSON_LINE_MAX];
 
 		if (op->field_mask != OMAQ_JSON_FIELD_OP ||
 		    omaq_direct_request_event(request_event, sizeof(request_event),
 			self_key, peer_key) != 0 ||
 		    omaq_direct_request_conflict_event(conflict_event,
-			sizeof(conflict_event), conflict_key) != 0) {
+			sizeof(conflict_event), conflict_key) != 0 ||
+		    omaq_direct_redeemed_event(redeemed_event, sizeof(redeemed_event),
+			"test-invite-redeem", peer_key, self_key) != 0) {
 			emit_error("forbidden");
 			return 0;
 		}
 		emit(request_event);
 		emit(conflict_event);
+		emit(redeemed_event);
 		return 0;
 	}
 #endif
@@ -11348,6 +11352,10 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			char contact_key[65], self_key[65];
 			char request[OMAQ_INVITE_ID_MAX + OMAQ_RK_HEX + 8];
 			int add_rc;
+#if OMAQ_PROTOCOL_VERSION >= 16
+			char redeemed_event[OMAQ_JSON_LINE_MAX];
+			int have_redeemed_event = 0;
+#endif
 #ifdef HAVE_SIGNAL
 			char local_rk[OMAQ_RK_HEX + 1];
 			if (!g_ratchet || !inv.rk[0] ||
@@ -11378,6 +11386,17 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("contact_exists", op->id);
 				return 0;
 			}
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (op->id[0]) {
+				if (omaq_direct_redeemed_event(redeemed_event,
+					    sizeof(redeemed_event), op->id, self_key,
+					    contact_key) != 0) {
+					emit_identity_error("invite_rejected", op->id);
+					return 0;
+				}
+				have_redeemed_event = 1;
+			}
+#endif
 			if (omaq_direct_state_add_begin(home_dir(), contact_key, inv.rk) != 0) {
 				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
@@ -11412,7 +11431,14 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
 			}
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (have_redeemed_event)
+				emit(redeemed_event);
+			else
+				emit_invite_redeemed("direct", op->id);
+#else
 			emit_invite_redeemed("direct", op->id);
+#endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_friends();
 			return 0;

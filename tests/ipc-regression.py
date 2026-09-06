@@ -100,6 +100,11 @@ INVITE_CONFLICT_EVENT = (
     '{"event":"request.conflict","kind":"direct","key":"' +
     "c" * 64 + '"}\n'
 ).encode()
+INVITE_REDEEMED_EVENT = (
+    '{"event":"invite.redeemed","kind":"direct",'
+    '"request":"test-invite-redeem","key":"' + "a" * 64 +
+    '","safety":"' + INVITE_SAFETY + '"}\n'
+).encode()
 IDENTITY_UNSUPPORTED = (
     (b'{"op":"identity.unlock","passphrase":"legacy","id":"identity-unlock-1"}\n',
      b'{"event":"error","code":"unsupported","request":"identity-unlock-1"}\n'),
@@ -306,12 +311,13 @@ def main() -> int:
                 )
             framing_client.sendall(INVITE_EVENT_COMMAND)
             response = b""
-            while response.count(b"\n") < 2:
+            while response.count(b"\n") < 3:
                 chunk = framing_client.recv(4096)
                 if not chunk:
                     break
                 response += chunk
-            if response != INVITE_REQUEST_EVENT + INVITE_CONFLICT_EVENT:
+            if response != (INVITE_REQUEST_EVENT + INVITE_CONFLICT_EVENT +
+                            INVITE_REDEEMED_EVENT):
                 raise RuntimeError(
                     f"Protocol-16 invite event schema mismatch: {response!r}"
                 )
@@ -612,6 +618,7 @@ def main() -> int:
             + NICKNAME_UNSUPPORTED_EVENT
             + INVITE_REQUEST_EVENT
             + INVITE_CONFLICT_EVENT
+            + INVITE_REDEEMED_EVENT
             + STATUS_NONCE_EVENT
             + expected_stage
             + expected_stage_discard

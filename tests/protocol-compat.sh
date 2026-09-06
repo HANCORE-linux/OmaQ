@@ -296,6 +296,13 @@ ShellRoot {
         var protocol15InviteCompatible = service.pending && !service.pendingGroup &&
           !service.supportsInviteRequestSafety && service.pendingRequestKey === "" &&
           service.pendingRequestSafety === ""
+        var protocol15RedeemTick = service.redeemTick
+        service.handleLine(JSON.stringify({ event: "invite.redeemed", kind: "direct",
+          request: "protocol15-redeem" }))
+        var protocol15RedeemCompatible =
+          service.lastRedeemRequest === "protocol15-redeem" &&
+          service.lastRedeemKind === "direct" && service.lastRedeemSafety === "" &&
+          service.redeemTick === protocol15RedeemTick + 1
         service.clearPendingRequest()
         var safetyPartsA = []
         var safetyPartsB = []
@@ -313,6 +320,22 @@ ShellRoot {
           service.supportsInviteRequestSafety && service.pendingRequestKey === directKey &&
           service.pendingRequestSafety === requestSafety &&
           service.pendingRequestConflictKey === replacementKey
+        var protocol16RedeemTick = service.redeemTick
+        service.handleLine(JSON.stringify({ event: "invite.redeemed", kind: "direct",
+          request: "protocol16-redeem", key: directKey, safety: requestSafety }))
+        var protocol16RedeemSafety =
+          service.lastRedeemRequest === "protocol16-redeem" &&
+          service.lastRedeemKind === "direct" &&
+          service.lastRedeemSafety === requestSafety &&
+          service.redeemTick === protocol16RedeemTick + 1
+        service.handleLine(JSON.stringify({ event: "invite.redeemed", kind: "direct",
+          request: "protocol16-malformed", key: replacementKey, safety: "bad" }))
+        var protocol16MalformedRedeemRejected =
+          service.lastRedeemRequest === "protocol16-redeem" &&
+          service.lastRedeemKind === "direct" && service.lastRedeemSafety === "" &&
+          service.redeemTick === protocol16RedeemTick + 1 &&
+          service.lastError === "helper_event_invalid" &&
+          service.lastErrorRequest === "protocol16-malformed"
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -331,7 +354,9 @@ ShellRoot {
             bindingChecks && groupAttachmentGate && groupInviteWired &&
             legacySurfaceCompatible && handshakeSurfaceQueued && handshake14Geometry &&
             modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
-            confirmedHangupGate && protocol15InviteCompatible && protocol16InviteSafety &&
+            confirmedHangupGate && protocol15InviteCompatible &&
+            protocol15RedeemCompatible && protocol16InviteSafety &&
+            protocol16RedeemSafety && protocol16MalformedRedeemRejected &&
             correlatedGroups && groupTypingProjected &&
             wrongGroupRequestIgnored &&
             incompleteGroupsPreserved && reusePurged &&

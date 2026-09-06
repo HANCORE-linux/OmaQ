@@ -21,6 +21,7 @@ BarWidget {
   property string redeemRequest: ""
   property string redeemFeedback: ""
   property string redeemFeedbackRequest: ""
+  property string redeemSafety: ""
   property string callFeedback: ""
   property bool nospamConfirm: false
   property bool removeContactConfirm: false
@@ -659,6 +660,7 @@ BarWidget {
     root.redeemRequest = ""
     root.redeemFeedback = ""
     root.redeemFeedbackRequest = ""
+    root.redeemSafety = ""
     root.callFeedback = ""
     panelCallFeedbackTimer.stop()
     root.chatPickerOpen = false
@@ -744,6 +746,7 @@ BarWidget {
     root.redeemRequest = ""
     root.redeemFeedback = ""
     root.redeemFeedbackRequest = ""
+    root.redeemSafety = ""
     root.chatPickerOpen = false
     root.settingsOpen = false
     root.themeOpen = false
@@ -838,6 +841,8 @@ BarWidget {
       return "OmaQ is still restoring queued events."
     if (code === "helper_event_overflow")
       return "Some queued live events were compacted; history was resynchronized."
+    if (code === "helper_event_invalid")
+      return "OmaQ received an invalid response from the running helper."
     if (code === "file_failed")
       return "File transfer failed."
     if (code === "avatar_failed")
@@ -876,6 +881,8 @@ BarWidget {
       return "The direct-contact limit has been reached."
     if (code === "invite_rejected")
       return "The invite could not be added. Create a fresh invite and try it once on the other device."
+    if (code === "nospam_rotate_failed")
+      return "The invite was cleared, but its one-use address could not be refreshed."
     if (code === "safety_key_changed")
       return "This contact's encryption identity changed. Remove the old contact state on both devices before exchanging a fresh invite."
     if (code === "group_registry_failed")
@@ -2195,6 +2202,8 @@ BarWidget {
         root.redeemFeedback = omaq.lastRedeemKind === "group"
           ? "Group invite checked. Waiting for the incoming group request."
           : "Invite checked. Waiting for the other person to accept."
+        root.redeemSafety = omaq.lastRedeemKind === "direct"
+          ? String(omaq.lastRedeemSafety || "") : ""
         root.redeemDraft = ""
       }
     }
@@ -2236,6 +2245,7 @@ BarWidget {
       if (root.redeemRequest !== "") {
         root.redeemFeedback = "Connection changed before the invite result was confirmed. Check your contacts before trying again."
         root.redeemFeedbackRequest = root.redeemRequest
+        root.redeemSafety = ""
         root.redeemRequest = ""
       }
     }
@@ -2251,6 +2261,7 @@ BarWidget {
       if (root.redeemRequest !== "") {
         root.redeemFeedback = "OmaQ restarted before the invite result was confirmed. Check your contacts before trying again."
         root.redeemFeedbackRequest = root.redeemRequest
+        root.redeemSafety = ""
         root.redeemRequest = ""
       }
       if (root.groupInviteFeedback === "Sending group invite…" &&
@@ -2316,6 +2327,7 @@ BarWidget {
           String(omaq.lastErrorRequest || "") === root.redeemRequest) {
         root.redeemFeedbackRequest = root.redeemRequest
         root.redeemFeedback = root.errorText(omaq.lastError)
+        root.redeemSafety = ""
         root.redeemRequest = ""
       }
       if (root.identityPrimaryRequest !== "" &&
@@ -4514,6 +4526,7 @@ BarWidget {
                   if (root.redeemRequest === "") {
                     root.redeemFeedback = ""
                     root.redeemFeedbackRequest = ""
+                    root.redeemSafety = ""
                   }
                 }
                 onAccepted: if (joinBtn.enabled) joinBtn.clicked()
@@ -4529,6 +4542,7 @@ BarWidget {
                 fontFamily: root.fontFamily
                 enabled: root.redeemRequest === ""
                 onClicked: {
+                  root.redeemSafety = ""
                   if (Model.parseInvite(root.redeemDraft)) {
                     var request = omaq.redeem(root.redeemDraft)
                     if (request === "legacy") {
@@ -4556,6 +4570,28 @@ BarWidget {
                     ? (root.systemColors[3] || root.onlineStatusColor) : root.urgent)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+
+              SafeText {
+                id: redeemedInviteSafety
+                visible: root.redeemSafety !== ""
+                width: parent.width
+                text: root.redeemSafety.replace(" / ", "\n")
+                color: root.systemColors[3] || root.controlAccent
+                font.family: "monospace"
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+                Accessible.name: "Redeemed invite safety code " + root.redeemSafety
+              }
+
+              SafeText {
+                visible: redeemedInviteSafety.visible
+                width: parent.width
+                text: "Compare this code with your friend before they accept"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
             }

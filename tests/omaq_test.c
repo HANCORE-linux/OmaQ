@@ -200,6 +200,8 @@ static void test_pending_invite_claim(void)
 		const char *peer_key =
 			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 		char safety[OMAQ_SAFETY_MAX], event[360], expected[360], conflict[144];
+		char redeemed[OMAQ_JSON_LINE_MAX], redeemed_expected[OMAQ_JSON_LINE_MAX];
+		char long_request[OMAQ_JSON_STR_MAX + 1];
 
 		if (omaq_safety_code(self_key, peer_key, safety, sizeof(safety)) != 0 ||
 		    snprintf(expected, sizeof(expected),
@@ -213,10 +215,27 @@ static void test_pending_invite_claim(void)
 		    strcmp(conflict,
 			   "{\"event\":\"request.conflict\",\"kind\":\"direct\",\"key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}") != 0)
 			fail("direct request conflict event");
+		if (snprintf(redeemed_expected, sizeof(redeemed_expected),
+			     "{\"event\":\"invite.redeemed\",\"kind\":\"direct\","
+			     "\"request\":\"redeem\\\"one\",\"key\":\"%s\",\"safety\":\"%s\"}",
+			     self_key, safety) >= (int)sizeof(redeemed_expected) ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed),
+			"redeem\"one", peer_key, self_key) != 0 ||
+		    strcmp(redeemed, redeemed_expected) != 0 ||
+		    omaq_json_validate(redeemed) != 0)
+			fail("direct redeemed safety event");
+		memset(long_request, 'x', sizeof(long_request) - 1);
+		long_request[sizeof(long_request) - 1] = '\0';
 		if (omaq_direct_request_event(event, 8, self_key, peer_key) != -1 ||
 		    omaq_direct_request_event(event, sizeof(event), "A", peer_key) != -1 ||
-		    omaq_direct_request_conflict_event(conflict, 8, peer_key) != -1)
-			fail("direct request event bounds");
+		    omaq_direct_request_conflict_event(conflict, 8, peer_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, 8, "redeem", peer_key,
+			self_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed), "", peer_key,
+			self_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed), long_request,
+			peer_key, self_key) != -1)
+			fail("direct identity event bounds");
 	}
 }
 

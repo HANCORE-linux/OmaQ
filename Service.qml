@@ -99,6 +99,7 @@ Item {
   property int redeemRequestSequence: 0
   property string lastRedeemRequest: ""
   property string lastRedeemKind: ""
+  property string lastRedeemSafety: ""
   property int redeemTick: 0
   property string inviteUrl: ""
   property double inviteExpiresAt: 0
@@ -1348,8 +1349,28 @@ Item {
       }
     }
     if (ev.event === "invite.redeemed") {
-      root.lastRedeemRequest = String(ev.request || "")
-      root.lastRedeemKind = String(ev.kind || "")
+      var redeemedRequest = String(ev.request || "")
+      var redeemedKind = String(ev.kind || "")
+      var redeemedSafety = ""
+      if (redeemedRequest === "" ||
+          (redeemedKind !== "direct" && redeemedKind !== "group"))
+        return
+      if (redeemedKind === "direct" && root.supportsInviteRequestSafety) {
+        var redeemedKey = String(ev.key || "")
+        redeemedSafety = String(ev.safety || "")
+        if (!/^[0-9a-f]{64}$/.test(redeemedKey) ||
+            !root.validInviteSafetyCode(redeemedSafety)) {
+          root.lastRedeemSafety = ""
+          root.lastError = "helper_event_invalid"
+          root.lastErrorConv = ""
+          root.lastErrorRequest = redeemedRequest
+          root.lastErrorTick = root.lastErrorTick + 1
+          return
+        }
+      }
+      root.lastRedeemRequest = redeemedRequest
+      root.lastRedeemKind = redeemedKind
+      root.lastRedeemSafety = redeemedSafety
       root.redeemTick = root.redeemTick + 1
     }
     if (ev.event === "direct.reinvite") {

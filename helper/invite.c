@@ -1,4 +1,5 @@
 #include "invite.h"
+#include "json_io.h"
 #include "safety.h"
 
 #include <ctype.h>
@@ -155,6 +156,26 @@ int omaq_direct_request_conflict_event(char *out, size_t outn,
 	written = snprintf(out, outn,
 		"{\"event\":\"request.conflict\",\"kind\":\"direct\",\"key\":\"%s\"}",
 		attempt_key);
+	return written < 0 || (size_t)written >= outn ? -1 : 0;
+}
+
+int omaq_direct_redeemed_event(char *out, size_t outn, const char *request,
+			       const char *self_key, const char *issuer_key)
+{
+	char escaped_request[OMAQ_JSON_STR_MAX * 6 + 1];
+	char safety[OMAQ_SAFETY_MAX];
+	int written;
+
+	if (!out || !request || !request[0] ||
+	    strlen(request) >= OMAQ_JSON_STR_MAX ||
+	    !lower_hex_key(self_key) || !lower_hex_key(issuer_key) ||
+	    omaq_json_escape(request, escaped_request, sizeof(escaped_request)) != 0 ||
+	    omaq_safety_code(self_key, issuer_key, safety, sizeof(safety)) != 0)
+		return -1;
+	written = snprintf(out, outn,
+		"{\"event\":\"invite.redeemed\",\"kind\":\"direct\","
+		"\"request\":\"%s\",\"key\":\"%s\",\"safety\":\"%s\"}",
+		escaped_request, issuer_key, safety);
 	return written < 0 || (size_t)written >= outn ? -1 : 0;
 }
 

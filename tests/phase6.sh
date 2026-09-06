@@ -170,12 +170,15 @@ if ! grep -a -q '"addr"' "$fa" || ! grep -a -q '"addr"' "$fb" ||
 	echo "phase6: no tox" >&2
 	exit 1
 fi
+public_key_a=$(grep -a '"addr"' "$fa" | tail -1 |
+	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
 public_key_b=$(grep -a '"addr"' "$fb" | tail -1 |
 	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
 public_key_c=$(grep -a '"addr"' "$fc" | tail -1 |
 	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
-[ "${#public_key_b}" -eq 64 ] && [ "${#public_key_c}" -eq 64 ] || {
-	echo "phase6: redeemer public keys missing" >&2
+[ "${#public_key_a}" -eq 64 ] && [ "${#public_key_b}" -eq 64 ] &&
+	[ "${#public_key_c}" -eq 64 ] || {
+	echo "phase6: participant public keys missing" >&2
 	exit 1
 }
 
@@ -184,11 +187,13 @@ sleep 0.3
 url=$(grep -a '"url"' "$fa" | tail -1 | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
 [ -n "$url" ] || { echo "phase6: no invite url" >&2; exit 1; }
 
-printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
+printf '{"op":"invite.redeem","payload":"%s","id":"phase6-redeem-b"}\n' "$url" >&4
 ok=0
 i=0
 while [ "$i" -lt 90 ]; do
-	if grep -a -q '"event":"request","kind":"direct"' "$fa"; then
+	if grep -a -q '"event":"request","kind":"direct"' "$fa" &&
+	   grep -a '"event":"invite.redeemed","kind":"direct"' "$fb" |
+	     grep -a -q '"request":"phase6-redeem-b"'; then
 		ok=1
 		break
 	fi
@@ -215,6 +220,31 @@ if not isinstance(safety, str) or len(safety.split(" / ")) != 2:
 print(safety)
 PY
 )
+redeemed_safety=$(python3 - "$fb" "$public_key_a" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+results = [event for event in events
+           if event.get("event") == "invite.redeemed" and
+           event.get("kind") == "direct" and
+           event.get("request") == "phase6-redeem-b"]
+if len(results) != 1:
+    raise SystemExit("phase6: correlated redeemed identity event count changed")
+event = results[0]
+if event.get("key") != sys.argv[2]:
+    raise SystemExit("phase6: redeemed identity does not name the invite issuer")
+safety = event.get("safety")
+if not isinstance(safety, str) or len(safety.split(" / ")) != 2:
+    raise SystemExit("phase6: redeemed safety code is malformed")
+print(safety)
+PY
+)
+[ "$redeemed_safety" = "$request_safety" ] || {
+	echo "phase6: participants received different pre-acceptance safety codes" >&2
+	exit 1
+}
 printf '%s\n' '{"op":"status","id":"phase6-request-reannounce"}' >&3
 ok=0
 i=0
@@ -371,7 +401,7 @@ while [ "$i" -lt 50 ]; do
 	sleep 0.2
 done
 [ "$ok" -eq 1 ] || { echo "phase6: accepted safety code missing" >&2; exit 1; }
-python3 - "$fa" "$request_safety" <<'PY'
+python3 - "$fa" "$request_safety" "$redeemed_safety" <<'PY'
 import json
 import sys
 
@@ -380,8 +410,9 @@ with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
 results = [event for event in events
            if event.get("event") == "safety" and
            event.get("request") == "phase6-request-safety"]
-if len(results) != 1 or results[0].get("code") != sys.argv[2]:
-    raise SystemExit("phase6: request safety differs from safety.get")
+if len(results) != 1 or results[0].get("code") != sys.argv[2] or \
+        results[0].get("code") != sys.argv[3]:
+    raise SystemExit("phase6: participant safety differs from safety.get")
 PY
 
 status_sequence=0

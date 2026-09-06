@@ -50,7 +50,7 @@ Identity bundles include Tox savedata, private group mappings, and group friend-
 
 ## Verify trusted contacts
 
-Invitations are private, one-use entry points. Share them through a trusted channel, compare a Protocol 16 incoming request's safety code before accepting, and revoke unused links that may have leaked. Declining a direct request revokes its issued invitation; a conflict warning means another valid Tox identity also used that link.
+Invitations are private, one-use entry points. Share them through a trusted channel and compare the byte-identical Protocol 16 safety codes shown to the redeemer and invitation owner before accepting. A conflict warning means another valid Tox identity also used that link. Accepting or declining a direct request retires its issued invitation and rotates the Tox nospam address without changing the public key or existing contacts; revoke unused links that may have leaked.
 
 Compare safety codes through another trusted channel. A code proves only the paired Tox public identities; it does not authenticate the Signal Ratchet identity or prove that a particular person controls either device. Safety codes are not setup secrets.
 

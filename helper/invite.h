@@ -55,11 +55,13 @@ int omaq_pending_invite_key_matches(const omaq_pending_invite *pending,
 int omaq_invite_conflict_note(omaq_invite_conflicts *conflicts,
 			      const uint8_t claimed_key[OMAQ_INVITE_PUBLIC_KEY_BYTES],
 			      const uint8_t attempt_key[OMAQ_INVITE_PUBLIC_KEY_BYTES]);
-/* Protocol-16 direct request events. 0 = formatted, -1 = invalid/truncated. */
+/* Protocol-16 direct identity events. 0 = formatted, -1 = invalid/truncated. */
 int omaq_direct_request_event(char *out, size_t outn, const char *self_key,
 			      const char *peer_key);
 int omaq_direct_request_conflict_event(char *out, size_t outn,
 				       const char *attempt_key);
+int omaq_direct_redeemed_event(char *out, size_t outn, const char *request,
+			       const char *self_key, const char *issuer_key);
 
 /* 0 = ok, -1 = invalid. Never half-accepts. */
 int omaq_invite_parse(const char *url, omaq_invite *out);

@@ -12,12 +12,15 @@ helper = (root / "helper/omaq.c").read_text(encoding="utf-8")
 invite = (root / "helper/invite.c").read_text(encoding="utf-8")
 service = (root / "Service.qml").read_text(encoding="utf-8")
 panel = (root / "Panel.qml").read_text(encoding="utf-8")
+protocol = (root / "docs/stages/protocol-16.md").read_text(encoding="utf-8")
+security = (root / "docs/SECURITY.md").read_text(encoding="utf-8")
 
 for marker in (
     "#define OMAQ_PROTOCOL_VERSION 16",
     "static int emit_pending_direct_request(void)",
     "omaq_direct_request_event(event, sizeof(event), self, key)",
     "omaq_direct_request_conflict_event(event, sizeof(event), key)",
+    "omaq_direct_redeemed_event(redeemed_event,",
     "omaq_invite_issue_clear(&g_pending_invite, &g_invite_conflicts,",
     "static void emit_recorded_direct_conflicts(void)",
     "omaq_invite_issue_busy(&g_pending_invite,",
@@ -85,6 +88,7 @@ for marker in (
     "int omaq_invite_conflict_note(",
     "int omaq_direct_request_event(",
     "int omaq_direct_request_conflict_event(",
+    "int omaq_direct_redeemed_event(",
 ):
     if marker not in invite:
         raise SystemExit(f"direct-invite-fingerprint: invite model lost {marker!r}")
@@ -93,6 +97,9 @@ for marker in (
     "readonly property bool supportsInviteRequestSafety: root.activeHelperProtocol >= 16",
     "function validInviteSafetyCode(value)",
     'if (ev.event === "request.conflict")',
+    'if (ev.event === "invite.redeemed")',
+    'property string lastRedeemSafety: ""',
+    'root.lastError = "helper_event_invalid"',
     "conflictKey !== root.pendingRequestKey",
     "function clearPendingRequest()",
     "operation.key = root.pendingRequestKey",
@@ -119,6 +126,28 @@ for marker in (
 for forbidden in ("omaq.lastAddr", "76-character", "onClicked: omaq.decide(true); omaq.decide"):
     if forbidden in pending:
         raise SystemExit(f"direct-invite-fingerprint: pending card exposes forbidden path {forbidden!r}")
+redeemed_start = panel.index("                id: redeemedInviteSafety")
+redeemed_end = panel.index("\n            TokenButton {", redeemed_start)
+redeemed = panel[redeemed_start:redeemed_end]
+for marker in (
+    'root.redeemSafety.replace(" / ", "\\n")',
+    'text: "Compare this code with your friend before they accept"',
+):
+    if marker not in redeemed:
+        raise SystemExit(f"direct-invite-fingerprint: redeemed card lost {marker!r}")
+for marker in (
+    'if (code === "nospam_rotate_failed")',
+    'return "The invite was cleared, but its one-use address could not be refreshed."',
+):
+    if marker not in panel:
+        raise SystemExit(f"direct-invite-fingerprint: error copy lost {marker!r}")
+for document, marker in (
+    (protocol, '"event":"invite.redeemed"'),
+    (protocol, "Accepting or declining a direct request completely clears"),
+    (security, "Accepting or declining a direct request retires"),
+):
+    if marker not in document:
+        raise SystemExit(f"direct-invite-fingerprint: documentation lost {marker!r}")
 PY
 
 echo "direct-invite-fingerprint: ok"
