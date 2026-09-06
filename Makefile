@@ -109,11 +109,11 @@ $(BIN_AV_STATE_TEST): tests/av_state_test.c helper/av.c helper/av.h helper/tox_a
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DHAVE_TOX -o $@ \
 		tests/av_state_test.c helper/av.c -pthread
 
-$(BIN_RATCHET_PREKEY_TEST): tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c helper/ratchet.h
+$(BIN_RATCHET_PREKEY_TEST): tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c helper/seal.c helper/ratchet.h
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_SIGNAL \
-		$(shell $(PKG_CONFIG) --cflags libsignal-protocol-c) -o $@ \
-		tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c \
-		$(shell $(PKG_CONFIG) --libs libsignal-protocol-c libcrypto)
+		$(shell $(PKG_CONFIG) --cflags libsignal-protocol-c) $(SODIUM_CFLAGS) -o $@ \
+		tests/ratchet_prekey_test.c helper/ratchet.c helper/ratchet_adapt.c helper/seal.c \
+		$(shell $(PKG_CONFIG) --libs libsignal-protocol-c libcrypto) $(SODIUM_LIBS)
 
 $(BIN_IDENTITY_GUARD_TEST): tests/identity_guard_test.c helper/identity_guard.c helper/tox_adapt.c helper/file.c
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX -DOMAQ_TOX_TEST \

@@ -5076,7 +5076,7 @@ BarWidget {
               SafeText {
                 visible: root.moreSection === "identity"
                 width: parent.width
-                text: "The passphrase encrypts the identity file and your chat history. Ratchet state and keys, avatars, receipts, and preferences stay unencrypted on disk under your account, so a copy of this disk or a backup still reveals who you talk to. Protect the device itself with full-disk encryption."
+                text: "The passphrase encrypts the identity file, your chat history, and your encryption keys. Avatars, received files, receipts, and preferences stay unencrypted on disk under your account, so a copy of this disk or a backup still reveals some metadata. Protect the device itself with full-disk encryption."
                 color: root.systemColors[1] || root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

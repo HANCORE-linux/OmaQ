@@ -10141,6 +10141,9 @@ static omaq_seal_key g_seal;
 static void seal_install(const omaq_seal_key *key)
 {
 	omaq_store_set_seal_key(key);
+#ifdef HAVE_SIGNAL
+	omaq_ratchet_set_seal_key(key);
+#endif
 }
 
 static void seal_forget(void)
@@ -10152,10 +10155,11 @@ static void seal_forget(void)
 /* Install the sealing key for an unlocked identity.
  *
  * This never blocks startup. Enforcement lives at the data boundary instead:
- * without the key, a sealed history record is a hard read error, never
- * plaintext and never a silent empty result. Keeping the check there also
- * means a transitional state - such as an identity restored from a recovery
- * copy that predates the passphrase - cannot lock the user out. */
+ * without the key, a sealed history record or Ratchet blob is a hard read
+ * error, never plaintext and never a silent empty result. Keeping the check
+ * there also means a transitional state - such as an identity restored from a
+ * recovery copy that predates the passphrase - cannot lock the user out; the
+ * Ratchet store is quarantined instead (see open_ratchet_store). */
 static void seal_activate(const char *pass)
 {
 	seal_forget();
@@ -10164,8 +10168,8 @@ static void seal_activate(const char *pass)
 	if (!pass || !pass[0] ||
 	    omaq_seal_key_open(home_dir(), pass, &g_seal) != 1) {
 		fprintf(stderr,
-			"omaq: sealed history present but the key did not "
-			"open; those conversations stay unreadable\n");
+			"omaq: sealed local state present but the key did not "
+			"open; it stays unreadable\n");
 		seal_forget();
 		return;
 	}
@@ -10185,7 +10189,13 @@ static int seal_enable(const char *pass)
 		return -1;
 	}
 	seal_install(&g_seal);
-	return omaq_store_reseal_all(home_dir()) < 0 ? -1 : 0;
+	if (omaq_store_reseal_all(home_dir()) < 0)
+		return -1;
+#ifdef HAVE_SIGNAL
+	if (omaq_ratchet_reseal_all(home_dir()) < 0)
+		return -1;
+#endif
+	return 0;
 }
 
 /* Stop sealing for an identity that dropped its passphrase: rewrite every
@@ -10198,11 +10208,72 @@ static int seal_disable(void)
 		return omaq_seal_key_destroy(home_dir());
 	}
 	omaq_store_set_seal_writes(0);
+#ifdef HAVE_SIGNAL
+	omaq_ratchet_set_seal_writes(0);
+#endif
 	if (omaq_store_reseal_all(home_dir()) < 0)
 		return -1;
+#ifdef HAVE_SIGNAL
+	if (omaq_ratchet_reseal_all(home_dir()) < 0)
+		return -1;
+#endif
 	seal_forget();
 	return omaq_seal_key_destroy(home_dir());
 }
+
+#ifdef HAVE_SIGNAL
+/* Sealed Ratchet state whose key is unavailable cannot be opened, and it must
+ * not be read as plaintext either. That happens only when a home ends up
+ * holding state sealed under a passphrase the current identity no longer
+ * carries - for example an identity restored from a recovery copy that
+ * predates the passphrase. Move the store aside rather than deleting it (the
+ * bytes stay recoverable if the passphrase turns up) and require fresh
+ * invitations, which is the same recovery OmaQ already performs when direct
+ * state has to be archived. */
+static int quarantine_locked_ratchet(void)
+{
+	char root[576], aside[700], token[33];
+	struct stat st;
+	time_t now = time(NULL);
+
+	if (snprintf(root, sizeof(root), "%s/ratchet", home_dir()) >= (int)sizeof(root))
+		return -1;
+	if (lstat(root, &st) != 0)
+		return 0;
+	if (rand_id(token, sizeof(token)) != 0)
+		return -1;
+	if (snprintf(aside, sizeof(aside), "%s.locked-%lld-%s", root,
+		     (long long)now, token) >= (int)sizeof(aside))
+		return -1;
+	if (lstat(aside, &st) == 0 || errno != ENOENT)
+		return -1;
+	if (rename(root, aside) != 0)
+		return -1;
+	if (fsync_directory(home_dir()) != 0)
+		return -1;
+	if (persist_reinvite_marker() != 0)
+		return -1;
+	g_direct_state_reinvite_required = 1;
+	fprintf(stderr,
+		"omaq: Ratchet state is sealed with an unavailable passphrase; "
+		"moved to %s and requiring fresh invitations\n", aside);
+	emit_error("direct_state_reinvite_required");
+	return 0;
+}
+
+/* Every Ratchet open goes through here so no path can open a store that is
+ * partly unreadable. */
+static struct omaq_ratchet *open_ratchet_store(void)
+{
+	int locked = omaq_ratchet_sealed_locked(home_dir());
+
+	if (locked < 0)
+		return NULL;
+	if (locked == 1 && quarantine_locked_ratchet() != 0)
+		return NULL;
+	return omaq_ratchet_open(home_dir());
+}
+#endif
 
 static int load_tox(const char *pass)
 {
@@ -10355,7 +10426,7 @@ static int restore_guarded_identity(const char *stage_save, const char *pass,
 		return -5;
 	}
 #ifdef HAVE_SIGNAL
-	g_ratchet = omaq_ratchet_open(home_dir());
+	g_ratchet = open_ratchet_store();
 	if (!g_ratchet) {
 		fail_direct_state_backend();
 		return -5;
@@ -11072,7 +11143,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		}
 #ifdef HAVE_SIGNAL
 		if (!g_ratchet)
-			g_ratchet = omaq_ratchet_open(home_dir());
+			g_ratchet = open_ratchet_store();
 		if (!g_ratchet) {
 			omaq_tox_discard(g_tox);
 			g_tox = NULL;
@@ -11165,7 +11236,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		}
 #ifdef HAVE_SIGNAL
 		if (!g_ratchet)
-			g_ratchet = omaq_ratchet_open(home_dir());
+			g_ratchet = open_ratchet_store();
 		if (!g_ratchet) {
 			fail_direct_state_backend();
 			g_shutdown_after_drain = 1;
@@ -13852,7 +13923,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				goto identity_import_rollback;
 			}
 #ifdef HAVE_SIGNAL
-			g_ratchet = omaq_ratchet_open(home_dir());
+			g_ratchet = open_ratchet_store();
 			if (!g_ratchet) {
 				goto identity_import_rollback;
 			}
@@ -13959,7 +14030,7 @@ identity_import_rollback:
 			}
 #ifdef HAVE_SIGNAL
 			if (!g_ratchet && g_tox && rollback_ok)
-				g_ratchet = omaq_ratchet_open(home_dir());
+				g_ratchet = open_ratchet_store();
 			if (!g_ratchet)
 				rollback_ok = 0;
 #endif
@@ -14137,7 +14208,7 @@ static void start_backend(void)
 #endif
 #ifdef HAVE_SIGNAL
 	g_ratchet = g_tox && !g_direct_state_migration_failed &&
-		!g_identity_primary_uncertain ? omaq_ratchet_open(home_dir()) : NULL;
+		!g_identity_primary_uncertain ? open_ratchet_store() : NULL;
 	if (g_tox && !g_identity_primary_uncertain && !g_ratchet)
 		fail_direct_state_backend();
 #endif

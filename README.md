@@ -25,7 +25,7 @@
 
 Tox encrypts transport end to end, and direct text messages add the Signal Double Ratchet. OmaQ disables direct UDP discovery and hole punching, so contacts do not receive each other's IP addresses.
 
-OmaQ runs no servers and has no operator access to your identity, contacts, or messages. Public Tox bootstrap and relay nodes can forward encrypted packets but cannot read message contents. Setting the optional passphrase encrypts both `tox.save` and your chat history at rest (Argon2id + XChaCha20-Poly1305); Ratchet state, avatars, receipts, and preferences are still protected only by local filesystem permissions.
+OmaQ runs no servers and has no operator access to your identity, contacts, or messages. Public Tox bootstrap and relay nodes can forward encrypted packets but cannot read message contents. Setting the optional passphrase encrypts `tox.save`, your chat history, and your Ratchet state — including the Signal identity private key — at rest (Argon2id + XChaCha20-Poly1305); avatars, receipts, and preferences are still protected only by local filesystem permissions.
 
 Use OmaQ only for lawful private communication with people you trust.
 

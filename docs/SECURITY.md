@@ -42,9 +42,11 @@ Source updates build an externally staged Git checkout before stopping the shell
 
 ## Know the passphrase boundary
 
-A passphrase encrypts the Tox savedata in `tox.save` **and your chat history**. Setting a passphrase derives a second key with Argon2id, stores it wrapped in `~/.local/share/omaq/seal.key`, and rewrites every stored transcript so each message record is sealed with XChaCha20-Poly1305. Removing the passphrase reverses the migration and deletes the key. Without the passphrase, sealed transcripts are unreadable: they are never shown as plaintext and never silently reported as empty.
+A passphrase encrypts the Tox savedata in `tox.save`, **your chat history, and your Ratchet state** — including the Signal identity private key. Setting a passphrase derives a second key with Argon2id, stores it wrapped in `~/.local/share/omaq/seal.key`, and rewrites every stored transcript and Ratchet blob so each one is sealed with XChaCha20-Poly1305. Removing the passphrase reverses the migration and deletes the key. Without the passphrase, sealed data is unreadable: it is never shown as plaintext and never silently reported as empty.
 
-It still does not encrypt Ratchet state, avatars, receipts, or preferences. In particular the Signal Ratchet identity private key under `~/.local/share/omaq/ratchet/` remains plaintext, because its lifetime is tied to identity replacement and recovery flows that must be reworked before it can be sealed safely; a disk image or backup therefore still reveals contact and session metadata. Use full-disk encryption when that matters.
+If a home ends up holding Ratchet state sealed under a passphrase the current identity no longer carries — for example an identity restored from a recovery copy that predates the passphrase — OmaQ moves that store aside to `ratchet.locked-<time>-<token>` and requires fresh invitations rather than opening a partly unreadable store. Nothing is deleted: the sealed bytes remain recoverable if the passphrase turns up.
+
+Avatars, received files, receipts, preferences, and unread state are still covered only by local filesystem permissions, so a disk image or backup still reveals some metadata. Use full-disk encryption when that matters.
 
 OmaQ maintains a fingerprint-bound identity-presence record and a current recovery copy. A stale or fingerprint-mismatched copy is never restored automatically. Export a current identity bundle before moving or repairing an established identity.
 

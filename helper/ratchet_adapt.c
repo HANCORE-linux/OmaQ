@@ -2,6 +2,7 @@
 
 #define _DEFAULT_SOURCE
 #include "ratchet.h"
+#include "seal.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -71,6 +72,7 @@ struct omaq_ratchet {
 };
 
 static int write_blob(const char *path, const uint8_t *p, size_t n);
+static int write_blob_raw(const char *path, const uint8_t *p, size_t n);
 static int read_blob(const char *path, uint8_t **out, size_t *n);
 static int fsync_parent(const char *path);
 static struct rec *rec_find(struct rec *a, int n, const char *name,
@@ -1356,13 +1358,217 @@ static int fsync_parent(const char *path)
 	return rc;
 }
 
+/* Passphrase-derived sealing for Ratchet state: sessions, signed prekeys and
+ * the identity private key. Inactive until the identity is unlocked with a
+ * passphrase. Sealed and legacy plaintext blobs may coexist while migration
+ * runs; a sealed blob is never returned without the key. */
+static omaq_seal_key g_ratchet_seal;
+static int g_ratchet_seal_writes = 1;
+
+void omaq_ratchet_set_seal_key(const omaq_seal_key *key)
+{
+	if (key && key->active)
+		g_ratchet_seal = *key;
+	else
+		omaq_seal_key_clear(&g_ratchet_seal);
+	g_ratchet_seal_writes = 1;
+}
+
+void omaq_ratchet_set_seal_writes(int enabled)
+{
+	g_ratchet_seal_writes = enabled ? 1 : 0;
+}
+
+int omaq_ratchet_seal_active(void)
+{
+	return g_ratchet_seal.active && g_ratchet_seal_writes;
+}
+
+static int blob_context(const char *path, char *out, size_t n)
+{
+	const char *base;
+	size_t len;
+
+	if (!path || !out)
+		return -1;
+	base = strrchr(path, '/');
+	base = base ? base + 1 : path;
+	len = strlen(base);
+	if (len == 0 || len >= n)
+		return -1;
+	memcpy(out, base, len + 1);
+	return 0;
+}
+
+/* Walk the Ratchet stores. `visit` returns 1 when it changed something, 0 when
+ * it did not, and -1 to abort. */
+typedef int (*ratchet_blob_visitor)(const char *path);
+
+static long walk_blob_directory(const char *dir, ratchet_blob_visitor visit)
+{
+	DIR *entries = opendir(dir);
+	struct dirent *entry;
+	long touched = 0;
+
+	if (!entries)
+		return errno == ENOENT ? 0 : -1;
+	while ((entry = readdir(entries)) != NULL) {
+		char path[768];
+		int rc;
+
+		if (entry->d_name[0] == '.' || strchr(entry->d_name, '/'))
+			continue;
+		if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >=
+		    (int)sizeof(path))
+			continue;
+		rc = visit(path);
+		if (rc < 0) {
+			closedir(entries);
+			return -1;
+		}
+		touched += rc;
+	}
+	closedir(entries);
+	return touched;
+}
+
+static long walk_ratchet_stores(const char *home, ratchet_blob_visitor visit)
+{
+	static const char *subdirectories[] = { "sess", "ident", "boot",
+						"reply", "pre" };
+	char root[576], dir[640];
+	long touched = 0, rc;
+	size_t i;
+
+	if (!home)
+		return -1;
+	if (snprintf(root, sizeof(root), "%s/ratchet", home) >= (int)sizeof(root))
+		return -1;
+	rc = walk_blob_directory(root, visit);
+	if (rc < 0)
+		return -1;
+	touched += rc;
+	for (i = 0; i < sizeof(subdirectories) / sizeof(subdirectories[0]); i++) {
+		if (snprintf(dir, sizeof(dir), "%s/%s", root,
+			     subdirectories[i]) >= (int)sizeof(dir))
+			return -1;
+		rc = walk_blob_directory(dir, visit);
+		if (rc < 0)
+			return -1;
+		touched += rc;
+	}
+	return touched;
+}
+
+/* Rewrite one blob so it matches the current sealing state. */
+static int reseal_blob(const char *path)
+{
+	uint8_t *buf = NULL;
+	size_t n = 0;
+	int rc;
+
+	rc = read_blob(path, &buf, &n);
+	if (rc == BLOB_MISSING)
+		return 0;
+	if (rc != BLOB_FOUND)
+		return -1;
+	rc = write_blob(path, buf, n) == 0 ? 1 : -1;
+	explicit_bzero(buf, n);
+	free(buf);
+	return rc;
+}
+
+long omaq_ratchet_reseal_all(const char *home)
+{
+	return walk_ratchet_stores(home, reseal_blob);
+}
+
+/* 1 when the blob is sealed but the installed key cannot open it. */
+static int blob_is_locked(const char *path)
+{
+	uint8_t header[64];
+	struct stat st;
+	ssize_t got;
+	int fd, locked;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0)
+		return 0;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return 0;
+	}
+	got = read(fd, header, sizeof(header));
+	close(fd);
+	if (got <= 0)
+		return 0;
+	if (!omaq_seal_is_blob(header, (size_t)got))
+		return 0;
+	if (!g_ratchet_seal.active)
+		return 1;
+	/* The key is installed: confirm it actually opens this blob. */
+	{
+		uint8_t *buf = NULL;
+		size_t n = 0;
+
+		locked = read_blob(path, &buf, &n) == BLOB_ERROR ? 1 : 0;
+		if (buf) {
+			explicit_bzero(buf, n);
+			free(buf);
+		}
+	}
+	return locked;
+}
+
+int omaq_ratchet_sealed_locked(const char *home)
+{
+	long rc = walk_ratchet_stores(home, blob_is_locked);
+
+	if (rc < 0)
+		return -1;
+	return rc > 0 ? 1 : 0;
+}
+
 static int write_blob(const char *path, const uint8_t *p, size_t n)
+{
+	char tmp[580];
+
+	if (!p || n == 0 || n > OMAQ_RATCHET_RECORD_MAX ||
+	    snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
+		return -1;
+	if (g_ratchet_seal.active && g_ratchet_seal_writes) {
+		char context[NAME_MAX + 1];
+		size_t sealed_cap = n + omaq_seal_blob_overhead();
+		uint8_t *sealed;
+		size_t sealed_len = 0;
+		int rc;
+
+		if (blob_context(path, context, sizeof(context)) != 0)
+			return -1;
+		sealed = malloc(sealed_cap);
+		if (!sealed)
+			return -1;
+		if (omaq_seal_blob(&g_ratchet_seal, context, p, n, sealed,
+				   sealed_cap, &sealed_len) != 0) {
+			explicit_bzero(sealed, sealed_cap);
+			free(sealed);
+			return -1;
+		}
+		rc = write_blob_raw(path, sealed, sealed_len);
+		explicit_bzero(sealed, sealed_cap);
+		free(sealed);
+		return rc;
+	}
+	return write_blob_raw(path, p, n);
+}
+
+static int write_blob_raw(const char *path, const uint8_t *p, size_t n)
 {
 	char tmp[580];
 	FILE *f;
 	int fd;
 
-	if (!p || n == 0 || n > OMAQ_RATCHET_RECORD_MAX ||
+	if (!p || n == 0 ||
 	    snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
 		return -1;
 	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -1417,7 +1623,8 @@ static int read_blob(const char *path, uint8_t **out, size_t *n)
 	}
 	if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) ||
 	    st.st_uid != geteuid() || st.st_nlink != 1 || st.st_size <= 0 ||
-	    st.st_size > OMAQ_RATCHET_RECORD_MAX) {
+	    (uint64_t)st.st_size >
+		    (uint64_t)OMAQ_RATCHET_RECORD_MAX + omaq_seal_blob_overhead()) {
 		fclose(f);
 		return BLOB_ERROR;
 	}
@@ -1430,6 +1637,40 @@ static int read_blob(const char *path, uint8_t **out, size_t *n)
 	if (got != (size_t)st.st_size || fclose(f) != 0) {
 		free(buf);
 		return BLOB_ERROR;
+	}
+	if (omaq_seal_is_blob(buf, got)) {
+		/* Fail closed: sealed Ratchet state is never returned without
+		 * the passphrase-derived key, and never silently skipped. */
+		char context[NAME_MAX + 1];
+		uint8_t *opened;
+		size_t opened_len = 0;
+
+		if (!g_ratchet_seal.active ||
+		    blob_context(path, context, sizeof(context)) != 0) {
+			explicit_bzero(buf, got);
+			free(buf);
+			return BLOB_ERROR;
+		}
+		opened = malloc(got);
+		if (!opened) {
+			explicit_bzero(buf, got);
+			free(buf);
+			return BLOB_ERROR;
+		}
+		if (omaq_seal_open_blob(&g_ratchet_seal, context, buf, got,
+					opened, got, &opened_len) != 0 ||
+		    opened_len == 0 || opened_len > OMAQ_RATCHET_RECORD_MAX) {
+			explicit_bzero(buf, got);
+			explicit_bzero(opened, got);
+			free(buf);
+			free(opened);
+			return BLOB_ERROR;
+		}
+		explicit_bzero(buf, got);
+		free(buf);
+		buf = opened;
+		got = opened_len;
+		st.st_size = (off_t)opened_len;
 	}
 	*out = buf;
 	*n = got;

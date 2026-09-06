@@ -1,6 +1,8 @@
 #!/bin/sh
-# Setting an identity passphrase must also seal chat history at rest, and
-# removing it must return the history to plaintext. No network required.
+# Setting an identity passphrase must also seal chat history and Ratchet state
+# at rest, and removing it must return both to plaintext. Sealed Ratchet state
+# whose key is gone must be quarantined, never read as plaintext and never
+# silently regenerated. No network required.
 set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin=${1:-$root/helper/omaq}
@@ -47,6 +49,28 @@ mkdir -p "$home/history/7"
 printf '{"id":"m1","from":"peer","text":"attack at dawn"}\n' >"$home/history/7/messages.jsonl"
 chmod 600 "$home/history/7/messages.jsonl"
 
+# Every regular file under $1 must begin with the seal magic.
+assert_sealed() {
+	found=0
+	for f in $(find "$1" -type f 2>/dev/null); do
+		found=1
+		if [ "$(head -c 9 -- "$f")" != "OMAQSEAL1" ]; then
+			echo "history-seal: $f is not sealed" >&2
+			exit 1
+		fi
+	done
+	[ "$found" -eq 1 ] || { echo "history-seal: no files under $1" >&2; exit 1; }
+}
+
+assert_plaintext() {
+	for f in $(find "$1" -type f 2>/dev/null); do
+		if [ "$(head -c 9 -- "$f")" = "OMAQSEAL1" ]; then
+			echo "history-seal: $f is still sealed" >&2
+			exit 1
+		fi
+	done
+}
+
 wait_for() {
 	i=0
 	while [ "$i" -lt 200 ]; do
@@ -78,6 +102,12 @@ if grep -a -r -q "attack at dawn" "$home" 2>/dev/null; then
 	echo "history-seal: plaintext transcript left on disk" >&2
 	exit 1
 fi
+# Ratchet state - including the Signal identity private key - is sealed too.
+[ -f "$home/ratchet/identity" ] || {
+	echo "history-seal: no Ratchet identity blob" >&2
+	exit 1
+}
+assert_sealed "$home/ratchet"
 
 printf '%s\n' '{"op":"identity.unprotect","passphrase":"a strong passphrase","id":"hs-unprotect"}' >&3
 wait_for '"request":"hs-unprotect"'
@@ -85,6 +115,63 @@ wait_for '"request":"hs-unprotect"'
 [ -f "$home/seal.key" ] && { echo "history-seal: seal key survived unprotect" >&2; exit 1; }
 grep -a -q "attack at dawn" "$home/history/7/messages.jsonl" || {
 	echo "history-seal: history not restored after unprotect" >&2
+	exit 1
+}
+assert_plaintext "$home/ratchet"
+
+# Quarantine: seal again, then lose the key and restart. The sealed Ratchet
+# store must be moved aside and fresh invitations required - never opened as
+# if it were empty.
+printf '%s\n' '{"op":"identity.protect","passphrase":"a strong passphrase","id":"hs-protect2"}' >&3
+wait_for '"request":"hs-protect2"'
+assert_sealed "$home/ratchet"
+sealed_identity=$(head -c 9 -- "$home/ratchet/identity")
+[ "$sealed_identity" = "OMAQSEAL1" ] || {
+	echo "history-seal: identity blob not sealed before quarantine" >&2
+	exit 1
+}
+exec 3>&-
+fd_open=0
+kill "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
+pid=""
+rm -f "$home/seal.key"
+# The planted transcript has no owning contact; OmaQ already refuses to unlock
+# while an orphan conversation directory exists, which is unrelated to
+# sealing, so drop it before exercising the quarantine.
+rm -rf "$home/history"
+rm -f "$fifo"
+mkfifo "$fifo"
+OMAQ_HOME="$home" OMAQ_STATE="$state" "$bin" >"$out" 2>"$out.err" <"$fifo" &
+pid=$!
+exec 3>"$fifo"
+fd_open=1
+i=0
+while [ "$i" -lt 200 ]; do
+	[ -S "$state/omaq.sock" ] && break
+	i=$((i + 1))
+	sleep 0.05
+done
+[ "$i" -lt 200 ] || { echo "history-seal: helper did not restart" >&2; exit 1; }
+# The identity is passphrase-protected again, so unlocking is what reaches the
+# Ratchet store.
+printf '%s\n' '{"op":"identity.unlock","passphrase":"a strong passphrase","id":"hs-unlock"}' >&3
+i=0
+while [ "$i" -lt 200 ]; do
+	set -- "$home"/ratchet.locked-*
+	[ -d "$1" ] && break
+	i=$((i + 1))
+	sleep 0.05
+done
+set -- "$home"/ratchet.locked-*
+[ -d "$1" ] || {
+	echo "history-seal: sealed Ratchet state was not quarantined" >&2
+	tail -5 "$out.err" >&2 || true
+	exit 1
+}
+assert_sealed "$1"
+[ -f "$home/direct-state-reinvite.required" ] || {
+	echo "history-seal: quarantine did not require fresh invitations" >&2
 	exit 1
 }
 
