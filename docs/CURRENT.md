@@ -1,4 +1,4 @@
-# Current status: 2026-09-05
+# Current status: 2026-09-06
 
 This page is the current product and release snapshot. Completed phase and follow-up history lives in the [stage notes](stages/README.md).
 
@@ -6,7 +6,7 @@ This page is the current product and release snapshot. Completed phase and follo
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.8.1-beta.2`, Protocol 16
+- **Manifest version:** `0.9.0-beta.1`, Protocol 16
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
 
@@ -51,7 +51,11 @@ The Protocol 16 direct-invite snapshot passes the full `make verify-4` gate, Pro
 
 The release-audit follow-up passes the full `make test` aggregate, `make verify-4`, `make helper`, `make arch`, phase 2, phase 8, Omarchy plugin validation, ShellCheck on every changed shell file, Qt parsing for all eight QML files, `qmllint` for ChatSurface, ChatPage, and Service, syntax checks, and `git diff --check`. The normal-plugin lifecycle change additionally passes the full `make test` aggregate, `make arch`, Omarchy plugin validation, focused install and uninstall regressions, ShellCheck, Python syntax compilation, and `git diff --check`. Panel runtime coverage verifies both semantic Omarchy theme keys and legacy `color0`–`color7` palettes, including deterministic legacy precedence in a mixed file.
 
-Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Protocol-15 phase 6 coverage also exercises request-correlated hangup, failed-action and stop-terminal replay, helper live-owner metadata during a same-socket status handshake, identity-mutation refusal during teardown, complete local media stop, ToxAV transport replacement, controlling-socket loss, lease expiry, and silence after each confirmed stop. These tests use isolated PulseAudio null sinks and do not replace live microphone, speaker, or network acceptance. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
+Repeated phase 2 runs measured 13.2 to 15.2 MB helper RSS against the documented absolute 51,200 kB limit. Repeated phase 6 runs passed file, timestamp, call, and public-network diagnostics with 30 to 32 MB call RSS. Protocol-15 phase 6 coverage also exercises request-correlated hangup, failed-action and stop-terminal replay, helper live-owner metadata during a same-socket status handshake, identity-mutation refusal during teardown, complete local media stop, ToxAV transport replacement, controlling-socket loss, lease expiry, and silence after each confirmed stop.
+
+The Phase 6 tests use null sinks on a parent-death-bound private PipeWire/PulseAudio server outside the normal user device registry. SIGKILL regressions verify private-server teardown and exact cleanup of legacy Phase 6 orphans while retaining live owners and near matches.
+
+The audio tests do not replace live microphone, speaker, or network acceptance. Attachment checks wait for sender and receiver events plus both local history entries, then compare each event only with its matching local history timestamp.
 
 Uninstall regressions cover current and byte-identical relocated helper inodes, changed relocated bytes, current and legacy rule names, interrupted temporary names, symlink and hardlink entries, unsafe root and rule-directory modes, unexpected files, individually declined data, confirmed data deletion, nested Yes/No and protected-path conflicts, writable-tree and mount-boundary refusal, configured external download paths, and the manual non-recursive package command. Update regressions cover source no-ops without a shell stop, private credential-free network homes and `.netrc` exclusion on remote resolution, monitored-path refusal, bounded external staging and descendant cleanup, complete Git checkout identity, literal root-level protocol compatibility, pre-stop exchange probing, delayed shell readiness, supervisor backoff and reappearance during rollback, restarted-shell identity, restart injection before exchange, same-filesystem atomic exchange, cross-device refusal, no copy fallback, reversible rollback, post-activation helper hashes and protocol, and an unchanged `.prev` during activation. Installation regressions cover the normal disabled Omarchy acquisition command, live validation, package/build/enable/readiness fail-stop ordering, delayed plugin IPC, readiness timeout without a forced restart, helper readiness, root entry-point arguments, Bash and Fish command parity, the external atomic no-replace path, exact enable-response loss, and bounded retries only for the exact observed shell-IPC transition tuple.
 

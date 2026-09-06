@@ -1,0 +1,86 @@
+name: Bug report
+description: Report reproducible incorrect behavior in OmaQ
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve OmaQ. Search existing issues first and remove private identities, contacts, messages, invitation links, safety codes, and machine-specific secrets from everything you submit.
+
+  - type: input
+    id: version
+    attributes:
+      label: OmaQ version or commit
+      description: Find the version in manifest.json. Add the commit when testing an unreleased build.
+      placeholder: "0.9.0-beta.1 or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: omarchy-version
+    attributes:
+      label: Omarchy version
+      placeholder: "Version or commit, if known"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Panel or navigation
+        - Direct chat
+        - Group chat
+        - Calls or audio
+        - Files or images
+        - Identity or invitations
+        - Notifications or appearance
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the incorrect behavior and its impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Select …
+        3. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Add sanitized logs, screenshots, or error text. Do not upload private communication data or live invitation material.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed private and machine-specific secrets from this report.
+          required: true
