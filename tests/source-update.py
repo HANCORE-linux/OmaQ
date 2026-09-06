@@ -1602,6 +1602,54 @@ class SourceUpdateTests(unittest.TestCase):
                 MODULE.CANONICAL_ORIGIN = original_origin
                 MODULE.GIT_NETWORK_CONFIG = original_network
 
+    def test_stage_update_rejects_a_signed_rollback_of_origin_main(self):
+        # Forced-push attack: origin/main is reset to an OLDER signed release
+        # than the installed checkout. The ancestry gate must refuse it.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            updates = base / "updates"
+            updates.mkdir(mode=0o700)
+            key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            old_release = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            sign_release_tag(source, key, "v1.0.0")
+            (source / "second").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "second"], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "commit", "-m", "second"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            live_head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            subprocess.run(
+                ["git", "-C", str(source), "reset", "--hard", old_release],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )  # the forced rollback: main now points at the old signed release
+            original_origin = MODULE.CANONICAL_ORIGIN
+            original_network = MODULE.GIT_NETWORK_CONFIG
+            MODULE.CANONICAL_ORIGIN = str(source)
+            MODULE.GIT_NETWORK_CONFIG = (
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "protocol.file.allow=always",
+            )
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.UpdateError, "not a fast-forward"
+                ):
+                    MODULE.stage_update(updates, live_head, old_release, signers)
+            finally:
+                MODULE.CANONICAL_ORIGIN = original_origin
+                MODULE.GIT_NETWORK_CONFIG = original_network
+
     def test_staged_build_allows_only_the_ignored_helper(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
