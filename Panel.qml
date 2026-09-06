@@ -882,6 +882,10 @@ BarWidget {
       return "The invite could not be added. Create a fresh invite and try it once on the other device."
     if (code === "nospam_rotate_failed")
       return "The invite was cleared, but its one-use address could not be refreshed."
+    if (code === "proxy_invalid")
+      return "proxy.conf in the OmaQ data folder is unreadable or malformed. OmaQ will not connect without the proxy you configured. Fix or remove the file, then restart OmaQ."
+    if (code === "relays_invalid")
+      return "relays.conf in the OmaQ data folder is unreadable or malformed. OmaQ will not connect through relays you did not choose. Fix or remove the file, then restart OmaQ."
     if (code === "safety_key_changed")
       return "This contact's encryption identity changed. Remove the old contact state on both devices before exchanging a fresh invite."
     if (code === "group_registry_failed")
