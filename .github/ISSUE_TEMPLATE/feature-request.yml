@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest a focused improvement to OmaQ
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before the proposed implementation. Do not include private identities, contacts, messages, invitation links, safety codes, or machine-specific secrets.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Who encounters this problem, and what can they not do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the desired behavior and user experience.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or simpler alternatives.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Panel or navigation
+        - Direct chat
+        - Group chat
+        - Calls or audio
+        - Files or images
+        - Identity or invitations
+        - Installation or updates
+        - Notifications or appearance
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Privacy or security considerations
+      description: Explain any effect on local data, identity verification, transport, permissions, or external services.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: This is not a vulnerability report. Security issues must use the private advisory link.
+          required: true

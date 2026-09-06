@@ -1,0 +1,80 @@
+name: Install, update, or uninstall problem
+description: Report a problem with OmaQ's supported lifecycle commands
+title: "[Lifecycle] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form only for installation, update, or removal problems. Remove usernames, local paths, private repository credentials, invitation links, and other secrets from logs before submitting them.
+
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation
+      options:
+        - Install
+        - Update
+        - Uninstall
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OmaQ version or commit
+      placeholder: "0.9.0-beta.1 or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: omarchy-version
+    attributes:
+      label: Omarchy version
+      placeholder: "Version or commit, if known"
+    validations:
+      required: false
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command used
+      description: Paste the exact supported command after removing private values.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened?
+      description: Include the exit status and the first relevant error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized output
+      description: Add only the relevant output. Do not include credentials, private identities, contacts, messages, or invitation data.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I used the supported OmaQ command documented for this operation.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed private and machine-specific secrets from this report.
+          required: true
