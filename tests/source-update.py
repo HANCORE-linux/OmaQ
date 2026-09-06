@@ -172,6 +172,115 @@ class SourceUpdateTests(unittest.TestCase):
                 any(field.startswith("ssh-") or field.startswith("sk-") for field in fields)
             )
 
+    def test_verify_release_tag_accepts_a_signed_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(
+                "# comment line\n\n" + signers_line + "\n", encoding="utf-8"
+            )
+            source = make_taggable_source(base)
+            sign_release_tag(source, key)
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            self.assertEqual(
+                MODULE.verify_release_tag(source, head, signers), "v0.9.0"
+            )
+
+    def test_verify_release_tag_requires_a_release_tag_on_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            with self.assertRaisesRegex(MODULE.UpdateError, "no release tag"):
+                MODULE.verify_release_tag(source, head, signers)
+
+    def test_verify_release_tag_rejects_unknown_keys_and_lightweight_tags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "a").mkdir()
+            (base / "b").mkdir()
+            signing_key, _untrusted_line = make_release_key(base / "a")
+            _other_key, trusted_line = make_release_key(base / "b")
+            signers = base / "release-signers"
+            signers.write_text(trusted_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            sign_release_tag(source, signing_key)  # signed by an UNTRUSTED key
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            with self.assertRaisesRegex(MODULE.UpdateError, "verif"):
+                MODULE.verify_release_tag(source, head, signers)
+            subprocess.run(
+                ["git", "-C", str(source), "tag", "-d", "v0.9.0"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(["git", "-C", str(source), "tag", "v0.9.1"], check=True)
+            with self.assertRaisesRegex(MODULE.UpdateError, "verif"):
+                MODULE.verify_release_tag(source, head, signers)
+
+    def test_verify_release_tag_ignores_tags_that_are_not_release_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            sign_release_tag(source, key, "nightly-2026-09-06")
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            with self.assertRaisesRegex(MODULE.UpdateError, "no release tag"):
+                MODULE.verify_release_tag(source, head, signers)
+
+    def test_verify_release_tag_rejects_an_openpgp_signed_tag(self):
+        # gpg.program is hard-disabled, so only the SSH trust root can satisfy
+        # the check even when the user's own keyring would accept the tag.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            tag_object = (
+                f"object {head}\n"
+                "type commit\n"
+                "tag v9.9.9\n"
+                "tagger Test <test@example.invalid> 0 +0000\n"
+                "\n"
+                "v9.9.9\n"
+                "-----BEGIN PGP SIGNATURE-----\n"
+                "\n"
+                "ZmFrZSBvcGVucGdwIHNpZ25hdHVyZQ==\n"
+                "-----END PGP SIGNATURE-----\n"
+            )
+            written = subprocess.run(
+                ["git", "-C", str(source), "hash-object", "-t", "tag", "-w",
+                 "--stdin"],
+                input=tag_object,
+                text=True,
+                check=True,
+                capture_output=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "-C", str(source), "update-ref", "refs/tags/v9.9.9",
+                 written],
+                check=True,
+            )
+            with self.assertRaisesRegex(MODULE.UpdateError, "verif"):
+                MODULE.verify_release_tag(source, head, signers)
+
     def test_strict_json_rejects_duplicate_keys(self):
         with self.assertRaisesRegex(MODULE.UpdateError, "duplicate JSON key"):
             MODULE.strict_json('{"state":"current","state":"inactive"}', "fixture")

@@ -1450,6 +1450,67 @@ def release_signers_path(live_root: Path, program_root: Path) -> Path:
     fail("no release signers file in the live checkout or the update controller")
 
 
+def verify_release_tag(stage: Path, stage_head: str, signers: Path) -> str:
+    # Fetched source may only be executed after an annotated release tag on
+    # the exact staged commit verifies against the in-tree SSH trust root.
+    git = command_path("git")
+    disable = command_path("false")  # hard-disable OpenPGP/X.509 verification
+    listing = run(
+        [
+            git,
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(stage),
+            "tag",
+            "--points-at",
+            stage_head,
+        ],
+        capture=True,
+        timeout=30,
+        env=git_environment(),
+    )
+    candidates = [
+        name
+        for name in bounded_text(listing.stdout, "git tag").split("\n")
+        if RELEASE_TAG.fullmatch(name)
+    ]
+    if not candidates:
+        fail(
+            f"staged commit {stage_head} carries no release tag; "
+            "refusing to build unsigned source"
+        )
+    for tag in sorted(candidates):
+        verified = run(
+            [
+                git,
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                f"gpg.ssh.allowedSignersFile={signers}",
+                "-c",
+                f"gpg.program={disable}",
+                "-c",
+                f"gpg.x509.program={disable}",
+                "-C",
+                str(stage),
+                "verify-tag",
+                "--",
+                tag,
+            ],
+            check=False,
+            quiet=True,
+            timeout=30,
+            env=git_environment(),
+        )
+        if verified.returncode == 0:
+            return tag
+    fail(
+        "no release tag on the staged commit passes signature verification "
+        f"against {RELEASE_SIGNERS_RELPATH}"
+    )
+
+
 def validate_plugin(root: Path) -> None:
     validate_manifest(root)
     run(
