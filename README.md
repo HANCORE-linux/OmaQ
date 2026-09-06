@@ -27,6 +27,8 @@ Tox encrypts transport end to end, and direct text messages add the Signal Doubl
 
 OmaQ runs no servers and has no operator access to your identity, contacts, or messages. Public Tox bootstrap and relay nodes can forward encrypted packets but cannot read message contents. Local filesystem permissions protect Ratchet state, avatars, receipts, preferences, and chat history that are not covered by the optional `tox.save` passphrase.
 
+Source updates install only commits carrying a release tag signed by the maintainer key pinned in-tree (`scripts/release-signers`); unsigned or rolled-back updates are refused.
+
 Use OmaQ only for lawful private communication with people you trust.
 
 ## How OmaQ works
