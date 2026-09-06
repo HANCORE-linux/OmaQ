@@ -30,7 +30,148 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
+def make_release_key(base: Path) -> tuple[Path, str]:
+    """Generate a throwaway signing key; return (private_key_path, signers_line)."""
+    key = base / "release_key"
+    subprocess.run(
+        [
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "release@omaq",
+            "-f",
+            str(key),
+        ],
+        check=True,
+    )
+    fields = (key.parent / (key.name + ".pub")).read_text(encoding="utf-8").split()
+    return key, f'release@omaq namespaces="git" {fields[0]} {fields[1]}'
+
+
+def make_taggable_source(base: Path) -> Path:
+    """A minimal local git origin on branch main with one commit."""
+    source = base / "source"
+    source.mkdir()
+    subprocess.run(
+        ["git", "-C", str(source), "init", "-b", "main"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "Test"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (source / "manifest.json").write_text(
+        json.dumps({"id": "hancore.omaq"}) + "\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "-m", "fixture"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    return source
+
+
+def sign_release_tag(source: Path, key: Path, name: str = "v0.9.0") -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={key}",
+            "tag",
+            "-s",
+            name,
+            "-m",
+            name,
+        ],
+        check=True,
+    )
+
+
 class SourceUpdateTests(unittest.TestCase):
+    def test_release_signers_prefers_live_root_then_controller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            live = base / "live"
+            controller = base / "controller"
+            for root in (live, controller):
+                (root / "scripts").mkdir(parents=True)
+            (live / "scripts/release-signers").write_text("live\n", encoding="utf-8")
+            (controller / "scripts/release-signers").write_text(
+                "controller\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                MODULE.release_signers_path(live, controller),
+                live / "scripts/release-signers",
+            )
+            (live / "scripts/release-signers").unlink()
+            self.assertEqual(
+                MODULE.release_signers_path(live, controller),
+                controller / "scripts/release-signers",
+            )
+            (controller / "scripts/release-signers").unlink()
+            with self.assertRaisesRegex(MODULE.UpdateError, "release signers"):
+                MODULE.release_signers_path(live, controller)
+
+    def test_release_signers_refuses_symlinks_and_loose_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            live = base / "live"
+            controller = base / "controller"
+            (live / "scripts").mkdir(parents=True)
+            (controller / "scripts").mkdir(parents=True)
+            target = base / "elsewhere"
+            target.write_text("x\n", encoding="utf-8")
+            (live / "scripts/release-signers").symlink_to(target)
+            with self.assertRaisesRegex(MODULE.UpdateError, "release signers"):
+                MODULE.release_signers_path(live, controller)
+            (live / "scripts/release-signers").unlink()
+            loose = live / "scripts/release-signers"
+            loose.write_text("x\n", encoding="utf-8")
+            loose.chmod(0o666)
+            with self.assertRaisesRegex(MODULE.UpdateError, "unsafe release signers"):
+                MODULE.release_signers_path(live, controller)
+
+    def test_release_signers_rejects_an_empty_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            live = base / "live"
+            controller = base / "controller"
+            (live / "scripts").mkdir(parents=True)
+            (controller / "scripts").mkdir(parents=True)
+            (live / "scripts/release-signers").write_text("", encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.UpdateError, "unsafe release signers"):
+                MODULE.release_signers_path(live, controller)
+
+    def test_shipped_release_signers_file_is_loadable_and_trusted(self):
+        signers = MODULE.release_signers_path(ROOT, ROOT)
+        self.assertEqual(signers, ROOT / "scripts/release-signers")
+        lines = [
+            line
+            for line in signers.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(lines, "no signer entries in scripts/release-signers")
+        for line in lines:
+            fields = line.split()
+            self.assertGreaterEqual(len(fields), 4)
+            self.assertIn('namespaces="git"', fields)
+            self.assertTrue(
+                any(field.startswith("ssh-") or field.startswith("sk-") for field in fields)
+            )
+
     def test_strict_json_rejects_duplicate_keys(self):
         with self.assertRaisesRegex(MODULE.UpdateError, "duplicate JSON key"):
             MODULE.strict_json('{"state":"current","state":"inactive"}', "fixture")

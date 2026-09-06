@@ -26,6 +26,8 @@ from typing import Callable
 
 PLUGIN_ID = "hancore.omaq"
 CANONICAL_ORIGIN = "https://github.com/HANCORE-linux/OmaQ.git"
+RELEASE_SIGNERS_RELPATH = "scripts/release-signers"
+RELEASE_TAG = re.compile(r"^v[0-9][0-9A-Za-z._-]{0,63}$")
 MAX_CAPTURE = 1024 * 1024
 MAX_TREE_BYTES = 512 * 1024 * 1024
 MAX_TREE_ENTRIES = 50000
@@ -1412,6 +1414,40 @@ def validate_manifest(root: Path) -> None:
     value = strict_json(bounded_text(raw, "manifest.json"), "manifest.json")
     if not isinstance(value, dict) or value.get("id") != PLUGIN_ID:
         fail("plugin manifest does not identify OmaQ")
+
+
+def release_signers_path(live_root: Path, program_root: Path) -> Path:
+    # Trust root for release-signature verification. Read from the already
+    # installed checkout: the freshly fetched clone is attacker-controlled in
+    # the very scenario this check exists for. The controller tree is the
+    # fallback for installations that predate the signers file (bootstrap
+    # clones are pinned to an exact commit per docs/SECURITY.md).
+    for root in (live_root, program_root):
+        candidate = root / RELEASE_SIGNERS_RELPATH
+        try:
+            fd = os.open(
+                candidate,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            fail(f"cannot open release signers file {candidate}: {error}")
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or info.st_mode & 0o022
+                or info.st_size == 0
+                or info.st_size > 64 * 1024
+            ):
+                fail(f"unsafe release signers file: {candidate}")
+        finally:
+            os.close(fd)
+        return candidate
+    fail("no release signers file in the live checkout or the update controller")
 
 
 def validate_plugin(root: Path) -> None:

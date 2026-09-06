@@ -1,0 +1,9 @@
+# OmaQ release trust root (OpenSSH allowed_signers format).
+#
+# scripts/update-omaq.py refuses to build or install any fetched commit unless
+# that commit carries an annotated release tag whose SSH signature verifies
+# against one of the keys below. The file is always read from the ALREADY
+# INSTALLED checkout, never from the freshly fetched clone.
+#
+# See docs/RELEASING.md for signing, rotation, and revocation.
+release@omaq namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACC+CscSQXmKagZwzuATd+p8KvoJT7hWECXiksvgzg0
