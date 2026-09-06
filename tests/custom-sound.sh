@@ -9,7 +9,6 @@ printf '%s\n' 'source retained' 'managed removed' 'bundled immutable' | \
 }
 python3 - "$root/Panel.qml" "$root/Service.qml" "$root/ChatSurface.qml" \
   "$root/manifest.json" "$root/sounds" <<'PY'
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -42,78 +41,66 @@ preset_block = panel[panel.index("readonly property var bundledNotificationSound
                      panel.index("readonly property var notificationSounds:")]
 presets = re.findall(r'\{ id: "([^"]+)", label: "([^"]+)"', preset_block)
 expected_presets = [
-    ("off", "Off"), ("icq-message", "UHOH"), ("qq", "PING"),
-    ("msn", "MAIL"), ("aurora", "Aurora"), ("glow", "Glow"),
-    ("click", "Click"), ("knock", "Knock")]
+    ("off", "Off"), ("qq", "PING"), ("msn", "MAIL"),
+    ("aurora", "Aurora"), ("glow", "Glow"), ("click", "Click"),
+    ("knock", "Knock")]
 if presets != expected_presets:
     raise SystemExit(f"custom-sound: unexpected bundled presets: {presets!r}")
 sound_schema = next(item for item in manifest["barWidget"]["schema"]
                     if item["key"] == "sound")
-expected_options = ["off", "icq-message", "qq", "msn", "aurora", "glow",
-                    "click", "knock", "custom"]
+expected_options = ["off", "qq", "msn", "aurora", "glow", "click",
+                    "knock", "custom"]
 if sound_schema["options"] != expected_options or \
-        sound_schema["defaultValue"] != "icq-message":
+        sound_schema["defaultValue"] != "knock" or \
+        manifest["barWidget"]["defaults"]["sound"] != "knock":
     raise SystemExit("custom-sound: manifest presets differ from the panel")
 expected_license = (
-    "MIT AND GPL-3.0-only AND Apache-2.0 AND CC-BY-SA-4.0 AND "
-    "CC0-1.0 AND OFL-1.1-no-RFN AND LicenseRef-Pixabay-Content"
+    "MIT AND GPL-3.0-only AND CC-BY-SA-4.0 AND CC0-1.0 AND "
+    "OFL-1.1-no-RFN AND LicenseRef-Pixabay-Content"
 )
 if manifest["license"] != expected_license:
     raise SystemExit("custom-sound: manifest license expression is incomplete")
-if 'return ["off", "icq-message", "qq", "msn", "aurora", "glow", "click",' not in chat or \
-        '"knock", "custom"].indexOf(value) >= 0 ? value : "icq-message"' not in chat or \
+panel_sound = panel[panel.index("readonly property string notificationSound:"):
+                    panel.index("readonly property string notificationSoundPath:")]
+panel_default = re.search(r'root\.settings\.sound \|\| "([^"]+)"', panel_sound)
+panel_fallback = re.search(r'\n    return "([^"]+)"\n  }', panel_sound)
+chat_sound = chat[chat.index("readonly property string soundName:"):
+                  chat.index("readonly property string soundCustom:")]
+chat_default = re.search(r'setting\("sound", "([^"]+)"\)', chat_sound)
+chat_rule = re.search(
+    r'return \[(.*?)\]\.indexOf\(value\) >= 0 \? value : "([^"]+)"',
+    chat_sound,
+    re.DOTALL,
+)
+if not all((panel_default, panel_fallback, chat_default, chat_rule)):
+    raise SystemExit("custom-sound: sound fallback source could not be parsed")
+chat_options = re.findall(r'"([^"]+)"', chat_rule.group(1))
+if chat_options != expected_options or \
+        panel_default.group(1) != "knock" or panel_fallback.group(1) != "knock" or \
+        chat_default.group(1) != "knock" or chat_rule.group(2) != "knock" or \
         '["qq", "msn", "aurora", "glow"].indexOf(selectedSound)' not in chat or \
-        'Qt.resolvedUrl("sounds/icq-message.mp3")' not in chat:
+        'if (selectedSound !== "custom")' not in chat:
     raise SystemExit("custom-sound: playback allowlist or fallback changed")
-expected_audio = {"icq-message.mp3", "qq.oga", "msn.oga", "aurora.oga",
-                  "glow.oga", "click.wav", "knock.wav", "phone.oga"}
+retired_preset = "i" + "cq-message"
+panel_options = [preset[0] for preset in presets] + ["custom"]
+panel_resolved = retired_preset if retired_preset in panel_options \
+    else panel_fallback.group(1)
+chat_resolved = retired_preset if retired_preset in chat_options \
+    else chat_rule.group(2)
+if panel_resolved != "knock" or chat_resolved != "knock":
+    raise SystemExit("custom-sound: retired persisted preset did not resolve to Knock")
+expected_audio = {"qq.oga", "msn.oga", "aurora.oga", "glow.oga",
+                  "click.wav", "knock.wav", "phone.oga"}
 actual_audio = {path.name for path in sounds.iterdir()
                 if path.suffix in {".mp3", ".oga", ".wav"}}
 if actual_audio != expected_audio:
     raise SystemExit(f"custom-sound: unexpected bundled audio: {actual_audio!r}")
-if (sounds / "LICENSES" / "CC-BY-4.0.txt").exists():
-    raise SystemExit("custom-sound: removed CC BY preset license remains")
-icq_path = sounds / "icq-message.mp3"
-expected_icq_sha256 = "14dcb321bb71e37bdd1cf7a9e2b3b3fbcf759e2043eeff1ad69885c13c244cf1"
-if hashlib.sha256(icq_path.read_bytes()).hexdigest() != expected_icq_sha256:
-    raise SystemExit("custom-sound: ICQ asset hash changed")
-attribution = (sounds / "ATTRIBUTION.md").read_text()
-for required in (
-    "https://github.com/mail-ru-im/im-desktop/blob/78924d804fc38a5746a073d5bdb71c1c4cc97780/products/icq/app/resources/sounds/incoming.wav",
-    "78924d804fc38a5746a073d5bdb71c1c4cc97780",
-    "Copyright (C) 2016 ICQ LLC (Mail.Ru Group)",
-    "Apache License 2.0 (`LICENSES/Apache-2.0.txt`)",
-    "6060dfb8fc8fdc1b58bd9482f57c491a3b73a61f4289dbc8d2b5c7d4d54f406f",
-    expected_icq_sha256,
-    "leading and trailing silence",
-    "does not claim ICQ endorsement or trademark rights",
-    "Upstream notice: `LICENSES/ICQ-NOTICE.md`",
-):
-    if required not in attribution:
-        raise SystemExit(f"custom-sound: missing ICQ attribution: {required}")
-apache = sounds / "LICENSES" / "Apache-2.0.txt"
-if hashlib.sha256(apache.read_bytes()).hexdigest() != \
-        "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff":
-    raise SystemExit("custom-sound: Apache-2.0 license text changed")
-notice = (sounds / "LICENSES" / "ICQ-NOTICE.md").read_text()
-for required in (
-    "Copyright 2016 ICQ LLC (Mail.Ru Group)",
-    "Licensed under the Apache License, Version 2.0",
-    "not redistributed as part of this sound",
-):
-    if required not in notice:
-        raise SystemExit(f"custom-sound: missing ICQ notice text: {required}")
+expected_licenses = {"CC-BY-SA-4.0.txt", "CC0-1.0.txt"}
+actual_licenses = {path.name for path in (sounds / "LICENSES").iterdir()
+                   if path.is_file()}
+if actual_licenses != expected_licenses:
+    raise SystemExit(f"custom-sound: unexpected sound licenses: {actual_licenses!r}")
 PY
-grep -Fxq "license=('MIT' 'GPL-3.0-only' 'Apache-2.0' 'CC-BY-SA-4.0' 'CC0-1.0' 'OFL-1.1-no-RFN' 'custom:Pixabay Content License')" \
-  "$root/packaging/PKGBUILD" || {
-  echo "custom-sound: PKGBUILD license array is incomplete" >&2
-  exit 1
-}
-grep -Fxq "| ICQ Desktop incoming-message sound | Derived \`sounds/icq-message.mp3\` | Apache-2.0 | Bundled UHOH notification sound; see [\`sounds/ATTRIBUTION.md\`](sounds/ATTRIBUTION.md) |" \
-  "$root/THIRD_PARTY.md" || {
-  echo "custom-sound: third-party ICQ attribution is missing" >&2
-  exit 1
-}
 tmp=$(mktemp -d /tmp/omaq-custom-sound-XXXXXX)
 pid=""
 cleanup() {
@@ -228,7 +215,7 @@ grep '"request":"custom-sound-remove"' "$tmp/output" | grep -q '"items":\[\]' ||
   echo "custom-sound: remove touched the source or retained the managed copy" >&2
   exit 1
 }
-[ -f "$root/sounds/icq-message.mp3" ] || {
+[ -f "$root/sounds/knock.wav" ] || {
   echo "custom-sound: bundled sound changed" >&2
   exit 1
 }

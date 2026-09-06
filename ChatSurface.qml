@@ -22,9 +22,9 @@ Item {
   readonly property bool animateUnread: setting("animateUnread", true)
   readonly property string surfaceMode: String(setting("surfaceMode", "separate"))
   readonly property string soundName: {
-    var value = String(setting("sound", "icq-message"))
-    return ["off", "icq-message", "qq", "msn", "aurora", "glow", "click",
-      "knock", "custom"].indexOf(value) >= 0 ? value : "icq-message"
+    var value = String(setting("sound", "knock"))
+    return ["off", "qq", "msn", "aurora", "glow", "click", "knock",
+      "custom"].indexOf(value) >= 0 ? value : "knock"
   }
   readonly property string soundCustom: String(setting("soundCustomPath", ""))
   readonly property string soundCustomId: String(setting("soundCustomId", ""))
@@ -973,9 +973,7 @@ Item {
     if (root.muted || selectedSound === "off" || selectedSound === "")
       return
     var path = selectedSound === "custom" ? root.managedCustomSoundPath() : ""
-    if (selectedSound === "icq-message")
-      path = String(Qt.resolvedUrl("sounds/icq-message.mp3")).replace(/^file:\/\//, "")
-    else if (selectedSound !== "custom")
+    if (selectedSound !== "custom")
       path = String(Qt.resolvedUrl("sounds/" + root.packagedSoundFile(selectedSound))).replace(/^file:\/\//, "")
     if (!path)
       return
