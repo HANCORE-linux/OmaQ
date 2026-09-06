@@ -13,7 +13,6 @@
 | Material Symbols Variable | QML action glyphs | Apache-2.0 | Installed system font; not bundled |
 | Noto Color Emoji 2.051 | 22 derived PNGs under `assets/emoji/` | OFL-1.1-no-RFN | Bundled emoji glyph images; see [`assets/emoji/ATTRIBUTION.md`](assets/emoji/ATTRIBUTION.md) |
 | Simple Icons Ko-fi glyph | Derived `assets/kofi-mono.svg` | CC0-1.0 | Monochrome support link; Ko-fi name and logo remain Ko-fi trademarks |
-| ICQ Desktop incoming-message sound | Derived `sounds/icq-message.mp3` | Apache-2.0 | Bundled UHOH notification sound; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 | KDE Ocean Sound Theme | Four unmodified `.oga` files under `sounds/` | CC BY-SA 4.0 | Bundled notification sounds; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 | Wikimedia Commons recordings | Two derived `.wav` files under `sounds/` | CC0 1.0 | Bundled notification sounds; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |
 | Pixabay asset 223780 by `u_bfmec9l9lj` | Derived `sounds/phone.oga` | Pixabay Content License | Call-progress tone; see [`sounds/ATTRIBUTION.md`](sounds/ATTRIBUTION.md) |

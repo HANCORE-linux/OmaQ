@@ -107,7 +107,6 @@ BarWidget {
   property string systemThemeName: "System"
   readonly property var bundledNotificationSounds: [
     { id: "off", label: "Off", custom: false, path: "" },
-    { id: "icq-message", label: "UHOH" },
     { id: "qq", label: "PING" },
     { id: "msn", label: "MAIL" },
     { id: "aurora", label: "Aurora" },
@@ -1620,13 +1619,13 @@ BarWidget {
   }
 
   readonly property string notificationSound: {
-    var value = String(root.settings && root.settings.sound || "icq-message")
+    var value = String(root.settings && root.settings.sound || "knock")
     if (value === "custom")
       return value
     for (var i = 0; i < root.bundledNotificationSounds.length; i++)
       if (String(root.bundledNotificationSounds[i].id || "") === value)
         return value
-    return "icq-message"
+    return "knock"
   }
   readonly property string notificationSoundPath:
     String(root.settings && root.settings.soundCustomPath || "")

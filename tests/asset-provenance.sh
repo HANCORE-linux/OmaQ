@@ -299,8 +299,8 @@ for value in (
 if manifest.count("OFL-1.1-no-RFN") != 1:
     raise SystemExit("emoji-provenance: manifest OFL expression changed")
 expected_license = (
-    "license=('MIT' 'GPL-3.0-only' 'Apache-2.0' 'CC-BY-SA-4.0' "
-    "'CC0-1.0' 'OFL-1.1-no-RFN' 'custom:Pixabay Content License')"
+    "license=('MIT' 'GPL-3.0-only' 'CC-BY-SA-4.0' 'CC0-1.0' "
+    "'OFL-1.1-no-RFN' 'custom:Pixabay Content License')"
 )
 if expected_license not in pkgbuild:
     raise SystemExit("emoji-provenance: PKGBUILD license array changed")

@@ -18,8 +18,8 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
-    "ChatSurface.qml": "9b6ce5a3e68170071fcf9c50af93e6c63ef361b34caef06190e77759bfb12f30",
-    "Panel.qml": "12a9c3e75d1f110fa650f01b9a1c7b282abfd98740ffe1bfd230e13676bbe43b",
+    "ChatSurface.qml": "85c63d92d66aebc53556d178276ab0aa31bb20556548dd3a7727ab4fda320d3f",
+    "Panel.qml": "cc888b37da8de0afc955ed04f0aab40577670edf574fac7ba4d8ba771d6b5d77",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "ffd4171eb4506e6722fcb0747cf99bbf3c4fc341a9877fb20a5c3c1ab7ddf5ec",
@@ -145,8 +145,8 @@ COMPUTED_WRITE_ALLOWLIST = {
 REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
-    "ChatSurface.qml": "58f0f28ea536541a3defc7db62dcc784f577c6eb288127d56e43d6c50f9962c5",
-    "Panel.qml": "420547c69e15c31b7c52ebf5d929e8f848d7b0040d60e680b46ff78220c3e80e",
+    "ChatSurface.qml": "61cb0a3d9aecdecdac9bc1ad1cefa941dd4f3047a0c2bfe336484eded210661d",
+    "Panel.qml": "0bb106d37a920d1cf34d316fc9e08610c868f9d8f4e9863128075eaa27c8fcbc",
     "Service.qml": "2395f4a77de4bc06a4cd21ad77bdd19fe98c9d41b2bd48de7bfb69eb1d383809",
     "pages/ChatPage.qml": "3232198c177017757631b97f59c5f45f7442cd9ca58b3c3972dec81e72c8a076",
 }
