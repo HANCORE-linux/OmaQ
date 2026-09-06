@@ -1581,6 +1581,7 @@ def stage_update(
     update_base: Path,
     live_head: str,
     expected_commit: str,
+    signers: Path,
     target_commit: str = "",
 ) -> StagedTree:
     git = command_path("git")
@@ -1633,6 +1634,10 @@ def stage_update(
     )
     if ancestry.returncode != 0:
         fail("staged source is not a fast-forward of the installed checkout")
+    # Nothing fetched has executed yet: validation, the helper build, and the
+    # plugin hooks all run below. Signature verification must stay here.
+    release_tag = verify_release_tag(stage, stage_head, signers)
+    print(f"verified release tag: {release_tag}")
     check_tree_bounds(stage)
     validate_plugin(stage)
     required = parse_required_helper_protocol(stage / "Service.qml")
@@ -2000,10 +2005,12 @@ class Updater:
             return self.finish_noop_update(
                 live_head, live_identity, initial_shell
             )
+        signers = release_signers_path(self.root, self.program_root)
         self.staged = stage_update(
             self.update_base,
             live_head,
             self.expected_commit,
+            signers,
             target_commit,
         )
         if directory_identity(self.root) != live_identity:

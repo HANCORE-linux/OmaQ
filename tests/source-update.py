@@ -454,6 +454,7 @@ class SourceUpdateTests(unittest.TestCase):
 
         updater = MODULE.Updater.__new__(MODULE.Updater)
         updater.root = Path("/tmp/live")
+        updater.program_root = ROOT
         updater.update_base = Path("/tmp/update-base")
         updater.expected_commit = ""
         updater.runtime_tool = Path("/tmp/runtime.py")
@@ -503,6 +504,7 @@ class SourceUpdateTests(unittest.TestCase):
 
         updater = MODULE.Updater.__new__(MODULE.Updater)
         updater.root = Path("/tmp/live")
+        updater.program_root = ROOT
         updater.update_base = Path("/tmp/update-base")
         updater.expected_commit = ""
         updater.runtime_tool = Path("/tmp/runtime.py")
@@ -1508,6 +1510,10 @@ class SourceUpdateTests(unittest.TestCase):
             head = subprocess.check_output(
                 ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
             ).strip()
+            key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            sign_release_tag(source, key, "v1.0.0")
             original_origin = MODULE.CANONICAL_ORIGIN
             original_network = MODULE.GIT_NETWORK_CONFIG
             MODULE.CANONICAL_ORIGIN = str(source)
@@ -1518,7 +1524,7 @@ class SourceUpdateTests(unittest.TestCase):
                 "protocol.file.allow=always",
             )
             try:
-                staged = MODULE.stage_update(updates, head, head)
+                staged = MODULE.stage_update(updates, head, head, signers)
             finally:
                 MODULE.CANONICAL_ORIGIN = original_origin
                 MODULE.GIT_NETWORK_CONFIG = original_network
@@ -1533,6 +1539,68 @@ class SourceUpdateTests(unittest.TestCase):
                 ).strip(),
                 str(source),
             )
+
+    def test_stage_update_refuses_an_unsigned_origin_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            updates = base / "updates"
+            updates.mkdir(mode=0o700)
+            _key, signers_line = make_release_key(base)
+            signers = base / "release-signers"
+            signers.write_text(signers_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            original_origin = MODULE.CANONICAL_ORIGIN
+            original_network = MODULE.GIT_NETWORK_CONFIG
+            MODULE.CANONICAL_ORIGIN = str(source)
+            MODULE.GIT_NETWORK_CONFIG = (
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "protocol.file.allow=always",
+            )
+            try:
+                with self.assertRaisesRegex(MODULE.UpdateError, "no release tag"):
+                    MODULE.stage_update(updates, head, head, signers)
+            finally:
+                MODULE.CANONICAL_ORIGIN = original_origin
+                MODULE.GIT_NETWORK_CONFIG = original_network
+
+    def test_stage_update_refuses_a_tag_signed_by_an_untrusted_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            updates = base / "updates"
+            updates.mkdir(mode=0o700)
+            (base / "attacker").mkdir()
+            (base / "maintainer").mkdir()
+            attacker_key, _attacker_line = make_release_key(base / "attacker")
+            _maintainer_key, trusted_line = make_release_key(base / "maintainer")
+            signers = base / "release-signers"
+            signers.write_text(trusted_line + "\n", encoding="utf-8")
+            source = make_taggable_source(base)
+            sign_release_tag(source, attacker_key, "v1.0.0")
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            original_origin = MODULE.CANONICAL_ORIGIN
+            original_network = MODULE.GIT_NETWORK_CONFIG
+            MODULE.CANONICAL_ORIGIN = str(source)
+            MODULE.GIT_NETWORK_CONFIG = (
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "protocol.file.allow=always",
+            )
+            try:
+                with self.assertRaisesRegex(
+                    MODULE.UpdateError, "signature verification"
+                ):
+                    MODULE.stage_update(updates, head, head, signers)
+            finally:
+                MODULE.CANONICAL_ORIGIN = original_origin
+                MODULE.GIT_NETWORK_CONFIG = original_network
 
     def test_staged_build_allows_only_the_ignored_helper(self):
         with tempfile.TemporaryDirectory() as directory:
