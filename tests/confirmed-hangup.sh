@@ -59,7 +59,7 @@ contracts = {
         "!toolbar.page.callEnding",
     ],
     "helper/omaq.c": [
-        "#define OMAQ_PROTOCOL_VERSION 15",
+        "#define OMAQ_PROTOCOL_VERSION 16",
         'strcmp(op->op, "call.lease") == 0',
         'call_control_owner_disconnected(g_clients[i], g_ncli == 1);',
         "g_call_owner_request[0] ? g_call_owner_request : NULL",

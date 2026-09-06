@@ -1,4 +1,5 @@
 #include "invite.h"
+#include "safety.h"
 
 #include <ctype.h>
 #include <stdint.h>
@@ -47,6 +48,114 @@ int omaq_pending_invite_claim(omaq_pending_invite *pending,
 	}
 	pending->used = 1;
 	return 1;
+}
+
+void omaq_invite_conflicts_clear(omaq_invite_conflicts *conflicts)
+{
+	if (conflicts)
+		memset(conflicts, 0, sizeof(*conflicts));
+}
+
+void omaq_invite_issue_clear(omaq_pending_invite *pending,
+			     omaq_invite_conflicts *conflicts, char *issued_id,
+			     char *issued_url, int64_t *issued_exp,
+			     int *issued_is_group, char *issued_group)
+{
+	if (issued_id)
+		issued_id[0] = '\0';
+	if (issued_url)
+		issued_url[0] = '\0';
+	if (issued_exp)
+		*issued_exp = 0;
+	if (issued_is_group)
+		*issued_is_group = 0;
+	if (issued_group)
+		issued_group[0] = '\0';
+	omaq_pending_invite_clear(pending);
+	omaq_invite_conflicts_clear(conflicts);
+}
+
+int omaq_invite_issue_busy(const omaq_pending_invite *pending,
+			   int have_group_auth, int have_group_pending,
+			   int have_pending_group_bind_proof)
+{
+	return (pending && pending->used) || have_group_auth ||
+		have_group_pending || have_pending_group_bind_proof;
+}
+
+int omaq_invite_conflict_note(omaq_invite_conflicts *conflicts,
+			      const uint8_t claimed_key[OMAQ_INVITE_PUBLIC_KEY_BYTES],
+			      const uint8_t attempt_key[OMAQ_INVITE_PUBLIC_KEY_BYTES])
+{
+	if (!conflicts || !claimed_key || !attempt_key)
+		return -1;
+	if (memcmp(claimed_key, attempt_key, OMAQ_INVITE_PUBLIC_KEY_BYTES) == 0)
+		return 0;
+	for (size_t i = 0; i < conflicts->count; i++)
+		if (memcmp(conflicts->keys[i], attempt_key,
+			   OMAQ_INVITE_PUBLIC_KEY_BYTES) == 0)
+			return 0;
+	if (conflicts->count >= OMAQ_INVITE_CONFLICT_KEYS_MAX)
+		return -1;
+	memcpy(conflicts->keys[conflicts->count], attempt_key,
+	       OMAQ_INVITE_PUBLIC_KEY_BYTES);
+	conflicts->count++;
+	return 1;
+}
+
+static int lower_hex_key(const char *key)
+{
+	if (!key || strlen(key) != 64)
+		return 0;
+	for (size_t i = 0; i < 64; i++)
+		if (!((key[i] >= '0' && key[i] <= '9') ||
+		      (key[i] >= 'a' && key[i] <= 'f')))
+			return 0;
+	return 1;
+}
+
+int omaq_pending_invite_key_matches(const omaq_pending_invite *pending,
+				    const char *key)
+{
+	static const char hex[] = "0123456789abcdef";
+	char expected[OMAQ_INVITE_PUBLIC_KEY_BYTES * 2 + 1];
+
+	if (!pending || !pending->used || !lower_hex_key(key))
+		return 0;
+	for (size_t i = 0; i < OMAQ_INVITE_PUBLIC_KEY_BYTES; i++) {
+		expected[i * 2] = hex[pending->public_key[i] >> 4];
+		expected[i * 2 + 1] = hex[pending->public_key[i] & 15];
+	}
+	expected[sizeof(expected) - 1] = '\0';
+	return strcmp(expected, key) == 0;
+}
+
+int omaq_direct_request_event(char *out, size_t outn, const char *self_key,
+			      const char *peer_key)
+{
+	char safety[OMAQ_SAFETY_MAX];
+	int written;
+
+	if (!out || !lower_hex_key(self_key) || !lower_hex_key(peer_key) ||
+	    omaq_safety_code(self_key, peer_key, safety, sizeof(safety)) != 0)
+		return -1;
+	written = snprintf(out, outn,
+		"{\"event\":\"request\",\"kind\":\"direct\",\"key\":\"%s\",\"safety\":\"%s\"}",
+		peer_key, safety);
+	return written < 0 || (size_t)written >= outn ? -1 : 0;
+}
+
+int omaq_direct_request_conflict_event(char *out, size_t outn,
+				       const char *attempt_key)
+{
+	int written;
+
+	if (!out || !lower_hex_key(attempt_key))
+		return -1;
+	written = snprintf(out, outn,
+		"{\"event\":\"request.conflict\",\"kind\":\"direct\",\"key\":\"%s\"}",
+		attempt_key);
+	return written < 0 || (size_t)written >= outn ? -1 : 0;
 }
 
 static void lower_copy(char *dst, const char *src, size_t n)

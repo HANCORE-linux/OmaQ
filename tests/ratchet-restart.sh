@@ -52,7 +52,14 @@ while [ "$i" -lt 90 ]; do
 	sleep 1
 done
 [ "$i" -lt 90 ] || { echo "ratchet-restart: no request" >&2; exit 1; }
-echo '{"op":"contact.decide","accept":true}' >&3
+request_key=$(grep -a '"event":"request","kind":"direct"' "$fa" | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]\{64\}\)".*/\1/p')
+[ "${#request_key}" -eq 64 ] || {
+	echo "ratchet-restart: request key missing" >&2
+	exit 1
+}
+printf '{"op":"contact.decide","id":"x","key":"%s","accept":true}\n' \
+	"$request_key" >&3
 i=0
 friend_key_a=""
 friend_key_b=""

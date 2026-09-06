@@ -61,8 +61,14 @@ Item {
   readonly property bool supportsGroupTyping: root.activeHelperProtocol >= 13
   readonly property bool supportsCustomSounds: root.activeHelperProtocol >= 14
   readonly property bool supportsConfirmedHangup: root.activeHelperProtocol >= 15
+  readonly property bool supportsInviteRequestSafety: root.activeHelperProtocol >= 16
   property bool supportsCorrelatedHistoryClear: false
   onActiveHelperProtocolChanged: {
+    if (!root.supportsInviteRequestSafety) {
+      root.pendingRequestKey = ""
+      root.pendingRequestSafety = ""
+      root.pendingRequestConflictKey = ""
+    }
     if (root.supportsCustomSounds)
       return
     if (root.customSounds.length > 0) {
@@ -103,6 +109,9 @@ Item {
   property string safetyCode: ""
   property string safetyConv: ""
   property bool pending: false
+  property string pendingRequestKey: ""
+  property string pendingRequestSafety: ""
+  property string pendingRequestConflictKey: ""
   property string lastConversation: "0"
   property string lastDirectId: ""
   property string lastDirectKey: ""
@@ -1090,6 +1099,7 @@ Item {
           root.pendingDirectEventOverflow = false
         }
         if (processChanged) {
+          root.clearPendingRequest()
           root.customSounds = []
           root.soundTick = root.soundTick + 1
           root.lastGroupGeneration = 0
@@ -1878,6 +1888,9 @@ Item {
         root.qrPath = ev.qr
       else if (ev.url !== undefined && String(ev.url || "") === "")
         root.qrPath = ""
+      if (ev.url !== undefined && String(ev.url || "") === "" &&
+          Number(ev.expires || 0) === 0)
+        root.clearPendingRequest()
       if (ev.op && ev.request) {
         root.lastInviteAction = String(ev.op)
         root.lastInviteRequest = String(ev.request)
@@ -1885,8 +1898,37 @@ Item {
       }
     }
     if (ev.event === "request") {
+      var requestKind = String(ev.kind || "")
+      if (requestKind !== "direct" && requestKind !== "group")
+        return
+      var requestIsGroup = requestKind === "group"
+      if (!requestIsGroup && root.supportsInviteRequestSafety) {
+        var requestKey = String(ev.key || "")
+        var requestSafety = String(ev.safety || "")
+        if (!/^[0-9a-f]{64}$/.test(requestKey) ||
+            !root.validInviteSafetyCode(requestSafety)) {
+          root.clearPendingRequest()
+          return
+        }
+        if (!root.pending || root.pendingGroup ||
+            root.pendingRequestKey !== requestKey)
+          root.pendingRequestConflictKey = ""
+        root.pendingRequestKey = requestKey
+        root.pendingRequestSafety = requestSafety
+      } else {
+        root.pendingRequestKey = ""
+        root.pendingRequestSafety = ""
+        root.pendingRequestConflictKey = ""
+      }
       root.pending = true
-      root.pendingGroup = ev.kind === "group"
+      root.pendingGroup = requestIsGroup
+    }
+    if (ev.event === "request.conflict") {
+      var conflictKey = String(ev.key || "")
+      if (root.supportsInviteRequestSafety && ev.kind === "direct" &&
+          root.pending && !root.pendingGroup && /^[0-9a-f]{64}$/.test(conflictKey) &&
+          conflictKey !== root.pendingRequestKey)
+        root.pendingRequestConflictKey = conflictKey
     }
     if (ev.event === "group.list.begin")
       root.beginGroupProjection(ev)
@@ -3310,9 +3352,39 @@ Item {
       return false
     return sendImmediateOp({ op: "direct.reinvite.clear", id: requestId })
   }
-  function decide(ok) {
-    sendOp({ op: "contact.decide", id: "x", accept: !!ok })
+  function validInviteSafetyCode(value) {
+    var halves = String(value || "").split(" / ")
+    if (halves.length !== 2)
+      return false
+    for (var halfIndex = 0; halfIndex < halves.length; halfIndex++) {
+      var groups = halves[halfIndex].split(" ")
+      if (groups.length !== 16)
+        return false
+      for (var groupIndex = 0; groupIndex < groups.length; groupIndex++)
+        if (!/^[0-9a-f]{4}$/.test(groups[groupIndex]))
+          return false
+    }
+    return true
+  }
+  function clearPendingRequest() {
     root.pending = false
+    root.pendingGroup = false
+    root.pendingRequestKey = ""
+    root.pendingRequestSafety = ""
+    root.pendingRequestConflictKey = ""
+  }
+  function decide(ok) {
+    var operation = { op: "contact.decide", id: "x", accept: !!ok }
+    var protocol16Direct = root.supportsInviteRequestSafety && !root.pendingGroup
+    if (protocol16Direct)
+      operation.key = root.pendingRequestKey
+    var sent = root.supportsInviteRequestSafety
+      ? root.sendImmediateOp(operation) : root.sendOp(operation)
+    if (!sent)
+      return false
+    if (!protocol16Direct)
+      root.clearPendingRequest()
+    return true
   }
   function removeContact(contactId, expectedKey) {
     var id = String(contactId || "")
@@ -4023,8 +4095,7 @@ Item {
     root.groupProjectionFailed = false
     groupProjectionTimer.stop()
     root.groupsTick = root.groupsTick + 1
-    root.pending = false
-    root.pendingGroup = false
+    root.clearPendingRequest()
     root.inviteUrl = ""
     root.inviteExpiresAt = 0
     root.qrPath = ""

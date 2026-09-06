@@ -169,6 +169,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/arch-check.sh
 	sh tests/float-script.sh
 	sh tests/nonblocking-invite.sh
+	sh tests/direct-invite-fingerprint.sh
 	sh tests/input-mask.sh
 	sh tests/surface-owner.sh
 	sh tests/chat-surface-geometry.sh

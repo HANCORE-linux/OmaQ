@@ -26,6 +26,7 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`product-hardening.md`](product-hardening.md) | Product, state, interface, and removal hardening |
 | [`protocol-11-14.md`](protocol-11-14.md) | Stable Direct state, GroupChat attachments, restart parity, windows, sounds, Reply, and Copy |
 | [`protocol-15.md`](protocol-15.md) | Confirmed local hangup, call control leases, and fail-closed teardown |
+| [`protocol-16.md`](protocol-16.md) | Pre-acceptance direct-request fingerprints and leak conflict signals |
 | [`correlated-clear-chat.md`](correlated-clear-chat.md) | Capability-gated, request-correlated DirectChat and GroupChat history clearing |
 | [`live-name-refresh.md`](live-name-refresh.md) | Event-driven DirectChat and GroupChat name refresh |
 | [`invite-redemption-feedback.md`](invite-redemption-feedback.md) | Persistent, user-edit-aware invite redemption feedback |

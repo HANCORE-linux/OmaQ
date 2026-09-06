@@ -170,6 +170,7 @@ BarWidget {
   readonly property real railIconWidth: Style.space(30)
   readonly property real railWidth: railIconWidth * 2 + framePadding * 2
   readonly property real headerHeight: Style.space(48)
+  readonly property real pendingDirectHeaderHeight: Style.space(156)
   readonly property real supportGlyphSize: Style.font.icon + Style.space(3)
   readonly property real basePrimaryAreaHeight: Math.max(
     identityContactsFrame.implicitHeight, actionRail.implicitHeight)
@@ -2710,7 +2711,9 @@ BarWidget {
           anchors.leftMargin: root.pad
           width: Math.max(0, parent.width - root.pad * 2 - root.railWidth -
                           root.panelSectionGap)
-          height: root.headerHeight
+          height: omaq.pending && !omaq.pendingGroup &&
+            omaq.supportsInviteRequestSafety
+            ? root.pendingDirectHeaderHeight : root.headerHeight
           radius: root.themedRadius(height)
           color: omaq.pending
             ? Qt.rgba((root.systemColors[3] || root.controlAccent).r,
@@ -2900,9 +2903,12 @@ BarWidget {
               spacing: Style.space(5)
               Accessible.name: omaq.pendingGroup
                 ? "Group invitation. Join a private group."
-                : "Friend request. Connect as a friend."
+                : (omaq.supportsInviteRequestSafety
+                  ? "Friend request. Compare the safety code with your friend before accepting."
+                  : "Friend request. Connect as a friend.")
 
               ColumnLayout {
+                id: pendingRequestDetails
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 0
@@ -2920,12 +2926,49 @@ BarWidget {
 
                 SafeText {
                   id: pendingRequestContext
+                  visible: omaq.pendingGroup || !omaq.supportsInviteRequestSafety
                   Layout.fillWidth: true
                   text: omaq.pendingGroup ? "Private group" : "New contact"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
+                }
+
+                SafeText {
+                  id: pendingRequestSafety
+                  visible: !omaq.pendingGroup && omaq.supportsInviteRequestSafety &&
+                    omaq.pendingRequestSafety !== ""
+                  Layout.fillWidth: true
+                  text: omaq.pendingRequestSafety.replace(" / ", "\n")
+                  color: root.systemColors[3] || root.controlAccent
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.Wrap
+                }
+
+                SafeText {
+                  id: pendingRequestGuidance
+                  visible: pendingRequestSafety.visible
+                  Layout.fillWidth: true
+                  text: "Compare this code with your friend before accepting"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                SafeText {
+                  id: pendingRequestConflict
+                  visible: !omaq.pendingGroup && omaq.supportsInviteRequestSafety &&
+                    omaq.pendingRequestConflictKey !== ""
+                  Layout.fillWidth: true
+                  text: "Another device used this invite link"
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  wrapMode: Text.WordWrap
                 }
               }
 
@@ -2962,7 +3005,8 @@ BarWidget {
                 iconText: "close"
                 iconFontFamily: "Material Symbols Rounded"
                 tooltipText: omaq.pendingGroup
-                  ? "Decline group invitation" : "Decline friend request"
+                  ? "Decline group invitation" : (omaq.supportsInviteRequestSafety
+                    ? "Decline and revoke link" : "Decline friend request")
                 accessibleName: tooltipText
                 focusable: true
                 foreground: root.foreground

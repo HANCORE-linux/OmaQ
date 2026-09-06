@@ -65,8 +65,10 @@ Connect two people in this order:
 
 1. Select **Invite** and share the complete link or QR code through a trusted channel.
 2. On the other device, select **Add contact**, paste the invitation, and select **Join chat**.
-3. On the first device, verify the requester and select **Accept**.
+3. On the first device, compare the displayed request safety code with the requester through another trusted channel, then select **Accept**. Older helpers require manual requester verification without this code.
 4. Select **Safety code**, choose that contact, and compare **Show safety code** through another trusted channel.
+
+A Protocol 16 **Friend request** shows a safety code. Compare it with the requester through another trusted channel before accepting; **Decline and revoke link** rejects the request and invalidates that invitation. Older compatible helpers keep the request card without this pre-acceptance code.
 
 A new link expires 24 hours after the helper issues it. **New link** first revokes the previous link, then creates its replacement. **Revoke** invalidates an unused link but cannot undo an accepted contact.
 

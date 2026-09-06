@@ -148,7 +148,11 @@ grep -a '"event":"invite.redeemed"' "$fb" |
 	echo "phase2: successful invite redemption was not correlated" >&2
 	exit 1
 }
-echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+request_key=$(grep -a '"event":"request","kind":"direct"' "$fa" | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]\{64\}\)".*/\1/p')
+[ "${#request_key}" -eq 64 ] || { echo "phase2: request key missing" >&2; exit 1; }
+printf '{"op":"contact.decide","id":"x","key":"%s","accept":true}\n' \
+	"$request_key" >&3
 sleep 1
 grep -a '"event":"invite"' "$fa" | tail -1 |
 	grep -a -q '"url":"","expires":0,"op":"clear"' || {

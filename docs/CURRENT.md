@@ -6,13 +6,13 @@ This page is the current product and release snapshot. Completed phase and follo
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.8.1-beta.2`, Protocol 15
+- **Manifest version:** `0.8.1-beta.2`, Protocol 16
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
 
 ## Working functionality
 
-- **Pairing:** **Invite** creates a one-use 24-hour QR code and link. The recipient uses **Add contact**, and the sender explicitly accepts the request. A successful redemption remains visible until the user edits the invitation field again. Safety codes support identity comparison through another trusted channel.
+- **Pairing:** **Invite** creates a one-use 24-hour QR code and link. The recipient uses **Add contact**, and the sender explicitly accepts the request. Protocol 16 binds each direct request to the requester's Tox public key and pre-acceptance safety code, warns when a different valid claimant uses the same link, and revokes the link on decline. Protocol 15 helpers retain the code-free request card. A successful redemption remains visible until the user edits the invitation field again. Safety codes support Tox-identity comparison through another trusted channel but do not authenticate the Signal Ratchet identity.
 - **Direct chat:** Direct messages add the Signal Double Ratchet to Tox transport and never fall back to plaintext. Each chat owns its window, saved size, placement, search state, unread state, history, files, and preferences. Tox friend-name events refresh every open DirectChat without restarting the shell.
 - **Messages:** Enter sends, modified Enter inserts a line break, and delivery failures distinguish safe Resend from an unknown result. Chats support formatting, arbitrary emoji, reactions, inline Reply, editing, confirmed deletion, exact text selection and Copy, message scaling, keyboard navigation, local history timestamps, per-chat search, receipts, unread badges, and a **New messages** divider. Clear Chat is immediate rather than reconnect-queued, uses an explicitly advertised request-correlated helper capability, and applies a result only to its exact current Direct or Group conversation.
 - **Files and images:** incoming transfers remain paused until acceptance and default to `~/Downloads/omaq/`. Outgoing transfers can be canceled. Received audio supports playback, while validated PNG, JPEG, and WebP images use a 56×56 preview that opens the complete local file. DirectChat and GroupChat share the non-call attachment workflow; video remains a normal download. Generic history errors never reuse an unrelated remembered file path.
@@ -46,6 +46,8 @@ This page is the current product and release snapshot. Completed phase and follo
 5. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
 
 ## Latest validation
+
+The Protocol 16 direct-invite snapshot passes the full `make verify-4` gate, Protocol 14 and 15 compatibility builds, no-Signal compilation, phases 2, 3, 6, and 8, Ratchet restart, exact IPC schemas, the key-bound stale-decision and busy-issue regressions, QML request/accessibility fixtures, helper hardening, and plaintext QML policy. Its three-identity Phase 6 run verifies the real redeemer key, pre- and post-acceptance safety-code equality, same-key request re-announcement, conflict replay after status, unchanged pending state after a stale decision, and no second accepted contact. Native Wayland and separate-network acceptance remain open.
 
 The release-audit follow-up passes the full `make test` aggregate, `make verify-4`, `make helper`, `make arch`, phase 2, phase 8, Omarchy plugin validation, ShellCheck on every changed shell file, Qt parsing for all eight QML files, `qmllint` for ChatSurface, ChatPage, and Service, syntax checks, and `git diff --check`. The normal-plugin lifecycle change additionally passes the full `make test` aggregate, `make arch`, Omarchy plugin validation, focused install and uninstall regressions, ShellCheck, Python syntax compilation, and `git diff --check`. Panel runtime coverage verifies both semantic Omarchy theme keys and legacy `color0`–`color7` palettes, including deterministic legacy precedence in a mixed file.
 

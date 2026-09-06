@@ -24,6 +24,10 @@ make -s -C "$root" \
 	HARDEN_CFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fPIE -DOMAQ_PROTOCOL_VERSION=14" \
 	helper
 make -s -C "$root" \
+	BIN_HELP="$tmp/helper/omaq-protocol15" \
+	HARDEN_CFLAGS="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fPIE -DOMAQ_PROTOCOL_VERSION=15" \
+	helper
+make -s -C "$root" \
 	BIN_IPC_TEST_HELPER="$tmp/helper/omaq" \
 	SANFLAGS="-DOMAQ_PROTOCOL_VERSION=7" \
 	"$tmp/helper/omaq"
@@ -287,6 +291,28 @@ ShellRoot {
         var confirmedHangupGate = !service.supportsConfirmedHangup
         service.activeHelperProtocol = 15
         confirmedHangupGate = confirmedHangupGate && service.supportsConfirmedHangup
+        service.clearPendingRequest()
+        service.handleLine(JSON.stringify({ event: "request", kind: "direct" }))
+        var protocol15InviteCompatible = service.pending && !service.pendingGroup &&
+          !service.supportsInviteRequestSafety && service.pendingRequestKey === "" &&
+          service.pendingRequestSafety === ""
+        service.clearPendingRequest()
+        var safetyPartsA = []
+        var safetyPartsB = []
+        for (var safetyIndex = 0; safetyIndex < 16; safetyIndex++) {
+          safetyPartsA.push("aaaa")
+          safetyPartsB.push("bbbb")
+        }
+        var requestSafety = safetyPartsA.join(" ") + " / " + safetyPartsB.join(" ")
+        service.activeHelperProtocol = 16
+        service.handleLine(JSON.stringify({ event: "request", kind: "direct",
+          key: directKey, safety: requestSafety }))
+        service.handleLine(JSON.stringify({ event: "request.conflict", kind: "direct",
+          key: replacementKey }))
+        var protocol16InviteSafety = service.pending && !service.pendingGroup &&
+          service.supportsInviteRequestSafety && service.pendingRequestKey === directKey &&
+          service.pendingRequestSafety === requestSafety &&
+          service.pendingRequestConflictKey === replacementKey
         service.activeHelperProtocol = 7
         service.friends = [{ id: "0", key: directKey }]
         if (service.activeHelperProtocol === 7 &&
@@ -305,7 +331,8 @@ ShellRoot {
             bindingChecks && groupAttachmentGate && groupInviteWired &&
             legacySurfaceCompatible && handshakeSurfaceQueued && handshake14Geometry &&
             modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
-            confirmedHangupGate && correlatedGroups && groupTypingProjected &&
+            confirmedHangupGate && protocol15InviteCompatible && protocol16InviteSafety &&
+            correlatedGroups && groupTypingProjected &&
             wrongGroupRequestIgnored &&
             incompleteGroupsPreserved && reusePurged &&
             bufferedUntilFriends && replayedAfterFriends && chatSearchSignaled &&
