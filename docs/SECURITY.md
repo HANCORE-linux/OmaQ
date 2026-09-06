@@ -50,9 +50,9 @@ Identity bundles include Tox savedata, private group mappings, and group friend-
 
 ## Verify trusted contacts
 
-Invitations are private, one-use entry points. Share them through a trusted channel, verify incoming requests before accepting, and revoke unused links that may have leaked.
+Invitations are private, one-use entry points. Share them through a trusted channel and compare the byte-identical Protocol 16 safety codes shown to the redeemer and invitation owner before accepting. A conflict warning means another valid Tox identity also used that link. Accepting or declining a direct request retires its issued invitation and rotates the Tox nospam address without changing the public key or existing contacts; revoke unused links that may have leaked.
 
-Compare the direct contact's safety code through another trusted channel. Safety codes verify the selected contact's stable identity and are not setup secrets.
+Compare safety codes through another trusted channel. A code proves only the paired Tox public identities; it does not authenticate the Signal Ratchet identity or prove that a particular person controls either device. Safety codes are not setup secrets.
 
 Use OmaQ only for lawful private communication with people you trust. Read the [illustrated user guide](USER-GUIDE.md#create-and-redeem-invitations) for invitation and safety-code steps.
 

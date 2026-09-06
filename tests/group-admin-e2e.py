@@ -162,11 +162,14 @@ def pair(inviter: Peer, recipient: Peer, recipient_key: str, label: str) -> dict
             "request": f"{label}-redeem",
         }
     )
-    inviter.wait(
+    request = inviter.wait(
         event_is("request", kind="direct"), NETWORK_TIMEOUT, request_start,
         "direct request",
     )
-    inviter.send({"op": "contact.decide", "id": label, "accept": True})
+    if request.get("key") != recipient_key:
+        raise RuntimeError(f"{inviter.name}: direct request key mismatch")
+    inviter.send({"op": "contact.decide", "id": label,
+                  "key": recipient_key, "accept": True})
     friend = inviter.wait(
         lambda event: event.get("event") == "friend.info"
         and event.get("key") == recipient_key

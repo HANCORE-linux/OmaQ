@@ -59,7 +59,7 @@
 #define MAX_CLIENTS 8
 #define CLIENT_OUT_MAX (OMAQ_JSON_LINE_MAX * 128u)
 #ifndef OMAQ_PROTOCOL_VERSION
-#define OMAQ_PROTOCOL_VERSION 15
+#define OMAQ_PROTOCOL_VERSION 16
 #endif
 #if OMAQ_PROTOCOL_VERSION >= 15
 #define OMAQ_HISTORY_CLEAR_VERSION 2
@@ -72,6 +72,7 @@
 
 static void emit(const char *value);
 static void emit_error(const char *code);
+static void pk_hex(const uint8_t *pk, char *out);
 static void emit_identity_primary_state(const char *request);
 static int rand_id(char *out, size_t n);
 #ifdef HAVE_TOX
@@ -212,6 +213,7 @@ static struct {
 } g_ratchet_recovery[OMAQ_DIRECT_STATE_FRIEND_MAX];
 #endif
 static omaq_pending_invite g_pending_invite;
+static omaq_invite_conflicts g_invite_conflicts;
 static int g_pending_announced;
 #ifdef HAVE_SIGNAL
 _Static_assert(OMAQ_INVITE_RATCHET_KEY_HEX == OMAQ_RK_HEX,
@@ -3666,12 +3668,9 @@ static int send_message_action(uint32_t friend, const char *conversation,
 
 static void clear_invite(void)
 {
-	g_issued_id[0] = '\0';
-	g_issued_url[0] = '\0';
-	g_issued_exp = 0;
-	g_issued_is_group = 0;
-	g_issued_group[0] = '\0';
-	omaq_pending_invite_clear(&g_pending_invite);
+	omaq_invite_issue_clear(&g_pending_invite, &g_invite_conflicts,
+				g_issued_id, g_issued_url, &g_issued_exp,
+				&g_issued_is_group, g_issued_group);
 	g_pending_announced = 0;
 }
 
@@ -3681,12 +3680,54 @@ static void clear_invite_and_emit(void)
 	emit_invite_state("", 0, "clear", NULL);
 }
 
+static void rotate_consumed_invite_nospam(void)
+{
+	if (g_tox && omaq_tox_nospam_rotate(g_tox) != 0)
+		emit_error("nospam_rotate_failed");
+}
+
+static int emit_pending_direct_request(void)
+{
+	if (!g_pending_invite.used)
+		return -1;
+#if OMAQ_PROTOCOL_VERSION >= 16
+	{
+		char self[65], key[65], event[360];
+
+		if (!g_tox || omaq_tox_self_pk_hex(g_tox, self) != 0)
+			return -1;
+		pk_hex(g_pending_invite.public_key, key);
+		if (omaq_direct_request_event(event, sizeof(event), self, key) != 0)
+			return -1;
+		emit(event);
+	}
+#else
+	emit("{\"event\":\"request\",\"kind\":\"direct\"}");
+#endif
+	return 0;
+}
+
+static void emit_recorded_direct_conflicts(void)
+{
+#if OMAQ_PROTOCOL_VERSION >= 16
+	for (size_t i = 0; i < g_invite_conflicts.count; i++) {
+		char key[65], event[180];
+
+		pk_hex(g_invite_conflicts.keys[i], key);
+		if (omaq_direct_request_conflict_event(event, sizeof(event), key) == 0)
+			emit(event);
+	}
+#endif
+}
+
 static void announce_pending_direct(void)
 {
 	if (!g_pending_invite.used || g_pending_announced)
 		return;
-	g_pending_announced = 1;
-	emit("{\"event\":\"request\",\"kind\":\"direct\"}");
+	if (emit_pending_direct_request() == 0) {
+		g_pending_announced = 1;
+		emit_recorded_direct_conflicts();
+	}
 }
 
 static void clear_group_auth(void)
@@ -5445,8 +5486,22 @@ static void hook_req(void *ud, const uint8_t *pk32, const char *msg)
 			return;
 #endif
 	}
-	if ((g_issued_exp && now >= g_issued_exp) || g_pending_invite.used)
+	if (g_issued_exp && now >= g_issued_exp)
 		return;
+	if (g_pending_invite.used) {
+#if OMAQ_PROTOCOL_VERSION >= 16
+		if (!g_issued_is_group &&
+		    omaq_invite_conflict_note(&g_invite_conflicts,
+			g_pending_invite.public_key, pk32) == 1 &&
+		    g_pending_announced) {
+			char event[144];
+
+			if (omaq_direct_request_conflict_event(event, sizeof(event), key) == 0)
+				emit(event);
+		}
+#endif
+		return;
+	}
 	if (omaq_pending_invite_claim(&g_pending_invite, pk32, ratchet_key) != 1)
 		return;
 	g_pending_announced = 0;
@@ -10552,6 +10607,33 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		emit(event);
 		return 0;
 	}
+#if OMAQ_PROTOCOL_VERSION >= 16
+	if (strcmp(op->op, "test.invite.events") == 0) {
+		const char *self_key =
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const char *peer_key =
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+		const char *conflict_key =
+			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+		char request_event[360], conflict_event[144];
+		char redeemed_event[OMAQ_JSON_LINE_MAX];
+
+		if (op->field_mask != OMAQ_JSON_FIELD_OP ||
+		    omaq_direct_request_event(request_event, sizeof(request_event),
+			self_key, peer_key) != 0 ||
+		    omaq_direct_request_conflict_event(conflict_event,
+			sizeof(conflict_event), conflict_key) != 0 ||
+		    omaq_direct_redeemed_event(redeemed_event, sizeof(redeemed_event),
+			"test-invite-redeem", peer_key, self_key) != 0) {
+			emit_error("forbidden");
+			return 0;
+		}
+		emit(request_event);
+		emit(conflict_event);
+		emit(redeemed_event);
+		return 0;
+	}
+#endif
 	if (strcmp(op->op, "test.emit") == 0) {
 		char *ev = malloc(OMAQ_IPC_TEST_EVENT_SIZE + 1u);
 		int prefix;
@@ -10697,6 +10779,12 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				clear_invite();
 				emit_invite_state("", 0, "status", NULL);
 			}
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (g_pending_invite.used && !g_issued_is_group &&
+			    !g_have_gauth && !g_have_gpending &&
+			    emit_pending_direct_request() == 0)
+				emit_recorded_direct_conflicts();
+#endif
 			emit_all_unread();
 			emit_direct_reinvite_state(g_direct_state_reinvite_required, NULL);
 			if (g_identity_primary_uncertain)
@@ -11007,6 +11095,16 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #endif
 	}
 	if (strcmp(op->op, "invite.create") == 0) {
+#ifdef HAVE_TOX
+		if ((strcmp(op->kind, "direct") == 0 ||
+		     (strcmp(op->kind, "group") == 0 && !op->id[0])) &&
+		    omaq_invite_issue_busy(&g_pending_invite, g_have_gauth,
+			g_have_gpending, g_group_bind_proof.used &&
+			g_group_bind_proof.pending_accept)) {
+			emit_identity_error("busy", op->request);
+			return 0;
+		}
+#endif
 		if (strcmp(op->kind, "group") == 0) {
 #ifdef HAVE_TOX
 			if (g_tox) {
@@ -11119,6 +11217,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					return 0;
 #endif
 				}
+				clear_invite();
 				snprintf(g_issued_id, sizeof(g_issued_id), "%s", inv.id);
 				snprintf(g_issued_url, sizeof(g_issued_url), "%s", url);
 				g_issued_exp = inv.expiry;
@@ -11169,6 +11268,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("unsupported", op->request);
 				return 0;
 			}
+			clear_invite();
 			snprintf(g_issued_id, sizeof(g_issued_id), "%s", inv.id);
 			snprintf(g_issued_url, sizeof(g_issued_url), "%s", url);
 			g_issued_exp = inv.expiry;
@@ -11252,6 +11352,10 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			char contact_key[65], self_key[65];
 			char request[OMAQ_INVITE_ID_MAX + OMAQ_RK_HEX + 8];
 			int add_rc;
+#if OMAQ_PROTOCOL_VERSION >= 16
+			char redeemed_event[OMAQ_JSON_LINE_MAX];
+			int have_redeemed_event = 0;
+#endif
 #ifdef HAVE_SIGNAL
 			char local_rk[OMAQ_RK_HEX + 1];
 			if (!g_ratchet || !inv.rk[0] ||
@@ -11282,6 +11386,17 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("contact_exists", op->id);
 				return 0;
 			}
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (op->id[0]) {
+				if (omaq_direct_redeemed_event(redeemed_event,
+					    sizeof(redeemed_event), op->id, self_key,
+					    contact_key) != 0) {
+					emit_identity_error("invite_rejected", op->id);
+					return 0;
+				}
+				have_redeemed_event = 1;
+			}
+#endif
 			if (omaq_direct_state_add_begin(home_dir(), contact_key, inv.rk) != 0) {
 				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
@@ -11316,7 +11431,14 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				emit_identity_error("direct_state_migration_failed", op->id);
 				return 0;
 			}
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (have_redeemed_event)
+				emit(redeemed_event);
+			else
+				emit_invite_redeemed("direct", op->id);
+#else
 			emit_invite_redeemed("direct", op->id);
+#endif
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			emit_friends();
 			return 0;
@@ -11379,6 +11501,12 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	if (strcmp(op->op, "contact.decide") == 0) {
 #ifdef HAVE_TOX
 		if (g_tox && g_have_gpending && g_gpending_announced && g_have_gauth) {
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if ((op->field_mask & OMAQ_JSON_FIELD_KEY) != 0) {
+				emit_identity_error("identity_changed", op->id);
+				return 0;
+			}
+#endif
 			if (op->has_accept && op->accept) {
 				uint32_t gnum = UINT32_MAX;
 				char gid[OMAQ_GROUP_ID_MAX] = "", chat_id[65] = "";
@@ -11535,6 +11663,16 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			return 0;
 		}
 		if (g_tox && g_pending_invite.used) {
+#if OMAQ_PROTOCOL_VERSION >= 16
+			if (!g_issued_is_group &&
+			    (op->field_mask != (OMAQ_JSON_FIELD_OP | OMAQ_JSON_FIELD_ID |
+					       OMAQ_JSON_FIELD_KEY | OMAQ_JSON_FIELD_ACCEPT) ||
+			     !omaq_pending_invite_key_matches(&g_pending_invite,
+						      op->key))) {
+				emit_identity_error("identity_changed", op->id);
+				return 0;
+			}
+#endif
 			if (op->has_accept && op->accept) {
 				uint32_t fn;
 				int accept_rc, add_journal = 0;
@@ -11598,6 +11736,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					}
 				}
 				clear_invite_and_emit();
+				rotate_consumed_invite_nospam();
 				if (migrate_direct_state() != 0) {
 					fail_direct_state_backend();
 					emit_error("direct_state_migration_failed");
@@ -11616,8 +11755,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				}
 				return 0;
 			}
-			omaq_pending_invite_clear(&g_pending_invite);
-			g_pending_announced = 0;
+			clear_invite_and_emit();
+			rotate_consumed_invite_nospam();
 			emit("{\"event\":\"snapshot\",\"unread\":0}");
 			return 0;
 		}

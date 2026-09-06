@@ -1,5 +1,5 @@
 #!/bin/sh
-# Phase 6: two homes, one file on disk, call start/stop, record peak RSS.
+# Phase 6: three identities, one file on disk, call start/stop, record peak RSS.
 set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/helper/omaq"
@@ -10,11 +10,15 @@ ha=$(mktemp -d /tmp/omaq-p6a-XXXXXX)
 sa=$(mktemp -d /tmp/omaq-p6as-XXXXXX)
 hb=$(mktemp -d /tmp/omaq-p6b-XXXXXX)
 sb=$(mktemp -d /tmp/omaq-p6bs-XXXXXX)
+hc=$(mktemp -d /tmp/omaq-p6c-XXXXXX)
+sc=$(mktemp -d /tmp/omaq-p6cs-XXXXXX)
 fa=$(mktemp /tmp/omaq-p6oa-XXXXXX)
 fb=$(mktemp /tmp/omaq-p6ob-XXXXXX)
+fc=$(mktemp /tmp/omaq-p6oc-XXXXXX)
 src=$(mktemp /tmp/omaq-p6-XXXXXX.bin)
 holda=$(mktemp -u /tmp/omaq-p6fa-XXXXXX)
 holdb=$(mktemp -u /tmp/omaq-p6fb-XXXXXX)
+holdc=$(mktemp -u /tmp/omaq-p6fc-XXXXXX)
 calla=$(mktemp -u /tmp/omaq-p6ca-XXXXXX)
 callb=$(mktemp -u /tmp/omaq-p6cb-XXXXXX)
 audio_a=$(mktemp /tmp/omaq-p6-audio-a-XXXXXX.raw)
@@ -22,6 +26,7 @@ audio_b=$(mktemp /tmp/omaq-p6-audio-b-XXXXXX.raw)
 call_replay=$(mktemp /tmp/omaq-p6-call-replay-XXXXXX.jsonl)
 pa=""
 pb=""
+pc=""
 call_bridge_a=""
 call_bridge_b=""
 lease_a_pid=""
@@ -34,19 +39,20 @@ cap_b="${pulse_tag}_cap_b"
 out_b="${pulse_tag}_out_b"
 # shellcheck disable=SC2329 # Invoked by trap.
 cleanup() {
-	exec 3>&- 4>&- 5>&- 6>&- 2>/dev/null || true
+	exec 3>&- 4>&- 5>&- 6>&- 7>&- 2>/dev/null || true
 	[ -n "${lease_a_pid:-}" ] && kill "$lease_a_pid" 2>/dev/null || true
 	[ -n "${lease_b_pid:-}" ] && kill "$lease_b_pid" 2>/dev/null || true
 	[ -n "${call_bridge_a:-}" ] && kill "$call_bridge_a" 2>/dev/null || true
 	[ -n "${call_bridge_b:-}" ] && kill "$call_bridge_b" 2>/dev/null || true
 	[ -n "${pa:-}" ] && kill "$pa" 2>/dev/null || true
 	[ -n "${pb:-}" ] && kill "$pb" 2>/dev/null || true
+	[ -n "${pc:-}" ] && kill "$pc" 2>/dev/null || true
 	for module in $pulse_modules; do
 		pactl unload-module "$module" 2>/dev/null || true
 	done
-	rm -rf "$ha" "$sa" "$hb" "$sb" "$fa" "$fb" "$src" "$holda" "$holdb" \
-		"$calla" "$callb" "$audio_a" "$audio_b" "$call_replay" \
-		"$fa.err" "$fb.err"
+	rm -rf "$ha" "$sa" "$hb" "$sb" "$hc" "$sc" "$fa" "$fb" "$fc" \
+		"$src" "$holda" "$holdb" "$holdc" "$calla" "$callb" \
+		"$audio_a" "$audio_b" "$call_replay" "$fa.err" "$fb.err" "$fc.err"
 }
 trap cleanup EXIT
 
@@ -134,7 +140,7 @@ for sink in "$cap_a" "$out_a" "$cap_b" "$out_b"; do
 	pulse_modules="$module $pulse_modules"
 done
 
-mkfifo "$holda" "$holdb" "$calla" "$callb"
+mkfifo "$holda" "$holdb" "$holdc" "$calla" "$callb"
 PULSE_SOURCE="${cap_a}.monitor" PULSE_SINK="$out_a" \
 	OMAQ_HOME="$ha" OMAQ_STATE="$sa" "$bin" >"$fa" 2>"$fa.err" <"$holda" &
 pa=$!
@@ -142,8 +148,11 @@ PULSE_SOURCE="${cap_b}.monitor" PULSE_SINK="$out_b" \
 	OMAQ_HOME="$hb" OMAQ_STATE="$sb" OMAQ_DOWNLOAD_DIR="$hb/Downloads" \
 	"$bin" >"$fb" 2>"$fb.err" <"$holdb" &
 pb=$!
+OMAQ_HOME="$hc" OMAQ_STATE="$sc" "$bin" >"$fc" 2>"$fc.err" <"$holdc" &
+pc=$!
 exec 3>"$holda"
 exec 4>"$holdb"
+exec 7>"$holdc"
 start_call_bridge "$sa/omaq.sock" "$calla" &
 call_bridge_a=$!
 start_call_bridge "$sb/omaq.sock" "$callb" &
@@ -153,22 +162,38 @@ exec 6>"$callb"
 sleep 0.4
 
 echo '{"op":"status"}' >&3
+echo '{"op":"status"}' >&4
+echo '{"op":"status"}' >&7
 sleep 0.2
-if ! grep -a -q '"addr"' "$fa"; then
+if ! grep -a -q '"addr"' "$fa" || ! grep -a -q '"addr"' "$fb" ||
+   ! grep -a -q '"addr"' "$fc"; then
 	echo "phase6: no tox" >&2
 	exit 1
 fi
+public_key_a=$(grep -a '"addr"' "$fa" | tail -1 |
+	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
+public_key_b=$(grep -a '"addr"' "$fb" | tail -1 |
+	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
+public_key_c=$(grep -a '"addr"' "$fc" | tail -1 |
+	sed -n 's/.*"addr":"\([0-9a-f]\{64\}\)[0-9a-f]\{12\}".*/\1/p')
+[ "${#public_key_a}" -eq 64 ] && [ "${#public_key_b}" -eq 64 ] &&
+	[ "${#public_key_c}" -eq 64 ] || {
+	echo "phase6: participant public keys missing" >&2
+	exit 1
+}
 
 echo '{"op":"invite.create","ttlSec":86400,"kind":"direct"}' >&3
 sleep 0.3
 url=$(grep -a '"url"' "$fa" | tail -1 | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
 [ -n "$url" ] || { echo "phase6: no invite url" >&2; exit 1; }
 
-printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&4
+printf '{"op":"invite.redeem","payload":"%s","id":"phase6-redeem-b"}\n' "$url" >&4
 ok=0
 i=0
 while [ "$i" -lt 90 ]; do
-	if grep -a -q '"request"' "$fa"; then
+	if grep -a -q '"event":"request","kind":"direct"' "$fa" &&
+	   grep -a '"event":"invite.redeemed","kind":"direct"' "$fb" |
+	     grep -a -q '"request":"phase6-redeem-b"'; then
 		ok=1
 		break
 	fi
@@ -176,7 +201,168 @@ while [ "$i" -lt 90 ]; do
 	sleep 1
 done
 [ "$ok" -eq 1 ] || { echo "phase6: no friend request" >&2; exit 1; }
-echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+request_safety=$(python3 - "$fa" "$public_key_b" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+requests = [event for event in events
+            if event.get("event") == "request" and event.get("kind") == "direct"]
+if len(requests) != 1:
+    raise SystemExit("phase6: direct request event count changed")
+event = requests[0]
+if event.get("key") != sys.argv[2]:
+    raise SystemExit("phase6: request key is not the redeemer public key")
+safety = event.get("safety")
+if not isinstance(safety, str) or len(safety.split(" / ")) != 2:
+    raise SystemExit("phase6: request safety code is malformed")
+print(safety)
+PY
+)
+redeemed_safety=$(python3 - "$fb" "$public_key_a" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+results = [event for event in events
+           if event.get("event") == "invite.redeemed" and
+           event.get("kind") == "direct" and
+           event.get("request") == "phase6-redeem-b"]
+if len(results) != 1:
+    raise SystemExit("phase6: correlated redeemed identity event count changed")
+event = results[0]
+if event.get("key") != sys.argv[2]:
+    raise SystemExit("phase6: redeemed identity does not name the invite issuer")
+safety = event.get("safety")
+if not isinstance(safety, str) or len(safety.split(" / ")) != 2:
+    raise SystemExit("phase6: redeemed safety code is malformed")
+print(safety)
+PY
+)
+[ "$redeemed_safety" = "$request_safety" ] || {
+	echo "phase6: participants received different pre-acceptance safety codes" >&2
+	exit 1
+}
+printf '%s\n' '{"op":"status","id":"phase6-request-reannounce"}' >&3
+ok=0
+i=0
+while [ "$i" -lt 50 ]; do
+	request_count=$(grep -a -c '"event":"request","kind":"direct"' "$fa" || true)
+	if [ "$request_count" -ge 2 ]; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$ok" -eq 1 ] || { echo "phase6: pending request was not re-announced" >&2; exit 1; }
+python3 - "$fa" "$public_key_b" "$request_safety" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+requests = [event for event in events
+            if event.get("event") == "request" and event.get("kind") == "direct"]
+if len(requests) != 2:
+    raise SystemExit("phase6: pending request re-announce count changed")
+for event in requests:
+    if event.get("key") != sys.argv[2] or event.get("safety") != sys.argv[3]:
+        raise SystemExit("phase6: pending request re-announce changed identity")
+PY
+
+printf '%s\n' \
+	'{"op":"invite.create","kind":"direct","ttlSec":86400,"request":"phase6-busy-issue"}' >&3
+ok=0
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"error","code":"busy"' "$fa" |
+	   grep -a -q '"request":"phase6-busy-issue"'; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$ok" -eq 1 ] || { echo "phase6: issue while request pending was not rejected" >&2; exit 1; }
+
+printf '{"op":"invite.redeem","payload":"%s"}\n' "$url" >&7
+ok=0
+i=0
+while [ "$i" -lt 90 ]; do
+	if grep -a -q '"event":"request.conflict"' "$fa"; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+[ "$ok" -eq 1 ] || { echo "phase6: no invite conflict" >&2; exit 1; }
+python3 - "$fa" "$public_key_c" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+conflicts = [event for event in events if event.get("event") == "request.conflict"]
+if len(conflicts) != 1 or conflicts[0] != {
+        "event": "request.conflict", "kind": "direct", "key": sys.argv[2]}:
+    raise SystemExit("phase6: invite conflict shape or deduplication changed")
+PY
+
+printf '{"op":"contact.decide","id":"phase6-stale-decision","key":"%s","accept":true}\n' \
+	"$public_key_c" >&3
+ok=0
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"error","code":"identity_changed"' "$fa" |
+	   grep -a -q '"request":"phase6-stale-decision"'; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$ok" -eq 1 ] || { echo "phase6: stale request decision was not rejected" >&2; exit 1; }
+printf '%s\n' '{"op":"status","id":"phase6-after-stale-decision"}' >&3
+ok=0
+i=0
+while [ "$i" -lt 50 ]; do
+	request_count=$(grep -a -c '"event":"request","kind":"direct"' "$fa" || true)
+	conflict_replay_count=$(grep -a -c '"event":"request.conflict"' "$fa" || true)
+	if [ "$request_count" -ge 3 ] && [ "$conflict_replay_count" -ge 2 ]; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$ok" -eq 1 ] || {
+	echo "phase6: stale decision changed pending state or conflict replay" >&2
+	exit 1
+}
+last_request_key=$(grep -a '"event":"request","kind":"direct"' "$fa" | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]\{64\}\)".*/\1/p')
+[ "$last_request_key" = "$public_key_b" ] || {
+	echo "phase6: stale decision replaced pending request" >&2
+	exit 1
+}
+conflict_count=$(grep -a -c '"event":"request.conflict"' "$fa" || true)
+last_conflict_key=$(grep -a '"event":"request.conflict"' "$fa" | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]\{64\}\)".*/\1/p')
+[ "$conflict_count" -eq 2 ] && [ "$last_conflict_key" = "$public_key_c" ] || {
+	echo "phase6: status did not replay the stored invite conflict" >&2
+	exit 1
+}
+if grep -a -q '"event":"friend.info"' "$fa"; then
+	echo "phase6: stale decision accepted a contact" >&2
+	exit 1
+fi
+
+printf '{"op":"contact.decide","id":"x","key":"%s","accept":true}\n' \
+	"$public_key_b" >&3
 i=0
 friend_key_a=""
 friend_key_b=""
@@ -193,6 +379,41 @@ done
 	echo "phase6: stable friend keys missing" >&2
 	exit 1
 }
+[ "$friend_key_a" = "$public_key_b" ] || {
+	echo "phase6: accepted friend does not match request key" >&2
+	exit 1
+}
+if grep -a '"event":"friend.info"' "$fa" | grep -a -q '"id":"1"'; then
+	echo "phase6: conflicting claimant became a second contact" >&2
+	exit 1
+fi
+printf '{"op":"safety.get","conversation":"0","key":"%s","id":"phase6-request-safety"}\n' \
+	"$friend_key_a" >&3
+ok=0
+i=0
+while [ "$i" -lt 50 ]; do
+	if grep -a '"event":"safety"' "$fa" |
+	   grep -a -q '"request":"phase6-request-safety"'; then
+		ok=1
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$ok" -eq 1 ] || { echo "phase6: accepted safety code missing" >&2; exit 1; }
+python3 - "$fa" "$request_safety" "$redeemed_safety" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="strict") as stream:
+    events = [json.loads(line) for line in stream if line.strip()]
+results = [event for event in events
+           if event.get("event") == "safety" and
+           event.get("request") == "phase6-request-safety"]
+if len(results) != 1 or results[0].get("code") != sys.argv[2] or \
+        results[0].get("code") != sys.argv[3]:
+    raise SystemExit("phase6: participant safety differs from safety.get")
+PY
 
 status_sequence=0
 direct_peers_online() {
@@ -294,7 +515,7 @@ while [ "$i" -lt 90 ]; do
 done
 if [ "$online" -ne 1 ]; then
 	echo "phase6: public Tox connectivity did not make both direct peers online" >&2
-	tail -20 "$fa.err" "$fb.err" >&2
+	tail -n 20 -- "$fa.err" "$fb.err" "$fc.err" >&2
 	exit 1
 fi
 
@@ -319,7 +540,7 @@ if [ "$sent" -ne 1 ]; then
 	else
 		echo "phase6: encrypted direct messaging did not establish while both peers were online" >&2
 	fi
-	tail -20 "$fa.err" "$fb.err" >&2
+	tail -n 20 -- "$fa.err" "$fb.err" "$fc.err" >&2
 	exit 1
 fi
 

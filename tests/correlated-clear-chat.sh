@@ -33,7 +33,7 @@ contracts = {
         'root.reactionStatus = "An item could not be added to chat history"',
     ],
     "helper/omaq.c": [
-        "#define OMAQ_PROTOCOL_VERSION 15",
+        "#define OMAQ_PROTOCOL_VERSION 16",
         "#define OMAQ_HISTORY_CLEAR_VERSION 2",
         "#define OMAQ_HISTORY_CLEAR_VERSION 1",
         "history.clear.succeeded",
@@ -125,7 +125,7 @@ key = "a" * 64
 send({"op": "status", "id": "clear-status"})
 snapshot = receive(lambda ev: ev.get("event") == "snapshot" and
                     ev.get("request") == "clear-status")
-if snapshot.get("protocol") != 15 or snapshot.get("historyClear") != 2:
+if snapshot.get("protocol") != 16 or snapshot.get("historyClear") != 2:
     raise SystemExit("correlated-clear-chat: clear capability was not advertised")
 
 send({"op": "history.clear", "conversation": "0", "key": key,

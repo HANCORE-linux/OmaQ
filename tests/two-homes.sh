@@ -68,7 +68,11 @@ if [ "$ok" -ne 1 ]; then
 	echo "two-homes: no friend request (timeout)" >&2
 	exit 1
 fi
-echo '{"op":"contact.decide","id":"x","accept":true}' >&3
+request_key=$(grep -a '"event":"request","kind":"direct"' "$fa" | tail -1 |
+	sed -n 's/.*"key":"\([0-9a-f]\{64\}\)".*/\1/p')
+[ "${#request_key}" -eq 64 ] || { echo "two-homes: request key missing" >&2; exit 1; }
+printf '{"op":"contact.decide","id":"x","key":"%s","accept":true}\n' \
+	"$request_key" >&3
 i=0
 friend_key=""
 while [ "$i" -lt 60 ]; do

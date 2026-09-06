@@ -112,7 +112,8 @@ static void test_invite_file(const char *path)
 
 static void test_pending_invite_claim(void)
 {
-	omaq_pending_invite pending;
+	omaq_pending_invite pending, claimed;
+	omaq_invite_conflicts conflicts;
 	uint8_t first[OMAQ_INVITE_PUBLIC_KEY_BYTES];
 	uint8_t second[OMAQ_INVITE_PUBLIC_KEY_BYTES];
 	char first_rk[OMAQ_INVITE_RATCHET_KEY_HEX + 1];
@@ -125,24 +126,117 @@ static void test_pending_invite_claim(void)
 	first_rk[sizeof(first_rk) - 1] = '\0';
 	second_rk[sizeof(second_rk) - 1] = '\0';
 	omaq_pending_invite_clear(&pending);
+	omaq_invite_conflicts_clear(&conflicts);
 	if (omaq_pending_invite_claim(&pending, first, first_rk) != 1 ||
 	    !pending.used || !pending.has_ratchet_key ||
 	    memcmp(pending.public_key, first, sizeof(first)) != 0 ||
 	    strcmp(pending.ratchet_key, first_rk) != 0)
 		fail("pending invite first writer");
+	claimed = pending;
 	if (omaq_pending_invite_claim(&pending, second, second_rk) != 0 ||
-	    memcmp(pending.public_key, first, sizeof(first)) != 0 ||
-	    strcmp(pending.ratchet_key, first_rk) != 0)
-		fail("pending invite second writer changed claim");
+	    omaq_invite_conflict_note(&conflicts, pending.public_key, second) != 1 ||
+	    omaq_invite_conflict_note(&conflicts, pending.public_key, second) != 0 ||
+	    omaq_invite_conflict_note(&conflicts, pending.public_key, first) != 0 ||
+	    conflicts.count != 1 || memcmp(&pending, &claimed, sizeof(pending)) != 0)
+		fail("pending invite conflict changed claim or repeated");
+	{
+		char issued_id[OMAQ_INVITE_ID_MAX + 1] = "issued-before-decline";
+		char issued_url[OMAQ_URL_MAX] = "https://issued.invalid";
+		char issued_group[80] = "group-before-direct";
+		int64_t issued_exp = 42;
+		int issued_is_group = 1;
+
+		if (!omaq_pending_invite_key_matches(&pending,
+			"1111111111111111111111111111111111111111111111111111111111111111") ||
+		    omaq_pending_invite_key_matches(&pending,
+			"2222222222222222222222222222222222222222222222222222222222222222") ||
+		    omaq_pending_invite_key_matches(&pending, "short") ||
+		    !omaq_invite_issue_busy(&pending, 0, 0, 0))
+			fail("pending invite decision key binding");
+		omaq_invite_issue_clear(&pending, &conflicts, issued_id, issued_url,
+					&issued_exp, &issued_is_group, issued_group);
+		if (issued_id[0] || issued_url[0] || issued_exp != 0 ||
+		    issued_is_group || issued_group[0] || pending.used ||
+		    pending.has_ratchet_key || pending.ratchet_key[0] ||
+		    conflicts.count != 0 ||
+		    omaq_invite_issue_busy(&pending, 0, 0, 0) ||
+		    !omaq_invite_issue_busy(&pending, 1, 0, 0) ||
+		    !omaq_invite_issue_busy(&pending, 0, 1, 0) ||
+		    !omaq_invite_issue_busy(&pending, 0, 0, 1))
+			fail("pending invite decline did not revoke complete issue state");
+	}
 	omaq_pending_invite_clear(&pending);
+	omaq_invite_conflicts_clear(&conflicts);
+	{
+		uint8_t attempt[OMAQ_INVITE_PUBLIC_KEY_BYTES] = {0};
+		size_t i;
+
+		for (i = 0; i < OMAQ_INVITE_CONFLICT_KEYS_MAX; i++) {
+			attempt[0] = 0x80u;
+			attempt[1] = (uint8_t)(i >> 8);
+			attempt[2] = (uint8_t)i;
+			if (omaq_invite_conflict_note(&conflicts, first, attempt) != 1)
+				fail("pending invite conflict ledger fill");
+		}
+		attempt[0] = 0x81u;
+		if (conflicts.count != OMAQ_INVITE_CONFLICT_KEYS_MAX ||
+		    omaq_invite_conflict_note(&conflicts, first, attempt) != -1 ||
+		    conflicts.count != OMAQ_INVITE_CONFLICT_KEYS_MAX)
+			fail("pending invite conflict ledger bound");
+	}
+	omaq_invite_conflicts_clear(&conflicts);
 	if (pending.used || pending.has_ratchet_key || pending.ratchet_key[0] ||
 	    omaq_pending_invite_claim(&pending, second, NULL) != 1 ||
 	    !pending.used || pending.has_ratchet_key || pending.ratchet_key[0] ||
 	    memcmp(pending.public_key, second, sizeof(second)) != 0)
 		fail("pending group invite claim");
 	omaq_pending_invite_clear(&pending);
-	if (omaq_pending_invite_claim(&pending, first, "bad") != -1 || pending.used)
+	if (omaq_pending_invite_claim(&pending, first, "bad") != -1 || pending.used ||
+	    conflicts.count != 0)
 		fail("pending invite malformed pin");
+	{
+		const char *self_key =
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const char *peer_key =
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+		char safety[OMAQ_SAFETY_MAX], event[360], expected[360], conflict[144];
+		char redeemed[OMAQ_JSON_LINE_MAX], redeemed_expected[OMAQ_JSON_LINE_MAX];
+		char long_request[OMAQ_JSON_STR_MAX + 1];
+
+		if (omaq_safety_code(self_key, peer_key, safety, sizeof(safety)) != 0 ||
+		    snprintf(expected, sizeof(expected),
+			     "{\"event\":\"request\",\"kind\":\"direct\",\"key\":\"%s\",\"safety\":\"%s\"}",
+			     peer_key, safety) >= (int)sizeof(expected) ||
+		    omaq_direct_request_event(event, sizeof(event), self_key, peer_key) != 0 ||
+		    strcmp(event, expected) != 0)
+			fail("direct request safety event");
+		if (omaq_direct_request_conflict_event(conflict, sizeof(conflict),
+					       peer_key) != 0 ||
+		    strcmp(conflict,
+			   "{\"event\":\"request.conflict\",\"kind\":\"direct\",\"key\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}") != 0)
+			fail("direct request conflict event");
+		if (snprintf(redeemed_expected, sizeof(redeemed_expected),
+			     "{\"event\":\"invite.redeemed\",\"kind\":\"direct\","
+			     "\"request\":\"redeem\\\"one\",\"key\":\"%s\",\"safety\":\"%s\"}",
+			     self_key, safety) >= (int)sizeof(redeemed_expected) ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed),
+			"redeem\"one", peer_key, self_key) != 0 ||
+		    strcmp(redeemed, redeemed_expected) != 0 ||
+		    omaq_json_validate(redeemed) != 0)
+			fail("direct redeemed safety event");
+		memset(long_request, 'x', sizeof(long_request) - 1);
+		long_request[sizeof(long_request) - 1] = '\0';
+		if (omaq_direct_request_event(event, 8, self_key, peer_key) != -1 ||
+		    omaq_direct_request_event(event, sizeof(event), "A", peer_key) != -1 ||
+		    omaq_direct_request_conflict_event(conflict, 8, peer_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, 8, "redeem", peer_key,
+			self_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed), "", peer_key,
+			self_key) != -1 ||
+		    omaq_direct_redeemed_event(redeemed, sizeof(redeemed), long_request,
+			peer_key, self_key) != -1)
+			fail("direct identity event bounds");
+	}
 }
 
 static void test_invites(void)

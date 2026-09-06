@@ -19,9 +19,9 @@ OLD_URGENT_LIMIT = 4096 * 1024
 BATCH_EVENTS = 80
 TEST_EVENT_SIZE = 65_500
 COMMAND = b'{"op":"status"}\n'
-EVENT = b'{"event":"snapshot","protocol":15,"historyClear":2,"unread":0,"conversations":[],"call":null}\n'
+EVENT = b'{"event":"snapshot","protocol":16,"historyClear":2,"unread":0,"conversations":[],"call":null}\n'
 STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
-STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":15,"historyClear":2,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
+STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":16,"historyClear":2,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 UNSUPPORTED_EVENT = b'{"event":"error","code":"unsupported"}\n'
 FORBIDDEN_EVENT = b'{"event":"error","code":"forbidden"}\n'
 DUPLICATE_COMMANDS = (
@@ -89,6 +89,22 @@ NICKNAME_UNSUPPORTED_COMMAND = (
 NICKNAME_UNSUPPORTED_EVENT = (
     b'{"event":"error","code":"unsupported","request":"nickname-no-tox"}\n'
 )
+INVITE_EVENT_COMMAND = b'{"op":"test.invite.events"}\n'
+INVITE_SAFETY = (("aaaa " * 15 + "aaaa") + " / " +
+                 ("bbbb " * 15 + "bbbb"))
+INVITE_REQUEST_EVENT = (
+    '{"event":"request","kind":"direct","key":"' + "b" * 64 +
+    '","safety":"' + INVITE_SAFETY + '"}\n'
+).encode()
+INVITE_CONFLICT_EVENT = (
+    '{"event":"request.conflict","kind":"direct","key":"' +
+    "c" * 64 + '"}\n'
+).encode()
+INVITE_REDEEMED_EVENT = (
+    '{"event":"invite.redeemed","kind":"direct",'
+    '"request":"test-invite-redeem","key":"' + "a" * 64 +
+    '","safety":"' + INVITE_SAFETY + '"}\n'
+).encode()
 IDENTITY_UNSUPPORTED = (
     (b'{"op":"identity.unlock","passphrase":"legacy","id":"identity-unlock-1"}\n',
      b'{"event":"error","code":"unsupported","request":"identity-unlock-1"}\n'),
@@ -292,6 +308,18 @@ def main() -> int:
             if response != NICKNAME_UNSUPPORTED_EVENT:
                 raise RuntimeError(
                     f"nickname rejection correlation mismatch: {response!r}"
+                )
+            framing_client.sendall(INVITE_EVENT_COMMAND)
+            response = b""
+            while response.count(b"\n") < 3:
+                chunk = framing_client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            if response != (INVITE_REQUEST_EVENT + INVITE_CONFLICT_EVENT +
+                            INVITE_REDEEMED_EVENT):
+                raise RuntimeError(
+                    f"Protocol-16 invite event schema mismatch: {response!r}"
                 )
             framing_client.sendall(STATUS_NONCE_COMMAND)
             response = b""
@@ -588,6 +616,9 @@ def main() -> int:
             + b"".join(expected for _, expected in IDENTITY_UNSUPPORTED)
             + GROUP_INVITE_UNSUPPORTED_EVENT
             + NICKNAME_UNSUPPORTED_EVENT
+            + INVITE_REQUEST_EVENT
+            + INVITE_CONFLICT_EVENT
+            + INVITE_REDEEMED_EVENT
             + STATUS_NONCE_EVENT
             + expected_stage
             + expected_stage_discard

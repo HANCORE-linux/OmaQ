@@ -20,7 +20,8 @@ required = [
     'text: omaq.pendingGroup ? "Group invite" : "Friend request"',
     'text: omaq.pendingGroup ? "Private group" : "New contact"',
     '? "Accept group invitation" : "Accept friend request"',
-    '? "Decline group invitation" : "Decline friend request"',
+    '"Decline and revoke link"',
+    '"Decline friend request"',
     "function onPendingChanged()",
     "root.nicknameEditOpen = false",
 ]
@@ -173,6 +174,11 @@ aliases = '''  property alias testService: omaq
   property alias testRequestContent: pendingRequestContent
   property alias testRequestTitle: pendingRequestTitle
   property alias testRequestContext: pendingRequestContext
+  property alias testRequestDetails: pendingRequestDetails
+  property alias testRequestSafety: pendingRequestSafety
+  property alias testRequestGuidance: pendingRequestGuidance
+  property alias testRequestConflict: pendingRequestConflict
+  property alias testHero: heroVisual
   property alias testAcceptButton: pendingAcceptButton
   property alias testDeclineButton: pendingDeclineButton
   property alias testHeaderRow: heroHeaderRow
@@ -194,8 +200,28 @@ service = service_path.read_text(encoding="utf-8")
 launch = "  Component.onCompleted: root.launchHelperDetached()\n"
 if service.count(launch) != 1:
     raise SystemExit("panel-request-focus: helper launch seam changed")
-service_path.write_text(service.replace(launch, "  Component.onCompleted: {}\n"),
-                        encoding="utf-8")
+service = service.replace(launch, "  Component.onCompleted: {}\n")
+immediate = '''    if (root.procReady) {
+      proc.write(line)
+      return true
+    }
+    return false
+  }
+
+  function sendConversationOp'''
+test_immediate = '''    if (root.procReady) {
+      var captured = root.pendingOps.slice()
+      captured.push(line)
+      root.pendingOps = captured
+      return true
+    }
+    return false
+  }
+
+  function sendConversationOp'''
+if service.count(immediate) != 1:
+    raise SystemExit("panel-request-focus: immediate-send test seam changed")
+service_path.write_text(service.replace(immediate, test_immediate), encoding="utf-8")
 PY
 cat >"$tmp/shell.qml" <<'QML'
 import QtQuick
@@ -283,6 +309,24 @@ ShellRoot {
         testRoot.check(Math.abs(panel.testSelfAvatar.width + panel.testSelfContent.width +
                                 panel.testHeaderRow.spacing - panel.testHeaderRow.width) < 1,
                        "self header geometry overflow")
+        panel.testService.activeHelperProtocol = 15
+        panel.testService.pendingGroup = false
+        panel.testService.pending = true
+        testRoot.check(panel.testRequestContent.Accessible.name ===
+          "Friend request. Connect as a friend.",
+          "Protocol-15 accessibility text requires an unavailable safety code")
+        var safetyPartsA = []
+        var safetyPartsB = []
+        for (var safetyIndex = 0; safetyIndex < 16; safetyIndex++) {
+          safetyPartsA.push("aaaa")
+          safetyPartsB.push("bbbb")
+        }
+        panel.testService.activeHelperProtocol = 16
+        panel.testService.pendingRequestKey =
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        panel.testService.pendingRequestSafety =
+          safetyPartsA.join(" ") + " / " + safetyPartsB.join(" ")
+        panel.testService.pendingRequestConflictKey = ""
         panel.testService.pendingGroup = false
         panel.testService.pending = true
       } else if (testRoot.step === 2) {
@@ -290,11 +334,23 @@ ShellRoot {
         testRoot.check(!panel.testSelfContent.visible, "self content visible for friend request")
         testRoot.check(panel.testRequestContent.visible, "friend request content hidden")
         testRoot.check(panel.testRequestTitle.text === "Friend request", "friend title incorrect")
-        testRoot.check(panel.testRequestContext.text === "New contact", "friend context incorrect")
+        testRoot.check(panel.testRequestContent.Accessible.name ===
+          "Friend request. Compare the safety code with your friend before accepting.",
+          "Protocol-16 accessibility text omits safety comparison")
+        testRoot.check(!panel.testRequestContext.visible,
+          "legacy friend context visible with Protocol-16 safety")
+        testRoot.check(panel.testRequestSafety.visible &&
+          panel.testRequestSafety.text.indexOf("\n") > 0,
+          "two-group request safety code is not visible")
+        testRoot.check(panel.testRequestGuidance.visible &&
+          panel.testRequestGuidance.text ===
+            "Compare this code with your friend before accepting",
+          "request safety guidance is missing")
+        testRoot.check(panel.testHero.height > Style.space(48),
+          "Protocol-16 request card did not expand for the safety code")
         testRoot.check(!panel.testRequestTitle.truncated,
                        "friend title truncated " + panel.testRequestTitle.width + "/" +
                        panel.testRequestTitle.implicitWidth)
-        testRoot.check(!panel.testRequestContext.truncated, "friend context truncated")
         testRoot.check(panel.testAcceptButton.visible && panel.testAcceptButton.focusable,
                        "accept action unavailable")
         testRoot.check(panel.testDeclineButton.visible && panel.testDeclineButton.focusable,
@@ -307,7 +363,52 @@ ShellRoot {
         testRoot.check(Math.abs(panel.testRequestContent.width -
                                 panel.testHeaderRow.width) < 1,
                        "request header geometry overflow")
+        panel.testService.pendingRequestConflictKey =
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        testRoot.check(panel.testRequestConflict.visible &&
+          panel.testRequestConflict.text === "Another device used this invite link",
+          "request conflict banner is missing")
+        testRoot.check(panel.testRequestDetails.implicitHeight <=
+          panel.testHero.height - Style.space(12),
+          "request fingerprint content overflows the pending card")
+        panel.testService.pendingOps = []
+        panel.testService.awaitingHelperInstance = false
+        panel.testService.procReady = false
+        panel.testDeclineButton.clicked()
+        testRoot.check(panel.testService.pending &&
+          panel.testService.pendingOps.length === 0,
+          "offline Protocol-16 decline was queued or cleared locally")
+        panel.testService.procReady = true
+        panel.testDeclineButton.clicked()
+        var decline = panel.testService.pendingOps.length === 1
+          ? JSON.parse(panel.testService.pendingOps[0]) : ({})
+        testRoot.check(decline.op === "contact.decide" && decline.accept === false &&
+          decline.key === "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "decline did not send the key-bound revoking contact decision")
+        testRoot.check(panel.testService.pending &&
+          panel.testService.pendingRequestSafety !== "" &&
+          panel.testService.pendingRequestConflictKey !== "",
+          "decline cleared before helper confirmation")
+        panel.testService.handleLine(JSON.stringify({ event: "error",
+          code: "identity_changed", request: "x" }))
+        testRoot.check(panel.testService.pending,
+          "rejected stale decline hid the helper-owned request")
+        panel.testService.pendingOps = []
+        panel.testDeclineButton.clicked()
+        testRoot.check(panel.testService.pendingOps.length === 1 &&
+          panel.testService.pending,
+          "retried decline did not wait for helper confirmation")
+        panel.testService.handleLine(JSON.stringify({ event: "invite", url: "",
+          expires: 0, op: "clear" }))
+        testRoot.check(!panel.testService.pending &&
+          panel.testService.pendingRequestSafety === "" &&
+          panel.testService.pendingRequestConflictKey === "",
+          "authoritative invite clear did not clear request presentation state")
+        panel.testService.pendingOps = []
+        panel.testService.procReady = false
+        panel.testService.awaitingHelperInstance = false
         panel.testService.pendingGroup = true
+        panel.testService.pending = true
       } else if (testRoot.step === 3) {
         testRoot.check(panel.testRequestTitle.text === "Group invite", "group title incorrect")
         testRoot.check(panel.testRequestContext.text === "Private group", "group context incorrect")

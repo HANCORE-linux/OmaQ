@@ -64,11 +64,13 @@ A direct connection starts with a one-use `omaq://` invitation shared through a 
 Connect two people in this order:
 
 1. Select **Invite** and share the complete link or QR code through a trusted channel.
-2. On the other device, select **Add contact**, paste the invitation, and select **Join chat**.
-3. On the first device, verify the requester and select **Accept**.
+2. On the other device, select **Add contact**, paste the invitation, and select **Join chat**. Keep the resulting safety code visible.
+3. On the first device, compare the request safety code with the code on the other device through another trusted channel, then select **Accept**. Older helpers require manual requester verification without these codes.
 4. Select **Safety code**, choose that contact, and compare **Show safety code** through another trusted channel.
 
-A new link expires 24 hours after the helper issues it. **New link** first revokes the previous link, then creates its replacement. **Revoke** invalidates an unused link but cannot undo an accepted contact.
+A Protocol 16 **Friend request** and its correlated redemption result show the same safety code on both devices. Compare them through another trusted channel before accepting; **Decline and revoke link** rejects the request and invalidates that invitation. Older compatible helpers keep the request card and redemption result without this pre-acceptance code.
+
+A new link expires 24 hours after the helper issues it. **New link** first revokes the previous link, then creates its replacement. **Revoke** invalidates an unused link but cannot undo an accepted contact. Accepting or declining a direct request retires that one-use invitation and refreshes its Tox nospam address without changing the public key or existing contacts.
 
 ## Personalize the interface
 

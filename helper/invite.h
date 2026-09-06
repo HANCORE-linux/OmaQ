@@ -10,6 +10,7 @@
 #define OMAQ_URL_MAX 512
 #define OMAQ_INVITE_PUBLIC_KEY_BYTES 32
 #define OMAQ_INVITE_RATCHET_KEY_HEX 64
+#define OMAQ_INVITE_CONFLICT_KEYS_MAX 512
 
 typedef enum { INVITE_DIRECT = 0, INVITE_GROUP = 1 } omaq_invite_kind;
 
@@ -30,11 +31,37 @@ typedef struct {
 	char ratchet_key[OMAQ_INVITE_RATCHET_KEY_HEX + 1];
 } omaq_pending_invite;
 
+typedef struct {
+	size_t count;
+	uint8_t keys[OMAQ_INVITE_CONFLICT_KEYS_MAX][OMAQ_INVITE_PUBLIC_KEY_BYTES];
+} omaq_invite_conflicts;
+
 void omaq_pending_invite_clear(omaq_pending_invite *pending);
 /* 1 = claimed, 0 = already claimed, -1 = invalid. First writer owns PK and RK. */
 int omaq_pending_invite_claim(omaq_pending_invite *pending,
 			      const uint8_t public_key[OMAQ_INVITE_PUBLIC_KEY_BYTES],
 			      const char *ratchet_key);
+void omaq_invite_conflicts_clear(omaq_invite_conflicts *conflicts);
+void omaq_invite_issue_clear(omaq_pending_invite *pending,
+			     omaq_invite_conflicts *conflicts, char *issued_id,
+			     char *issued_url, int64_t *issued_exp,
+			     int *issued_is_group, char *issued_group);
+int omaq_invite_issue_busy(const omaq_pending_invite *pending,
+			   int have_group_auth, int have_group_pending,
+			   int have_pending_group_bind_proof);
+int omaq_pending_invite_key_matches(const omaq_pending_invite *pending,
+				    const char *key);
+/* 1 = first different claimant, 0 = owner/already seen, -1 = invalid/full. */
+int omaq_invite_conflict_note(omaq_invite_conflicts *conflicts,
+			      const uint8_t claimed_key[OMAQ_INVITE_PUBLIC_KEY_BYTES],
+			      const uint8_t attempt_key[OMAQ_INVITE_PUBLIC_KEY_BYTES]);
+/* Protocol-16 direct identity events. 0 = formatted, -1 = invalid/truncated. */
+int omaq_direct_request_event(char *out, size_t outn, const char *self_key,
+			      const char *peer_key);
+int omaq_direct_request_conflict_event(char *out, size_t outn,
+				       const char *attempt_key);
+int omaq_direct_redeemed_event(char *out, size_t outn, const char *request,
+			       const char *self_key, const char *issuer_key);
 
 /* 0 = ok, -1 = invalid. Never half-accepts. */
 int omaq_invite_parse(const char *url, omaq_invite *out);
