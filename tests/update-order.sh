@@ -450,6 +450,19 @@ if ! grep -Fq 'Do not update OmaQ with' "$root/README.md" ||
   echo "update-order: README generic-updater warning changed" >&2
   exit 1
 fi
+[ "$(grep -Fc 'omarchy restart shell' "$root/README.md")" -eq 2 ] || {
+  echo "update-order: README shell-refresh hints changed" >&2
+  exit 1
+}
+grep -Fq 'If a successful install reports a current helper but OmaQ is still absent' \
+  "$root/README.md" || {
+  echo "update-order: install shell-refresh hint is not readiness-gated" >&2
+  exit 1
+}
+grep -Fq "After an \`activated\` or \`current\` result" "$root/README.md" || {
+  echo "update-order: update shell-refresh hint is not result-gated" >&2
+  exit 1
+}
 if ! grep -Fq 'include OmaQ in an all-plugins' "$root/docs/INSTALLATION.md" ||
     ! grep -Fq 'omarchy plugin update --yes' "$root/docs/INSTALLATION.md"; then
   echo "update-order: installation guide omits the all-plugins update risk" >&2

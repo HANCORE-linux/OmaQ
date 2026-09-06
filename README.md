@@ -29,6 +29,16 @@ OmaQ runs no servers and has no operator access to your identity, contacts, or m
 
 Use OmaQ only for lawful private communication with people you trust.
 
+## Project independence and lawful use
+
+OmaQ is general-purpose software intended for lawful use. This policy adds no restrictions to the open-source licenses.
+
+The project responds truthfully to lawful requests from public authorities. If the project does not possess the requested user data, it says so. OmaQ operates no service and cannot provide data stored only on users' devices, including identities, contacts, messages, and history.
+
+The project does not cooperate with resellers. It offers no reseller, original equipment manufacturer (OEM), white-label, or exclusive distribution arrangements. This policy does not limit open-source redistribution rights or imply project affiliation or endorsement.
+
+OmaQ maintains one public codebase. The project offers no private, privileged, selectively weakened, or organization-specific builds, including builds for public authorities, companies, or resellers. Security-relevant changes remain public and reviewable.
+
 ## How OmaQ works
 
 <p align="center">
@@ -61,7 +71,13 @@ omarchy plugin add https://github.com/HANCORE-linux/OmaQ.git --yes &&
 ~/.config/omarchy/plugins/hancore.omaq/install.sh --yes
 ```
 
-Omarchy installs the plugin checkout. `install.sh` installs the required packages, builds the helper, enables OmaQ in its manifest's right bar section, and waits for reactive plugin activation and any in-flight watched-tree reload to expose working OmaQ IPC and a matching running helper. It does not force a second shell restart while asynchronous plugin loaders may still be finalizing. Pass `--section left` or `--section center` to `install.sh` to choose another section.
+`install.sh` installs dependencies, builds the helper, and enables OmaQ in the selected bar section. It waits for verified IPC and helper readiness without forcing another restart. Pass `--section left` or `--section center` to change the section.
+
+If a successful install reports a current helper but OmaQ is still absent, refresh the shell:
+
+```bash
+omarchy restart shell
+```
 
 ## Update
 
@@ -71,9 +87,15 @@ Run the shell-off updater from the installed Git checkout:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/update-omaq.sh --yes
 ```
 
-Do not update OmaQ with `omarchy plugin update`, including the all-plugins form. Omarchy would fast-forward the source checkout without rebuilding its native helper. Always use the OmaQ updater above.
+Do not update OmaQ with `omarchy plugin update`, including the all-plugins form. It updates the checkout without rebuilding the native helper.
 
-When needed, the updater builds outside the monitored plugin tree, exchanges the checkout while the shell is stopped, and verifies the result. Active groups can defer helper activation. See the [installation lifecycle](docs/INSTALLATION.md) for older installations, exact-commit pinning, backups, and recovery.
+When needed, the updater builds outside the monitored plugin tree. It exchanges the checkout while the shell is stopped and verifies the result. Active groups can defer helper activation. See the [installation lifecycle](docs/INSTALLATION.md) for older installations, exact-commit pinning, backups, and recovery.
+
+After an `activated` or `current` result, refresh the shell only if the interface has not reappeared:
+
+```bash
+omarchy restart shell
+```
 
 ## Uninstall
 
@@ -83,7 +105,7 @@ Run the verified wrapper:
 ~/.config/omarchy/plugins/hancore.omaq/scripts/uninstall-omaq.sh
 ```
 
-Keep retained data if you may reinstall OmaQ or still need the identity or history. In an interactive run, every remaining OmaQ data directory is offered separately for permanent removal; each answer defaults to No. `--yes` removes the plugin non-interactively and retains all data. Dependency packages are never removed automatically; the wrapper prints a separate non-recursive Pacman command for optional manual cleanup.
+Interactive mode offers every remaining OmaQ data directory separately and defaults each answer to No. `--yes` retains all data. Dependency packages are never removed automatically. The wrapper only prints a non-recursive Pacman command for optional manual cleanup.
 
 ## Documentation
 
