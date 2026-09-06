@@ -72,6 +72,12 @@ A Protocol 16 **Friend request** and its correlated redemption result show the s
 
 A new link expires 24 hours after the helper issues it. **New link** first revokes the previous link, then creates its replacement. **Revoke** invalidates an unused link but cannot undo an accepted contact. Accepting or declining a direct request retires that one-use invitation and refreshes its Tox nospam address without changing the public key or existing contacts.
 
+### If another device uses the link
+
+<a href="images/guide/37-invite-conflict.svg"><img src="images/guide/37-invite-conflict.svg" alt="Normal direct invitation flow and the warning shown when another device uses the same link" width="100%"></a>
+
+**Another device used this invite link** means a different valid Tox identity redeemed the link while the first request was pending. If you did not expect this, do not accept the pending request. Select **Decline and revoke link**, then create a new invitation.
+
 ## Personalize the interface
 
 Panel preferences use the active OmaQ and Omarchy visual system. Message scaling changes message bodies and composer input; composer controls, receipts, and group member labels keep their normal size.

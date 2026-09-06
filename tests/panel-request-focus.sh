@@ -9,6 +9,9 @@ root = Path(sys.argv[1])
 panel = (root / "Panel.qml").read_text(encoding="utf-8")
 agents = (root / "AGENTS.md").read_text(encoding="utf-8")
 guide = (root / "docs/USER-GUIDE.md").read_text(encoding="utf-8")
+diagram = (root / "docs/images/guide/37-invite-conflict.svg").read_text(
+    encoding="utf-8"
+)
 
 required = [
     "id: selfHeaderAvatar\n              visible: !omaq.pending",
@@ -82,6 +85,14 @@ if "pending contact or group request replaces that entire self presentation" not
     raise SystemExit("panel-request-focus: repository UI contract is stale")
 if "temporarily replaces the complete self presentation" not in guide:
     raise SystemExit("panel-request-focus: user guide is stale")
+for marker in (
+    "Another device used this invite link",
+    "Decline and revoke link",
+):
+    if marker not in guide or marker not in diagram:
+        raise SystemExit(f"panel-request-focus: conflict guide lost {marker!r}")
+if "37-invite-conflict.svg" not in guide:
+    raise SystemExit("panel-request-focus: conflict diagram link is missing")
 print("panel-request-focus: source ok")
 PY
 

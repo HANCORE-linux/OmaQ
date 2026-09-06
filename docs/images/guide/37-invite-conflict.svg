@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title description">
+  <!-- Project-original documentation artwork, licensed under LICENSE.MIT. -->
+  <title id="title">Direct invitation and unexpected reuse</title>
+  <desc id="description">The normal path compares the same safety code before acceptance. If another device uses the link, the first request stays pending and the link should be declined and revoked.</desc>
+
+  <rect width="1200" height="520" rx="24" fill="#101315"/>
+  <text x="32" y="45" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="25" font-weight="700">One link, one pending request</text>
+
+  <text x="32" y="83" fill="#9fcf9f" font-family="system-ui, sans-serif" font-size="17" font-weight="700">NORMAL USE</text>
+
+  <rect x="32" y="100" width="300" height="150" rx="16" fill="#181c1f" stroke="#565d60" stroke-width="2"/>
+  <text x="54" y="133" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="19" font-weight="700">Device A</text>
+  <text x="54" y="166" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="17">Create a one-use invite</text>
+  <text x="54" y="197" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="15">Share the private link with B</text>
+  <rect x="54" y="214" width="115" height="24" rx="12" fill="#31383c"/>
+  <text x="72" y="231" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="13">Copy link</text>
+
+  <path d="M344 175 H418" fill="none" stroke="#9fcf9f" stroke-width="4" stroke-linecap="round"/>
+  <path d="M407 165 L420 175 L407 185" fill="none" stroke="#9fcf9f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="432" y="100" width="300" height="150" rx="16" fill="#181c1f" stroke="#565d60" stroke-width="2"/>
+  <text x="454" y="133" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="19" font-weight="700">Device B</text>
+  <text x="454" y="166" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="17">Redeem the invite once</text>
+  <text x="454" y="197" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="15">Keep the safety code visible</text>
+  <rect x="454" y="214" width="105" height="24" rx="12" fill="#31383c"/>
+  <text x="473" y="231" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="13">Join chat</text>
+
+  <path d="M744 175 H818" fill="none" stroke="#9fcf9f" stroke-width="4" stroke-linecap="round"/>
+  <path d="M807 165 L820 175 L807 185" fill="none" stroke="#9fcf9f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="832" y="100" width="336" height="150" rx="16" fill="#181c1f" stroke="#9fcf9f" stroke-width="2"/>
+  <text x="854" y="124" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="13">Device A</text>
+  <text x="854" y="150" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="19" font-weight="700">Friend request</text>
+  <text x="854" y="176" fill="#9fcf9f" font-family="ui-monospace, monospace" font-size="15">Same safety code on A and B</text>
+  <text x="854" y="199" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="14">Compare this code with your friend</text>
+  <text x="854" y="219" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="14">before accepting</text>
+  <rect x="1037" y="218" width="105" height="24" rx="12" fill="#38523f"/>
+  <text x="1067" y="235" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="13">Accept</text>
+
+  <line x1="32" y1="282" x2="1168" y2="282" stroke="#31383c" stroke-width="2"/>
+  <text x="32" y="322" fill="#ff8d8d" font-family="system-ui, sans-serif" font-size="17" font-weight="700">UNEXPECTED REUSE</text>
+
+  <rect x="180" y="340" width="320" height="136" rx="16" fill="#181c1f" stroke="#565d60" stroke-width="2"/>
+  <text x="202" y="373" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="19" font-weight="700">Another device</text>
+  <text x="202" y="406" fill="#e8e8e8" font-family="system-ui, sans-serif" font-size="17">Redeems the same invite link</text>
+  <text x="202" y="437" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="15">The first request stays pending</text>
+
+  <path d="M512 408 H630" fill="none" stroke="#ff8d8d" stroke-width="4" stroke-linecap="round"/>
+  <path d="M619 398 L632 408 L619 418" fill="none" stroke="#ff8d8d" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="644" y="340" width="524" height="136" rx="16" fill="#181c1f" stroke="#ff8d8d" stroke-width="2"/>
+  <text x="666" y="373" fill="#ff8d8d" font-family="system-ui, sans-serif" font-size="18" font-weight="700">Another device used this invite link</text>
+  <text x="666" y="405" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="15">Do not accept an unexpected request</text>
+  <rect x="666" y="424" width="205" height="30" rx="15" fill="#593638"/>
+  <text x="685" y="444" fill="#ffffff" font-family="system-ui, sans-serif" font-size="13" font-weight="700">Decline and revoke link</text>
+  <text x="892" y="444" fill="#aeb4b7" font-family="system-ui, sans-serif" font-size="14">Then create a new invite</text>
+</svg>
