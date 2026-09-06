@@ -2,6 +2,8 @@
 #define OMAQ_STORE_H
 
 #include <stddef.h>
+
+#include "seal.h"
 #include "conversation.h"
 
 #define OMAQ_STORE_READ_IDS_MAX 4096u
@@ -11,6 +13,18 @@ typedef struct {
 } omaq_store_message_id;
 
 /* Only this module opens history files. */
+
+/* Install or clear the passphrase-derived history sealing key. Passing NULL
+ * or an inactive key returns the store to plaintext for future writes. */
+void omaq_store_set_seal_key(const omaq_seal_key *key);
+void omaq_store_set_seal_writes(int enabled);
+int omaq_store_seal_active(void);
+
+/* Rewrite every history file under $home so its records match the current
+ * sealing state: sealed when a key is installed, plaintext when it is not.
+ * Each file is replaced atomically, so an interrupted run leaves a mix that
+ * reads correctly. Returns the number of files rewritten, or -1. */
+long omaq_store_reseal_all(const char *home);
 
 int omaq_store_append(const char *home, const char *conv_id, const char *line);
 /* Removes current and rotated history for exactly one conversation. */

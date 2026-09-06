@@ -3840,7 +3840,7 @@ static void reset_identity_runtime_state(void)
 	emit_invite_state("", 0, "clear", NULL);
 }
 
-#define IDENTITY_ARCHIVE_PATHS 18
+#define IDENTITY_ARCHIVE_PATHS 19
 
 typedef struct {
 	char source[IDENTITY_ARCHIVE_PATHS][700];
@@ -3973,7 +3973,10 @@ static int prepare_identity_archive(identity_state_archive *archive, const char 
 	const char *home_names[] = {
 		"history", "avatars", "files", "ratchet", "groups.tsv", "group-friends.tsv",
 		"direct-friends.tsv", "direct-add.pending", "direct-remove.pending",
-		"direct-state-reinvite.required"
+		"direct-state-reinvite.required",
+		/* The sealing key belongs to the identity whose history and
+		 * Ratchet state it protects; it must travel with them. */
+		"seal.key"
 	};
 	const char *state_names[] = {
 		"surfaces.jsonl", "", "auto-open.json", "unread.tsv", "group-bind.pending",
@@ -3994,9 +3997,14 @@ static int prepare_identity_archive(identity_state_archive *archive, const char 
 	}
 	memset(archive, 0, sizeof(*archive));
 	for (i = 0; i < IDENTITY_ARCHIVE_PATHS; i++) {
-		const char *base = i < 10 ? home_dir() : state_dir();
-		const char *name = i < 10 ? home_names[i] :
-			(i == 11 ? auto_open_name : state_names[i - 10]);
+		/* Derive the split from the tables so adding a home or state
+		 * entry cannot silently misalign the mapping. */
+		const int home_count =
+			(int)(sizeof(home_names) / sizeof(home_names[0]));
+		const char *base = i < home_count ? home_dir() : state_dir();
+		const char *name = i < home_count ? home_names[i] :
+			(i == home_count + 1 ? auto_open_name :
+			 state_names[i - home_count]);
 		if (snprintf(archive->source[i], sizeof(archive->source[i]), "%s/%s",
 			     base, name) >= (int)sizeof(archive->source[i]) ||
 		    snprintf(archive->archived[i], sizeof(archive->archived[i]),
@@ -10124,6 +10132,78 @@ static int activate_identity_guard(struct omaq_tox *tox)
 	return 0;
 }
 
+/* Passphrase-derived sealing of local state that the Tox savedata passphrase
+ * does not cover: chat history and Ratchet state. The key exists only while
+ * the identity is unlocked; nothing is sealed for identities without a
+ * passphrase, which preserves the previous behaviour for those users. */
+static omaq_seal_key g_seal;
+
+static void seal_install(const omaq_seal_key *key)
+{
+	omaq_store_set_seal_key(key);
+}
+
+static void seal_forget(void)
+{
+	seal_install(NULL);
+	omaq_seal_key_clear(&g_seal);
+}
+
+/* Install the sealing key for an unlocked identity.
+ *
+ * This never blocks startup. Enforcement lives at the data boundary instead:
+ * without the key, a sealed history record is a hard read error, never
+ * plaintext and never a silent empty result. Keeping the check there also
+ * means a transitional state - such as an identity restored from a recovery
+ * copy that predates the passphrase - cannot lock the user out. */
+static void seal_activate(const char *pass)
+{
+	seal_forget();
+	if (!omaq_seal_key_present(home_dir()))
+		return;
+	if (!pass || !pass[0] ||
+	    omaq_seal_key_open(home_dir(), pass, &g_seal) != 1) {
+		fprintf(stderr,
+			"omaq: sealed history present but the key did not "
+			"open; those conversations stay unreadable\n");
+		seal_forget();
+		return;
+	}
+	seal_install(&g_seal);
+}
+
+/* Start sealing for an identity that just gained a passphrase. */
+static int seal_enable(const char *pass)
+{
+	if (!pass || !pass[0])
+		return -1;
+	seal_forget();
+	if (omaq_seal_key_present(home_dir())) {
+		if (omaq_seal_key_open(home_dir(), pass, &g_seal) != 1)
+			return -1;
+	} else if (omaq_seal_key_create(home_dir(), pass, &g_seal) != 0) {
+		return -1;
+	}
+	seal_install(&g_seal);
+	return omaq_store_reseal_all(home_dir()) < 0 ? -1 : 0;
+}
+
+/* Stop sealing for an identity that dropped its passphrase: rewrite every
+ * sealed record as plaintext while the key can still read it, then discard
+ * the key file. */
+static int seal_disable(void)
+{
+	if (!g_seal.active) {
+		seal_forget();
+		return omaq_seal_key_destroy(home_dir());
+	}
+	omaq_store_set_seal_writes(0);
+	if (omaq_store_reseal_all(home_dir()) < 0)
+		return -1;
+	seal_forget();
+	return omaq_seal_key_destroy(home_dir());
+}
+
 static int load_tox(const char *pass)
 {
 	int err = 0, guard_rc;
@@ -10134,6 +10214,8 @@ static int load_tox(const char *pass)
 		return 1;
 	}
 	g_locked = 0;
+	if (g_tox)
+		seal_activate(pass);
 	if (!g_tox) {
 		if (g_identity_guard_state == OMAQ_IDENTITY_GUARD_RESTORED)
 			(void)omaq_identity_guard_reject_recovery(home_dir(), state_dir());
@@ -11021,12 +11103,23 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			emit_identity_error("forbidden", op->id);
 			return 0;
 		}
+		/* The passphrase now also seals history and Ratchet state. */
+		if (seal_enable(op->passphrase) != 0) {
+			emit_error("seal_migration_failed");
+			emit_identity_action("protect", op->id, NULL, 1);
+			return 0;
+		}
 		emit_identity_action("protect", op->id, NULL, 1);
 		return 0;
 	}
 	if (strcmp(op->op, "identity.unprotect") == 0) {
 		if (!g_tox || omaq_identity_unprotect(g_tox, op->passphrase) != 0) {
 			emit_identity_error("forbidden", op->id);
+			return 0;
+		}
+		if (seal_disable() != 0) {
+			emit_error("seal_migration_failed");
+			emit_identity_action("unprotect", op->id, NULL, 0);
 			return 0;
 		}
 		emit_identity_action("unprotect", op->id, NULL, 0);

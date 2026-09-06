@@ -18,6 +18,7 @@
 #include "../helper/ratchet_pin.h"
 #include "../helper/presence.h"
 #include "../helper/receipt.h"
+#include "../helper/seal.h"
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
@@ -1496,6 +1497,133 @@ static void test_message_rate(void)
 		"g:1000000000000000000000000000000000000000000000000000000000000000",
 		actor, 10000) == 0)
 		fail("message rate global burst limit");
+}
+
+static void test_history_sealing(void)
+{
+	char home[] = "/tmp/omaq-seal-home-XXXXXX";
+	char path[512];
+	char raw[8192];
+	char *tail = NULL;
+	size_t tail_len = 0;
+	omaq_seal_key key;
+	FILE *f;
+	size_t got;
+
+	memset(&key, 0, sizeof(key));
+	if (!omaq_seal_ready()) {
+		fail("seal unavailable");
+		return;
+	}
+	if (!mkdtemp(home)) {
+		fail("seal home");
+		return;
+	}
+
+	/* Without a key the store behaves exactly as before: plaintext JSONL. */
+	if (omaq_store_seal_active())
+		fail("seal active before key");
+	if (omaq_store_append(home, "7", "{\"id\":\"m1\",\"text\":\"legacy\"}") != 0)
+		fail("append plaintext");
+	snprintf(path, sizeof(path), "%s/history/7/messages.jsonl", home);
+	f = fopen(path, "r");
+	if (!f) {
+		fail("history file");
+		return;
+	}
+	got = fread(raw, 1, sizeof(raw) - 1, f);
+	fclose(f);
+	raw[got] = '\0';
+	if (!strstr(raw, "legacy"))
+		fail("plaintext not written");
+
+	/* Installing a key seals new records. */
+	if (omaq_seal_key_create(home, "a strong passphrase", &key) != 0) {
+		fail("seal key create");
+		return;
+	}
+	omaq_store_set_seal_key(&key);
+	if (!omaq_store_seal_active())
+		fail("seal inactive after key");
+	if (omaq_store_append(home, "7", "{\"id\":\"m2\",\"text\":\"secret words\"}") != 0)
+		fail("append sealed");
+	f = fopen(path, "r");
+	if (!f) {
+		fail("history file 2");
+		return;
+	}
+	got = fread(raw, 1, sizeof(raw) - 1, f);
+	fclose(f);
+	raw[got] = '\0';
+	if (strstr(raw, "secret words"))
+		fail("sealed record leaked plaintext");
+	if (!strstr(raw, OMAQ_SEAL_RECORD_PREFIX))
+		fail("sealed record not written");
+	/* Legacy plaintext and sealed records coexist and both read back. */
+	if (omaq_store_tail(home, "7", 10, &tail, &tail_len) != 0 || !tail) {
+		fail("tail mixed");
+	} else {
+		if (!strstr(tail, "legacy") || !strstr(tail, "secret words"))
+			fail("mixed read");
+		free(tail);
+		tail = NULL;
+	}
+
+	/* Migration seals what is left. */
+	if (omaq_store_reseal_all(home) < 0)
+		fail("reseal all");
+	f = fopen(path, "r");
+	if (!f) {
+		fail("history file 3");
+		return;
+	}
+	got = fread(raw, 1, sizeof(raw) - 1, f);
+	fclose(f);
+	raw[got] = '\0';
+	if (strstr(raw, "legacy") || strstr(raw, "secret words"))
+		fail("migration left plaintext");
+	if (omaq_store_tail(home, "7", 10, &tail, &tail_len) != 0 || !tail ||
+	    !strstr(tail, "legacy") || !strstr(tail, "secret words"))
+		fail("read after migration");
+	free(tail);
+	tail = NULL;
+
+	/* Without the key the sealed history is unreadable, never plaintext. */
+	omaq_store_set_seal_key(NULL);
+	if (omaq_store_seal_active())
+		fail("seal active after clear");
+	if (omaq_store_tail(home, "7", 10, &tail, &tail_len) == 0)
+		fail("sealed history readable without key");
+	free(tail);
+	tail = NULL;
+
+	/* The wrong passphrase cannot install a usable key. */
+	{
+		omaq_seal_key wrong;
+
+		memset(&wrong, 0, sizeof(wrong));
+		if (omaq_seal_key_open(home, "not the passphrase", &wrong) != -1)
+			fail("wrong passphrase opened seal key");
+	}
+
+	/* Unsealing restores plaintext for an identity that drops its passphrase. */
+	omaq_store_set_seal_key(&key);
+	if (omaq_store_tail(home, "7", 10, &tail, &tail_len) != 0 || !tail)
+		fail("reopen with key");
+	free(tail);
+	tail = NULL;
+	omaq_store_set_seal_key(NULL);
+	if (omaq_store_reseal_all(home) >= 0)
+		fail("unseal without key succeeded");
+	omaq_seal_key_clear(&key);
+
+	(void)unlink(path);
+	snprintf(path, sizeof(path), "%s/history/7", home);
+	(void)rmdir(path);
+	snprintf(path, sizeof(path), "%s/history", home);
+	(void)rmdir(path);
+	(void)omaq_seal_key_destroy(home);
+	(void)rmdir(home);
 }
 
 static void test_safety(void)
@@ -3282,6 +3410,7 @@ int main(void)
 	test_group_file_offer_rate();
 	test_message_rate();
 	test_safety();
+	test_history_sealing();
 	test_group_file_wire();
 	test_group_invite();
 	test_direct_state();

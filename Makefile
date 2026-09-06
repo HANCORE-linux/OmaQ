@@ -12,6 +12,10 @@ TOX_OK := $(shell $(PKG_CONFIG) --exists libtoxcore && echo yes || \
 SIG_OK := $(shell $(PKG_CONFIG) --exists libsignal-protocol-c && echo yes || echo no)
 PULSE_OK := $(shell $(PKG_CONFIG) --exists libpulse && echo yes || echo no)
 IMAGE_OK := $(shell $(PKG_CONFIG) --exists libpng libjpeg libwebp && echo yes || echo no)
+SODIUM_OK := $(shell $(PKG_CONFIG) --exists libsodium && echo yes || echo no)
+SODIUM_CFLAGS := $(shell $(PKG_CONFIG) --cflags libsodium 2>/dev/null)
+SODIUM_LIBS := $(shell $(PKG_CONFIG) --libs libsodium 2>/dev/null)
+CFLAGS += $(SODIUM_CFLAGS)
 
 ifeq ($(TOX_OK),yes)
   TOX_PC := $(shell $(PKG_CONFIG) --exists libtoxcore && echo libtoxcore || echo toxcore)
@@ -43,7 +47,7 @@ endif
 LIB_SRC := helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
 	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/stdout_spool.c helper/state_archive.c helper/store.c helper/message.c \
 	helper/identity.c helper/identity_guard.c helper/tox_adapt.c helper/rate.c \
-	helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/safety.c helper/seal.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/file.c helper/avatar.c helper/av.c \
 	helper/presence.c helper/receipt.c helper/message_action.c helper/direct_state.c \
 	helper/ratchet.c helper/ratchet_pin.c helper/ratchet_adapt.c
@@ -51,7 +55,7 @@ HELPER_SRC := $(LIB_SRC) helper/omaq.c
 TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation.c helper/auto_open.c \
 	helper/group_file.c helper/group_file_store.c helper/json_io.c helper/text.c helper/line_reader.c helper/store.c helper/message.c helper/identity.c \
 	helper/identity_guard.c \
-	helper/rate.c helper/safety.c helper/qr.c helper/group.c helper/group_invite.c \
+	helper/rate.c helper/safety.c helper/seal.c helper/qr.c helper/group.c helper/group_invite.c \
 	helper/surface.c helper/sound.c helper/state_archive.c helper/file.c helper/avatar.c helper/presence.c helper/receipt.c helper/message_action.c \
 	helper/direct_state.c helper/ratchet.c helper/ratchet_pin.c
 
@@ -85,13 +89,13 @@ else
   REINVITE_TEST_COMMAND := @echo "reinvite-recovery: skipped (full helper dependencies unavailable)"
 endif
 
-.PHONY: all test helper check-signal check-audio check-images arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
+.PHONY: all test helper check-signal check-audio check-images check-sodium arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
 all: $(BIN_TEST) helper
 
 $(BIN_TEST): $(TEST_SRC)
-	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) $(AVATAR_CFLAGS) -o $@ $(TEST_SRC) $(AVATAR_LIBS)
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) $(AVATAR_CFLAGS) $(SODIUM_CFLAGS) -o $@ $(TEST_SRC) $(AVATAR_LIBS) $(SODIUM_LIBS)
 
 $(BIN_SPOOL_TEST): tests/stdout_spool_test.c helper/stdout_spool.c helper/stdout_spool.h
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DOMAQ_STDOUT_SPOOL_MAX=5242880u \
@@ -127,12 +131,12 @@ $(BIN_TOX_RELAY_RETRY_TEST): tests/tox_relay_retry_test.c helper/tox_adapt.c hel
 
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
-		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
-		$(AVATAR_LIBS)
+		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) $(SODIUM_CFLAGS) -o $@ $(HELPER_SRC) \
+		$(AVATAR_LIBS) $(SODIUM_LIBS)
 
-$(BIN_GROUP_ADMIN_TEST_HELPER): check-signal $(HELPER_SRC)
+$(BIN_GROUP_ADMIN_TEST_HELPER): check-signal check-sodium $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) \
-		-DOMAQ_IPC_TEST -DOMAQ_TOX_TEST -o $@ $(HELPER_SRC) $(TOX_LIBS)
+		-DOMAQ_IPC_TEST -DOMAQ_TOX_TEST -o $@ $(HELPER_SRC) $(TOX_LIBS) $(SODIUM_LIBS)
 
 check-signal:
 	@if [ "$(SIG_OK)" != "yes" ]; then \
@@ -148,14 +152,21 @@ check-audio:
 		exit 1; \
 	fi
 
+check-sodium:
+	@if [ "$(SODIUM_OK)" != "yes" ]; then \
+		echo "omaq: libsodium is required to encrypt local history and Ratchet state" >&2; \
+		echo "omaq: install libsodium before running 'make helper'" >&2; \
+		exit 1; \
+	fi
+
 check-images:
 	@if [ "$(IMAGE_OK)" != "yes" ]; then \
 		echo "omaq: libpng, libjpeg and libwebp are required for safe avatar decoding" >&2; \
 		exit 1; \
 	fi
 
-$(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
-	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
+$(BIN_HELP): check-signal check-audio check-images check-sodium $(HELPER_SRC)
+	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS) $(SODIUM_LIBS)
 
 test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)
@@ -223,6 +234,7 @@ verify-0: test arch
 verify-1-offline: test arch helper
 	sh tests/lock-elect.sh
 	sh tests/two-clients.sh
+	sh tests/history-seal.sh
 	omarchy plugin validate .
 	@echo "verify-1-offline: ok"
 
@@ -245,6 +257,7 @@ verify-2: test arch helper
 	fi
 	sh tests/lock-elect.sh
 	sh tests/two-clients.sh
+	sh tests/history-seal.sh
 	omarchy plugin validate .
 	sh tests/phase2.sh
 	@echo "verify-2: ok"

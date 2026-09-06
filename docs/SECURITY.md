@@ -42,7 +42,9 @@ Source updates build an externally staged Git checkout before stopping the shell
 
 ## Know the passphrase boundary
 
-A passphrase encrypts the Tox savedata in `tox.save`. It does not encrypt Ratchet state, avatars, receipts, preferences, or chat history.
+A passphrase encrypts the Tox savedata in `tox.save` **and your chat history**. Setting a passphrase derives a second key with Argon2id, stores it wrapped in `~/.local/share/omaq/seal.key`, and rewrites every stored transcript so each message record is sealed with XChaCha20-Poly1305. Removing the passphrase reverses the migration and deletes the key. Without the passphrase, sealed transcripts are unreadable: they are never shown as plaintext and never silently reported as empty.
+
+It still does not encrypt Ratchet state, avatars, receipts, or preferences. In particular the Signal Ratchet identity private key under `~/.local/share/omaq/ratchet/` remains plaintext, because its lifetime is tied to identity replacement and recovery flows that must be reworked before it can be sealed safely; a disk image or backup therefore still reveals contact and session metadata. Use full-disk encryption when that matters.
 
 OmaQ maintains a fingerprint-bound identity-presence record and a current recovery copy. A stale or fingerprint-mismatched copy is never restored automatically. Export a current identity bundle before moving or repairing an established identity.
 

@@ -4358,6 +4358,15 @@ BarWidget {
                 font.pixelSize: Style.font.caption
               }
 
+              SafeText {
+                width: parent.width
+                text: "Anyone who sees this link or QR before your contact does can redeem it and become that contact. Send it through a channel only they can read, and revoke it if it may have leaked."
+                color: root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
               Column {
                 id: inviteSteps
                 visible: root.inviteConfirmMode === ""
@@ -5059,6 +5068,16 @@ BarWidget {
                 width: parent.width
                 text: "Use at least 8 characters and at most 128 bytes."
                 color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              SafeText {
+                visible: root.moreSection === "identity"
+                width: parent.width
+                text: "The passphrase encrypts the identity file and your chat history. Ratchet state and keys, avatars, receipts, and preferences stay unencrypted on disk under your account, so a copy of this disk or a backup still reveals who you talk to. Protect the device itself with full-disk encryption."
+                color: root.systemColors[1] || root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap

@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "store.h"
+#include "seal.h"
 #include "json_io.h"
 
 #include <ctype.h>
@@ -10,12 +11,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #define ROTATE_BYTES (2 * 1024 * 1024)
 #define UNREAD_STATE_BYTES (1024 * 1024)
 #define STORE_LINE_MAX 16384u
+/* A sealed record is base64 of nonce+ciphertext+tag, so it is about a third
+ * longer than the plaintext line it replaces. */
+#define STORE_SEALED_LINE_MAX (STORE_LINE_MAX * 2u)
 #define GROUP_REACTION_ACTORS_MAX 32
 #define MESSAGE_INDEX_SLOTS 8
 #define MESSAGE_INDEX_BLOOM_BYTES (128u * 1024u)
@@ -167,6 +172,77 @@ static int mkdir_p(const char *path)
 	return -1;
 }
 
+/* Passphrase-derived sealing for chat history. Inactive until the identity is
+ * unlocked with a passphrase; unprotected identities keep the previous
+ * plaintext format. Sealed and plaintext records may coexist in one file
+ * while migration runs, so reads accept both, but a sealed record is never
+ * readable without the key. */
+static omaq_seal_key g_store_seal;
+/* Reads always use the installed key; writes can be switched to plaintext so
+ * an identity that drops its passphrase can be migrated back in one pass. */
+static int g_store_seal_writes = 1;
+
+void omaq_store_set_seal_key(const omaq_seal_key *key)
+{
+	if (key && key->active)
+		g_store_seal = *key;
+	else
+		omaq_seal_key_clear(&g_store_seal);
+	g_store_seal_writes = 1;
+}
+
+void omaq_store_set_seal_writes(int enabled)
+{
+	g_store_seal_writes = enabled ? 1 : 0;
+}
+
+int omaq_store_seal_active(void)
+{
+	return g_store_seal.active && g_store_seal_writes;
+}
+
+/* The directory holding a history file is the conversation id, so it is a
+ * stable binding that survives log rotation. */
+static int seal_context_from_path(const char *path, char *out, size_t n)
+{
+	const char *last, *prev;
+	size_t len;
+
+	if (!path || !out)
+		return -1;
+	last = strrchr(path, '/');
+	if (!last || last == path)
+		return -1;
+	prev = NULL;
+	for (const char *scan = path; scan < last; scan++) {
+		if (*scan == '/')
+			prev = scan;
+	}
+	if (!prev)
+		return -1;
+	len = (size_t)(last - prev - 1);
+	if (len == 0 || len >= n)
+		return -1;
+	memcpy(out, prev + 1, len);
+	out[len] = '\0';
+	return 0;
+}
+
+static int write_history_line(FILE *f, const char *path, const char *line)
+{
+	char context[256];
+	char sealed[STORE_SEALED_LINE_MAX + 2];
+
+	if (!g_store_seal.active || !g_store_seal_writes)
+		return fprintf(f, "%s\n", line) < 0 ? -1 : 0;
+	if (seal_context_from_path(path, context, sizeof(context)) != 0)
+		return -1;
+	if (omaq_seal_record(&g_store_seal, context, line, sealed,
+			     sizeof(sealed)) != 0)
+		return -1;
+	return fprintf(f, "%s\n", sealed) < 0 ? -1 : 0;
+}
+
 static int hist_dir(const char *home, const char *conv_id, char *buf, size_t n)
 {
 	if (!home || !conv_id || !buf)
@@ -189,6 +265,7 @@ static int hist_file(const char *home, const char *conv_id, char *buf, size_t n)
 }
 
 static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap);
+static void reset_read_lines(char ***lines, size_t *n, size_t *cap);
 static int history_line_id(const char *line, char *out, size_t outn);
 
 struct message_index_entry {
@@ -535,7 +612,7 @@ static int update_file_message(const char *path, const char *id, const char *tex
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
 	for (i = 0; i < n; i++)
-		if (fprintf(f, "%s\n", lines[i]) < 0)
+		if (write_history_line(f, path, lines[i]) != 0)
 			goto close_fail;
 	if (fclose(f) != 0)
 		goto fail_tmp;
@@ -596,7 +673,7 @@ static int update_file_receipt(const char *path, const char *id, const char *sta
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
 	for (i = 0; i < n; i++)
-		if (fprintf(f, "%s\n", lines[i]) < 0)
+		if (write_history_line(f, path, lines[i]) != 0)
 			goto close_fail;
 	if (fclose(f) != 0)
 		goto fail_tmp;
@@ -692,7 +769,7 @@ static int update_file_group_receipt(const char *path, const char *id,
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
 	for (i = 0; i < n; i++)
-		if (fprintf(f, "%s\n", lines[i]) < 0)
+		if (write_history_line(f, path, lines[i]) != 0)
 			goto close_fail;
 	if (fclose(f) != 0)
 		goto fail_tmp;
@@ -791,7 +868,7 @@ static int update_file_reaction(const char *path, const char *id, const char *em
 	if (fchmod(fileno(f), 0600) != 0)
 		goto close_fail;
 	for (i = 0; i < n; i++) {
-		if (fprintf(f, "%s\n", lines[i]) < 0)
+		if (write_history_line(f, path, lines[i]) != 0)
 			goto close_fail;
 	}
 	if (fclose(f) != 0)
@@ -1168,6 +1245,113 @@ int omaq_store_clear(const char *home, const char *conv_id)
 	return rc;
 }
 
+/* Rewrite one history file so every record matches the current sealing
+ * state. The rewrite is atomic, so a crash leaves either the old or the new
+ * file, never a partial one. */
+static int reseal_file(const char *path)
+{
+	char **lines = NULL;
+	char tmp[640];
+	size_t n = 0, cap = 0, i;
+	FILE *f;
+
+	if (read_lines(path, &lines, &n, &cap) != 0)
+		return -1;
+	if (n == 0) {
+		reset_read_lines(&lines, &n, &cap);
+		return 0;
+	}
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >=
+	    (int)sizeof(tmp)) {
+		reset_read_lines(&lines, &n, &cap);
+		return -1;
+	}
+	f = safe_fopen(tmp, "w");
+	if (!f) {
+		reset_read_lines(&lines, &n, &cap);
+		return -1;
+	}
+	if (fchmod(fileno(f), 0600) != 0)
+		goto fail;
+	for (i = 0; i < n; i++) {
+		if (write_history_line(f, path, lines[i]) != 0)
+			goto fail;
+	}
+	if (fflush(f) != 0 || fsync(fileno(f)) != 0 || fclose(f) != 0) {
+		safe_unlink(tmp);
+		reset_read_lines(&lines, &n, &cap);
+		return -1;
+	}
+	if (safe_rename(tmp, path) != 0) {
+		safe_unlink(tmp);
+		reset_read_lines(&lines, &n, &cap);
+		return -1;
+	}
+	reset_read_lines(&lines, &n, &cap);
+	return 1;
+fail:
+	fclose(f);
+	safe_unlink(tmp);
+	reset_read_lines(&lines, &n, &cap);
+	return -1;
+}
+
+long omaq_store_reseal_all(const char *home)
+{
+	char root[512], dir[576], path[704];
+	DIR *conversations;
+	struct dirent *entry;
+	long rewritten = 0;
+
+	if (!home)
+		return -1;
+	if (snprintf(root, sizeof(root), "%s/history", home) >= (int)sizeof(root))
+		return -1;
+	conversations = opendir(root);
+	if (!conversations)
+		return errno == ENOENT ? 0 : -1;
+	while ((entry = readdir(conversations)) != NULL) {
+		struct stat st;
+		int index;
+
+		if (entry->d_name[0] == '.')
+			continue;
+		if (strchr(entry->d_name, '/'))
+			continue;
+		if (snprintf(dir, sizeof(dir), "%s/%s", root, entry->d_name) >=
+		    (int)sizeof(dir))
+			continue;
+		/* messages.jsonl plus the rotated generation. safe_stat accepts
+		 * only owner-owned regular files, so a non-conversation entry
+		 * simply yields no history paths. */
+		for (index = 0; index < 2; index++) {
+			int rc;
+
+			if (index == 0)
+				rc = snprintf(path, sizeof(path),
+					      "%s/messages.jsonl", dir);
+			else
+				rc = snprintf(path, sizeof(path),
+					      "%s/messages.jsonl.1", dir);
+			if (rc >= (int)sizeof(path))
+				continue;
+			if (safe_stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+				continue;
+			rc = reseal_file(path);
+			if (rc < 0) {
+				closedir(conversations);
+				return -1;
+			}
+			rewritten += rc;
+		}
+		message_index_invalidate(home, entry->d_name);
+	}
+	closedir(conversations);
+	if (fsync_dir(root) != 0)
+		return -1;
+	return rewritten;
+}
+
 int omaq_store_append(const char *home, const char *conv_id, const char *line)
 {
 	char dir[512], path[576], rot[580];
@@ -1201,7 +1385,7 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 		fclose(f);
 		return -1;
 	}
-	if (fprintf(f, "%s\n", line) < 0) {
+	if (write_history_line(f, path, line) != 0) {
 		fclose(f);
 		return -1;
 	}
@@ -1232,7 +1416,9 @@ static void reset_read_lines(char ***lines, size_t *n, size_t *cap)
 static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 {
 	FILE *f;
-	char buf[STORE_LINE_MAX + 2];
+	char buf[STORE_SEALED_LINE_MAX + 2];
+	char opened[STORE_LINE_MAX + 1];
+	char context[256];
 
 	f = safe_fopen(path, "r");
 	if (!f)
@@ -1240,12 +1426,37 @@ static int read_lines(const char *path, char ***lines, size_t *n, size_t *cap)
 	while (fgets(buf, sizeof(buf), f)) {
 		size_t len = strlen(buf);
 		char *copy;
-		if (len == 0 || len > STORE_LINE_MAX || buf[len - 1] != '\n') {
+		if (len == 0 || len > STORE_SEALED_LINE_MAX ||
+		    buf[len - 1] != '\n') {
 			fclose(f);
 			reset_read_lines(lines, n, cap);
 			return -1;
 		}
 		buf[--len] = '\0';
+		if (omaq_seal_is_record(buf)) {
+			/* Fail closed: a sealed record is never returned as
+			 * plaintext, and never skipped. */
+			if (!g_store_seal.active ||
+			    seal_context_from_path(path, context,
+						   sizeof(context)) != 0 ||
+			    omaq_seal_open_record(&g_store_seal, context, buf,
+						  opened, sizeof(opened)) != 0) {
+				fclose(f);
+				reset_read_lines(lines, n, cap);
+				return -1;
+			}
+			len = strlen(opened);
+			if (len == 0 || len > STORE_LINE_MAX) {
+				fclose(f);
+				reset_read_lines(lines, n, cap);
+				return -1;
+			}
+			memcpy(buf, opened, len + 1);
+		} else if (len > STORE_LINE_MAX) {
+			fclose(f);
+			reset_read_lines(lines, n, cap);
+			return -1;
+		}
 		if (omaq_json_validate(buf) != 0) {
 			fclose(f);
 			reset_read_lines(lines, n, cap);
