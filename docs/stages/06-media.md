@@ -22,7 +22,9 @@
 make verify-6
 ```
 
-`tests/phase6.sh` prints the measured call-peak RSS. The gate is 40,960 kB.
+`tests/phase6.sh` prints the measured call-peak RSS. The gate is 40,960 kB. Its four `OmaQ-Call-Test-*` capture and playback endpoints run on a parent-death-bound private PipeWire/PulseAudio server, so they do not appear in the user's normal device registry.
+
+Before starting the private server, the harness removes only exact `omaq_p6_<pid>_{cap,out}_{a,b}` modules whose owning PID is no longer alive. Two SIGKILL regressions verify private-server teardown and legacy orphan reclamation without removing a live run.
 
 ## Stays out
 
