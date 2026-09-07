@@ -85,7 +85,7 @@ else
   REINVITE_TEST_COMMAND := @echo "reinvite-recovery: skipped (full helper dependencies unavailable)"
 endif
 
-.PHONY: all test test-ci helper check-tox check-signal check-audio check-images check-qml arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
+.PHONY: all test test-ci helper check-tox check-signal check-audio check-images check-node check-qml arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
 all: $(BIN_TEST) helper
@@ -160,6 +160,12 @@ check-images:
 		exit 1; \
 	fi
 
+check-node:
+	@if ! command -v node >/dev/null 2>&1; then \
+		echo "omaq: Node.js is required for the CI test suite" >&2; \
+		exit 1; \
+	fi
+
 check-qml:
 	@if [ ! -x /usr/lib/qt6/bin/qml ] || [ ! -x /usr/lib/qt6/bin/qmlformat ]; then \
 		echo "omaq: Qt 6 qml and qmlformat are required for the CI test suite" >&2; \
@@ -170,7 +176,7 @@ $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 # Keep native Quickshell and Omarchy shell fixtures in the local test target.
-test-ci: check-tox check-signal check-audio check-images check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)

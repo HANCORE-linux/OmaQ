@@ -29,8 +29,8 @@ jobs:
         run: >-
           pacman -Syu --noconfirm --needed
           actionlint file fish git jq libjpeg-turbo libpng libpulse
-          libsignal-protocol-c libwebp openssl pkgconf python qt6-declarative
-          shadow shellcheck socat toxcore util-linux
+          libsignal-protocol-c libwebp nodejs openssl pkgconf python
+          qt6-declarative shadow shellcheck socat toxcore util-linux
 
       - name: Check out the tested revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
