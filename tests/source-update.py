@@ -205,6 +205,7 @@ class SourceUpdateTests(unittest.TestCase):
         updater = MODULE.Updater.__new__(MODULE.Updater)
         updater.root = Path("/tmp/live")
         updater.update_base = Path("/tmp/update-base")
+        updater.update_archive = Path("/tmp/update-archive")
         updater.expected_commit = ""
         updater.runtime_tool = Path("/tmp/runtime.py")
         updater.shell = FakeShell()
@@ -215,7 +216,7 @@ class SourceUpdateTests(unittest.TestCase):
         original_validate = MODULE.validate_git_checkout
         original_helper_call = MODULE.helper_call
         MODULE.resolve_remote_main = lambda *args: "b" * 40
-        MODULE.stage_update = lambda *args: MODULE.StagedTree(
+        MODULE.stage_update = lambda *args, **kwargs: MODULE.StagedTree(
             Path("/tmp/staged"), "b" * 40, "b" * 64, 15
         )
         MODULE.directory_identity = lambda path: (1, 2)
@@ -254,6 +255,7 @@ class SourceUpdateTests(unittest.TestCase):
         updater = MODULE.Updater.__new__(MODULE.Updater)
         updater.root = Path("/tmp/live")
         updater.update_base = Path("/tmp/update-base")
+        updater.update_archive = Path("/tmp/update-archive")
         updater.expected_commit = ""
         updater.runtime_tool = Path("/tmp/runtime.py")
         updater.shell = FakeShell()
@@ -265,7 +267,7 @@ class SourceUpdateTests(unittest.TestCase):
         original_helper_call = MODULE.helper_call
         original_exchange_preflight = MODULE.preflight_exchange_support
         MODULE.resolve_remote_main = lambda *args: "b" * 40
-        MODULE.stage_update = lambda *args: MODULE.StagedTree(
+        MODULE.stage_update = lambda *args, **kwargs: MODULE.StagedTree(
             Path("/tmp/staged"), "b" * 40, "b" * 64, 14
         )
         MODULE.directory_identity = lambda path: (1, 2)
@@ -347,7 +349,9 @@ class SourceUpdateTests(unittest.TestCase):
             original_validate = MODULE.validate_git_checkout
             original_helper_call = MODULE.helper_call
             MODULE.resolve_remote_main = lambda *args: "a" * 40
-            MODULE.stage_update = lambda *args: self.fail("same commit was staged")
+            MODULE.stage_update = lambda *args, **kwargs: self.fail(
+                "same commit was staged"
+            )
             MODULE.validate_git_checkout = lambda *args, **kwargs: "a" * 40
 
             def fake_helper_call(_root, action, **_kwargs):
@@ -561,9 +565,12 @@ class SourceUpdateTests(unittest.TestCase):
     def test_update_storage_reserves_space_and_limits_retained_trees(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            first = root / "first"
+            first = root / "tree-20260101-000000-000000000001"
+            second = root / "tree-20260102-000000-000000000002"
             first.mkdir()
-            (first / "data").write_bytes(b"x" * 70)
+            second.mkdir()
+            (first / "data").write_bytes(b"x" * 35)
+            (second / "data").write_bytes(b"x" * 35)
             previous_trees = MODULE.MAX_UPDATE_TREES
             previous_total = MODULE.MAX_UPDATE_BYTES
             previous_tree_bytes = MODULE.MAX_TREE_BYTES
@@ -575,8 +582,6 @@ class SourceUpdateTests(unittest.TestCase):
                     MODULE.check_update_storage(root)
 
                 MODULE.MAX_UPDATE_BYTES = 1000
-                second = root / "second"
-                second.mkdir()
                 MODULE.MAX_UPDATE_TREES = 2
                 with self.assertRaisesRegex(MODULE.UpdateError, "retained-tree"):
                     MODULE.check_update_storage(root)
@@ -584,6 +589,224 @@ class SourceUpdateTests(unittest.TestCase):
                 MODULE.MAX_UPDATE_TREES = previous_trees
                 MODULE.MAX_UPDATE_BYTES = previous_total
                 MODULE.MAX_TREE_BYTES = previous_tree_bytes
+
+    def test_update_storage_enforces_per_tree_entry_and_byte_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / "tree-20260101-000000-000000000001"
+            tree.mkdir()
+            (tree / "first").write_bytes(b"x" * 6)
+            (tree / "second").write_bytes(b"x" * 5)
+            previous_entries = MODULE.MAX_TREE_ENTRIES
+            previous_tree_bytes = MODULE.MAX_TREE_BYTES
+            previous_total = MODULE.MAX_UPDATE_BYTES
+            try:
+                MODULE.MAX_TREE_ENTRIES = 1
+                with self.assertRaisesRegex(MODULE.UpdateError, "entry limit"):
+                    MODULE.check_update_storage(root)
+                MODULE.MAX_TREE_ENTRIES = previous_entries
+                MODULE.MAX_TREE_BYTES = 10
+                MODULE.MAX_UPDATE_BYTES = 100
+                with self.assertRaisesRegex(MODULE.UpdateError, "byte limit"):
+                    MODULE.check_update_storage(root)
+            finally:
+                MODULE.MAX_TREE_ENTRIES = previous_entries
+                MODULE.MAX_TREE_BYTES = previous_tree_bytes
+                MODULE.MAX_UPDATE_BYTES = previous_total
+
+    def test_full_update_storage_archives_the_oldest_tree_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "omaq-source-updates"
+            archive = state / "omaq-source-update-archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+                "tree-20260103-000000-000000000003",
+            ]
+            for name in names:
+                tree = updates / name
+                tree.mkdir()
+                (tree / "value").write_text(name, encoding="utf-8")
+            oldest_identity = MODULE.directory_identity(updates / names[0])
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+
+            archived = archive / names[0]
+            self.assertFalse((updates / names[0]).exists())
+            self.assertEqual(MODULE.directory_identity(archived), oldest_identity)
+            self.assertEqual(
+                (archived / "value").read_text(encoding="utf-8"), names[0]
+            )
+            self.assertEqual(
+                sorted(path.name for path in updates.iterdir()), names[1:]
+            )
+            self.assertIn(str(archived), output.getvalue())
+
+    def test_update_storage_refuses_unrecognized_entries_before_archival(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            (updates / "tree-current").mkdir()
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                with self.assertRaisesRegex(MODULE.UpdateError, "unexpected entry"):
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertEqual(list(archive.iterdir()), [])
+
+    def test_update_storage_refuses_nested_symlinks_before_archival(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            outside = state / "outside"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            outside.write_text("keep\n", encoding="utf-8")
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            (updates / names[0] / "outside-link").symlink_to(outside)
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                with self.assertRaisesRegex(MODULE.UpdateError, "contains a symlink"):
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep\n")
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertEqual(list(archive.iterdir()), [])
+
+    def test_update_storage_refuses_unsafe_modes_before_archival(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            unsafe = updates / names[0] / "unsafe"
+            unsafe.mkdir()
+            unsafe.chmod(0o777)
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                with self.assertRaisesRegex(MODULE.UpdateError, "unsafe directory"):
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertEqual(list(archive.iterdir()), [])
+
+    def test_update_storage_refuses_an_archive_name_collision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            (archive / names[0]).mkdir()
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                with self.assertRaisesRegex(MODULE.UpdateError, "already contains"):
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertTrue((archive / names[0]).is_dir())
+
+    def test_update_storage_refuses_a_full_archive_without_moving_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            archived_name = "tree-20251231-000000-000000000000"
+            (archive / archived_name).mkdir()
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            previous_archive_trees = MODULE.MAX_UPDATE_ARCHIVE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                MODULE.MAX_UPDATE_ARCHIVE_TREES = 1
+                with self.assertRaises(MODULE.UpdateError) as caught:
+                    MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+                MODULE.MAX_UPDATE_ARCHIVE_TREES = previous_archive_trees
+            message = str(caught.exception)
+            self.assertIn("archive reached its retained-tree limit", message)
+            self.assertIn("inspect and move or manually delete", message)
+            self.assertIn(str(archive), message)
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertTrue((archive / archived_name).is_dir())
+
+    def test_update_storage_refuses_cross_mount_archival_without_moving_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            updates = state / "updates"
+            archive = state / "archive"
+            updates.mkdir(mode=0o700)
+            archive.mkdir(mode=0o700)
+            names = [
+                "tree-20260101-000000-000000000001",
+                "tree-20260102-000000-000000000002",
+            ]
+            for name in names:
+                (updates / name).mkdir()
+            previous_trees = MODULE.MAX_UPDATE_TREES
+            try:
+                MODULE.MAX_UPDATE_TREES = len(names)
+                with mock.patch.object(MODULE, "mount_id_for", side_effect=[1, 2]):
+                    with self.assertRaisesRegex(MODULE.UpdateError, "mount boundary"):
+                        MODULE.prepare_update_storage(updates, archive)
+            finally:
+                MODULE.MAX_UPDATE_TREES = previous_trees
+            self.assertTrue(all((updates / name).is_dir() for name in names))
+            self.assertEqual(list(archive.iterdir()), [])
 
     def test_exchange_capability_is_probed_before_live_exchange(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1268,7 +1491,12 @@ class SourceUpdateTests(unittest.TestCase):
                 "protocol.file.allow=always",
             )
             try:
-                staged = MODULE.stage_update(updates, head, head)
+                with mock.patch.object(MODULE, "validate_plugin") as validate_plugin:
+                    staged = MODULE.stage_update(updates, head, head)
+                    self.assertEqual(
+                        validate_plugin.call_args_list,
+                        [mock.call(staged.path), mock.call(staged.path)],
+                    )
             finally:
                 MODULE.CANONICAL_ORIGIN = original_origin
                 MODULE.GIT_NETWORK_CONFIG = original_network

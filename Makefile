@@ -85,7 +85,7 @@ else
   REINVITE_TEST_COMMAND := @echo "reinvite-recovery: skipped (full helper dependencies unavailable)"
 endif
 
-.PHONY: all test helper check-signal check-audio check-images arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
+.PHONY: all test test-ci helper check-tox check-signal check-audio check-images check-node check-qml arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
 	verify-2 verify-3 verify-4 verify-5 verify-6 verify-7 verify-8 clean
 
 all: $(BIN_TEST) helper
@@ -134,6 +134,12 @@ $(BIN_GROUP_ADMIN_TEST_HELPER): check-signal $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) \
 		-DOMAQ_IPC_TEST -DOMAQ_TOX_TEST -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
+check-tox:
+	@if [ "$(TOX_OK)" != "yes" ]; then \
+		echo "omaq: toxcore is required for the CI test suite" >&2; \
+		exit 1; \
+	fi
+
 check-signal:
 	@if [ "$(SIG_OK)" != "yes" ]; then \
 		echo "omaq: libsignal-protocol-c is required for direct-message encryption" >&2; \
@@ -154,8 +160,53 @@ check-images:
 		exit 1; \
 	fi
 
+check-node:
+	@if ! command -v node >/dev/null 2>&1; then \
+		echo "omaq: Node.js is required for the CI test suite" >&2; \
+		exit 1; \
+	fi
+
+check-qml:
+	@if [ ! -x /usr/lib/qt6/bin/qml ] || [ ! -x /usr/lib/qt6/bin/qmlformat ]; then \
+		echo "omaq: Qt 6 qml and qmlformat are required for the CI test suite" >&2; \
+		exit 1; \
+	fi
+
 $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
+
+# Keep native Quickshell and Omarchy shell fixtures in the local test target.
+test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+	./$(BIN_TEST)
+	./$(BIN_SPOOL_TEST)
+	./$(BIN_FILE_TRANSFER_TEST)
+	./$(BIN_AV_STATE_TEST)
+	./$(BIN_IDENTITY_GUARD_TEST)
+	./$(BIN_TOX_RELAY_RETRY_TEST)
+	./$(BIN_RATCHET_PREKEY_TEST)
+	python3 tests/tcp_relay_retry_source_test.py
+	sh tests/arch-check.sh
+	sh tests/float-script.sh
+	sh tests/nonblocking-invite.sh
+	sh tests/direct-invite-fingerprint.sh
+	sh tests/input-mask.sh
+	sh tests/surface-owner.sh
+	python3 tests/qml_plaintext_test.py
+	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
+	sh tests/group-chat-parity.sh
+	sh tests/redeem-feedback.sh
+	sh tests/asset-provenance.sh
+	python3 tests/extract-emoji.py
+	sh tests/paste-image.sh
+	sh tests/no-signal-build.sh
+	sh tests/reinvite-recovery.sh
+	sh tests/uninstall.sh
+	sh tests/helper-update.sh ./$(BIN_IPC_TEST_HELPER)
+	python3 tests/source-update.py
+	python3 tests/source-install.py
+	sh tests/update-order.sh
+	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
+	@echo "test-ci: ok (native Quickshell and Omarchy shell fixtures excluded)"
 
 test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)

@@ -229,10 +229,24 @@ esac
         self.assertLess(time.monotonic() - started, 2.0)
         self.assertEqual(self.target.read_bytes(), b"sentinel")
         child_pid = int(pid_file.read_text())
+
+        def process_can_run() -> bool:
+            try:
+                raw = Path(f"/proc/{child_pid}/stat").read_text(
+                    encoding="ascii"
+                )
+            except FileNotFoundError:
+                return False
+            close = raw.rfind(")")
+            fields = raw[close + 2 :].split()
+            self.assertGreaterEqual(close, 0)
+            self.assertGreaterEqual(len(fields), 1)
+            return fields[0] != "Z"
+
         deadline = time.monotonic() + 2.0
-        while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+        while process_can_run() and time.monotonic() < deadline:
             time.sleep(0.02)
-        self.assertFalse(Path(f"/proc/{child_pid}").exists())
+        self.assertFalse(process_can_run())
 
 
 if __name__ == "__main__":

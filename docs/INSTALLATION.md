@@ -288,6 +288,10 @@ To bind an announced release or reviewed revision, set `expected_commit` in the 
 
 The updater clones and builds outside the monitored plugin tree. When the remote commit differs, it verifies exchange support, stops the shell, atomically exchanges the complete checkouts, restarts the shell, and checks the plugin and helper. The old checkout remains at the printed `previous tree` path for manual recovery.
 
+When active storage reaches eight trees, the updater validates both storage locations. It atomically moves the oldest tree to `~/.local/state/omaq-source-update-archive/` before staging without deleting it. The archive retains at most 56 trees, so a later update can move an older printed `previous tree` path there. Per-tree and aggregate entry, byte, ownership, device, and mount checks fail closed before archival; staging also requires at least 1 GiB free.
+
+At 56 archived trees, the updater stops before staging and prints the archive path. Inspect that directory, then move or manually delete only trees you no longer need before rerunning the updater. The updater never removes archived trees automatically.
+
 An active private group can keep the compatible old helper running under the new plugin tree. The updater reports that state as pending instead of forcing a restart. Do not run `omarchy restart shell` during an update. See the [shell-off update transaction](stages/trigger-free-updates.md) for the complete sequence and security boundaries.
 
 ### Check update status
@@ -372,7 +376,8 @@ After removing the plugin, an interactive wrapper run offers each existing OmaQ 
 - `~/.local/state/omaq/`: identity recovery, preferences, unread state, receipts, surfaces, and journals
 - `~/Downloads/omaq/`: received files
 - `~/.local/state/omaq-deploy-backups/`: deployment backups, when present
-- `~/.local/state/omaq-source-updates/`: retained source-update trees, when present
+- `~/.local/state/omaq-source-updates/`: active retained source-update trees, when present
+- `~/.local/state/omaq-source-update-archive/`: older retained source-update trees, when present
 - `~/.omaq-source-install/`: a retained legacy source checkout, when present
 - the exact Omarchy plugin backup path reported during removal, when present
 
