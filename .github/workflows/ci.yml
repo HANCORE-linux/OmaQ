@@ -1,0 +1,82 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arch-tests:
+    name: Arch headless suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: archlinux:base-devel@sha256:694da1fce635e3a14d90751941b08f02c500e8724682f7a00768e7152251ec34
+    steps:
+      - name: Install signed Arch dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed
+          actionlint file fish git jq libjpeg-turbo libpng libpulse
+          libsignal-protocol-c libwebp openssl pkgconf python qt6-declarative
+          shadow shellcheck socat toxcore util-linux
+
+      - name: Check out the tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare the unprivileged test account
+        run: |
+          useradd --create-home --shell /bin/bash omaq-ci
+          install -d -o omaq-ci -g omaq-ci /home/omaq-ci/OmaQ
+          runuser -u omaq-ci -- cp -a --no-preserve=ownership \
+            "$GITHUB_WORKSPACE/." /home/omaq-ci/OmaQ/
+
+      - name: Run static checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          runuser -u omaq-ci -- env \
+            HOME=/home/omaq-ci \
+            BASE_SHA="$BASE_SHA" \
+            EVENT_NAME="$EVENT_NAME" \
+            HEAD_SHA="$HEAD_SHA" \
+            bash -s <<'CI_SCRIPT'
+          set -euo pipefail
+          cd /home/omaq-ci/OmaQ
+          actionlint
+          find . -type f -name '*.sh' -print0 | sort -z | xargs -0 shellcheck
+          python3 -m compileall -q scripts tests
+          pkg-config --exists libtoxcore || pkg-config --exists toxcore
+          pkg-config --exists libsignal-protocol-c libpulse libpng libjpeg libwebp
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "$BASE_SHA...$HEAD_SHA"
+          else
+            if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+               [[ "$BASE_SHA" == "0000000000000000000000000000000000000000" ]] ||
+               ! git cat-file -e "$BASE_SHA^{commit}"; then
+              BASE_SHA=$(git rev-parse "$HEAD_SHA^")
+            fi
+            git diff --check "$BASE_SHA..$HEAD_SHA"
+          fi
+          CI_SCRIPT
+
+      - name: Run the headless test suite
+        run: >-
+          runuser -u omaq-ci -- env HOME=/home/omaq-ci
+          make -C /home/omaq-ci/OmaQ test-ci
