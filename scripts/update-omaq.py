@@ -661,7 +661,11 @@ def archive_oldest_update_tree(update_base: Path, archive_base: Path) -> Path:
     if len(active) != MAX_UPDATE_TREES:
         fail("update storage is not at its retained-tree limit")
     if len(archived) >= MAX_UPDATE_ARCHIVE_TREES:
-        fail("update archive reached its retained-tree limit")
+        fail(
+            "update archive reached its retained-tree limit; inspect and move "
+            f"or manually delete no-longer-needed trees from {archive_base} "
+            "before retrying"
+        )
     check_update_tree_inventory(active + archived)
     update_info = lstat_directory(update_base, private=True)
     archive_info = lstat_directory(archive_base, private=True)

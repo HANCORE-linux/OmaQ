@@ -772,11 +772,15 @@ class SourceUpdateTests(unittest.TestCase):
             try:
                 MODULE.MAX_UPDATE_TREES = len(names)
                 MODULE.MAX_UPDATE_ARCHIVE_TREES = 1
-                with self.assertRaisesRegex(MODULE.UpdateError, "archive reached"):
+                with self.assertRaises(MODULE.UpdateError) as caught:
                     MODULE.prepare_update_storage(updates, archive)
             finally:
                 MODULE.MAX_UPDATE_TREES = previous_trees
                 MODULE.MAX_UPDATE_ARCHIVE_TREES = previous_archive_trees
+            message = str(caught.exception)
+            self.assertIn("archive reached its retained-tree limit", message)
+            self.assertIn("inspect and move or manually delete", message)
+            self.assertIn(str(archive), message)
             self.assertTrue(all((updates / name).is_dir() for name in names))
             self.assertTrue((archive / archived_name).is_dir())
 
