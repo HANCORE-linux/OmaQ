@@ -31,6 +31,7 @@ MAX_TREE_BYTES = 512 * 1024 * 1024
 MAX_TREE_ENTRIES = 50000
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_UPDATE_TREES = 8
+MAX_UPDATE_ARCHIVE_TREES = 56
 MAX_PROC_BYTES = 256 * 1024
 GIT_NETWORK_CONFIG = (
     "-c",
@@ -48,6 +49,7 @@ GIT_NETWORK_CONFIG = (
 )
 EXPECTED_HELPER_PROTOCOL_MIN = 9
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
+UPDATE_TREE_NAME = re.compile(r"^tree-[0-9]{8}-[0-9]{6}-[0-9a-f]{12}$")
 REQUIRED_PROTOCOL_DECLARATION = re.compile(
     r"^[ \t]*(?:readonly[ \t]+)?property[ \t]+int[ \t]+"
     r"requiredHelperProtocol[ \t]*:",
@@ -534,39 +536,219 @@ def check_tree_bounds(root: Path, *, allow_disappeared: bool = False) -> None:
             fail(f"cannot inspect staged tree: {error}")
 
 
-def check_update_storage(root: Path) -> None:
+def update_tree_directories(
+    root: Path, label: str, maximum: int
+) -> list[Path]:
     lstat_directory(root, private=True)
-    trees = 0
-    entries = 0
-    total = 0
-    stack = []
+    trees = []
     with os.scandir(root) as iterator:
         for child in iterator:
+            if len(trees) >= maximum:
+                fail(f"{label} exceeds its retained-tree limit")
             info = child.stat(follow_symlinks=False)
-            if not stat.S_ISDIR(info.st_mode):
-                fail(f"update storage contains an unexpected entry: {child.path}")
-            trees += 1
-            if trees >= MAX_UPDATE_TREES:
-                fail("update storage reached its retained-tree limit")
-            stack.append(Path(child.path))
-    while stack:
-        current = stack.pop()
-        with os.scandir(current) as iterator:
-            for child in iterator:
+            if (
+                not UPDATE_TREE_NAME.fullmatch(child.name)
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022
+            ):
+                fail(f"{label} contains an unexpected entry: {child.path}")
+            trees.append(Path(child.path))
+    return sorted(trees, key=lambda path: path.name)
+
+
+def check_update_tree_inventory(trees: list[Path]) -> None:
+    entries = 0
+    total = 0
+    maximum_entries = MAX_TREE_ENTRIES * (
+        MAX_UPDATE_TREES + MAX_UPDATE_ARCHIVE_TREES
+    )
+
+    def traversal_error(error: OSError) -> None:
+        raise error
+
+    for tree in trees:
+        tree_entries = 0
+        tree_total = 0
+        parent_fd = os.open(
+            tree.parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        tree_fd = -1
+        try:
+            parent_info = os.fstat(parent_fd)
+            tree_fd = os.open(
+                tree.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            tree_info = os.fstat(tree_fd)
+            if (
+                tree_info.st_dev != parent_info.st_dev
+                or mount_id_for_fd(tree_fd) != mount_id_for_fd(parent_fd)
+            ):
+                fail(f"update storage tree crosses a mount boundary: {tree}")
+            tree_identity = (tree_info.st_dev, tree_info.st_ino)
+        finally:
+            if tree_fd >= 0:
+                os.close(tree_fd)
+            os.close(parent_fd)
+
+        first = True
+        for current, directories, files, directory_fd in os.fwalk(
+            tree, topdown=True, onerror=traversal_error, follow_symlinks=False
+        ):
+            current_info = os.fstat(directory_fd)
+            if first:
+                if (current_info.st_dev, current_info.st_ino) != tree_identity:
+                    fail(f"update storage tree changed identity: {tree}")
+                first = False
+            for name in directories + files:
                 entries += 1
-                if entries > MAX_TREE_ENTRIES * MAX_UPDATE_TREES:
+                tree_entries += 1
+                if tree_entries > MAX_TREE_ENTRIES:
+                    fail(f"retained update tree exceeds its entry limit: {tree}")
+                if entries > maximum_entries:
                     fail("update storage exceeds its aggregate entry limit")
-                info = child.stat(follow_symlinks=False)
+                path = Path(current) / name
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                entry_fd = os.open(
+                    name,
+                    os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    entry_info = os.fstat(entry_fd)
+                    if (entry_info.st_dev, entry_info.st_ino) != (
+                        info.st_dev,
+                        info.st_ino,
+                    ):
+                        fail(f"update storage entry changed identity: {path}")
+                    if (
+                        info.st_dev != tree_info.st_dev
+                        or mount_id_for_fd(entry_fd) != mount_id_for_fd(directory_fd)
+                    ):
+                        fail(f"update storage entry crosses a mount boundary: {path}")
+                finally:
+                    os.close(entry_fd)
+                if info.st_uid != os.geteuid():
+                    fail(f"update storage contains a foreign-owned entry: {path}")
                 if stat.S_ISLNK(info.st_mode):
-                    fail(f"update storage contains a symlink: {child.path}")
+                    fail(f"update storage contains a symlink: {path}")
                 if stat.S_ISDIR(info.st_mode):
-                    stack.append(Path(child.path))
+                    if info.st_mode & 0o022 or (info.st_mode & 0o700) != 0o700:
+                        fail(f"update storage contains an unsafe directory: {path}")
                 elif stat.S_ISREG(info.st_mode):
+                    if info.st_mode & 0o022:
+                        fail(f"update storage contains an unsafe file: {path}")
+                    tree_total += info.st_size
                     total += info.st_size
+                    if tree_total > MAX_TREE_BYTES:
+                        fail(f"retained update tree exceeds its byte limit: {tree}")
                     if total > MAX_UPDATE_BYTES - MAX_TREE_BYTES:
                         fail("update storage cannot safely retain another staged tree")
                 else:
-                    fail(f"update storage contains a special file: {child.path}")
+                    fail(f"update storage contains a special file: {path}")
+
+
+def archive_oldest_update_tree(update_base: Path, archive_base: Path) -> Path:
+    active = update_tree_directories(
+        update_base, "update storage", MAX_UPDATE_TREES
+    )
+    archived = update_tree_directories(
+        archive_base, "update archive", MAX_UPDATE_ARCHIVE_TREES
+    )
+    if len(active) != MAX_UPDATE_TREES:
+        fail("update storage is not at its retained-tree limit")
+    if len(archived) >= MAX_UPDATE_ARCHIVE_TREES:
+        fail("update archive reached its retained-tree limit")
+    check_update_tree_inventory(active + archived)
+    update_info = lstat_directory(update_base, private=True)
+    archive_info = lstat_directory(archive_base, private=True)
+    if update_info.st_dev != archive_info.st_dev:
+        fail("update storage and archive are on different filesystems")
+    if mount_id_for(update_base) != mount_id_for(archive_base):
+        fail("update storage and archive cross a mount boundary")
+
+    source = active[0]
+    target = archive_base / source.name
+    source_info = source.lstat()
+    source_fd = os.open(
+        update_base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    archive_fd = os.open(
+        archive_base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    try:
+        if (os.fstat(source_fd).st_dev, os.fstat(source_fd).st_ino) != (
+            update_info.st_dev,
+            update_info.st_ino,
+        ) or (os.fstat(archive_fd).st_dev, os.fstat(archive_fd).st_ino) != (
+            archive_info.st_dev,
+            archive_info.st_ino,
+        ):
+            fail("update storage changed identity before archival")
+        anchored_source = os.stat(
+            source.name, dir_fd=source_fd, follow_symlinks=False
+        )
+        if (anchored_source.st_dev, anchored_source.st_ino) != (
+            source_info.st_dev,
+            source_info.st_ino,
+        ):
+            fail("retained tree changed identity before archival")
+        try:
+            os.stat(source.name, dir_fd=archive_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            fail(f"update archive already contains {source.name}")
+        # Updater's private lock serializes cooperative launchers. The private
+        # owner-only parents retain the documented same-user process boundary.
+        os.rename(
+            source.name,
+            source.name,
+            src_dir_fd=source_fd,
+            dst_dir_fd=archive_fd,
+        )
+        moved = os.stat(source.name, dir_fd=archive_fd, follow_symlinks=False)
+        if (moved.st_dev, moved.st_ino) != (source_info.st_dev, source_info.st_ino):
+            try:
+                os.rename(
+                    source.name,
+                    source.name,
+                    src_dir_fd=archive_fd,
+                    dst_dir_fd=source_fd,
+                )
+            finally:
+                fail("retained tree identity changed during archival")
+        os.fsync(source_fd)
+        os.fsync(archive_fd)
+    finally:
+        os.close(archive_fd)
+        os.close(source_fd)
+    return target
+
+
+def prepare_update_storage(update_base: Path, archive_base: Path) -> None:
+    active = update_tree_directories(
+        update_base, "update storage", MAX_UPDATE_TREES
+    )
+    archived = update_tree_directories(
+        archive_base, "update archive", MAX_UPDATE_ARCHIVE_TREES
+    )
+    check_update_tree_inventory(active + archived)
+    if len(active) == MAX_UPDATE_TREES:
+        archived_tree = archive_oldest_update_tree(update_base, archive_base)
+        print(f"archived retained tree: {archived_tree}")
+    if shutil.disk_usage(update_base).free < MAX_TREE_BYTES * 2:
+        fail("update storage has less than 1 GiB free")
+
+
+def check_update_storage(root: Path) -> None:
+    trees = update_tree_directories(root, "update storage", MAX_UPDATE_TREES)
+    if len(trees) >= MAX_UPDATE_TREES:
+        fail("update storage reached its retained-tree limit")
+    check_update_tree_inventory(trees)
     if shutil.disk_usage(root).free < MAX_TREE_BYTES * 2:
         fail("update storage has less than 1 GiB free")
 
@@ -675,6 +857,22 @@ def read_proc_file(path: Path, maximum: int) -> bytes:
     finally:
         os.close(fd)
     return b"".join(chunks)
+
+
+def mount_id_for_fd(fd: int) -> int:
+    raw = read_proc_file(Path(f"/proc/self/fdinfo/{fd}"), 4096)
+    try:
+        text = raw.decode("ascii", "strict")
+    except UnicodeDecodeError as error:
+        fail(f"file-descriptor metadata is not ASCII: {error}")
+    values = [
+        line.removeprefix("mnt_id:").strip()
+        for line in text.splitlines()
+        if line.startswith("mnt_id:")
+    ]
+    if len(values) != 1 or not values[0].isdecimal():
+        fail("file-descriptor metadata has no unambiguous mount ID")
+    return int(values[0])
 
 
 def decode_mountinfo_path(value: str) -> Path:
@@ -1485,9 +1683,19 @@ def stage_update(
     live_head: str,
     expected_commit: str,
     target_commit: str = "",
+    *,
+    update_archive: Path | None = None,
 ) -> StagedTree:
     git = command_path("git")
-    check_update_storage(update_base)
+    if update_archive is None:
+        check_update_storage(update_base)
+    else:
+        try:
+            update_archive.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        lstat_directory(update_archive, private=True)
+        prepare_update_storage(update_base, update_archive)
     target = target_commit or resolve_remote_main(update_base, expected_commit)
     if not HEX_40.fullmatch(target):
         fail("target commit is not a lowercase 40-hex object name")
@@ -1732,6 +1940,7 @@ class Updater:
             fail(f"cannot create state directory: {error}")
         lstat_directory(state_home)
         self.update_base = state_home / "omaq-source-updates"
+        self.update_archive = state_home / "omaq-source-update-archive"
         try:
             self.update_base.mkdir(mode=0o700)
         except FileExistsError:
@@ -1908,6 +2117,7 @@ class Updater:
             live_head,
             self.expected_commit,
             target_commit,
+            update_archive=self.update_archive,
         )
         if directory_identity(self.root) != live_identity:
             fail("live plugin root changed while the replacement was staged")

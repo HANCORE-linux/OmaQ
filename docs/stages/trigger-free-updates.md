@@ -18,6 +18,7 @@ The updater now:
 - resolves canonical `origin/main` first and skips staging plus the shell stop when the live commit already matches
 - retries a pending group-safe helper activation during that source no-op without stopping the shell
 - bounds clone and build writes, retained tree count and bytes, and required free space; limit failures terminate the complete staging process group
+- validates active and archived retention trees, then atomically archives the oldest active tree when all eight active slots are occupied; archival never deletes the tree
 - clones the complete replacement checkout and builds its helper below private user state
 - validates the plugin before and after the external build
 - binds the target commit, helper SHA-256, running helper protocol, and literal staged QML requirement
@@ -51,7 +52,7 @@ The focused tests cover:
 - same-filesystem exchange and reverse exchange
 - no-op source updates without staging or a shell stop
 - pre-stop exchange-capability probing and cross-device refusal without copy fallback
-- monitored-path refusal, bounded acquisition, descendant-process termination, and retained update storage
+- monitored-path refusal, bounded acquisition, descendant-process termination, retained update storage, oldest-tree archival, name collisions, full archives, and cross-mount refusal
 - a supervisor in the one-second relaunch backoff, a replacement supervisor appearing during stop, delayed shell readiness after the exact timeout result, lock rechecking after that timeout, and rejection of other nonzero restart results
 - shell-stop recovery, interrupt handling, and restarted supervisor, Quickshell, or watcher identity replacement
 - a restart injected after an earlier stopped check but before the final exchange check

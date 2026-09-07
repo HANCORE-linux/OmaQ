@@ -754,7 +754,8 @@ if (( ! assume_yes && remove_status == 0 )); then
     "private identity, contacts, groups, avatars, history, and Ratchet state"
   add_cleanup_directory "$download_dir/omaq" "received files"
   add_cleanup_directory "$state_home/omaq-deploy-backups" "deployment backups"
-  add_cleanup_directory "$state_home/omaq-source-updates" "retained source-update trees"
+  add_cleanup_directory "$state_home/omaq-source-updates" "active retained source-update trees"
+  add_cleanup_directory "$state_home/omaq-source-update-archive" "older retained source-update trees"
   add_cleanup_directory "$HOME/.omaq-source-install" "retained source checkout"
   [[ -z $plugin_backup ]] ||
     add_cleanup_directory "$plugin_backup" "Omarchy plugin backup"

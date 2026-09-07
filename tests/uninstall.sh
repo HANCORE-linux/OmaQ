@@ -766,14 +766,16 @@ interactive="$tmp/interactive-cleanup"
 interactive_home="$interactive/home"
 interactive_plugin="$interactive_home/.config/omarchy/plugins/hancore.omaq"
 interactive_state="$interactive_home/.local/state/omaq"
+interactive_archive="$interactive_home/.local/state/omaq-source-update-archive"
 interactive_data="$interactive_home/.local/share/omaq"
 interactive_download_base="$interactive/external-received-files"
 interactive_downloads="$interactive_download_base/omaq"
 interactive_runtime="$interactive/runtime"
 mkdir -p "$interactive/bin" "$interactive_plugin/scripts" \
-  "$interactive_plugin/helper" "$interactive_state" "$interactive_data" \
-  "$interactive_downloads" "$interactive_runtime"
+  "$interactive_plugin/helper" "$interactive_state" "$interactive_archive" \
+  "$interactive_data" "$interactive_downloads" "$interactive_runtime"
 printf 'private\n' >"$interactive_data/private"
+printf 'archive\n' >"$interactive_archive/value"
 printf 'download\n' >"$interactive_downloads/received"
 cp "$root/scripts/uninstall-omaq.sh" \
   "$interactive_plugin/scripts/uninstall-omaq.sh"
@@ -816,6 +818,15 @@ interactive_command="HOME=$interactive_home PATH=$interactive/bin:/usr/bin:/bin 
 }
 [ -f "$interactive_downloads/received" ] || {
   echo "uninstall: declined download deletion was not retained" >&2
+  exit 1
+}
+[ -f "$interactive_archive/value" ] || {
+  echo "uninstall: declined source-update archive was not retained" >&2
+  exit 1
+}
+grep -Fq -- "Permanently delete $interactive_archive" \
+  "$interactive/gum.log" || {
+  echo "uninstall: source-update archive was not offered" >&2
   exit 1
 }
 grep -Fq -- "Permanently delete $interactive_downloads" \
