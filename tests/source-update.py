@@ -1491,7 +1491,12 @@ class SourceUpdateTests(unittest.TestCase):
                 "protocol.file.allow=always",
             )
             try:
-                staged = MODULE.stage_update(updates, head, head)
+                with mock.patch.object(MODULE, "validate_plugin") as validate_plugin:
+                    staged = MODULE.stage_update(updates, head, head)
+                    self.assertEqual(
+                        validate_plugin.call_args_list,
+                        [mock.call(staged.path), mock.call(staged.path)],
+                    )
             finally:
                 MODULE.CANONICAL_ORIGIN = original_origin
                 MODULE.GIT_NETWORK_CONFIG = original_network

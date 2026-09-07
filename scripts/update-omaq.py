@@ -543,8 +543,6 @@ def update_tree_directories(
     trees = []
     with os.scandir(root) as iterator:
         for child in iterator:
-            if len(trees) >= maximum:
-                fail(f"{label} exceeds its retained-tree limit")
             info = child.stat(follow_symlinks=False)
             if (
                 not UPDATE_TREE_NAME.fullmatch(child.name)
@@ -553,6 +551,8 @@ def update_tree_directories(
                 or info.st_mode & 0o022
             ):
                 fail(f"{label} contains an unexpected entry: {child.path}")
+            if len(trees) >= maximum:
+                fail(f"{label} exceeds its retained-tree limit")
             trees.append(Path(child.path))
     return sorted(trees, key=lambda path: path.name)
 

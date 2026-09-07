@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 20
     container:
       image: archlinux:base-devel@sha256:694da1fce635e3a14d90751941b08f02c500e8724682f7a00768e7152251ec34
+      options: --init # Reap orphaned process-group members after timeout tests.
     steps:
       - name: Install signed Arch dependencies
         run: >-
