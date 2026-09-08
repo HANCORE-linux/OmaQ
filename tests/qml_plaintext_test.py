@@ -24,7 +24,7 @@ QML_POLICY_SHA256 = {
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "ffd4171eb4506e6722fcb0747cf99bbf3c4fc341a9877fb20a5c3c1ab7ddf5ec",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "aa5f9df065b0608d0c10881c4e725f919046f9d3186ac2917d95e3583cd27d9e",
+    "pages/ChatPage.qml": "3e97ab9ac00b73223acde99a3c5dc7f76608625d140e3f30df0e1f73909bf8d2",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -148,7 +148,10 @@ COMPUTED_WRITE_SOURCE_SHA256 = {
     "ChatSurface.qml": "61cb0a3d9aecdecdac9bc1ad1cefa941dd4f3047a0c2bfe336484eded210661d",
     "Panel.qml": "0bb106d37a920d1cf34d316fc9e08610c868f9d8f4e9863128075eaa27c8fcbc",
     "Service.qml": "2395f4a77de4bc06a4cd21ad77bdd19fe98c9d41b2bd48de7bfb69eb1d383809",
-    "pages/ChatPage.qml": "3232198c177017757631b97f59c5f45f7442cd9ca58b3c3972dec81e72c8a076",
+    "pages/ChatPage.qml": "ebba53191bcbe53531886aeecd9ada88664b795d3681b09813e882214b588333",
+}
+REVIEWED_MODEL_MUTATION_IDS = {
+    "pages/ChatPage.qml": {"groupReceiptModel"},
 }
 FUNCTION_PARAMETERS = re.compile(
     r"\bfunction(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\((?P<params>[^)]*)\)"
@@ -394,8 +397,10 @@ def check_forbidden_patterns(path: Path, source: str) -> None:
     relative_path = str(path.relative_to(ROOT))
     formatted_digest = hashlib.sha256(source.encode()).hexdigest()
     allowed_computed_writes = set()
+    allowed_model_mutations = set()
     if formatted_digest == COMPUTED_WRITE_SOURCE_SHA256.get(relative_path):
         allowed_computed_writes = COMPUTED_WRITE_ALLOWLIST.get(relative_path, set())
+        allowed_model_mutations = REVIEWED_MODEL_MUTATION_IDS.get(relative_path, set())
     for assignment in COMPUTED_PROPERTY_WRITE.finditer(source):
         if assignment.group("id") not in allowed_computed_writes:
             fail(f"computed write to unreviewed map {assignment.group('id')!r} in {path.relative_to(ROOT)}")
@@ -432,7 +437,8 @@ def check_forbidden_patterns(path: Path, source: str) -> None:
         fail(f"plain-input exception name {match.group('id')!r} is shadowed in {path.relative_to(ROOT)}")
     direct_mutations = list(TEXT_MUTATION_ACCESS.finditer(source_without_noncode))
     for access in direct_mutations:
-        if (access.group("id") not in PLAIN_INPUT_IDS | MODEL_SET_PROPERTY_IDS or
+        if (access.group("id") not in
+                PLAIN_INPUT_IDS | MODEL_SET_PROPERTY_IDS | allowed_model_mutations or
                 access.group("after").strip() != "("):
             fail(f"text-like mutation method on an unreviewed object in {path.relative_to(ROOT)}")
     for access in ANY_TEXT_MUTATION_ACCESS.finditer(source_without_noncode):
@@ -1132,6 +1138,19 @@ Item {
             "}\n",
             mutation,
         )
+    expect_full_policy_forbidden(
+        """import QtQuick
+Item {
+  TextEdit { id: label; textFormat: TextEdit.PlainText; text: "safe" }
+  Component.onCompleted: {
+    var groupReceiptModel = label
+    groupReceiptModel.clear()
+  }
+}
+""",
+        "reviewed receipt-model identifier reused as a text sink",
+        ROOT / "pages/ChatPage.qml",
+    )
     expect_full_policy_forbidden(
         """import QtQuick
 Item {
