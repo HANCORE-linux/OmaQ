@@ -4098,15 +4098,18 @@ FocusScope {
             (line.reactionMe !== "" || line.reactionPeer !== "" ||
              line.groupReactionEmojis.length > 0)
           readonly property real metadataGap: Style.space(5)
+          readonly property real metadataJoinWidth: line.hasGroupReceipt &&
+            line.timestampText !== "" ? metadataSeparator.implicitWidth +
+              line.metadataGap * 2 : 0
           readonly property bool hasMetadataText: line.timestampText !== "" ||
             line.hasGroupReceipt
           readonly property bool splitMetadataText: line.hasGroupReceipt &&
             line.timestampText !== "" && groupReceiptStatus.implicitWidth +
-              line.metadataGap + messageTimestamp.implicitWidth > line.width
+              line.metadataJoinWidth + messageTimestamp.implicitWidth > line.width
           readonly property real metadataTextWidth: line.splitMetadataText
             ? Math.max(groupReceiptStatus.implicitWidth, messageTimestamp.implicitWidth)
             : (line.hasGroupReceipt ? groupReceiptStatus.implicitWidth : 0) +
-              (line.hasGroupReceipt && line.timestampText !== "" ? line.metadataGap : 0) +
+              line.metadataJoinWidth +
               (line.timestampText !== "" ? messageTimestamp.implicitWidth : 0)
           readonly property real metadataTextHeight: line.splitMetadataText
             ? groupReceiptStatus.implicitHeight + Style.space(2) +
@@ -4620,10 +4623,25 @@ FocusScope {
               ? Math.max(0, line.metadataRightEdge - width)
               : Math.max(0, line.metadataRightEdge - width -
                   (messageTimestamp.visible
-                    ? messageTimestamp.width + line.metadataGap : 0))
+                    ? messageTimestamp.width + line.metadataJoinWidth : 0))
             y: bubble.y + bubble.height + line.metadataTextTop
             text: line.groupReceiptText
             color: root.receiptDeliveredColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            renderType: Text.QtRendering
+            z: 4
+          }
+
+          OmaQ.SafeText {
+            id: metadataSeparator
+            objectName: "metadataSeparator"
+            visible: groupReceiptStatus.visible && messageTimestamp.visible &&
+              !line.splitMetadataText
+            x: messageTimestamp.x - line.metadataGap - width
+            y: messageTimestamp.y
+            text: "|"
+            color: messageTimestamp.color
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             renderType: Text.QtRendering
