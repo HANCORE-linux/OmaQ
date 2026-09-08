@@ -32,6 +32,7 @@ delegate_aliases = """        delegate: FocusScope {
           property alias testCodeCopy: codeCopyButton
           property alias testTimestamp: messageTimestamp
           property alias testReceipt: groupReceiptStatus
+          property alias testSeparator: metadataSeparator
           property alias testReaction: reactionBadge
 """
 if source.count(root_needle) != 1 or source.count(delegate_needle) != 1:
@@ -52,6 +53,7 @@ ShellRoot {
   property int phase: 0
   property int attempts: 0
   property var receiptDelegate: null
+  property real inlineMetadataWidth: 0
   readonly property string datedTimestamp: "2023-11-14 · 22:13"
 
   QtObject {
@@ -115,6 +117,29 @@ ShellRoot {
       item.y + item.height <= line.height + 0.5)
   }
 
+  function checkMetadata(line) {
+    var receipt = line.testReceipt
+    var timestamp = line.testTimestamp
+    var separator = line.testSeparator
+    var inline = receipt.visible && timestamp.visible && !line.splitMetadataText
+    check(separator.visible === inline,
+      "separator must appear only between an inline group receipt and timestamp")
+    check(insideLine(separator, line) && !overlaps(separator, receipt) &&
+      !overlaps(separator, timestamp) && !overlaps(separator, line.testReaction),
+      "separator escaped its row or overlapped metadata")
+    if (inline) {
+      check(separator.text === "|" &&
+        Math.abs(receipt.x + receipt.width + line.metadataGap - separator.x) < 0.5 &&
+        Math.abs(separator.x + separator.width + line.metadataGap - timestamp.x) < 0.5 &&
+        Math.abs(receipt.y - timestamp.y) < 0.5 &&
+        Math.abs(separator.y - timestamp.y) < 0.5,
+        "group receipt, separator, and timestamp lost their inline order or spacing")
+    } else if (receipt.visible && timestamp.visible) {
+      check(timestamp.y >= receipt.y + receipt.height,
+        "stacked group receipt overlaps its timestamp")
+    }
+  }
+
   Item {
     Pages.ChatPage {
       id: narrowPage
@@ -168,6 +193,19 @@ ShellRoot {
     }
   }
 
+  Item {
+    Pages.ChatPage {
+      id: metadataPage
+      width: 420
+      height: 620
+      service: fake
+      demo: false
+      conversation: "g:metadata"
+      peerName: "Group"
+      theme: ({ bg: "#111111", fg: "#eeeeee", accent: "#77cc66", unread: "#cc7777" })
+    }
+  }
+
   Timer {
     interval: 40
     repeat: true
@@ -195,10 +233,20 @@ ShellRoot {
         groupPage.appendLine({ id: "group-code-short", dir: "in",
           sender: "short-peer", text: "```c\nx\n```", ts: 1700000000,
           ack: -1 })
+        metadataPage.appendLine({ id: "no-time", dir: "out", text: "x", ack: 1,
+          groupReceipts: [{ actor: "a".repeat(64), state: "read" }] })
+        metadataPage.appendLine({ id: "today", dir: "out", text: "x", ack: 1,
+          ts: Math.floor(Date.now() / 1000),
+          groupReceipts: [{ actor: "a".repeat(64), state: "read" }] })
+        metadataPage.appendLine({ dir: "sys", text: "System", ts: 1700000000,
+          ack: -1 })
+        metadataPage.appendLine({ dir: "sys", text: "New messages", newMarker: true,
+          ack: -1 })
         narrowPage.testList.positionViewAtEnd()
         directPage.testList.positionViewAtEnd()
         widePage.testList.positionViewAtEnd()
         groupPage.testList.positionViewAtEnd()
+        metadataPage.testList.positionViewAtEnd()
         phase = 1
         attempts = 0
         return
@@ -239,6 +287,34 @@ ShellRoot {
         return
       }
 
+      var metadataRows = []
+      for (var metadataIndex = 0; metadataIndex < 4; metadataIndex++) {
+        var metadataLine = metadataPage.testList.itemAtIndex(metadataIndex)
+        if (!metadataLine) {
+          if (attempts < 80)
+            return
+          console.error("OMAQ_TRANSCRIPT_FAIL metadata delegates unavailable")
+          Qt.quit()
+          return
+        }
+        metadataRows.push(metadataLine)
+        checkMetadata(metadataLine)
+      }
+      check(!metadataRows[0].testTimestamp.visible &&
+        metadataRows[0].testReceipt.text === "Read by 1",
+        "missing timestamp was fabricated or suppressed the receipt")
+      check(metadataRows[1].testReceipt.text === "Read by 1" &&
+        metadataRows[1].testSeparator.visible &&
+        /^\d\d:\d\d$/.test(metadataRows[1].testTimestamp.text),
+        "today's group metadata does not render Read by 1 | HH:mm")
+      check(!metadataRows[2].testSeparator.visible && !metadataRows[3].testSeparator.visible,
+        "system or new-message marker has a stray separator")
+      for (var row of [narrow, directIncoming, directReaction, wideIncoming,
+                       wideReaction, groupReaction, longCode, shortCode])
+        checkMetadata(row)
+      check(!directReaction.testSeparator.visible && !longCode.testSeparator.visible,
+        "direct or incoming message has a stray separator")
+
       if (phase === 1) {
         receiptDelegate = groupReaction
         check(!groupReaction.testReceipt.visible &&
@@ -253,7 +329,7 @@ ShellRoot {
       check(groupReaction === receiptDelegate,
         "live group receipt update recreated its message delegate")
       if (phase === 2) {
-        check(groupReaction.testReceipt.visible &&
+        check(groupReaction.testReceipt.visible && groupReaction.testSeparator.visible &&
           groupReaction.testReceipt.text === "Delivered to 1",
           "first live group receipt was not projected")
         check(groupPage.applyGroupReceipt("group-out-reaction", "a".repeat(64),
@@ -326,6 +402,36 @@ ShellRoot {
         attempts = 0
         return
       }
+      if (phase === 6) {
+        inlineMetadataWidth = groupReaction.testReceipt.implicitWidth +
+          groupReaction.testSeparator.implicitWidth + groupReaction.metadataGap * 2 +
+          groupReaction.testTimestamp.implicitWidth
+        // Drive the delegate's lane width directly: these offscreen Items have
+        // no window to schedule a parent Layout polish after a page resize.
+        groupReaction.width = inlineMetadataWidth - 1
+        phase = 7
+        return
+      }
+      if (phase === 7) {
+        check(Math.abs(groupReaction.width - (inlineMetadataWidth - 1)) < 0.5 &&
+          groupReaction.splitMetadataText && !groupReaction.testSeparator.visible,
+          "metadata did not stack below required width: " + groupReaction.width +
+            " / " + inlineMetadataWidth + ", split=" + groupReaction.splitMetadataText)
+        groupReaction.width = inlineMetadataWidth
+        phase = 8
+        return
+      }
+      if (phase === 8) {
+        check(Math.abs(groupReaction.width - inlineMetadataWidth) < 0.5 &&
+          !groupReaction.splitMetadataText && groupReaction.testSeparator.visible,
+          "metadata did not return inline at required width: " + groupReaction.width +
+            " / " + inlineMetadataWidth + ", split=" + groupReaction.splitMetadataText)
+        groupReaction.width = inlineMetadataWidth + 1
+        phase = 9
+        return
+      }
+      check(!groupReaction.splitMetadataText && groupReaction.testSeparator.visible,
+        "inline separator disappeared above the required width")
       console.log(failed ? "OMAQ_TRANSCRIPT_RESULT fail" :
         "OMAQ_TRANSCRIPT_RESULT ok")
       Qt.quit()
