@@ -1,4 +1,4 @@
-# Current status: 2026-09-06
+# Current status: 2026-09-08
 
 This page is the current product and release snapshot. Completed phase and follow-up history lives in the [stage notes](stages/README.md).
 
@@ -6,7 +6,7 @@ This page is the current product and release snapshot. Completed phase and follo
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.9.0-beta.1`, Protocol 16
+- **Manifest version:** `0.9.0-beta.2`, Protocol 16
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
 
@@ -41,15 +41,37 @@ This page is the current product and release snapshot. Completed phase and follo
 
 ### Existing validation gaps
 
-1. Complete native three-peer group-attachment injection, mixed recipient outcomes, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks.
-2. Complete native separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
-3. Complete native Quickshell and Wayland acceptance for themes, images, multiple monitors, and floating versus tiled windows.
+1. Complete native three-identity invite-conflict, three-peer group, and mixed-recipient attachment acceptance with an isolated third identity. Attachment injection, acknowledgement loss, sender history-write failure, and transfer-ID ledger crash-injection checks also remain open.
+2. Complete the remaining separate-network checks for presence, typing, delivery, unread state, and the **New messages** divider. Earlier manual audio and separate-network checks do not cover this entire matrix. Phase 6 still depends on public bootstrap and relay availability, but it now distinguishes network state from encrypted-message failure.
+3. Complete the remaining native theme and floating-versus-tiled coverage. Multi-monitor acceptance requires unavailable hardware; the image checks below do not establish complete Wayland coverage.
 4. Investigate the `qmlcachegen Panel.qml` parser and import failures. In the installed environment, `qmllint Panel.qml` can still exit 255 without diagnostics; the other QML lint targets and runtime fixtures remain the supported gates.
 5. Keep AUR phase 7 paused until registration and a separate approval; when packaging resumes, align `PKGBUILD` with the linked helper binary's GPL-3.0-only scope before building.
 
 ## Latest validation
 
-The Protocol 16 direct-invite snapshot passes the full `make verify-4` gate, Protocol 14 and 15 compatibility builds, no-Signal compilation, phases 2, 3, 6, and 8, Ratchet restart, exact IPC schemas, the key-bound stale-decision and busy-issue regressions, QML request/accessibility fixtures, helper hardening, and plaintext QML policy. Its three-identity Phase 6 run verifies the real redeemer key, byte-identical safety codes on both devices before acceptance and from `safety.get` afterward, same-key request re-announcement, conflict replay after status, unchanged pending state after a stale decision, and no second accepted contact. Native Wayland and separate-network acceptance remain open.
+### Native two-machine checks
+
+On 2026-09-08, the maintainer completed the remaining two-machine checks on `3dbbffc4a898491b57429ef9708394ea14ba9e34`. DirectChat names refreshed immediately in both directions with the recipient panel closed. GroupChat checks covered existing sender labels in one direction, an open member list in the other, and typing after renames in both directions. The name-refresh checks used no status request, extra message, or chat/panel reopening as a refresh trigger.
+
+On that same base, both machines projected Member → Admin → Member with the owner unchanged. Leave/reinvite restored membership in the same group without a duplicate, and the long invite error remained fully readable.
+
+Earlier accepted implementation snapshots confirmed:
+
+- Pending group-invite replay after status and one acceptance without a duplicate group
+- Group read receipts, the inline `Read by 1 | timestamp` separator, image preview, drag-and-drop, and the visible **Send image** action
+- Attachment-decline feedback on both machines, confirmed at the UI level only
+
+Earlier checks confirmed direct and two-peer group messaging, post-acceptance Tox safety-code comparison, a byte-identical received file, real microphone/speaker operation, and separate-network use. These observations do not establish the remaining three-identity, network-matrix, or multi-monitor checks.
+
+### Automated implementation checks
+
+The live-name implementation passed full `make test`, local `make test-ci`, phase 3, helper hardening, architecture, plugin, no-Signal, and focused QML checks. Independent cumulative review found no remaining actionable findings. The [Arch main-CI run](https://github.com/HANCORE-linux/OmaQ/actions/runs/34240504394) passed for `3dbbffc4a898491b57429ef9708394ea14ba9e34`; it does not validate later release metadata edits.
+
+Earlier runs failed a phase-3 post-kick cleanup assertion and an emoji-test process lookup with `ProcessLookupError`. Full reruns passed, but neither failure's cause was established. This metadata/documentation preparation does not imply a fresh run of those runtime suites.
+
+### Earlier automated evidence
+
+The Protocol 16 direct-invite snapshot passes the full `make verify-4` gate, Protocol 14 and 15 compatibility builds, no-Signal compilation, phases 2, 3, 6, and 8, Ratchet restart, exact IPC schemas, the key-bound stale-decision and busy-issue regressions, QML request/accessibility fixtures, helper hardening, and plaintext QML policy. Its three-identity Phase 6 run verifies the real redeemer key, byte-identical safety codes on both devices before acceptance and from `safety.get` afterward, same-key request re-announcement, conflict replay after status, unchanged pending state after a stale decision, and no second accepted contact. That automated three-identity run does not replace the remaining native acceptance listed above.
 
 The release-audit follow-up passes the full `make test` aggregate, `make verify-4`, `make helper`, `make arch`, phase 2, phase 8, Omarchy plugin validation, ShellCheck on every changed shell file, Qt parsing for all eight QML files, `qmllint` for ChatSurface, ChatPage, and Service, syntax checks, and `git diff --check`. The normal-plugin lifecycle change additionally passes the full `make test` aggregate, `make arch`, Omarchy plugin validation, focused install and uninstall regressions, ShellCheck, Python syntax compilation, and `git diff --check`. Panel runtime coverage verifies both semantic Omarchy theme keys and legacy `color0`–`color7` palettes, including deterministic legacy precedence in a mixed file.
 
@@ -67,6 +89,6 @@ No current test claims complete native Wayland or multi-monitor acceptance.
 
 ## Next order
 
-1. Complete the remaining native multi-monitor, separate-network, and three-peer attachment checks.
+1. Complete the remaining native three-identity invite-conflict, three-peer group/attachment, separate-network, and display checks.
 2. Prepare any new tag or release only after separate target acceptance and release approval.
 3. Keep packaging and AUR publication paused until separately approved.
