@@ -12,7 +12,7 @@ body:
     attributes:
       label: OmaQ version or commit
       description: Find the version in manifest.json. Add the commit when testing an unreleased build.
-      placeholder: "0.9.0-beta.1 or commit SHA"
+      placeholder: "0.9.0-beta.2 or commit SHA"
     validations:
       required: true
 
