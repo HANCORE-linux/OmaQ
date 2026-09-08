@@ -404,6 +404,10 @@ while [ "$i" -lt 50 ]; do
 done
 [ "$i" -lt 50 ] || { echo "phase3: binding acknowledgement missing" >&2; exit 1; }
 
+# The two connected helpers must publish Direct and Group name changes without
+# a status/list request, another message, or a new connection doing the refresh.
+python3 "$root/tests/live-name-helper.py" "$fa" "$fb" "$gid" "$pre_gid"
+
 cp -a "$hb/." "$hd/"
 printf 'A\t%s\t1111111111111111\t%s\t-\t0\t0\t0\n' "$gid" \
 	"0000000000000000000000000000000000000000000000000000000000000000" \
@@ -873,6 +877,8 @@ if [ -n "$member_key" ]; then
 		grep -a -c 'left the group\.' || true)
 	persisted_leave_notices_before=$(grep -a '"dir":"sys"' "$ha/history/$gid/messages.jsonl" |
 		grep -a -c 'left the group\.' || true)
+	kick_a_offset=$(wc -c <"$fa")
+	kick_b_offset=$(wc -c <"$fb")
 	printf '{"op":"group.member.remove","group":"%s","member":"%s"}\n' "$gid" "$member_key" >&3
 	i=0
 	while [ "$i" -lt 50 ]; do
@@ -884,7 +890,32 @@ if [ -n "$member_key" ]; then
 		i=$((i + 1))
 		sleep 0.2
 	done
-	[ "$i" -lt 50 ] || { echo "phase3: kicked self group was not removed" >&2; exit 1; }
+	if [ "$i" -ge 50 ]; then
+		python3 - "$fa" "$kick_a_offset" "$fb" "$kick_b_offset" "$gid" <<'PY'
+import collections
+import json
+import sys
+
+for label, path, offset in (('A', sys.argv[1], sys.argv[2]),
+                            ('B', sys.argv[3], sys.argv[4])):
+    with open(path, 'rb') as stream:
+        stream.seek(int(offset))
+        data = stream.read(1048577)
+    if len(data) > 1048576:
+        raise SystemExit('phase3: kick diagnostics exceeded byte bound')
+    errors, changes = collections.Counter(), collections.Counter()
+    for line in data.splitlines():
+        event = json.loads(line)
+        if event.get('event') == 'error':
+            errors[event.get('code', 'missing')] += 1
+        if event.get('event') == 'group.changed' and event.get('group') == sys.argv[5]:
+            changes[event.get('action', 'missing')] += 1
+    print(f'phase3: kick diagnostics {label}: errors={dict(errors)}, changes={dict(changes)}',
+          file=sys.stderr)
+PY
+		echo "phase3: kicked self group was not removed" >&2
+		exit 1
+	fi
 	leave_notices_after=$(grep -a '"event":"message"' "$fa" | grep -a '"dir":"sys"' |
 		grep -a -c 'left the group\.' || true)
 	[ "$leave_notices_after" -eq "$((leave_notices_before + 1))" ] || {

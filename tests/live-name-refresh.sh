@@ -4,6 +4,7 @@ root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 
 python3 - "$root" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 root = Path(sys.argv[1])
@@ -39,9 +40,14 @@ for name, needles in contracts.items():
             raise SystemExit(f"live-name-refresh: missing {name} contract: {needle}")
 
 hook_start = omaq.index("static void hook_friend_name(")
-hook_end = omaq.index("static void hook_typing(", hook_start)
-if "emit_friends();" not in omaq[hook_start:hook_end]:
-    raise SystemExit("live-name-refresh: Direct name callback does not refresh friends")
+hook_end = omaq.index("static void flush_friend_names(", hook_start)
+flush_end = omaq.index("static void hook_typing(", hook_end)
+if "g_friend_names_dirty = 1;" not in omaq[hook_start:hook_end] or \
+        "emit_friends();" in omaq[hook_start:hook_end] or \
+        "emit_friends();" not in omaq[hook_end:flush_end]:
+    raise SystemExit("live-name-refresh: Direct names must refresh after the native callback")
+if len(re.findall(r"omaq_tox_iterate\(g_tox\);\s+flush_friend_names\(\);", omaq)) != 2:
+    raise SystemExit("live-name-refresh: a backend loop omitted the post-iterate name refresh")
 if surface.count("peerName: root.friendLabel") != 3:
     raise SystemExit("live-name-refresh: an open ChatPage lost its reactive Direct name")
 for marker in ("Number(root.service.groupsTick || 0)",

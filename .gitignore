@@ -5,6 +5,8 @@ tests/av_state_test
 tests/ratchet_prekey_test
 tests/identity_guard_test
 tests/tox_relay_retry_test
+tests/tox_name_test
+tests/omaq_tox_name_test_helper
 tests/omaq_ipc_test_helper
 tests/omaq_group_admin_test_helper
 helper/omaq

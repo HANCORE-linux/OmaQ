@@ -3,6 +3,7 @@
 #define _DEFAULT_SOURCE
 #include "tox_adapt.h"
 #include "file.h"
+#include "group.h"
 #include "identity_guard.h"
 
 #include <errno.h>
@@ -428,23 +429,45 @@ int omaq_tox_set_name(struct omaq_tox *t, const char *name)
 {
 	Tox_Err_Set_Info error = TOX_ERR_SET_INFO_OK;
 	uint8_t old_name[TOX_MAX_NAME_LENGTH] = {0};
-	size_t old_len;
+	uint32_t groups[OMAQ_GROUPS_MAX];
+	size_t old_len, count = 0;
+	int result = 0;
 
 	if (!t || !t->tox || nickname_ok(name) != 0)
-		return -1;
+		return OMAQ_TOX_NAME_INVALID;
+	if (t->primary_uncertain || t->primary_warning_preserved)
+		return OMAQ_TOX_NAME_SAVE_FAILED;
 	old_len = tox_self_get_name_size(t->tox);
 	if (old_len > sizeof(old_name))
-		return -1;
+		return OMAQ_TOX_NAME_SAVE_FAILED;
 	if (old_len)
 		tox_self_get_name(t->tox, old_name);
 	if (!tox_self_set_name(t->tox, (const uint8_t *)name, strlen(name), &error))
-		return -1;
+		return OMAQ_TOX_NAME_SAVE_FAILED;
 	if (omaq_tox_save(t) < 0) {
-		Tox_Err_Set_Info rollback_error = TOX_ERR_SET_INFO_OK;
-		(void)tox_self_set_name(t->tox, old_name, old_len, &rollback_error);
-		return -1;
+		/* A published but uncertain primary must not diverge from memory. */
+		if (!t->primary_uncertain) {
+			Tox_Err_Set_Info rollback_error = TOX_ERR_SET_INFO_OK;
+			(void)tox_self_set_name(t->tox, old_name, old_len, &rollback_error);
+		}
+		return OMAQ_TOX_NAME_SAVE_FAILED;
 	}
-	return 0;
+
+	/* Commit the profile first: group broadcasts cannot be rolled back across
+	 * peers. Even FAIL_SEND may change a native group's local name. Report a
+	 * partial result instead of undoing the saved profile or claiming success. */
+	if (omaq_tox_group_numbers(t, groups, OMAQ_GROUPS_MAX, &count) != 0)
+		return OMAQ_TOX_NAME_GROUPS_UNCONFIRMED;
+	for (size_t i = 0; i < count; i++) {
+		Tox_Err_Group_Self_Name_Set group_error = TOX_ERR_GROUP_SELF_NAME_SET_OK;
+		/* Repeat same-name sends too, so an explicit retry can repair FAIL_SEND. */
+		if (!tox_group_self_set_name(t->tox, groups[i], (const uint8_t *)name,
+					    strlen(name), &group_error))
+			result = OMAQ_TOX_NAME_GROUPS_UNCONFIRMED;
+	}
+	if (count && omaq_tox_save(t) < 0)
+		result = OMAQ_TOX_NAME_GROUPS_UNCONFIRMED;
+	return result;
 }
 
 static void on_status(Tox *tox, Tox_Connection st, void *ud)
@@ -1542,18 +1565,26 @@ int omaq_tox_group_numbers(struct omaq_tox *t, uint32_t *groups, size_t max,
 
 	if (!t || !t->tox || !groups || !count)
 		return -1;
+	*count = 0;
 	total = tox_group_get_number_groups(t->tox);
 	if (total > max)
 		return -1;
-	for (uint32_t candidate = 0; candidate < 65536 && found < total;
-	     candidate++) {
+	/* The native count excludes groups still waiting for shared state, but
+	 * their slots are queryable and can precede established groups. Scan the
+	 * whole supported slot range; the count is only a lower bound. */
+	for (uint32_t candidate = 0; candidate < 65536; candidate++) {
 		Tox_Err_Group_State_Query err = TOX_ERR_GROUP_STATE_QUERY_OK;
 		uint8_t id[TOX_GROUP_CHAT_ID_SIZE];
-		if (tox_group_get_chat_id(t->tox, candidate, id, &err) &&
-		    err == TOX_ERR_GROUP_STATE_QUERY_OK)
-			groups[found++] = candidate;
+		if (!tox_group_get_chat_id(t->tox, candidate, id, &err)) {
+			if (err != TOX_ERR_GROUP_STATE_QUERY_GROUP_NOT_FOUND)
+				return -1;
+			continue;
+		}
+		if (err != TOX_ERR_GROUP_STATE_QUERY_OK || found == max)
+			return -1;
+		groups[found++] = candidate;
 	}
-	if (found != total)
+	if (found < total)
 		return -1;
 	*count = found;
 	return 0;

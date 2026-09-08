@@ -34,6 +34,11 @@ uint32_t omaq_tox_interval_ms(const struct omaq_tox *t);
 int omaq_tox_self_addr_hex(struct omaq_tox *t, char *hex76);
 int omaq_tox_self_pk_hex(struct omaq_tox *t, char *hex64);
 int omaq_tox_self_name(struct omaq_tox *t, char *out, size_t n);
+#define OMAQ_TOX_NAME_INVALID (-1)
+#define OMAQ_TOX_NAME_SAVE_FAILED (-2)
+#define OMAQ_TOX_NAME_GROUPS_UNCONFIRMED 1
+/* 0: saved and group sends accepted; 1: saved, group updates unconfirmed.
+ * Negative results never acknowledge a completed nickname change. */
 int omaq_tox_set_name(struct omaq_tox *t, const char *name);
 int omaq_tox_friend_pk_hex(struct omaq_tox *t, uint32_t friend_number, char *hex64);
 int omaq_tox_friend_add(struct omaq_tox *t, const char *addr_hex, const char *msg, uint32_t *fn_out);
