@@ -238,6 +238,49 @@ if [ "$ok" -ne 1 ]; then
 	tail -30 "$fb" >&2
 	exit 1
 fi
+status_replay_start=$(wc -l <"$fb")
+status_group_requests_before=$(grep -a -c '"event":"request","kind":"group"' "$fb" || true)
+status_group_requests_before=${status_group_requests_before:-0}
+echo '{"op":"status","id":"phase3-pending-group-status"}' >&4
+i=0
+while [ "$i" -lt 50 ]; do
+	status_group_requests_after=$(grep -a -c '"event":"request","kind":"group"' "$fb" || true)
+	status_group_requests_after=${status_group_requests_after:-0}
+	if [ "$status_group_requests_after" -gt "$status_group_requests_before" ] &&
+	   tail -n +"$((status_replay_start + 1))" "$fb" |
+		grep -a '"event":"snapshot"' |
+		grep -a -q '"request":"phase3-pending-group-status"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.1
+done
+[ "$i" -lt 50 ] || {
+	echo "phase3: pending group invite was not replayed after status" >&2
+	exit 1
+}
+sleep 0.2
+status_group_requests_after=$(grep -a -c '"event":"request","kind":"group"' "$fb" || true)
+status_group_requests_after=${status_group_requests_after:-0}
+[ "$status_group_requests_after" -eq "$((status_group_requests_before + 1))" ] || {
+	echo "phase3: status replay emitted the pending group invite more than once" >&2
+	exit 1
+}
+status_invite_line=$(tail -n +"$((status_replay_start + 1))" "$fb" |
+	grep -a -n -m 1 '"event":"invite","url":"","expires":0,"op":"status"' |
+	cut -d: -f1 || true)
+status_request_line=$(tail -n +"$((status_replay_start + 1))" "$fb" |
+	grep -a -n -m 1 '"event":"request","kind":"group"' | cut -d: -f1 || true)
+[ -n "$status_invite_line" ] && [ -n "$status_request_line" ] || {
+	echo "phase3: status replay sequence is incomplete" >&2
+	exit 1
+}
+[ "$status_invite_line" -lt "$status_request_line" ] || {
+	echo "phase3: pending group invite preceded the authoritative status clear" >&2
+	exit 1
+}
+greq_now=$(grep -a -c '"kind":"group"' "$fb" || true)
+greq_now=${greq_now:-0}
 before=$(wc -l <"$fa")
 printf '{"op":"identity.export","path":"%s","id":"phase3-export-binding-debt"}\n' \
 	"$busy_export" >&3

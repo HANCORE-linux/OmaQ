@@ -51,6 +51,7 @@ ShellRoot {
   property bool failed: false
   property int phase: 0
   property int attempts: 0
+  property var receiptDelegate: null
   readonly property string datedTimestamp: "2023-11-14 · 22:13"
 
   QtObject {
@@ -187,9 +188,7 @@ ShellRoot {
         groupPage.appendLine({ id: "group-out-reaction", dir: "out", text: "x",
           ts: 1700000000, ack: 1, reactionMe: "👍", reactionPeer: "😂",
           groupReactions: [{ actor: "a", emoji: "❤️" },
-            { actor: "b", emoji: "🎉" }],
-          groupReceipts: [{ actor: "a", state: "read" },
-            { actor: "b", state: "delivered" }] })
+            { actor: "b", emoji: "🎉" }] })
         groupPage.appendLine({ id: "group-code-long", dir: "in",
           sender: "long-peer", text: "```c\nvalue\n```", ts: 1700000000,
           ack: -1 })
@@ -240,6 +239,48 @@ ShellRoot {
         return
       }
 
+      if (phase === 1) {
+        receiptDelegate = groupReaction
+        check(!groupReaction.testReceipt.visible &&
+          groupReaction.testReceipt.text === "",
+          "group receipt was visible before a live receipt event")
+        check(groupPage.applyGroupReceipt("group-out-reaction", "a".repeat(64),
+          "delivered"), "initial live group receipt was rejected")
+        phase = 2
+        attempts = 0
+        return
+      }
+      check(groupReaction === receiptDelegate,
+        "live group receipt update recreated its message delegate")
+      if (phase === 2) {
+        check(groupReaction.testReceipt.visible &&
+          groupReaction.testReceipt.text === "Delivered to 1",
+          "first live group receipt was not projected")
+        check(groupPage.applyGroupReceipt("group-out-reaction", "a".repeat(64),
+          "read"), "live group read receipt was rejected")
+        phase = 3
+        attempts = 0
+        return
+      }
+      if (phase === 3) {
+        check(groupReaction.testReceipt.text === "Read by 1",
+          "live group receipt did not advance from delivered to read")
+        check(groupPage.applyGroupReceipt("group-out-reaction", "a".repeat(64),
+          "delivered"), "delayed live group receipt was rejected")
+        phase = 4
+        attempts = 0
+        return
+      }
+      if (phase === 4) {
+        check(groupReaction.testReceipt.text === "Read by 1",
+          "delayed delivered receipt regressed visible read state")
+        check(groupPage.applyGroupReceipt("group-out-reaction", "b".repeat(64),
+          "delivered"), "second member live group receipt was rejected")
+        phase = 5
+        attempts = 0
+        return
+      }
+
       check(narrow.testTimestamp.text === datedTimestamp &&
         directIncoming.testTimestamp.text === datedTimestamp &&
         wideIncoming.testTimestamp.text === datedTimestamp &&
@@ -258,6 +299,9 @@ ShellRoot {
         insideLine(wideReaction.testReaction, wideReaction) &&
         !overlaps(wideReaction.testTimestamp, wideReaction.testReaction),
         "wide message metadata escaped or overlapped")
+      check(groupReaction.testReceipt.visible &&
+        groupReaction.testReceipt.text === "Read by 1 · Delivered to 2",
+        "live group receipt did not advance without regressing read state")
       check(insideLine(groupReaction.testTimestamp, groupReaction) &&
         insideLine(groupReaction.testReceipt, groupReaction) &&
         insideLine(groupReaction.testReaction, groupReaction) &&
@@ -276,9 +320,9 @@ ShellRoot {
         shortCode.testSender.x + shortCode.testSender.width <=
           shortCode.testCodeCopy.x + 0.5,
         "short group sender wraps or overlaps unnecessarily")
-      if (phase === 1) {
+      if (phase === 5) {
         Style.fontBaseSize = 16
-        phase = 2
+        phase = 6
         attempts = 0
         return
       }

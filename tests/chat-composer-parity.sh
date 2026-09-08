@@ -3,7 +3,20 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d /tmp/omaq-chat-composer-XXXXXX)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-ln -s "$root/pages" "$tmp/pages"
+mkdir "$tmp/pages"
+cp "$root/pages/ChatPage.qml" "$tmp/pages/ChatPage.qml"
+python3 - "$tmp/pages/ChatPage.qml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+needle = "  id: root\n"
+alias = "  property alias testPendingImageSendButton: sendPendingImageButton\n"
+if source.count(needle) != 1:
+    raise SystemExit("chat-composer-parity: QML test seam changed")
+path.write_text(source.replace(needle, needle + alias), encoding="utf-8")
+PY
 ln -s "$root/assets" "$tmp/assets"
 ln -s "$root/scripts" "$tmp/scripts"
 ln -s "$root/CallTone.qml" "$tmp/CallTone.qml"
@@ -29,6 +42,7 @@ import "pages" as Pages
 ShellRoot {
   QtObject {
     id: fake
+    property bool supportsAttachments: true
     property bool supportsGroupAttachments: true
     property bool supportsGroupTyping: true
     property bool awaitingHelperInstance: false
@@ -276,12 +290,27 @@ ShellRoot {
         page.pendingImageStageRequest === "stage-1" && page.isSmileOnly("🥳") &&
         !page.isSmileOnly("⌘") && page.smilePx === 56 && exactSelection &&
         replyParity && reactionRanking && searchIsolation && timestampFormatting &&
-        missingTimestampCleared
-      var sent = page.sendPendingImage() && fake.sent === 1 &&
+        missingTimestampCleared && page.testPendingImageSendButton.visible &&
+        page.testPendingImageSendButton.enabled &&
+        page.testPendingImageSendButton.helpText === "Send image"
+      fake.supportsGroupAttachments = false
+      var capabilityBlocked = page.pendingImagePath === "/tmp/canonical.png" &&
+        !page.testPendingImageSendButton.enabled &&
+        page.testPendingImageSendButton.helpText === "Image sending unavailable"
+      page.testPendingImageSendButton.clicked()
+      capabilityBlocked = capabilityBlocked && fake.sent === 0 &&
+        page.pendingImagePath === "/tmp/canonical.png" &&
+        page.pendingImageSendRequest === ""
+      fake.supportsGroupAttachments = true
+      var capabilityRestored = page.testPendingImageSendButton.enabled &&
+        page.testPendingImageSendButton.helpText === "Send image"
+      page.testPendingImageSendButton.clicked()
+      var sent = fake.sent === 1 &&
         page.pendingImageSendRequest === "image-request-1" &&
         page.pendingImagePath === "/tmp/canonical.png"
-      if (!preview || !sent) {
-        console.log("OMAQ_CHAT_COMPOSER_BAD", page.fileStatus, fake.sent)
+      if (!preview || !capabilityBlocked || !capabilityRestored || !sent) {
+        console.log("OMAQ_CHAT_COMPOSER_BAD", page.fileStatus, fake.sent,
+          capabilityBlocked, capabilityRestored)
         Qt.quit()
         return
       }

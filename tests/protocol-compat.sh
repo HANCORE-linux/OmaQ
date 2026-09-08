@@ -296,6 +296,13 @@ ShellRoot {
         var protocol15InviteCompatible = service.pending && !service.pendingGroup &&
           !service.supportsInviteRequestSafety && service.pendingRequestKey === "" &&
           service.pendingRequestSafety === ""
+        service.handleLine(JSON.stringify({ event: "invite", url: "", expires: 0,
+          op: "status" }))
+        var pendingClearedByStatus = !service.pending
+        service.handleLine(JSON.stringify({ event: "request", kind: "group" }))
+        var groupStatusReplayProjected = pendingClearedByStatus && service.pending &&
+          service.pendingGroup && service.pendingRequestKey === "" &&
+          service.pendingRequestSafety === ""
         var protocol15RedeemTick = service.redeemTick
         service.handleLine(JSON.stringify({ event: "invite.redeemed", kind: "direct",
           request: "protocol15-redeem" }))
@@ -355,7 +362,8 @@ ShellRoot {
             legacySurfaceCompatible && handshakeSurfaceQueued && handshake14Geometry &&
             modernSurfaceGeometry && downgradeQueueCompatible && malformedSoundFailedClosed &&
             confirmedHangupGate && protocol15InviteCompatible &&
-            protocol15RedeemCompatible && protocol16InviteSafety &&
+            groupStatusReplayProjected && protocol15RedeemCompatible &&
+            protocol16InviteSafety &&
             protocol16RedeemSafety && protocol16MalformedRedeemRejected &&
             correlatedGroups && groupTypingProjected &&
             wrongGroupRequestIgnored &&

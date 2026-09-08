@@ -3730,6 +3730,12 @@ static void announce_pending_direct(void)
 	}
 }
 
+static void reannounce_pending_group(void)
+{
+	if (g_have_gauth && g_have_gpending && g_gpending_announced)
+		emit("{\"event\":\"request\",\"kind\":\"group\"}");
+}
+
 static void clear_group_auth(void)
 {
 	g_have_gauth = 0;
@@ -10779,6 +10785,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 				clear_invite();
 				emit_invite_state("", 0, "status", NULL);
 			}
+			reannounce_pending_group();
 #if OMAQ_PROTOCOL_VERSION >= 16
 			if (g_pending_invite.used && !g_issued_is_group &&
 			    !g_have_gauth && !g_have_gpending &&

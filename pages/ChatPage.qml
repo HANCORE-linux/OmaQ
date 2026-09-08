@@ -1397,8 +1397,16 @@ FocusScope {
     for (var i = lines.count - 1; i >= 0; i--) {
       var receiptLine = lines.get(i)
       if (receiptLine && receiptLine.id === id) {
-        lines.setProperty(i, "groupReceipts", root.updatedGroupReceipts(
-          receiptLine.groupReceipts || [], actorKey, state))
+        var groupReceiptModel = receiptLine.groupReceipts || []
+        var updated = root.updatedGroupReceipts(groupReceiptModel, actorKey, state)
+        if (groupReceiptModel && typeof groupReceiptModel.clear === "function" &&
+            typeof groupReceiptModel.append === "function") {
+          groupReceiptModel.clear()
+          for (var receiptIndex = 0; receiptIndex < updated.length; receiptIndex++)
+            groupReceiptModel.append(updated[receiptIndex])
+        } else {
+          lines.setProperty(i, "groupReceipts", updated)
+        }
         return true
       }
     }
@@ -3483,6 +3491,7 @@ FocusScope {
         spacing: Style.space(3)
 
         OmaQ.SafeText {
+          id: groupInviteFeedbackText
           width: parent.width
           text: root.groupInviteFeedback !== "" ? root.groupInviteFeedback :
             (root.groupInviteCandidates.length > 0
@@ -3491,7 +3500,7 @@ FocusScope {
             ? (root.theme.unread || root.accent) : root.accent
           font.family: root.fontFamily
           font.pixelSize: root.smileTextPx
-          elide: Text.ElideRight
+          wrapMode: Text.WordWrap
         }
 
         Flickable {
@@ -5048,7 +5057,7 @@ FocusScope {
 
           OmaQ.SafeText {
             anchors.left: pendingImage.right
-            anchors.right: clearPendingImageButton.left
+            anchors.right: sendPendingImageButton.left
             anchors.leftMargin: Style.space(6)
             anchors.rightMargin: Style.space(6)
             anchors.verticalCenter: parent.verticalCenter
@@ -5057,6 +5066,22 @@ FocusScope {
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             elide: Text.ElideMiddle
+          }
+
+          FormatBtn {
+            id: sendPendingImageButton
+            anchors.right: clearPendingImageButton.left
+            anchors.rightMargin: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            materialIcon: "send"
+            helpText: root.attachmentsAvailable && root.service &&
+              root.service.supportsAttachments
+              ? "Send image" : "Image sending unavailable"
+            enabled: root.pendingImageSendRequest === "" && root.service &&
+              !!root.service.supportsAttachments && root.attachmentsAvailable &&
+              root.directBindingValid &&
+              !root.service.fileSendingFor(root.conversation)
+            onClicked: root.sendPendingImage()
           }
 
           FormatBtn {

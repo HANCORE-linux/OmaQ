@@ -40,6 +40,14 @@ if "function groupInviteCandidateMatches(groupId, friendId, expectedKey)" not in
     raise SystemExit("group-chat-parity: authoritative invite candidate validation missing")
 if "return omaq.groupInviteCandidateMatches" not in panel:
     raise SystemExit("group-chat-parity: Panel and GroupChat invite validation diverged")
+feedback_start = page.index("          id: groupInviteFeedbackText")
+feedback_end = page.index("        Flickable {", feedback_start)
+feedback = page[feedback_start:feedback_end]
+if "wrapMode: Text.WordWrap" not in feedback or "Text.ElideRight" in feedback:
+    raise SystemExit("group-chat-parity: GroupChat invite feedback can still truncate")
+if "static void reannounce_pending_group(void)" not in helper or \
+        "\t\t\treannounce_pending_group();" not in helper:
+    raise SystemExit("group-chat-parity: status does not replay a pending group invite")
 
 attachments = (
     "readonly property bool attachmentsAvailable: !root.groupConversation",
@@ -49,6 +57,16 @@ attachments = (
 )
 if not all(value in page for value in attachments):
     raise SystemExit("group-chat-parity: GroupChat composer attachment parity missing")
+image_send_start = page.index("            id: sendPendingImageButton")
+image_send_end = page.index("            id: clearPendingImageButton", image_send_start)
+image_send = page[image_send_start:image_send_end]
+if '"Send image" : "Image sending unavailable"' not in image_send or \
+        "!!root.service.supportsAttachments && root.attachmentsAvailable" not in image_send or \
+        "onClicked: root.sendPendingImage()" not in image_send or \
+        "onDropped: function(drop)" not in page or \
+        "var path = root.localPathFromUrl(drop.urls[0])" not in page or \
+        "root.inspectSelectedAttachment(path)" not in page:
+    raise SystemExit("group-chat-parity: selected-image capability gate or drag-and-drop is missing")
 if "Files are available in direct chats only" in page:
     raise SystemExit("group-chat-parity: obsolete Direct-only attachment gate remains")
 if "readonly property bool supportsGroupAttachments: root.activeHelperProtocol >= 12" not in service:
@@ -141,6 +159,12 @@ if "group_typing_magic" not in helper or "groupTypingActors" not in service or \
 if "omaq_store_update_group_receipt_changed" not in helper or \
         "lastReceiptActor" not in service or "groupReceiptSummary" not in page:
     raise SystemExit("group-chat-parity: per-member GroupChat receipts are missing")
+receipt_start = page.index("  function applyGroupReceipt(")
+receipt_end = page.index("  function markRead()", receipt_start)
+receipt_projection = page[receipt_start:receipt_end]
+if 'typeof groupReceiptModel.clear === "function"' not in receipt_projection or \
+        "groupReceiptModel.append(updated[receiptIndex])" not in receipt_projection:
+    raise SystemExit("group-chat-parity: live receipt updates do not mutate their nested model")
 
 # Calls must remain explicitly Direct-only.
 guide = (root / "docs/USER-GUIDE.md").read_text()
