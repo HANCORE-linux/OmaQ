@@ -109,6 +109,7 @@ static int g_replaying_sound_results;
 static struct omaq_tox *g_tox;
 static int g_locked;
 static int g_connection_online = -1;
+static int g_friend_names_dirty;
 #define FILE_REQUEST_CACHE 8
 #define GROUP_CLEANUP_MAX OMAQ_GROUPS_MAX
 #define GROUP_INVITE_RESULT_CACHE_MAX 16
@@ -5443,7 +5444,16 @@ static void hook_friend_name(void *ud, uint32_t friend)
 {
 	(void)ud;
 	(void)friend;
-	emit_friends();
+	/* toxcore invokes this callback before updating its friend-name getters. */
+	g_friend_names_dirty = 1;
+}
+
+static void flush_friend_names(void)
+{
+	if (g_friend_names_dirty) {
+		g_friend_names_dirty = 0;
+		emit_friends();
+	}
 }
 
 static void hook_typing(void *ud, uint32_t friend, int typing)
@@ -11837,16 +11847,20 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #ifdef HAVE_TOX
 		char escaped[260], escaped_request[160], request_field[192] = "";
 		char ev[560];
+		int name_result = omaq_tox_set_name(g_tox, op->nickname);
 
-		if (!g_tox || omaq_tox_set_name(g_tox, op->nickname) != 0) {
-			emit_identity_error("nickname_invalid", op->id);
+		if (name_result < 0) {
+			emit_identity_error(name_result == OMAQ_TOX_NAME_INVALID ?
+					    "nickname_invalid" : "nickname_update_failed", op->id);
 			return 0;
 		}
 		if (omaq_json_escape(op->nickname, escaped, sizeof(escaped)) != 0) {
 			emit_identity_error("nickname_invalid", op->id);
 			return 0;
 		}
-		if (op->id[0] &&
+		/* A partial group update still changed the saved profile. Project that
+		 * value without completing the request, then report its correlated error. */
+		if (name_result == 0 && op->id[0] &&
 		    omaq_json_escape(op->id, escaped_request, sizeof(escaped_request)) == 0)
 			snprintf(request_field, sizeof(request_field),
 				 ",\"request\":\"%s\"", escaped_request);
@@ -11854,6 +11868,9 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			 "{\"event\":\"nickname\",\"value\":\"%s\"%s}",
 			 escaped, request_field);
 		emit(ev);
+		emit_groups(NULL);
+		if (name_result == OMAQ_TOX_NAME_GROUPS_UNCONFIRMED)
+			emit_identity_error("nickname_group_sync_failed", op->id);
 		return 0;
 #endif
 		emit_identity_error("unsupported", op->id);
@@ -14216,6 +14233,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_TOX
 			if (g_tox && !g_identity_primary_uncertain) {
 				omaq_tox_iterate(g_tox);
+				flush_friend_names();
 				group_file_pump();
 				flush_receipt_acknowledgements();
 				expire_group_auth_reservation();
@@ -14374,6 +14392,7 @@ int main(int argc, char **argv)
 			enforce_call_control_lease();
 			reset_call_transport();
 			omaq_tox_iterate(g_tox);
+			flush_friend_names();
 			group_file_pump();
 			flush_receipt_acknowledgements();
 			expire_group_auth_reservation();

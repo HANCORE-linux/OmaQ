@@ -201,6 +201,7 @@ aliases = '''  property alias testService: omaq
   property alias testInviteContent: inviteContent
   property alias testInviteSteps: inviteSteps
   property alias testInviteStepsRepeater: inviteStepsRepeater
+  property alias testNicknameField: nicknameField
 '''
 if panel.count(needle) != 1:
     raise SystemExit("panel-request-focus: test alias insertion point changed")
@@ -526,6 +527,39 @@ ShellRoot {
           panel.testInviteContent.width < panel.testCard.width &&
           testRoot.inviteStepsFit(),
           "font base 16 escaped the fixed panel or invite rows")
+        panel.inviteOpen = false
+        panel.nicknameEditOpen = true
+        panel.nicknameSubmitPending = true
+        panel.nicknameRequest = "nickname-partial"
+        panel.testNicknameField.text = "Partial name"
+        panel.testService.handleLine(JSON.stringify({ event: "nickname",
+          value: "Partial name" }))
+      } else if (testRoot.step === 12) {
+        testRoot.check(panel.testService.selfNickname === "Partial name" &&
+          panel.nicknameSubmitPending && panel.nicknameEditOpen,
+          "uncorrelated saved profile falsely completed a partial nickname request")
+        panel.testService.handleLine(JSON.stringify({ event: "error",
+          code: "nickname_group_sync_failed", request: "unrelated-name" }))
+        testRoot.check(panel.nicknameSubmitPending,
+          "unrelated nickname error completed the pending request")
+        panel.testService.handleLine(JSON.stringify({ event: "error",
+          code: "nickname_group_sync_failed", request: "nickname-partial" }))
+      } else if (testRoot.step === 13) {
+        testRoot.check(!panel.nicknameSubmitPending && panel.nicknameEditOpen &&
+          panel.nicknameFeedbackError &&
+          panel.nicknameFeedback === "Nickname saved; group updates are unconfirmed." &&
+          panel.nicknameFeedbackRequest === "nickname-partial" &&
+          panel.testNicknameField.text === "Partial name",
+          "partial nickname result lost its warning, draft, or correlation")
+        panel.nicknameSubmitPending = true
+        panel.nicknameRequest = "nickname-retry"
+        panel.testService.handleLine(JSON.stringify({ event: "nickname",
+          value: "Partial name", request: "nickname-retry" }))
+      } else if (testRoot.step === 14) {
+        testRoot.check(!panel.nicknameSubmitPending && !panel.nicknameEditOpen &&
+          panel.nicknameFeedback === "" && !panel.nicknameFeedbackError &&
+          panel.nicknameRequest === "" && panel.testNicknameField.text === "Partial name",
+          "confirmed same-name retry failed to clear the partial result")
         console.log(testRoot.failed ? "PANEL_REQUEST_RESULT fail" : "PANEL_REQUEST_RESULT ok")
         Qt.quit()
       }

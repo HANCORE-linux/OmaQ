@@ -848,6 +848,10 @@ BarWidget {
       return "Avatar image is invalid or larger than 512 KiB."
     if (code === "nickname_invalid")
       return "Nickname must contain 1–18 valid characters."
+    if (code === "nickname_update_failed")
+      return "Nickname update failed. Try again."
+    if (code === "nickname_group_sync_failed")
+      return "Nickname saved; group updates are unconfirmed."
     if (code === "identity_changed")
       return "Identity changed. Pending actions were discarded."
     if (code === "identity_backup_failed")
@@ -3154,7 +3158,9 @@ BarWidget {
                 ? "Nickname update is unavailable."
                 : omaq.lastError === "nickname_invalid"
                   ? "Nickname must contain 1–18 valid characters."
-                  : "Nickname update failed. Try again."
+                  : omaq.lastError === "nickname_group_sync_failed"
+                    ? root.errorText(omaq.lastError)
+                    : "Nickname update failed. Try again."
               root.nicknameFeedbackError = true
               root.nicknameRequest = ""
               nicknameSubmitTimer.stop()

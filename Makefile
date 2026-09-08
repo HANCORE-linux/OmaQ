@@ -62,6 +62,8 @@ BIN_AV_STATE_TEST := tests/av_state_test
 BIN_RATCHET_PREKEY_TEST := tests/ratchet_prekey_test
 BIN_IDENTITY_GUARD_TEST := tests/identity_guard_test
 BIN_TOX_RELAY_RETRY_TEST := tests/tox_relay_retry_test
+BIN_TOX_NAME_TEST := tests/tox_name_test
+BIN_TOX_NAME_IPC_HELPER := tests/omaq_tox_name_test_helper
 BIN_IPC_TEST_HELPER := tests/omaq_ipc_test_helper
 BIN_GROUP_ADMIN_TEST_HELPER := tests/omaq_group_admin_test_helper
 
@@ -71,6 +73,7 @@ endif
 ifeq ($(TOX_OK),yes)
   IDENTITY_GUARD_TEST_TARGET := $(BIN_IDENTITY_GUARD_TEST)
   TOX_RELAY_RETRY_TEST_TARGET := $(BIN_TOX_RELAY_RETRY_TEST)
+  TOX_NAME_TEST_TARGET := $(BIN_TOX_NAME_TEST) $(BIN_TOX_NAME_IPC_HELPER)
 endif
 ifeq ($(IMAGE_OK),yes)
   CLIPBOARD_E2E_COMMAND := sh tests/clipboard-image-e2e.sh ./$(BIN_IPC_TEST_HELPER)
@@ -125,6 +128,19 @@ $(BIN_TOX_RELAY_RETRY_TEST): tests/tox_relay_retry_test.c helper/tox_adapt.c hel
 		-Wl,--wrap=tox_bootstrap -Wl,--wrap=tox_add_tcp_relay \
 		$(shell $(PKG_CONFIG) --libs $(TOX_PC))
 
+$(BIN_TOX_NAME_TEST): tests/tox_name_test.c helper/tox_adapt.c helper/tox_adapt.h helper/group.h helper/identity_guard.c helper/file.c
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DHAVE_TOX \
+		$(shell $(PKG_CONFIG) --cflags $(TOX_PC)) -o $@ \
+		tests/tox_name_test.c helper/identity_guard.c helper/file.c \
+		-Wl,--wrap=tox_bootstrap -Wl,--wrap=tox_add_tcp_relay \
+		-Wl,--wrap=tox_group_self_set_name $(shell $(PKG_CONFIG) --libs $(TOX_PC))
+
+$(BIN_TOX_NAME_IPC_HELPER): $(HELPER_SRC) tests/tox_name_faults.c
+	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -DOMAQ_TOX_TEST -o $@ \
+		$(HELPER_SRC) tests/tox_name_faults.c $(TOX_LIBS) -Wl,--wrap=main \
+		-Wl,--wrap=tox_bootstrap -Wl,--wrap=tox_add_tcp_relay \
+		-Wl,--wrap=tox_group_self_set_name -Wl,--wrap=omaq_tox_set_name
+
 $(BIN_IPC_TEST_HELPER): $(HELPER_SRC)
 	$(CC) -std=c11 -Wall -Werror -Wno-unused-function -O1 $(SANFLAGS) -DOMAQ_IPC_TEST \
 		-DOMAQ_STDOUT_SPOOL_MAX=5242880u $(AVATAR_CFLAGS) -o $@ $(HELPER_SRC) \
@@ -176,13 +192,15 @@ $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 # Keep native Quickshell and Omarchy shell fixtures in the local test target.
-test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
 	./$(BIN_IDENTITY_GUARD_TEST)
 	./$(BIN_TOX_RELAY_RETRY_TEST)
+	./$(BIN_TOX_NAME_TEST)
+	python3 tests/tox-name-ipc.py ./$(BIN_TOX_NAME_IPC_HELPER)
 	./$(BIN_RATCHET_PREKEY_TEST)
 	python3 tests/tcp_relay_retry_source_test.py
 	sh tests/arch-check.sh
@@ -208,13 +226,15 @@ test-ci: check-tox check-signal check-audio check-images check-node check-qml $(
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 	@echo "test-ci: ok (native Quickshell and Omarchy shell fixtures excluded)"
 
-test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
+test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
 	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_IDENTITY_GUARD_TEST); fi
 	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_TOX_RELAY_RETRY_TEST); fi
+	@if [ "$(TOX_OK)" = "yes" ]; then ./$(BIN_TOX_NAME_TEST); fi
+	@if [ "$(TOX_OK)" = "yes" ]; then python3 tests/tox-name-ipc.py ./$(BIN_TOX_NAME_IPC_HELPER); fi
 	@if [ "$(SIG_OK)" = "yes" ]; then ./$(BIN_RATCHET_PREKEY_TEST); fi
 	python3 tests/tcp_relay_retry_source_test.py
 	sh tests/arch-check.sh
@@ -392,5 +412,6 @@ verify-8: test arch helper
 clean:
 	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
 		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IDENTITY_GUARD_TEST) \
-		$(BIN_TOX_RELAY_RETRY_TEST) $(BIN_IPC_TEST_HELPER) \
+		$(BIN_TOX_RELAY_RETRY_TEST) $(BIN_TOX_NAME_TEST) $(BIN_TOX_NAME_IPC_HELPER) \
+		$(BIN_IPC_TEST_HELPER) \
 		$(BIN_GROUP_ADMIN_TEST_HELPER) $(BIN_HELP)
