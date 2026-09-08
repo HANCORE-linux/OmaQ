@@ -45,7 +45,7 @@ Hover or keyboard-focus an action-rail icon to display its label. Use the rail t
 
 Close the panel with `Escape`, another press on the OmaQ bar action, or a click outside. The panel intentionally has no redundant Close button and never keeps a desktop-sized invisible input region.
 
-Friend names use the panel's width-driven grid and show online, away, and offline state. Name changes appear immediately in the panel and every open DirectChat. Group peer-name changes also refresh member rows, message sender labels, and typing labels in every open GroupChat. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
+Friend names use the panel's width-driven grid and show online, away, and offline state. Name changes appear immediately in the panel, open DirectChats, and GroupChat member rows, sender labels, and typing labels. Standard font sizes use one wide column; after five contacts, scroll the bounded list to reach the remaining entries. An unread friend receives a `color03` underline, while the bar widget shows the total unread badge when badges are enabled.
 
 ## Create and redeem invitations
 
@@ -92,7 +92,7 @@ Panel preferences use the active OmaQ and Omarchy visual system. Message scaling
 </tr></tbody>
 </table>
 
-Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Each floating chat shows **Pop up: On** or **Pop up: Off** for its per-conversation automatic-opening preference.
+Select **Chat message size**, **Theme**, or **Sounds** in the action rail before choosing an option. The global **Mute** state does not disable unread counts, delivery, encryption, or incoming-call progress tones. Toggle **Pop up: On** or **Pop up: Off** in a floating chat to control its automatic opening.
 
 Omarchy plugin settings also control badges, right-side notifications, desktop notifications, separate or bundled cards, unread animation, the default theme, message scale, sound, and formatting-toolbar visibility.
 
@@ -106,7 +106,7 @@ New DirectChat and GroupChat windows use the compositor's standard opening anima
 <td><a href="images/guide/15-direct-chat-overview.png"><img src="images/guide/15-direct-chat-overview.png" alt="DirectChat messages and receipts" width="220"></a><br>The header keeps the contact name beside online, offline, reconnecting, or typing state. The history shows incoming and outgoing bubbles, receipts, reactions, and unread separation.</td>
 <td><a href="images/guide/16-direct-formatting.png"><img src="images/guide/16-direct-formatting.png" alt="DirectChat formatting toolbar" width="220"></a><br>Toggle Heading, Bold, Italic, Quote, Code, Link, unordered list, numbered list, and task list tools.</td>
 <td><a href="images/guide/17-direct-emoji-picker.png"><img src="images/guide/17-direct-emoji-picker.png" alt="DirectChat emoji picker" width="220"></a><br>Scroll through the picker or paste another valid Unicode emoji sequence. Emoji-only messages use the fixed 56-pixel presentation. A message's React action shows the five most-used reactions in the loaded conversation at the same size as this picker.</td>
-<td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Clear requires confirmation immediately before execution and removes only the current local conversation history. OmaQ never queues this destructive action for reconnect, and it applies success or failure only to the exact DirectChat or GroupChat request.</td>
+<td><a href="images/guide/21-direct-clear-confirm.png"><img src="images/guide/21-direct-clear-confirm.png" alt="Clear DirectChat confirmation" width="220"></a><br>Confirm Clear chat to remove only this chat's local history. OmaQ never queues it for reconnect and applies results only to the matching conversation and request.</td>
 </tr></tbody>
 </table>
 
@@ -159,7 +159,7 @@ VoiceCall is available only in DirectChat. The bar icon pulses while a call ring
 
 Select the call action to ring a contact. The recipient can Answer, Decline, or Hang up while ringing. An active call shows elapsed time and retains Hang up. After you select Hang up, the chat shows **Ending…** until the helper confirms that local capture, buffered audio, and the old call transport have stopped. It then shows **Call ended** or a more specific local result. If bounded reconnect replay no longer contains the expected result, OmaQ reports **Call result unavailable after reconnect** without claiming a confirmed hangup.
 
-This confirmation covers the local stop. A network failure can prevent the other person from receiving the cancellation.
+Call controls report unavailable actions rather than queueing them for reconnect. A confirmed hangup covers only the local stop; a network failure can prevent delivery of the cancellation.
 
 OmaQ captures and plays 48 kHz mono audio through the PulseAudio client library. PipeWire-Pulse supplies desktop devices. OmaQ keeps call audio in bounded memory and does not record it.
 

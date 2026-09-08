@@ -33,11 +33,11 @@ Use OmaQ only for lawful private communication with people you trust.
 
 OmaQ is general-purpose software intended for lawful use. This policy adds no restrictions to the open-source licenses.
 
-The project responds truthfully to lawful requests from public authorities. If the project does not possess the requested user data, it says so. OmaQ operates no service and cannot provide data stored only on users' devices, including identities, contacts, messages, and history.
+The project answers lawful requests from public authorities truthfully, including when it does not possess the requested data. OmaQ operates no service and cannot provide identities, contacts, messages, or history stored only on your devices.
 
-The project does not cooperate with resellers. It offers no reseller, original equipment manufacturer (OEM), white-label, or exclusive distribution arrangements. This policy does not limit open-source redistribution rights or imply project affiliation or endorsement.
+The project neither cooperates with resellers nor offers reseller, original equipment manufacturer (OEM), white-label, or exclusive distribution arrangements. This policy neither limits open-source redistribution rights nor implies project affiliation or endorsement.
 
-OmaQ maintains one public codebase. The project offers no private, privileged, selectively weakened, or organization-specific builds, including builds for public authorities, companies, or resellers. Security-relevant changes remain public and reviewable.
+OmaQ keeps one codebase and all security-relevant changes public and reviewable. The project offers no private, privileged, selectively weakened, or organization-specific builds, including for public authorities, companies, or resellers.
 
 ## How OmaQ works
 
@@ -48,18 +48,6 @@ OmaQ maintains one public codebase. The project offers no private, privileged, s
 <p align="center">
   Toxcore transports encrypted packets between peers. Direct messages receive an additional Signal Double Ratchet layer, while identity and history remain in local storage.
 </p>
-
-## Chat behavior
-
-Clear Chat is immediate, never queued for reconnect, and applies a helper result only to the exact current conversation and request.
-
-Open DirectChat and GroupChat windows update names as peers change them.
-
-Floating chats expose their per-conversation automatic-opening preference as **Pop up: On** or **Pop up: Off** while retaining a blank draggable toolbar area.
-
-DirectChat call controls remain fail-closed and report unavailable actions without claiming that a peer received an undeliverable cancellation.
-
-See the [illustrated user guide](docs/USER-GUIDE.md) for daily use and the [current status](docs/CURRENT.md) for capability and validation details.
 
 ## Install
 
