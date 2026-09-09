@@ -209,6 +209,7 @@ test-ci: check-tox check-signal check-audio check-images check-node check-qml $(
 	sh tests/direct-invite-fingerprint.sh
 	sh tests/input-mask.sh
 	sh tests/surface-owner.sh
+	python3 tests/material-symbols.py
 	python3 tests/qml_plaintext_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/group-chat-parity.sh
@@ -246,6 +247,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/chat-surface-geometry.sh
 	sh tests/chat-transcript-layout.sh
 	sh tests/chat-message-actions.sh
+	sh tests/material-symbols.sh
 	python3 tests/qml_plaintext_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
@@ -261,6 +263,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/asset-provenance.sh
 	python3 tests/extract-emoji.py
 	sh tests/chat-composer-parity.sh
+	sh tests/chat-input-scroll.sh
 	$(CLIPBOARD_E2E_COMMAND)
 	sh tests/paste-image.sh
 	sh tests/protocol-compat.sh

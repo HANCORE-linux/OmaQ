@@ -18,13 +18,14 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
-    "ChatSurface.qml": "85c63d92d66aebc53556d178276ab0aa31bb20556548dd3a7727ab4fda320d3f",
-    "Panel.qml": "3f0ca09483e97d1d3b12412e209dd067318ed15f54ca8b5fdfed7353694086bb",
+    "ChatSurface.qml": "5db1eec01d51f767172f43b48e976c153719874daca247c48a373d07fa929e36",
+    "MaterialSymbols.qml": "e4f62d5c50be23a97149725d74e87f3427666ccd72ca6e12e088b3dd0b82b70e",
+    "Panel.qml": "e75d7588cfd05eda59c2106fb614927511905eb449f47da60250850e17884a25",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "ffd4171eb4506e6722fcb0747cf99bbf3c4fc341a9877fb20a5c3c1ab7ddf5ec",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "4dd5414cc68415c7e6a6a22f9544bc2b65f023c514fd0aa52a680e908e061c54",
+    "pages/ChatPage.qml": "fa84ce08a7df3f1f59bc2c81105b3ea5472493b85d6a220b3d3ecf19d1202aad",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -145,10 +146,10 @@ COMPUTED_WRITE_ALLOWLIST = {
 REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
-    "ChatSurface.qml": "61cb0a3d9aecdecdac9bc1ad1cefa941dd4f3047a0c2bfe336484eded210661d",
-    "Panel.qml": "334d07fe0e583d470519779fde103fb83b495c65f9e6082030229f19ae1f72f4",
+    "ChatSurface.qml": "f2454a007e434f61efb711b881261c722405e625dbfd7769ee3c8230949444a5",
+    "Panel.qml": "3f7bd5220ec928cc5658d5db76c67cb475b0bb713cd37be849e766eefa2a8514",
     "Service.qml": "2395f4a77de4bc06a4cd21ad77bdd19fe98c9d41b2bd48de7bfb69eb1d383809",
-    "pages/ChatPage.qml": "5d3cd196d0ea207e157a2f538759d03619aaae170218a718a9e8263b1f3e5609",
+    "pages/ChatPage.qml": "007606819edfe5fbcf67b0fb3449c9c96880bc40223d4fc51ec9bfbb4276daf7",
 }
 REVIEWED_MODEL_MUTATION_IDS = {
     "pages/ChatPage.qml": {"groupReceiptModel"},
@@ -544,7 +545,11 @@ def check_external_components(path: Path, lines: list[str], external_ids: set[st
         if kind in {"ChatBtn", "SurfaceBtn", "FormatBtn", "EmojiPickerBtn"}:
             if tooltip and tooltip != '""':
                 fail(f"external {kind} re-enables its inherited AutoText tooltip at {location}")
-            if icon and expression_references(icon):
+            # Only these two literal call glyphs may depend on font readiness.
+            # The source hash also binds the singleton's boolean ready contract.
+            ready_icon = (kind == "SurfaceBtn" and path == ROOT / "ChatSurface.qml" and
+                          re.fullmatch(r'OmaQ\.MaterialSymbols\.ready\s*\?\s*"\\u(?:e0b0|e0b1)"\s*:\s*"\?"', icon))
+            if icon and expression_references(icon) and not ready_icon:
                 fail(f"dynamic text reaches external {kind} icon at {location}")
         if kind in ALLOWED_EXTERNAL_LABEL_REFS:
             if text and not external_label_safe(kind, text):
@@ -556,7 +561,11 @@ def check_external_components(path: Path, lines: list[str], external_ids: set[st
             continue
         if kind == "BarIconButton":
             allowed = {"omaq.incomingCall", "omaq.pending", "omaq.pendingGroup"}
-            if expression_references(text) - allowed or expression_references(tooltip) - allowed:
+            text_allowed = allowed
+            ready_bar = r'omaq.incomingCall?(OmaQ.MaterialSymbols.ready?"\ue0b0":"?"):(omaq.pending?"":"󰭹")'
+            if path == ROOT / "Panel.qml" and re.sub(r"\s+", "", text) == ready_bar:
+                text_allowed = allowed | {"OmaQ.MaterialSymbols.ready"}
+            if expression_references(text) - text_allowed or expression_references(tooltip) - allowed:
                 fail(f"remote value reaches external BarIconButton text at {location}")
 
 
@@ -924,6 +933,27 @@ def check_adversarial_controls() -> None:
         "}\n",
         "SafeText RichText override",
     )
+
+    safe_icon = r'OmaQ.MaterialSymbols.ready ? "\ue0b0" : "?"'
+    safe_bar = r'omaq.incomingCall ? (OmaQ.MaterialSymbols.ready ? "\ue0b0" : "?") : (omaq.pending ? "" : "󰭹")'
+    for path, kind, prop, value in (
+        (ROOT / "ChatSurface.qml", "SurfaceBtn", "iconText", safe_icon),
+        (ROOT / "ChatSurface.qml", "SurfaceBtn", "iconText", safe_icon.replace("e0b0", "e0b1")),
+        (ROOT / "Panel.qml", "BarIconButton", "text", safe_bar),
+    ):
+        source = "import QtQuick\nItem {\n  " + kind + " { " + prop + ": " + value + " }\n}\n"
+        lines = format_qml_text(source).splitlines()
+        check_external_components(path, lines, set())
+        expect_full_policy_forbidden(source, "font-ready icon on another source path")
+        for replacement in ('service.lastChatText', 'OmaQ.MaterialSymbols.glyph("call")',
+                            '"<img src=\\\"https://invalid.example/icon\\\">"'):
+            hostile = source.replace(r'"\ue0b0"', replacement).replace(r'"\ue0b1"', replacement)
+            expect_full_policy_forbidden(hostile, "dynamic or markup font-ready icon", path)
+        expect_full_policy_forbidden(source.replace('OmaQ.MaterialSymbols.ready', 'service.ready'),
+                                     "unreviewed readiness producer", path)
+    expect_full_policy_forbidden(
+        'import QtQuick\nItem {\n  SurfaceBtn { iconText: ' + safe_icon + '; tooltipText: service.lastChatText }\n}\n',
+        "font-ready icon re-enabling an external tooltip", ROOT / "ChatSurface.qml")
 
     malicious = (
         "service.lastChatText",

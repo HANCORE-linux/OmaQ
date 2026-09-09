@@ -114,7 +114,7 @@ tmp=$(mktemp -d /tmp/omaq-panel-request-XXXXXX)
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$tmp/omaq"
-for path in Panel.qml Service.qml SafeText.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
+for path in Panel.qml Service.qml SafeText.qml MaterialSymbols.qml Model.js Emoji.js MessageLayout.js CallTone.qml \
   ChatSurface.qml PlacementController.qml SurfaceCoordinator.qml qmldir assets pages \
   sounds themes scripts helper manifest.json; do
   cp -a "$root/$path" "$tmp/omaq/"
