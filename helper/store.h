@@ -10,7 +10,10 @@ typedef struct {
 	char id[97];
 } omaq_store_message_id;
 
-/* Only this module opens history files. */
+/* Only this module opens history files.
+ * Append succeeds after flushing/syncing the file and its directory entries.
+ * Failure can leave bytes on disk; it is not a rollback or a safe-resend signal.
+ * This does not transact Ratchet state, history rewrites, or remote delivery. */
 
 int omaq_store_append(const char *home, const char *conv_id, const char *line);
 /* Removes current and rotated history for exactly one conversation. */

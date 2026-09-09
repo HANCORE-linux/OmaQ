@@ -2,6 +2,10 @@
 
 This page is the current product and release snapshot. Completed phase and follow-up history lives in the [stage notes](stages/README.md).
 
+## Unreleased branch work
+
+- History append now checks flush, file sync, close, and bottom-up directory sync before returning success and publishing the message ID in its index. Failures remain ambiguous and are not safe-resend signals. See [history append durability](stages/history-append-durability.md) for tests and outstanding native validation. This is branch work, not a released capability.
+
 ## Snapshot
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
