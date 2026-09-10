@@ -708,16 +708,16 @@ Item {
     SurfaceBtn {
       visible: toolbar.page && !toolbar.page.inCall && !toolbar.page.incoming &&
         !toolbar.page.callEnding && !toolbar.page.callActionPending
-      iconText: "call"
-      fontFamily: "Material Symbols Rounded"
+      iconText: OmaQ.MaterialSymbols.ready ? "\ue0b0" : "?"
+      fontFamily: OmaQ.MaterialSymbols.family
       helpText: "Start call with " + (toolbar.page ? toolbar.page.peerName : "contact")
       onClicked: toolbar.page.startCall()
     }
     SurfaceBtn {
       visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall &&
         !toolbar.page.callEnding && !toolbar.page.callActionPending
-      iconText: "call"
-      fontFamily: "Material Symbols Rounded"
+      iconText: OmaQ.MaterialSymbols.ready ? "\ue0b0" : "?"
+      fontFamily: OmaQ.MaterialSymbols.family
       helpText: "Answer call from " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       selected: true
@@ -726,8 +726,8 @@ Item {
     SurfaceBtn {
       visible: toolbar.page && toolbar.page.incoming && !toolbar.page.inCall &&
         !toolbar.page.callEnding && !toolbar.page.callActionPending
-      iconText: "call_end"
-      fontFamily: "Material Symbols Rounded"
+      iconText: OmaQ.MaterialSymbols.ready ? "\ue0b1" : "?"
+      fontFamily: OmaQ.MaterialSymbols.family
       helpText: "Decline call from " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       onClicked: toolbar.page.hangUp()
@@ -735,8 +735,8 @@ Item {
     SurfaceBtn {
       visible: toolbar.page && toolbar.page.inCall && !toolbar.page.callEnding &&
         !toolbar.page.callActionPending
-      iconText: "call_end"
-      fontFamily: "Material Symbols Rounded"
+      iconText: OmaQ.MaterialSymbols.ready ? "\ue0b1" : "?"
+      fontFamily: OmaQ.MaterialSymbols.family
       helpText: "End call with " + (toolbar.page ? toolbar.page.peerName : "contact")
       bordered: true
       selected: true

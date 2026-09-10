@@ -304,6 +304,17 @@ FocusScope {
     return choices
   }
 
+  function allReactionChoicesFor(currentEmoji) {
+    // Keep the familiar first five (including the selected reaction), then
+    // append every remaining supported choice once. Snapshot only on open.
+    var choices = root.reactionChoicesFor(currentEmoji, 5)
+    var ranked = root.mostUsedReactionSet(root.emojiSet.length)
+    for (var i = 0; i < ranked.length; i++)
+      if (choices.indexOf(ranked[i]) < 0)
+        choices.push(ranked[i])
+    return choices
+  }
+
   ListModel {
     id: lines
   }
@@ -404,12 +415,12 @@ FocusScope {
       OmaQ.SafeText {
         Layout.preferredWidth: Style.font.icon
         horizontalAlignment: Text.AlignHCenter
-        text: contextItem.materialIcon
+        text: OmaQ.MaterialSymbols.glyph(contextItem.materialIcon)
         visible: contextItem.materialIcon !== ""
         color: contextItem.informational ? contextItem.informationalIconColor :
           (!contextItem.enabled ? Qt.darker(root.fg, 1.6) :
            (contextItem.highlighted ? root.accent : root.fg))
-        font.family: "Material Symbols Rounded"
+        font.family: OmaQ.MaterialSymbols.family
         font.pixelSize: Style.font.icon
         font.variableAxes: ({ "FILL": contextItem.informational
           ? contextItem.informationalIconFill : 0, "wght": 500 })
@@ -429,9 +440,9 @@ FocusScope {
 
       OmaQ.SafeText {
         visible: !!contextItem.subMenu
-        text: "chevron_right"
+        text: OmaQ.MaterialSymbols.glyph("chevron_right")
         color: contextItem.highlighted ? root.accent : Qt.darker(root.fg, 1.35)
-        font.family: "Material Symbols Rounded"
+        font.family: OmaQ.MaterialSymbols.family
         font.pixelSize: Style.font.icon
         font.variableAxes: ({ "FILL": 0, "wght": 500 })
         renderType: Text.QtRendering
@@ -460,12 +471,13 @@ FocusScope {
 
     OmaQ.SafeText {
       anchors.centerIn: parent
-      text: reactionAction.emoji !== "" ? reactionAction.emoji : reactionAction.materialIcon
+      text: reactionAction.emoji !== "" ? reactionAction.emoji
+        : OmaQ.MaterialSymbols.glyph(reactionAction.materialIcon)
       color: reactionAction.materialIcon !== ""
         ? (reactionAction.selected || reactionHover.hovered || reactionAction.activeFocus
           ? root.accent : root.fg)
         : root.fg
-      font.family: reactionAction.emoji !== "" ? "Noto Color Emoji" : "Material Symbols Rounded"
+      font.family: reactionAction.emoji !== "" ? "Noto Color Emoji" : OmaQ.MaterialSymbols.family
       font.pixelSize: reactionAction.emoji !== ""
         ? (reactionAction.compact ? Style.font.bodySmall : Style.font.body)
         : (reactionAction.compact ? Style.font.body : Style.font.icon)
@@ -523,14 +535,15 @@ FocusScope {
     OmaQ.SafeText {
       id: receiptText
       anchors.centerIn: parent
-      text: receiptMark.failed ? "error" : (receiptMark.uncertain ? "help" :
+      text: receiptMark.failed ? OmaQ.MaterialSymbols.glyph("error") :
+        (receiptMark.uncertain ? OmaQ.MaterialSymbols.glyph("help") :
         (receiptMark.acknowledgement >= 2 ? "✓✓" :
          (receiptMark.acknowledgement >= 1 ? "✓" : "·")))
       color: receiptMark.markColor
       opacity: receiptMark.failed || receiptMark.uncertain ||
         receiptMark.acknowledgement >= 1 ? 1.0 : 0.72
       font.family: receiptMark.failed || receiptMark.uncertain
-        ? "Material Symbols Rounded" : root.fontFamily
+        ? OmaQ.MaterialSymbols.family : root.fontFamily
       font.pixelSize: receiptMark.failed || receiptMark.uncertain
         ? Style.font.body : Style.font.caption
       font.variableAxes: receiptMark.failed || receiptMark.uncertain
@@ -550,6 +563,8 @@ FocusScope {
     property string materialIcon: ""
     property real materialIconSize: Style.font.icon + Style.space(2)
     fontFamily: root.fontFamily
+    opacity: enabled ? 1.0 : 0.38
+    accent: enabled ? root.accent : foreground
     iconText: ""
     text: ""
     horizontalPadding: 0
@@ -559,9 +574,9 @@ FocusScope {
 
     OmaQ.SafeText {
       anchors.centerIn: parent
-      text: formatButton.materialIcon
+      text: OmaQ.MaterialSymbols.glyph(formatButton.materialIcon)
       color: formatButton.hot || formatButton.selected ? formatButton.accent : formatButton.foreground
-      font.family: "Material Symbols Rounded"
+      font.family: OmaQ.MaterialSymbols.family
       font.pixelSize: formatButton.materialIconSize
       font.variableAxes: ({ "FILL": 0, "wght": 500 })
       renderType: Text.QtRendering
@@ -3255,9 +3270,9 @@ FocusScope {
           OmaQ.SafeText {
             anchors.centerIn: parent
             visible: root.peerAvatar === "" || root.peerAvatarFailed
-            text: root.groupConversation ? "group" : "person"
+            text: OmaQ.MaterialSymbols.glyph(root.groupConversation ? "group" : "person")
             color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72)
-            font.family: "Material Symbols Rounded"
+            font.family: OmaQ.MaterialSymbols.family
             font.pixelSize: Math.round(Style.font.display * 0.64)
             font.variableAxes: ({ "FILL": 0, "wght": 500 })
             renderType: Text.QtRendering
@@ -3552,10 +3567,10 @@ FocusScope {
                   spacing: Style.space(4)
                   OmaQ.SafeText {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "person_add"
+                    text: OmaQ.MaterialSymbols.glyph("person_add")
                     color: String(inviteFriend.modelData && inviteFriend.modelData.id || "") ===
                       root.groupInviteFriendId ? root.accent : root.fg
-                    font.family: "Material Symbols Rounded"
+                    font.family: OmaQ.MaterialSymbols.family
                     font.pixelSize: Style.font.iconSmall
                     font.variableAxes: ({ "FILL": 0, "wght": 500 })
                   }
@@ -3671,11 +3686,11 @@ FocusScope {
 
                   OmaQ.SafeText {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: memberButton.modelData.role === "owner" ? "crown" :
-                      (memberButton.modelData.role === "admin" ? "shield_person" : "person")
+                    text: OmaQ.MaterialSymbols.glyph(memberButton.modelData.role === "owner" ? "crown" :
+                      (memberButton.modelData.role === "admin" ? "shield_person" : "person"))
                     color: memberButton.modelData.self || memberButton.modelData.online
                       ? root.accent : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.58)
-                    font.family: "Material Symbols Rounded"
+                    font.family: OmaQ.MaterialSymbols.family
                     font.pixelSize: Style.font.icon + Style.space(2)
                     font.variableAxes: ({ "FILL": 0, "wght": 600 })
                     renderType: Text.QtRendering
@@ -4135,7 +4150,7 @@ FocusScope {
             line.hasReaction ? Style.space(14) : 0,
             line.hasMetadataText ? line.metadataTextTop + line.metadataTextHeight : 0)
           property bool reactionPickerOpen: false
-          property var reactionChoices: root.reactionChoicesFor(line.reactionMe, 5)
+          property var reactionChoices: []
           readonly property bool actionControlsVisible: line.failed ||
             line.hasTextSelection ||
             (line.replyable && (lineHover.hovered || line.keyboardSelected ||
@@ -4268,9 +4283,9 @@ FocusScope {
               OmaQ.SafeText {
                 id: genericFileIcon
                 visible: !line.audioMessage
-                text: "draft"
+                text: OmaQ.MaterialSymbols.glyph("draft")
                 color: root.accent
-                font.family: "Material Symbols Rounded"
+                font.family: OmaQ.MaterialSymbols.family
                 font.pixelSize: Style.font.icon
                 font.variableAxes: ({ "FILL": 0, "wght": 500 })
                 renderType: Text.QtRendering
@@ -4352,9 +4367,9 @@ FocusScope {
                 anchors.centerIn: parent
                 visible: inlineImageContent.status === Image.Error ||
                   inlineImageContent.status === Image.Null
-                text: "broken_image"
+                text: OmaQ.MaterialSymbols.glyph("broken_image")
                 color: root.accent
-                font.family: "Material Symbols Rounded"
+                font.family: OmaQ.MaterialSymbols.family
                 font.pixelSize: Style.font.icon
               }
 
@@ -4750,15 +4765,43 @@ FocusScope {
 
           Controls.Popup {
             id: reactionPicker
-            width: reactionPickerGrid.implicitWidth + padding * 2
-            height: reactionPickerGrid.implicitHeight + padding * 2
+            readonly property int pageSize: 5
+            readonly property int pageCount: Math.max(1,
+              Math.ceil(line.reactionChoices.length / pageSize))
+            property int pageIndex: 0
+            property real wheelRemainder: 0
+            width: reactionPickerRow.implicitWidth + padding * 2
+            height: reactionPickerRow.implicitHeight + padding * 2
             padding: Style.space(4)
             margins: Style.space(3)
             focus: true
             closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+            function focusFirstReaction() {
+              var firstReaction = reactionPickerRepeater.itemAt(0)
+              if (reactionPicker.visible && firstReaction)
+                firstReaction.forceActiveFocus()
+            }
+            function changePage(delta) {
+              pageIndex = Math.max(0, Math.min(pageCount - 1, pageIndex + delta))
+              Qt.callLater(focusFirstReaction)
+            }
+            function scrollChoices(event) {
+              var angle = event.angleDelta.y || event.angleDelta.x
+              var pixels = event.pixelDelta.y || event.pixelDelta.x
+              wheelRemainder += angle || pixels * 120 / Style.space(30)
+              var steps = Math.trunc(wheelRemainder / 120)
+              if (steps !== 0) {
+                wheelRemainder -= steps * 120
+                changePage(-steps)
+              }
+              // Never scroll the transcript behind the picker, even at its ends.
+              event.accepted = true
+            }
             onOpened: {
               line.reactionPickerOpen = true
-              line.reactionChoices = root.reactionChoicesFor(line.reactionMe, 5)
+              line.reactionChoices = root.allReactionChoicesFor(line.reactionMe)
+              pageIndex = 0
+              wheelRemainder = 0
               var point = moreReactionAction.mapToItem(line, 0, moreReactionAction.height + Style.space(3))
               x = Math.max(Style.space(3), Math.min(point.x, line.width - width - Style.space(3)))
               var below = moreReactionAction.mapToItem(list, 0,
@@ -4769,11 +4812,7 @@ FocusScope {
               pickerY = Math.max(Style.space(3),
                 Math.min(pickerY, list.height - height - Style.space(3)))
               y = list.mapToItem(line, 0, pickerY).y
-              Qt.callLater(function() {
-                var firstReaction = reactionPickerRepeater.itemAt(0)
-                if (firstReaction)
-                  firstReaction.forceActiveFocus()
-              })
+              Qt.callLater(focusFirstReaction)
             }
             onClosed: {
               line.reactionPickerOpen = false
@@ -4788,26 +4827,72 @@ FocusScope {
               border.width: 1
             }
 
-            contentItem: Grid {
-              id: reactionPickerGrid
-              columns: 5
+            contentItem: Row {
+              id: reactionPickerRow
               spacing: Style.space(3)
+              Keys.onLeftPressed: reactionPicker.changePage(-1)
+              Keys.onRightPressed: reactionPicker.changePage(1)
 
-              Repeater {
-                id: reactionPickerRepeater
-                model: line.reactionChoices
-                delegate: EmojiPickerBtn {
-                  required property int index
-                  readonly property string reactionEmoji: String(
-                    line.reactionChoices[index] || "")
-                  emojiValue: reactionEmoji
-                  selected: line.reactionMe === reactionEmoji
-                  helpText: "React with " + reactionEmoji
-                  onClicked: {
-                    root.reactToMessage(line.contextId, line.reactionMe, reactionEmoji)
-                    reactionPicker.close()
+              WheelHandler {
+                target: null
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                acceptedModifiers: Qt.NoModifier
+                onWheel: event => reactionPicker.scrollChoices(event)
+              }
+              WheelHandler {
+                target: null
+                orientation: Qt.Horizontal
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                acceptedModifiers: Qt.NoModifier
+                onWheel: function(event) {
+                  // Diagonal events are already consumed by the vertical handler.
+                  if (event.angleDelta.y === 0 && event.pixelDelta.y === 0)
+                    reactionPicker.scrollChoices(event)
+                }
+              }
+
+              FormatBtn {
+                id: previousReactionPage
+                materialIcon: "chevron_left"
+                helpText: "Previous reactions"
+                enabled: reactionPicker.pageIndex > 0
+                onClicked: reactionPicker.changePage(-1)
+              }
+
+              Grid {
+                id: reactionPickerGrid
+                columns: reactionPicker.pageSize
+                spacing: Style.space(3)
+                // Keep the last, partial page and both arrows in place.
+                width: reactionPicker.pageSize * Style.space(30) +
+                  (reactionPicker.pageSize - 1) * spacing
+                height: Style.space(30)
+
+                Repeater {
+                  id: reactionPickerRepeater
+                  model: Math.min(reactionPicker.pageSize, line.reactionChoices.length -
+                    reactionPicker.pageIndex * reactionPicker.pageSize)
+                  delegate: EmojiPickerBtn {
+                    required property int index
+                    readonly property string reactionEmoji: String(line.reactionChoices[
+                      reactionPicker.pageIndex * reactionPicker.pageSize + index] || "")
+                    emojiValue: reactionEmoji
+                    selected: line.reactionMe === reactionEmoji
+                    helpText: "React with " + reactionEmoji
+                    onClicked: {
+                      root.reactToMessage(line.contextId, line.reactionMe, reactionEmoji)
+                      reactionPicker.close()
+                    }
                   }
                 }
+              }
+
+              FormatBtn {
+                id: nextReactionPage
+                materialIcon: "chevron_right"
+                helpText: "More reactions"
+                enabled: reactionPicker.pageIndex + 1 < reactionPicker.pageCount
+                onClicked: reactionPicker.changePage(1)
               }
             }
           }
@@ -5311,7 +5396,7 @@ FocusScope {
         RowLayout {
           id: composerRow
           width: parent.width
-          implicitHeight: input.height
+          implicitHeight: inputBox.implicitHeight
           spacing: Style.space(4)
 
             FormatBtn {
@@ -5326,51 +5411,62 @@ FocusScope {
               id: inputBox
               Layout.fillWidth: true
               Layout.minimumHeight: Style.space(30)
-              Layout.preferredHeight: Math.min(Style.space(84), Math.max(Style.space(30), input.contentHeight + Style.space(12)))
+              implicitHeight: Math.min(Style.space(84), Math.max(Style.space(30),
+                input.contentHeight + input.topPadding + input.bottomPadding))
+              Layout.preferredHeight: implicitHeight
 
-              Controls.TextArea {
-                textFormat: TextEdit.PlainText
-                id: input
+              Flickable {
+                id: inputFlick
                 anchors.fill: parent
-                color: root.fg
-                selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-                selectedTextColor: root.fg
-                placeholderTextColor: Qt.darker(root.fg, 1.6)
-                font.family: root.fontFamily
-                objectName: "composerInput"
-                font.pixelSize: root.messageTextPx
-                font.hintingPreference: Font.PreferNoHinting
-                wrapMode: TextEdit.Wrap
-                verticalAlignment: Text.AlignVCenter
-                activeFocusOnTab: true
-                placeholderText: root.demo ? "Demo message" : "Message (Enter to send)"
-                onTextChanged: root.updateTyping()
-                persistentSelection: true
-                background: BorderSurface {
-                  readonly property var stateBorder: Border.controlSpec(
-                    input.activeFocus ? "focus" : "normal", root.fg, root.accent)
-                  color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-                  borderSpec: Border.withWidth(stateBorder, Style.normalBorderWidth)
-                  radius: Style.cornerRadius
-                }
-                Keys.onPressed: function(event) {
-                  var blockedModifiers = Qt.ShiftModifier | Qt.ControlModifier |
-                    Qt.AltModifier | Qt.MetaModifier
-                  var controlPaste = event.key === Qt.Key_V &&
-                    (event.modifiers & Qt.ControlModifier) &&
-                    !(event.modifiers & (Qt.ShiftModifier | Qt.AltModifier |
-                      Qt.MetaModifier))
-                  var insertPaste = event.key === Qt.Key_Insert &&
-                    (event.modifiers & Qt.ShiftModifier) &&
-                    !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier |
-                      Qt.MetaModifier))
-                  if (controlPaste || insertPaste) {
-                    root.pasteComposer()
-                    event.accepted = true
-                  } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
-                      !(event.modifiers & blockedModifiers)) {
-                    root.send()
-                    event.accepted = true
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+
+                Controls.TextArea.flickable: input
+
+                Controls.TextArea {
+                  textFormat: TextEdit.PlainText
+                  id: input
+                  color: root.fg
+                  selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                  selectedTextColor: root.fg
+                  placeholderTextColor: Qt.darker(root.fg, 1.6)
+                  font.family: root.fontFamily
+                  objectName: "composerInput"
+                  font.pixelSize: root.messageTextPx
+                  font.hintingPreference: Font.PreferNoHinting
+                  wrapMode: TextEdit.Wrap
+                  verticalAlignment: Text.AlignVCenter
+                  activeFocusOnTab: true
+                  placeholderText: root.demo ? "Demo message" : "Message (Enter to send)"
+                  onTextChanged: root.updateTyping()
+                  persistentSelection: true
+                  background: BorderSurface {
+                    readonly property var stateBorder: Border.controlSpec(
+                      input.activeFocus ? "focus" : "normal", root.fg, root.accent)
+                    color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
+                    borderSpec: Border.withWidth(stateBorder, Style.normalBorderWidth)
+                    radius: Style.cornerRadius
+                  }
+                  Keys.onPressed: function(event) {
+                    var blockedModifiers = Qt.ShiftModifier | Qt.ControlModifier |
+                      Qt.AltModifier | Qt.MetaModifier
+                    var controlPaste = event.key === Qt.Key_V &&
+                      (event.modifiers & Qt.ControlModifier) &&
+                      !(event.modifiers & (Qt.ShiftModifier | Qt.AltModifier |
+                        Qt.MetaModifier))
+                    var insertPaste = event.key === Qt.Key_Insert &&
+                      (event.modifiers & Qt.ShiftModifier) &&
+                      !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier |
+                        Qt.MetaModifier))
+                    if (controlPaste || insertPaste) {
+                      root.pasteComposer()
+                      event.accepted = true
+                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) &&
+                        !(event.modifiers & blockedModifiers)) {
+                      root.send()
+                      event.accepted = true
+                    }
                   }
                 }
               }

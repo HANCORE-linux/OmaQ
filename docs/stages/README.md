@@ -29,6 +29,8 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`protocol-16.md`](protocol-16.md) | Pre-acceptance direct-request fingerprints and leak conflict signals |
 | [`correlated-clear-chat.md`](correlated-clear-chat.md) | Capability-gated, request-correlated DirectChat and GroupChat history clearing |
 | [`live-name-refresh.md`](live-name-refresh.md) | Event-driven DirectChat and GroupChat name refresh |
+| [`reaction-composer-scroll.md`](reaction-composer-scroll.md) | Paged reactions and cursor-visible long-message editing |
+| [`material-symbols.md`](material-symbols.md) | Explicit font loading and ligature-independent icon characters |
 | [`invite-redemption-feedback.md`](invite-redemption-feedback.md) | Persistent, user-edit-aware invite redemption feedback |
 | [`floating-window-presentation.md`](floating-window-presentation.md) | Pop up labels and a quiet retained drag surface |
 | [`search-timestamps-security.md`](search-timestamps-security.md) | Per-chat search, local timestamps, PlainText, and helper security |

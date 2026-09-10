@@ -324,9 +324,9 @@ BarWidget {
       SafeText {
         anchors.centerIn: parent
         visible: av.failed || av.path === ""
-        text: "person"
+        text: OmaQ.MaterialSymbols.glyph("person")
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.72)
-        font.family: "Material Symbols Rounded"
+        font.family: OmaQ.MaterialSymbols.family
         font.pixelSize: Math.round(av.px * 0.64)
         font.variableAxes: ({ "FILL": 0, "wght": 500 })
         renderType: Text.QtRendering
@@ -438,10 +438,12 @@ BarWidget {
       SafeText {
         id: buttonIcon
         visible: tokenButton.iconText !== ""
-        text: tokenButton.iconText
+        text: tokenButton.iconFontFamily === "Material Symbols Rounded"
+          ? OmaQ.MaterialSymbols.glyph(tokenButton.iconText) : tokenButton.iconText
         color: tokenButton.selected || tokenButton.hot || tokenButton.activeFocus
           ? tokenButton.actionColor : tokenButton.foreground
-        font.family: tokenButton.iconFontFamily
+        font.family: tokenButton.iconFontFamily === "Material Symbols Rounded"
+          ? OmaQ.MaterialSymbols.family : tokenButton.iconFontFamily
         font.pixelSize: tokenButton.iconSize
         anchors.verticalCenter: parent.verticalCenter
       }
@@ -528,10 +530,10 @@ BarWidget {
 
     SafeText {
       anchors.centerIn: parent
-      text: railIcon.materialIcon
+      text: OmaQ.MaterialSymbols.glyph(railIcon.materialIcon)
       color: railIcon.selected || railHover.hovered || railIcon.activeFocus
         ? railIcon.activeColor : root.dim
-      font.family: "Material Symbols Rounded"
+      font.family: OmaQ.MaterialSymbols.family
       font.pixelSize: Style.font.icon + Style.space(3)
       font.variableAxes: ({ "FILL": railIcon.selected && railIcon.fillSelected ? 1 : 0,
                             "wght": 500 })
@@ -2385,8 +2387,8 @@ BarWidget {
     opticalSize: Style.bar.iconCanvas + Style.space(2)
     anchors.fill: parent
     bar: root.bar
-    text: omaq.incomingCall ? "call" : (omaq.pending ? "" : "󰭹")
-    fontFamily: omaq.incomingCall ? "Material Symbols Rounded" : "monospace"
+    text: omaq.incomingCall ? (OmaQ.MaterialSymbols.ready ? "\ue0b0" : "?") : (omaq.pending ? "" : "󰭹")
+    fontFamily: omaq.incomingCall ? OmaQ.MaterialSymbols.family : "monospace"
     active: omaq.incomingCall || omaq.pending
     activeColor: omaq.pending && !omaq.incomingCall
       ? (root.systemColors[1] || root.urgent)
@@ -3675,9 +3677,9 @@ BarWidget {
                     id: activeGroupIcon
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "groups"
+                    text: OmaQ.MaterialSymbols.glyph("groups")
                     color: root.systemColors[3] || root.controlAccent
-                    font.family: "Material Symbols Rounded"
+                    font.family: OmaQ.MaterialSymbols.family
                     font.pixelSize: Style.font.icon
                     font.variableAxes: ({ "FILL": activeGroupDelegate.activeFocus ? 1 : 0,
                                           "wght": 500 })
