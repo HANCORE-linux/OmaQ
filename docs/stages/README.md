@@ -39,3 +39,7 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`safe-source-install.md`](safe-source-install.md) | External first-install build, atomic placement, controlled discovery, and enablement |
 
 Together, these notes record what landed, how the work was verified, measured RSS where relevant, and what remained outside each iteration. No note means the planned phase did not finish. Never add keys, complete Tox identifiers, or real chat logs.
+
+## Unreleased branch work
+
+- [History append durability](history-append-durability.md): checked file and directory sync before append success; native validation outstanding.

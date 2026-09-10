@@ -56,6 +56,7 @@ TEST_SRC := tests/omaq_test.c helper/invite.c helper/roles.c helper/conversation
 	helper/direct_state.c helper/ratchet.c helper/ratchet_pin.c
 
 BIN_TEST := tests/omaq_test
+BIN_STORE_APPEND_TEST := tests/store_append_test
 BIN_SPOOL_TEST := tests/stdout_spool_test
 BIN_FILE_TRANSFER_TEST := tests/file_transfer_test
 BIN_AV_STATE_TEST := tests/av_state_test
@@ -95,6 +96,13 @@ all: $(BIN_TEST) helper
 
 $(BIN_TEST): $(TEST_SRC)
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) $(AVATAR_CFLAGS) -o $@ $(TEST_SRC) $(AVATAR_LIBS)
+
+$(BIN_STORE_APPEND_TEST): tests/store_append_test.c helper/store.c helper/store.h helper/json_io.c helper/conversation.c helper/text.c
+	# Keep fprintf interposable for write-error injection in this test only.
+	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) \
+		-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin-fprintf -o $@ \
+		tests/store_append_test.c helper/store.c helper/json_io.c helper/conversation.c helper/text.c \
+		-Wl,--wrap=fprintf,--wrap=fflush,--wrap=fsync,--wrap=fclose
 
 $(BIN_SPOOL_TEST): tests/stdout_spool_test.c helper/stdout_spool.c helper/stdout_spool.h
 	$(CC) -std=c11 -Wall -Werror -O1 $(SANFLAGS) -DOMAQ_STDOUT_SPOOL_MAX=5242880u \
@@ -192,8 +200,9 @@ $(BIN_HELP): check-signal check-audio check-images $(HELPER_SRC)
 	$(CC) $(CFLAGS) $(HARDEN_CFLAGS) $(HARDEN_LDFLAGS) -o $@ $(HELPER_SRC) $(TOX_LIBS)
 
 # Keep native Quickshell and Omarchy shell fixtures in the local test target.
-test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
+test-ci: check-tox check-signal check-audio check-images check-node check-qml $(BIN_TEST) $(BIN_STORE_APPEND_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(BIN_HELP)
 	./$(BIN_TEST)
+	./$(BIN_STORE_APPEND_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
@@ -227,8 +236,9 @@ test-ci: check-tox check-signal check-audio check-images check-node check-qml $(
 	python3 tests/ipc-regression.py ./$(BIN_IPC_TEST_HELPER)
 	@echo "test-ci: ok (native Quickshell and Omarchy shell fixtures excluded)"
 
-test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
+test: $(BIN_TEST) $(BIN_STORE_APPEND_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) $(SIGNAL_TEST_TARGET) $(IDENTITY_GUARD_TEST_TARGET) $(TOX_RELAY_RETRY_TEST_TARGET) $(TOX_NAME_TEST_TARGET) $(BIN_IPC_TEST_HELPER) $(REINVITE_TEST_TARGET)
 	./$(BIN_TEST)
+	./$(BIN_STORE_APPEND_TEST)
 	./$(BIN_SPOOL_TEST)
 	./$(BIN_FILE_TRANSFER_TEST)
 	./$(BIN_AV_STATE_TEST)
@@ -413,7 +423,7 @@ verify-8: test arch helper
 	@echo "verify-8: ok"
 
 clean:
-	rm -f $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
+	rm -f $(BIN_TEST) $(BIN_STORE_APPEND_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TEST) \
 		$(BIN_RATCHET_PREKEY_TEST) $(BIN_IDENTITY_GUARD_TEST) \
 		$(BIN_TOX_RELAY_RETRY_TEST) $(BIN_TOX_NAME_TEST) $(BIN_TOX_NAME_IPC_HELPER) \
 		$(BIN_IPC_TEST_HELPER) \

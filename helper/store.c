@@ -160,6 +160,20 @@ static int fsync_dir(const char *path)
 	return rc;
 }
 
+/* Use the same no-follow directory traversal as history file access. */
+static int fsync_parent(const char *path)
+{
+	char base[NAME_MAX + 1];
+	int fd = open_parent_dir(path, base, sizeof(base));
+	int rc;
+
+	if (fd < 0)
+		return -1;
+	rc = fsync(fd);
+	close(fd);
+	return rc;
+}
+
 static int mkdir_p(const char *path)
 {
 	if (mkdir(path, 0700) == 0 || errno == EEXIST)
@@ -1174,6 +1188,7 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 	char root[512];
 	FILE *f;
 	struct stat st;
+	int failed;
 
 	if (!line || strchr(line, '\n'))
 		return -1;
@@ -1201,11 +1216,17 @@ int omaq_store_append(const char *home, const char *conv_id, const char *line)
 		fclose(f);
 		return -1;
 	}
-	if (fprintf(f, "%s\n", line) < 0) {
-		fclose(f);
-		return -1;
-	}
+	failed = fprintf(f, "%s\n", line) < 0;
+	if (!failed && (fflush(f) != 0 || fsync(fileno(f)) != 0))
+		failed = 1;
 	if (fclose(f) != 0)
+		failed = 1;
+	if (failed)
+		return -1;
+	/* Sync bottom-up, including on retries after a failed directory sync.
+	 * Existing names can still be uncommitted from that earlier attempt. */
+	if (fsync_parent(path) != 0 || fsync_parent(dir) != 0 ||
+	    fsync_parent(root) != 0)
 		return -1;
 	{
 		char id[97];
