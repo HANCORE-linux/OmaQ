@@ -202,6 +202,7 @@ aliases = '''  property alias testService: omaq
   property alias testInviteSteps: inviteSteps
   property alias testInviteStepsRepeater: inviteStepsRepeater
   property alias testNicknameField: nicknameField
+  property alias testJoinButton: joinBtn
 '''
 if panel.count(needle) != 1:
     raise SystemExit("panel-request-focus: test alias insertion point changed")
@@ -247,6 +248,9 @@ ShellRoot {
   property bool failed: false
   property int step: 0
   property real compactHeight: 0
+  readonly property string validInvite: "omaq://invite/" +
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+    "0123456789ab?i=abc1&e=2000000000&k=direct"
 
   function check(value, message) {
     if (value)
@@ -433,6 +437,32 @@ ShellRoot {
         testRoot.check(panel.testSelfAvatar.visible, "self avatar did not return")
         testRoot.check(panel.testSelfContent.visible, "self content did not return")
         testRoot.check(!panel.testRequestContent.visible, "request content did not clear")
+        panel.testService.helperCompatibility = "compatible"
+        panel.testService.activeHelperProtocol = 16
+        panel.testService.awaitingHelperInstance = false
+        panel.testService.procReady = false
+        panel.testService.pendingOps = []
+        panel.redeemRequest = ""
+        panel.redeemDraft = " \t\n" + testRoot.validInvite + "\r\n "
+        panel.testJoinButton.clicked()
+        var redeem = panel.testService.pendingOps.length === 1
+          ? JSON.parse(panel.testService.pendingOps[0]) : ({})
+        testRoot.check(redeem.op === "invite.redeem" &&
+          redeem.payload === testRoot.validInvite,
+          "join path did not submit the normalized invite payload")
+        panel.testService.pendingOps = []
+        panel.redeemRequest = ""
+        panel.redeemDraft = testRoot.validInvite.replace("abc1", "abc 1")
+        panel.testJoinButton.clicked()
+        testRoot.check(panel.testService.pendingOps.length === 0,
+          "join path accepted interior invite whitespace")
+        panel.redeemDraft = testRoot.validInvite + "\u00a0"
+        panel.testJoinButton.clicked()
+        testRoot.check(panel.testService.pendingOps.length === 0,
+          "join path accepted Unicode invite whitespace")
+        panel.redeemDraft = ""
+        panel.redeemRequest = ""
+        panel.testService.pendingOps = []
         panel.testService.friends = []
         panel.openRailAdvanced("chat")
       } else if (testRoot.step === 5) {

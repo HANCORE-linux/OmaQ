@@ -110,6 +110,89 @@ static void test_invite_file(const char *path)
 	fail(path);
 }
 
+#define TEST_INVITE_ADDR \
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"
+#define TEST_DIRECT_INVITE \
+	"omaq://invite/" TEST_INVITE_ADDR "?i=abc1&e=2000000000&k=direct"
+
+static int parsed_test_invite_ok(const omaq_invite *inv)
+{
+	return inv->kind == INVITE_DIRECT && strcmp(inv->tox_addr, TEST_INVITE_ADDR) == 0 &&
+		strcmp(inv->id, "abc1") == 0 && inv->expiry == INT64_C(2000000000);
+}
+
+static void test_invite_whitespace(void)
+{
+	static const struct {
+		const char *input;
+		const char *name;
+	} accepted[] = {
+		{ TEST_DIRECT_INVITE, "invite without surrounding whitespace" },
+		{ "\n" TEST_DIRECT_INVITE "\n", "invite with surrounding LF" },
+		{ "\r\n" TEST_DIRECT_INVITE "\r\n", "invite with surrounding CRLF" },
+		{ "  " TEST_DIRECT_INVITE "  ", "invite with surrounding spaces" },
+		{ "\t\t" TEST_DIRECT_INVITE "\t", "invite with surrounding tabs" },
+		{ " \t\r\n\f\v" TEST_DIRECT_INVITE "\v\f\n\r\t ",
+		  "invite with mixed surrounding ASCII whitespace" },
+	};
+	static const struct {
+		const char *input;
+		const char *name;
+	} rejected[] = {
+		{ "omaq: //invite/" TEST_INVITE_ADDR "?i=abc1&e=2000000000&k=direct",
+		  "invite with whitespace in scheme" },
+		{ "omaq://invite/ " TEST_INVITE_ADDR "?i=abc1&e=2000000000&k=direct",
+		  "invite with whitespace before address" },
+		{ "omaq://invite/" TEST_INVITE_ADDR "\n?i=abc1&e=2000000000&k=direct",
+		  "invite with whitespace before query" },
+		{ "omaq://invite/" TEST_INVITE_ADDR "?i=abc 1&e=2000000000&k=direct",
+		  "invite with whitespace in value" },
+		{ "omaq://invite/" TEST_INVITE_ADDR "?i=abc\xc2\xa0" "1&e=2000000000&k=direct",
+		  "invite with Unicode whitespace in value" },
+		{ "omaq://invite/" TEST_INVITE_ADDR "?i=abc1&\te=2000000000&k=direct",
+		  "invite with whitespace in key" },
+		{ TEST_DIRECT_INVITE "\nnot-whitespace",
+		  "invite with whitespace before trailing content" },
+		{ "\xc2\xa0" TEST_DIRECT_INVITE "\xc2\xa0",
+		  "invite with non-ASCII surrounding whitespace" },
+	};
+	omaq_invite inv;
+	char at_limit[OMAQ_URL_MAX];
+	char over_limit[OMAQ_URL_MAX + 1];
+	size_t valid_len = strlen(TEST_DIRECT_INVITE);
+
+	for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
+		if (omaq_invite_parse(accepted[i].input, &inv) != 0 ||
+		    !parsed_test_invite_ok(&inv))
+			fail(accepted[i].name);
+	}
+	for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+		if (omaq_invite_parse(rejected[i].input, &inv) == 0)
+			fail(rejected[i].name);
+	}
+	if (omaq_invite_parse(NULL, &inv) == 0 ||
+	    omaq_invite_parse(TEST_DIRECT_INVITE, NULL) == 0 ||
+	    omaq_invite_parse("", &inv) == 0 ||
+	    omaq_invite_parse(" \t\r\n", &inv) == 0 ||
+	    omaq_invite_parse(" \tomaq://invite/not-an-invite\r\n", &inv) == 0)
+		fail("empty or malformed invite whitespace");
+
+	memcpy(at_limit, TEST_DIRECT_INVITE, valid_len);
+	memset(at_limit + valid_len, ' ', sizeof(at_limit) - valid_len - 1);
+	at_limit[sizeof(at_limit) - 1] = '\0';
+	if (omaq_invite_parse(at_limit, &inv) != 0 || !parsed_test_invite_ok(&inv))
+		fail("invite whitespace at input bound");
+
+	memcpy(over_limit, TEST_DIRECT_INVITE, valid_len);
+	memset(over_limit + valid_len, ' ', sizeof(over_limit) - valid_len - 1);
+	over_limit[sizeof(over_limit) - 1] = '\0';
+	if (omaq_invite_parse(over_limit, &inv) == 0)
+		fail("invite whitespace over input bound");
+}
+
+#undef TEST_DIRECT_INVITE
+#undef TEST_INVITE_ADDR
+
 static void test_pending_invite_claim(void)
 {
 	omaq_pending_invite pending, claimed;
@@ -244,6 +327,7 @@ static void test_invites(void)
 	DIR *d = opendir("tests/gold/invite");
 	struct dirent *e;
 
+	test_invite_whitespace();
 	test_pending_invite_claim();
 	if (!d) {
 		fail("open tests/gold/invite");

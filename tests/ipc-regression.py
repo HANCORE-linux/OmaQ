@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -24,6 +25,16 @@ STATUS_NONCE_COMMAND = b'{"op":"status","id":"fresh-status-1"}\n'
 STATUS_NONCE_EVENT = b'{"event":"snapshot","protocol":16,"historyClear":2,"unread":0,"conversations":[],"call":null,"request":"fresh-status-1"}\n'
 UNSUPPORTED_EVENT = b'{"event":"error","code":"unsupported"}\n'
 FORBIDDEN_EVENT = b'{"event":"error","code":"forbidden"}\n'
+INVITE_URL = (
+    "omaq://invite/"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "0123456789ab?i=abc1&e=2000000000&k=direct"
+)
+INVITE_URL_VARIANT = (
+    "omaq://invite/"
+    "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    "0123456789AB?k=direct&e=2000000000&i=abc1"
+)
 DUPLICATE_COMMANDS = (
     ("string", b'{"op":"status","id":"first","id":"second"}\n'),
     ("integer-width", b'{"op":"status","width":320,"width":640}\n'),
@@ -171,7 +182,16 @@ def main() -> int:
     state = tempfile.mkdtemp(prefix="omaq-ipc-state-")
     replay_path = Path(tempfile.mkstemp(prefix="omaq-ipc-replay-")[1])
     env = os.environ.copy()
-    env.update(OMAQ_HOME=home, OMAQ_STATE=state)
+    qrencode = Path(state) / "fake-qrencode.py"
+    qrencode.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text("
+        "sys.argv[-1], encoding='ascii')\n",
+        encoding="utf-8",
+    )
+    qrencode.chmod(0o700)
+    env.update(OMAQ_HOME=home, OMAQ_STATE=state, OMAQ_QRENCODE=str(qrencode))
     first: subprocess.Popen[bytes] | None = None
     second: subprocess.Popen[bytes] | None = None
 
@@ -230,6 +250,33 @@ def main() -> int:
             if normalize_instances(response) != EVENT or not instance_match:
                 raise RuntimeError(f"socket framing recovery mismatch: {response!r}")
             instance = instance_match.group(1).decode()
+
+            # Invite parsing accepts only bounded outer ASCII whitespace. QR output and
+            # its event must use the same canonical URL, without corrupting JSONL.
+            qr_path = Path(home) / "outer-whitespace.png"
+            qr_command = json.dumps(
+                {
+                    "op": "invite.qr",
+                    "payload": " \t\n" + INVITE_URL_VARIANT + "\n\t ",
+                    "path": str(qr_path),
+                },
+                separators=(",", ":"),
+            ).encode() + b"\n"
+            expected_qr = (
+                '{"event":"invite","url":"' + INVITE_URL + '","qr":"'
+                + str(qr_path) + '"}\n'
+            ).encode()
+            framing_client.sendall(qr_command)
+            response = receive_line(framing_client)
+            if response != expected_qr:
+                raise RuntimeError(f"canonical QR event mismatch: {response!r}")
+            if not qr_path.is_file() or qr_path.read_text(encoding="ascii") != INVITE_URL:
+                raise RuntimeError("qrencode did not receive the canonical invite URL")
+            framing_client.sendall(COMMAND)
+            response = receive_line(framing_client)
+            if normalize_instances(response) != EVENT or not INSTANCE_FIELD.search(response):
+                raise RuntimeError(f"helper did not survive whitespace QR output: {response!r}")
+
             for field_class, duplicate_command in DUPLICATE_COMMANDS:
                 framing_client.sendall(duplicate_command)
                 response = receive_line(framing_client)
@@ -607,6 +654,8 @@ def main() -> int:
         replayed = replay_path.read_bytes()
         expected = (
             EVENT
+            + expected_qr
+            + EVENT
             + UNSUPPORTED_EVENT * len(DUPLICATE_COMMANDS)
             + EVENT
             + FORBIDDEN_EVENT * 3
@@ -647,7 +696,7 @@ def main() -> int:
         # A fresh helper stdout stream discards the old stream's incomplete JSONL tail.
         combined = first_complete + replayed
         instances = INSTANCE_FIELD.findall(combined)
-        if len(instances) != 9 or len(set(instances)) < 2:
+        if len(instances) != 10 or len(set(instances)) < 2:
             raise RuntimeError(f"helper instance ids missing or not rotated: {instances!r}")
         if normalize_instances(combined) != expected:
             raise RuntimeError(

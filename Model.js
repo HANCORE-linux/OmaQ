@@ -3,13 +3,31 @@
 /* UX precheck only. The helper is authoritative for redeem. */
 
 var TOX_ADDR_LEN = 76
+var INVITE_URL_MAX = 512
+
+function normalizeInvite(url) {
+    if (typeof url !== "string" || url.length >= INVITE_URL_MAX)
+        return null
+    var start = 0
+    var end = url.length
+    while (start < end && isAsciiWhitespace(url.charCodeAt(start)))
+        start++
+    while (end > start && isAsciiWhitespace(url.charCodeAt(end - 1)))
+        end--
+    return start === end ? null : url.slice(start, end)
+}
+
+function isAsciiWhitespace(code) {
+    return code === 0x20 || (code >= 0x09 && code <= 0x0d)
+}
 
 function parseInvite(url) {
-    if (typeof url !== "string")
+    var normalized = normalizeInvite(url)
+    if (normalized === null)
         return null
-    if (url.indexOf("omaq://invite/") !== 0)
+    if (normalized.indexOf("omaq://invite/") !== 0 || /\s/.test(normalized))
         return null
-    var rest = url.slice(14)
+    var rest = normalized.slice(14)
     if (rest.length < TOX_ADDR_LEN + 1)
         return null
     var addr = rest.slice(0, TOX_ADDR_LEN)
@@ -20,7 +38,7 @@ function parseInvite(url) {
     var q = rest.slice(TOX_ADDR_LEN + 1)
     var parts = q.split("&")
     var seen = {}
-    var out = { id: "", expiry: "", kind: "", group: "", role: "", rk: "" }
+    var out = { url: normalized, id: "", expiry: "", kind: "", group: "", role: "", rk: "" }
     for (var i = 0; i < parts.length; i++) {
         var eq = parts[i].indexOf("=")
         if (eq < 1)

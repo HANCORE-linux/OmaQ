@@ -29,11 +29,13 @@ int omaq_qr_path_ok(const char *path)
 int omaq_qr_write_png(const char *url, const char *path)
 {
 	omaq_invite inv;
+	char canonical[OMAQ_URL_MAX];
 	const char *bin;
 	pid_t pid;
 	int st;
 
-	if (!url || omaq_invite_parse(url, &inv) != 0)
+	if (!url || omaq_invite_parse(url, &inv) != 0 ||
+	    omaq_invite_format(&inv, canonical, sizeof(canonical)) != 0)
 		return -1;
 	if (omaq_qr_path_ok(path) != 0)
 		return -1;
@@ -45,7 +47,7 @@ int omaq_qr_write_png(const char *url, const char *path)
 		return -1;
 	if (pid == 0) {
 		execl(bin, "qrencode", "-o", path, "-t", "PNG", "-s", "6", "--",
-		      url, (char *)NULL);
+		      canonical, (char *)NULL);
 		_exit(127);
 	}
 	if (waitpid(pid, &st, 0) != pid)

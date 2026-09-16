@@ -63,7 +63,7 @@ int omaq_direct_request_conflict_event(char *out, size_t outn,
 int omaq_direct_redeemed_event(char *out, size_t outn, const char *request,
 			       const char *self_key, const char *issuer_key);
 
-/* 0 = ok, -1 = invalid. Never half-accepts. */
+/* 0 = ok, -1 = invalid. Ignores surrounding ASCII whitespace only. Never half-accepts. */
 int omaq_invite_parse(const char *url, omaq_invite *out);
 
 /* Write URL. Returns 0 or -1. */

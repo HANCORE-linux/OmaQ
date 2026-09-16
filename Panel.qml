@@ -4550,8 +4550,9 @@ BarWidget {
                 enabled: root.redeemRequest === ""
                 onClicked: {
                   root.redeemSafety = ""
-                  if (Model.parseInvite(root.redeemDraft)) {
-                    var request = omaq.redeem(root.redeemDraft)
+                  var invite = Model.parseInvite(root.redeemDraft)
+                  if (invite) {
+                    var request = omaq.redeem(invite.url)
                     if (request === "legacy") {
                       root.redeemFeedbackRequest = ""
                       root.redeemFeedback = "Invite submitted to the older helper. Check your contacts before trying it again."
