@@ -21,6 +21,18 @@ for marker in (
 ):
     if marker not in field:
         raise SystemExit(f"redeem-feedback: input handler lost {marker!r}")
+join_start = panel.index("                id: joinBtn\n")
+join_end = panel.index("\n              SafeText {", join_start)
+join = panel[join_start:join_end]
+for marker in (
+    "var invite = Model.parseInvite(root.redeemDraft)",
+    "if (invite) {",
+    "omaq.redeem(invite.url)",
+):
+    if marker not in join:
+        raise SystemExit(f"redeem-feedback: normalized submission lost {marker!r}")
+if "omaq.redeem(root.redeemDraft)" in join:
+    raise SystemExit("redeem-feedback: raw invite draft reaches IPC")
 result_start = panel.index("    function onRedeemTickChanged() {\n")
 result_end = panel.index("    function onDirectReinviteTickChanged() {\n", result_start)
 result = panel[result_start:result_end]
@@ -53,9 +65,11 @@ tmp=$(mktemp -d /tmp/omaq-redeem-feedback-XXXXXX)
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() { rm -rf -- "$tmp"; }
 trap cleanup EXIT HUP INT TERM
+cp "$root/Model.js" "$tmp/Model.js"
 cat >"$tmp/fixture.qml" <<'QML'
 import QtQuick
 import QtQuick.Controls
+import "Model.js" as Model
 
 ApplicationWindow {
   id: root
@@ -68,6 +82,9 @@ ApplicationWindow {
   property string redeemFeedbackRequest: "request-1"
   property string redeemSafety: ""
   property bool failed: false
+  readonly property string validInvite: "omaq://invite/" +
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+    "0123456789ab?i=abc1&e=2000000000&k=direct"
 
   function check(value, message) {
     if (value)
@@ -91,6 +108,24 @@ ApplicationWindow {
   }
 
   Component.onCompleted: {
+    var outerWhitespace = " \t\n\r\f\v" + root.validInvite + "\v\f\r\n\t "
+    var parsed = Model.parseInvite(outerWhitespace)
+    root.check(parsed && parsed.url === root.validInvite,
+      "surrounding ASCII whitespace was not normalized")
+    root.check(Model.parseInvite("\u00a0" + root.validInvite) === null &&
+      Model.parseInvite(root.validInvite + "\u00a0") === null &&
+      Model.parseInvite(root.validInvite.replace("abc1", "abc\u00a01")) === null,
+      "Unicode whitespace was accepted")
+    root.check(Model.parseInvite(root.validInvite.replace("abc1", "abc 1")) === null,
+      "interior ASCII whitespace was accepted")
+    root.check(Model.normalizeInvite(" \t\r\n") === null,
+      "ASCII-whitespace-only input was accepted")
+    var padding = ""
+    while (root.validInvite.length + padding.length < 511)
+      padding += " "
+    root.check(Model.parseInvite(root.validInvite + padding) !== null &&
+      Model.parseInvite(root.validInvite + padding + " ") === null,
+      "invite input bound differs from the helper")
     root.redeemRequest = ""
     root.redeemFeedbackRequest = ""
     root.redeemFeedback = "Invite checked. Waiting for the other person to accept."

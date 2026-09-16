@@ -11491,27 +11491,32 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 	}
 	if (strcmp(op->op, "invite.qr") == 0) {
 		const char *url = op->payload[0] ? op->payload : NULL;
+		omaq_invite inv;
+		char canonical[OMAQ_URL_MAX];
 		char ev[OMAQ_URL_MAX + OMAQ_JSON_STR_MAX + 48];
+		char esc_url[OMAQ_JSON_STR_MAX];
 		char esc_path[OMAQ_JSON_STR_MAX];
 #ifdef HAVE_TOX
 		if (!url)
 			url = g_issued_url[0] ? g_issued_url : NULL;
 #endif
-		if (!url || !op->path[0]) {
+		if (!url || !op->path[0] || omaq_invite_parse(url, &inv) != 0 ||
+		    omaq_invite_format(&inv, canonical, sizeof(canonical)) != 0) {
 			emit_error("unsupported");
 			return 0;
 		}
-		if (omaq_qr_write_png(url, op->path) != 0) {
+		if (omaq_qr_write_png(canonical, op->path) != 0) {
 			emit_error("forbidden");
 			return 0;
 		}
-		if (omaq_json_escape(op->path, esc_path, sizeof(esc_path)) != 0) {
+		if (omaq_json_escape(canonical, esc_url, sizeof(esc_url)) != 0 ||
+		    omaq_json_escape(op->path, esc_path, sizeof(esc_path)) != 0) {
 			emit_error("unsupported");
 			return 0;
 		}
 		snprintf(ev, sizeof(ev),
 			 "{\"event\":\"invite\",\"url\":\"%s\",\"qr\":\"%s\"}",
-			 url, esc_path);
+			 esc_url, esc_path);
 		emit(ev);
 		return 0;
 	}

@@ -18,6 +18,35 @@ static int is_id_char(char c)
 	       (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
 
+static int is_ascii_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+	       c == '\f' || c == '\v';
+}
+
+static int trim_invite_url(const char *url, char out[OMAQ_URL_MAX])
+{
+	size_t len = 0;
+	size_t start = 0;
+	size_t end;
+
+	while (len < OMAQ_URL_MAX && url[len])
+		len++;
+	if (len == OMAQ_URL_MAX)
+		return -1;
+	end = len;
+	while (start < end && is_ascii_space(url[start]))
+		start++;
+	while (end > start && is_ascii_space(url[end - 1]))
+		end--;
+	if (start == end)
+		return -1;
+	len = end - start;
+	memcpy(out, url + start, len);
+	out[len] = '\0';
+	return 0;
+}
+
 void omaq_pending_invite_clear(omaq_pending_invite *pending)
 {
 	if (pending)
@@ -216,6 +245,7 @@ static int parse_i64(const char *s, int64_t *out)
 
 int omaq_invite_parse(const char *url, omaq_invite *out)
 {
+	char trimmed[OMAQ_URL_MAX];
 	const char *p;
 	const char *q;
 	int seen_i = 0, seen_e = 0, seen_k = 0, seen_g = 0, seen_r = 0, seen_rk = 0;
@@ -223,6 +253,9 @@ int omaq_invite_parse(const char *url, omaq_invite *out)
 	if (!url || !out)
 		return -1;
 	memset(out, 0, sizeof(*out));
+	if (trim_invite_url(url, trimmed) != 0)
+		return -1;
+	url = trimmed;
 
 	if (strncmp(url, "omaq://invite/", 14) != 0)
 		return -1;
