@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 
 
 VERBS = [("help", False), ("connect", True), ("split", True), ("invite", False), ("redeem", True),
@@ -65,4 +66,43 @@ TIPS = [
     ("pgup / pgdn", "scroll the chat"),
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
+KNOWN = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
+         "accept", "decline", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
 RECEIPTS = ["·", "→", "⇉", "⇉"]
+
+
+def parse_command(line):
+    parts = line[1:].strip().split(None, 1)
+    verb = parts[0].lower() if parts else ""
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if verb and verb not in KNOWN:
+        candidates = [name for name, _ in VERBS
+                      if name.startswith(verb) and name not in ("accept", "decline", "acceptfile", "declinefile")]
+        if len(candidates) == 1:
+            verb = candidates[0]
+    return verb, arg
+
+
+def suggestions(draft, names):
+    body = draft[1:]
+    if " " not in body:
+        want = body.casefold()
+        return "verb", body, [name for name, _ in VERBS if name.startswith(want)]
+    verb, rest = body.split(" ", 1)
+    if verb.lower() not in NAMED:
+        return "none", rest, []
+    want = rest.casefold()
+    return "name", rest, [name for name in names if name.casefold().startswith(want)]
+
+
+@dataclass(eq=False, slots=True)
+class Completion:
+    kind: str
+    verb: str
+    items: list
+    index: int
+
+    def step(self, step):
+        self.index = (self.index + step) % len(self.items)
+        choice = self.items[self.index]
+        return (":" + choice) if self.kind == "verb" else ":%s %s" % (self.verb, choice)

@@ -703,32 +703,12 @@ class App:
                     self.read_pending[conversation] = now + 5.0
 
     def command(self, line):
-        parts = line[1:].strip().split(None, 1)
-        verb = parts[0].lower() if parts else ""
-        arg = parts[1].strip() if len(parts) > 1 else ""
-        known = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
-                 "accept", "decline", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
-        if verb and verb not in known:
-            candidates = [name for name, _ in VERBS
-                          if name.startswith(verb) and name not in ("accept", "decline", "acceptfile", "declinefile")]
-            if len(candidates) == 1:
-                verb = candidates[0]
+        verb, arg = parse_command(line)
         handler = COMMAND_HANDLERS.get(verb)
         if handler:
             getattr(self, handler)(verb, arg)
         else:
             self.say('Unknown command :%s; :help lists the commands' % clean_line(verb))
-
-    def suggestions(self, draft):
-        body = draft[1:]
-        if " " not in body:
-            want = body.casefold()
-            return "verb", body, [name for name, _ in VERBS if name.startswith(want)]
-        verb, rest = body.split(" ", 1)
-        if verb.lower() not in NAMED:
-            return "none", rest, []
-        want = rest.casefold()
-        return "name", rest, [f["name"] for f in self.friends if f["name"].casefold().startswith(want)]
 
     def track_zoom(self, size):
         if not size or not size[0] or not size[3] or size[3] < size[0]:
@@ -821,18 +801,15 @@ class App:
 
     def complete(self, pane, step):
         if self.completion is None:
-            kind, base, items = self.suggestions(pane.draft)
+            kind, base, items = suggestions(pane.draft, [f["name"] for f in self.friends])
             if not items:
                 if kind == "name":
                     self.say("No friend starts with %s" % clean_line(base))
                 self.dirty = True
                 return
             verb = pane.draft[1:].split(" ", 1)[0]
-            self.completion = {"kind": kind, "verb": verb, "items": items, "index": -1 if step > 0 else 0}
-        state = self.completion
-        state["index"] = (state["index"] + step) % len(state["items"])
-        choice = state["items"][state["index"]]
-        pane.draft = (":" + choice) if state["kind"] == "verb" else ":%s %s" % (state["verb"], choice)
+            self.completion = Completion(kind, verb, items, -1 if step > 0 else 0)
+        pane.draft = self.completion.step(step)
         pane.cursor = len(pane.draft)
         self.dirty = True
 

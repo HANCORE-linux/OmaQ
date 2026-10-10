@@ -1,6 +1,6 @@
 import time
 
-from .commands import HINT, RECEIPTS, TIPS
+from .commands import HINT, RECEIPTS, TIPS, suggestions
 from .protocol import FAILURES
 from .text import (cells, clean, clean_line, clip, clock, day_label, human_size, is_command, progress_bar, shorten,
                    text_width, wrap)
@@ -81,9 +81,9 @@ class Screen:
         if not is_command(pane.draft):
             return self.hint_line(cols)
         if self.app.completion is not None:
-            kind, items, chosen = self.app.completion["kind"], self.app.completion["items"], self.app.completion["index"]
+            kind, items, chosen = self.app.completion.kind, self.app.completion.items, self.app.completion.index
         else:
-            kind, _, items = self.app.suggestions(pane.draft)
+            kind, _, items = suggestions(pane.draft, [f["name"] for f in self.app.friends])
             chosen = 0
         if not items:
             text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
