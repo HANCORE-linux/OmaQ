@@ -121,18 +121,20 @@ def clip(text, width):
     return "".join(out), used
 
 
+def stops(text):
+    marks, at = [0], 0
+    for chunk, _ in cells(text):
+        at += len(chunk)
+        marks.append(at)
+    return marks
+
+
 def prev_stop(text, i):
-    i = max(0, i - 1)
-    while i > 0 and char_width(text[i]) == 0:
-        i -= 1
-    return i
+    return max([mark for mark in stops(text) if mark < i] or [0])
 
 
 def next_stop(text, i):
-    i = min(len(text), i + 1)
-    while i < len(text) and char_width(text[i]) == 0:
-        i += 1
-    return i
+    return min([mark for mark in stops(text) if mark > i] or [len(text)])
 
 
 def emojify(text, final=True):

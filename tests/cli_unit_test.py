@@ -1547,6 +1547,30 @@ class Blockers(Sandbox):
         app.apply_friends([{"id": "0", "key": B, "name": "bob", "online": True, "status": "online"}])
         self.assertNotIn("\u2715 File transfer canceled", self.plain(app.render()))
 
+    def test_r14_cursor_steps_over_drawn_clusters(self):
+        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+        thumb = "\U0001F44D\U0001F3FF"
+        saved = dict(cli.WIDTHS)
+        try:
+            cli.WIDTHS.update({"vs16": 2, "cluster": True})
+            pane = cli.Pane("0")
+            pane.insert("a" + family + thumb + "b")
+            pane.edit("key", "left")
+            self.assertEqual(pane.draft[pane.cursor:], "b")
+            pane.edit("key", "left")
+            self.assertEqual(pane.draft[pane.cursor:], thumb + "b")
+            pane.edit("key", "backspace")
+            self.assertEqual((pane.draft, pane.cursor), ("a" + thumb + "b", 1))
+            pane.edit("key", "delete")
+            self.assertEqual(pane.draft, "ab")
+            cli.WIDTHS.update({"cluster": False})
+            pane.draft, pane.cursor = family, len(family)
+            pane.edit("key", "backspace")
+            self.assertEqual(pane.draft, "\U0001F468\u200d\U0001F469\u200d")
+        finally:
+            cli.WIDTHS.clear()
+            cli.WIDTHS.update(saved)
+
     def test_r12_small_windows_wrap_codes_and_scroll(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
