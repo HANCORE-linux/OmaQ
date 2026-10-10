@@ -1,3 +1,5 @@
+from .text import emojify, is_command, next_stop, prev_stop
+
 PANE_MIN_WIDTH = 24
 
 
@@ -15,6 +17,60 @@ class Pane:
         self.hist = None
         self.hist_items = None
         self.stash = ("", 0)
+
+    def insert(self, text):
+        self.draft = self.draft[:self.cursor] + text + self.draft[self.cursor:]
+        self.cursor += len(text)
+        if not is_command(self.draft) and any(ch.isspace() for ch in text):
+            before = emojify(self.draft[:self.cursor], final=False)
+            self.draft, self.cursor = before + self.draft[self.cursor:], len(before)
+
+    def edit(self, kind, value):
+        if kind == "key":
+            if value == "backspace" and self.cursor > 0:
+                j = prev_stop(self.draft, self.cursor)
+                self.draft, self.cursor = self.draft[:j] + self.draft[self.cursor:], j
+            elif value == "delete" and self.cursor < len(self.draft):
+                self.draft = self.draft[:self.cursor] + self.draft[next_stop(self.draft, self.cursor):]
+            elif value == "left":
+                self.cursor = prev_stop(self.draft, self.cursor)
+            elif value == "right":
+                self.cursor = next_stop(self.draft, self.cursor)
+            elif value == "home":
+                self.cursor = 0
+            elif value == "end":
+                self.cursor = len(self.draft)
+            elif value == "esc":
+                self.draft, self.cursor = "", 0
+        elif kind == "ctrl":
+            if value == "a":
+                self.cursor = 0
+            elif value == "e":
+                self.cursor = len(self.draft)
+            elif value == "u":
+                self.draft, self.cursor = self.draft[self.cursor:], 0
+
+    def recall(self, step, source):
+        if self.hist is None:
+            if step < 0:
+                return False
+            items = source()
+            if not items:
+                return False
+            self.hist_items, self.stash, self.hist = items, (self.draft, self.cursor), 0
+        else:
+            self.hist += step
+            if self.hist < 0:
+                self.draft, self.cursor = self.stash
+                self.hist, self.hist_items = None, None
+                return True
+            self.hist = min(self.hist, len(self.hist_items) - 1)
+        self.draft = self.hist_items[self.hist]
+        self.cursor = len(self.draft)
+        return True
+
+    def forget_recall(self):
+        self.hist, self.hist_items, self.stash = None, None, ("", 0)
 
 
 class Layout:

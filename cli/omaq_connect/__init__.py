@@ -352,7 +352,7 @@ class App:
         self.commands = []
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
-            self.forget_recall(pane)
+            pane.forget_recall()
         self.handshake_request()
 
     def drop_confirm(self):
@@ -375,9 +375,6 @@ class App:
             self.say("%s \u00b7 %s" % (self.status, text), max(STATUS_SECONDS, seconds))
         else:
             self.say(text, seconds)
-
-    def forget_recall(self, pane):
-        pane.hist, pane.hist_items, pane.stash = None, None, ("", 0)
 
     def resume_transfers(self, restarted):
         self.files.resume(restarted)
@@ -463,7 +460,7 @@ class App:
             if id(pane) in moved:
                 pane.conv = moved[id(pane)]
                 pane.scroll = 0
-                self.forget_recall(pane)
+                pane.forget_recall()
                 self.restore_draft(pane)
         if not self.layout.columns and friends:
             pick = None
@@ -611,26 +608,6 @@ class App:
     def send_failed(self):
         self.say("Not connected" if not self.link else "Could not send the request")
 
-    def history_step(self, pane, step):
-        if pane.hist is None:
-            if step < 0:
-                return
-            items = self.commands[::-1] if pane.draft.startswith(":") else self.chat.sent_texts(pane.conv)
-            if not items:
-                return
-            pane.hist_items, pane.stash, pane.hist = items, (pane.draft, pane.cursor), 0
-        else:
-            pane.hist += step
-            if pane.hist < 0:
-                pane.draft, pane.cursor = pane.stash
-                pane.hist, pane.hist_items = None, None
-                self.dirty = True
-                return
-            pane.hist = min(pane.hist, len(pane.hist_items) - 1)
-        pane.draft = pane.hist_items[pane.hist]
-        pane.cursor = len(pane.draft)
-        self.dirty = True
-
     def open_overlay(self, kind, **fields):
         self.overlay = OVERLAYS[kind](**fields)
 
@@ -751,13 +728,7 @@ class App:
             self.help = Help()
             self.dirty = True
             return
-        layout_keys = {"alt-left": ("focus", "left"), "alt-right": ("focus", "right"), "alt-up": ("focus", "up"),
-                       "alt-down": ("focus", "down"), "alt-shift-left": ("move", "left"),
-                       "alt-shift-right": ("move", "right"), "alt-shift-up": ("move", "up"),
-                       "alt-shift-down": ("move", "down")}
-        alt_keys = {"h": ("focus", "left"), "l": ("focus", "right"), "k": ("focus", "up"), "j": ("focus", "down"),
-                    "H": ("move", "left"), "L": ("move", "right"), "K": ("move", "up"), "J": ("move", "down")}
-        action = layout_keys.get(value) if kind == "key" else (alt_keys.get(value) if kind == "alt" else None)
+        action = LAYOUT_KEYS.get((kind, value))
         if action:
             if action[0] == "focus":
                 before = self.pane
@@ -792,60 +763,36 @@ class App:
         if not (kind == "key" and value in ("up", "down")):
             pane.hist, pane.hist_items = None, None
         if kind in ("text", "paste") or (kind == "key" and value in ("shift-enter", "alt-shift-enter", "alt-enter")):
-            insert = "\n" if kind == "key" else value
-            pane.draft = pane.draft[:pane.cursor] + insert + pane.draft[pane.cursor:]
-            pane.cursor += len(insert)
-            if not is_command(pane.draft) and any(ch.isspace() for ch in insert):
-                before = emojify(pane.draft[:pane.cursor], final=False)
-                pane.draft, pane.cursor = before + pane.draft[pane.cursor:], len(before)
+            pane.insert("\n" if kind == "key" else value)
             self.last_edit = now
             if pane.conv and not is_command(pane.draft) and now - self.typing_sent > TYPING_SEND_EVERY:
                 if self.send_bound({"op": "typing.set", "conversation": pane.conv, "typing": True}):
                     self.typing_on, self.typing_sent = pane.conv, now
-        elif kind == "key":
-            if value == "enter":
-                self.overlay = None
-                if is_command(pane.draft):
-                    line, pane.draft, pane.cursor = pane.draft, "", 0
-                    if line.strip() != ":" and (not self.commands or self.commands[-1] != line):
-                        self.commands = (self.commands + [line])[-100:]
-                    self.command(line)
-                else:
-                    self.send_text()
-            elif value == "backspace" and pane.cursor > 0:
-                j = prev_stop(pane.draft, pane.cursor)
-                pane.draft, pane.cursor = pane.draft[:j] + pane.draft[pane.cursor:], j
-            elif value == "delete" and pane.cursor < len(pane.draft):
-                pane.draft = pane.draft[:pane.cursor] + pane.draft[next_stop(pane.draft, pane.cursor):]
-            elif value == "left":
-                pane.cursor = prev_stop(pane.draft, pane.cursor)
-            elif value == "right":
-                pane.cursor = next_stop(pane.draft, pane.cursor)
-            elif value == "home":
-                pane.cursor = 0
-            elif value == "end":
-                pane.cursor = len(pane.draft)
-            elif value in ("up", "down"):
-                self.history_step(pane, 1 if value == "up" else -1)
-                return
-            elif value == "pgup":
-                pane.scroll += max(1, self.size[1] // 2)
-            elif value == "pgdn":
-                pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
-            elif value in ("tab", "backtab") and is_command(pane.draft):
-                self.complete(pane, 1 if value == "tab" else -1)
-                return
-            elif value in ("tab", "backtab") and self.friends:
-                self.show(self.next_free(pane.conv, 1 if value == "tab" else -1))
-            elif value == "esc":
-                pane.draft, pane.cursor = "", 0
-        elif kind == "ctrl":
-            if value == "a":
-                pane.cursor = 0
-            elif value == "e":
-                pane.cursor = len(pane.draft)
-            elif value == "u":
-                pane.draft, pane.cursor = pane.draft[pane.cursor:], 0
+        elif kind == "key" and value == "enter":
+            self.overlay = None
+            if is_command(pane.draft):
+                line, pane.draft, pane.cursor = pane.draft, "", 0
+                if line.strip() != ":" and (not self.commands or self.commands[-1] != line):
+                    self.commands = (self.commands + [line])[-100:]
+                self.command(line)
+            else:
+                self.send_text()
+        elif kind == "key" and value in ("up", "down"):
+            source = lambda: self.commands[::-1] if pane.draft.startswith(":") else self.chat.sent_texts(pane.conv)
+            if pane.recall(1 if value == "up" else -1, source):
+                self.dirty = True
+            return
+        elif kind == "key" and value == "pgup":
+            pane.scroll += max(1, self.size[1] // 2)
+        elif kind == "key" and value == "pgdn":
+            pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
+        elif kind == "key" and value in ("tab", "backtab") and is_command(pane.draft):
+            self.complete(pane, 1 if value == "tab" else -1)
+            return
+        elif kind == "key" and value in ("tab", "backtab") and self.friends:
+            self.show(self.next_free(pane.conv, 1 if value == "tab" else -1))
+        else:
+            pane.edit(kind, value)
         self.dirty = True
 
     def friends_bar(self, cols):

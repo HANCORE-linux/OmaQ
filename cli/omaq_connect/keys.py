@@ -1,6 +1,17 @@
 import codecs
 
 
+LAYOUT_KEYS = {
+    ("key", "alt-left"): ("focus", "left"), ("key", "alt-right"): ("focus", "right"),
+    ("key", "alt-up"): ("focus", "up"), ("key", "alt-down"): ("focus", "down"),
+    ("key", "alt-shift-left"): ("move", "left"), ("key", "alt-shift-right"): ("move", "right"),
+    ("key", "alt-shift-up"): ("move", "up"), ("key", "alt-shift-down"): ("move", "down"),
+    ("alt", "h"): ("focus", "left"), ("alt", "l"): ("focus", "right"), ("alt", "k"): ("focus", "up"),
+    ("alt", "j"): ("focus", "down"), ("alt", "H"): ("move", "left"), ("alt", "L"): ("move", "right"),
+    ("alt", "K"): ("move", "up"), ("alt", "J"): ("move", "down"),
+}
+
+
 class Keys:
     SPECIAL = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end", "Z": "backtab",
                "I": "focus-in", "O": "focus-out", "P": "f1"}

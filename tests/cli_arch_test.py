@@ -11,7 +11,7 @@ PATCHED = {"time", "os", "subprocess", "select"}
 ALLOWED = {
     "text": set(),
     "protocol": set(),
-    "layout": set(),
+    "layout": {"text"},
     "keys": set(),
     "palette": {"text"},
     "link": {"protocol"},

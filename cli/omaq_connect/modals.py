@@ -102,9 +102,7 @@ class Picker:
         elif kind == "key" and value == "enter":
             if items:
                 composer = app.pane or app.scratch
-                emoji = items[min(self.index, len(items) - 1)][0]
-                composer.draft = composer.draft[:composer.cursor] + emoji + composer.draft[composer.cursor:]
-                composer.cursor += len(emoji)
+                composer.insert(items[min(self.index, len(items) - 1)][0])
                 composer.hist, composer.hist_items, app.completion = None, None, None
             app.picker = None
         elif kind == "key" and value in ("left", "right", "up", "down"):
