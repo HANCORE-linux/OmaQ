@@ -1036,10 +1036,32 @@ class Installer:
         print(f"available helper: {self.staged.helper_hash}")
         print(f"running helper: {helper['running_sha256']}")
         print(f"installed tree: {self.root}")
+        link_cli(self.root)
         return helper
 
     def close(self) -> None:
         self.lock.close()
+
+
+def link_cli(root: Path) -> None:
+    script = Path(root) / "cli" / "omaq.py"
+    if script.is_symlink() or not script.is_file():
+        return
+    try:
+        result = core.run(
+            ["/usr/bin/python3", "-I", str(script), "--link"],
+            check=False,
+            capture=True,
+            timeout=10,
+        )
+        text = (
+            core.bounded_text(result.stdout, "omaq-connect link stdout")
+            + core.bounded_text(result.stderr, "omaq-connect link stderr")
+        ).strip()
+    except (core.UpdateError, OSError, ValueError) as error:
+        text = f"omaq-connect: command not linked ({error})"
+    if text:
+        print(text)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

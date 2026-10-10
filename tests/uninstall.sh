@@ -9,7 +9,9 @@ helper="$root/tests/omaq_ipc_test_helper"
 
 tmp=$(mktemp -d)
 trap 'jobs -p | xargs -r kill 2>/dev/null || true; rm -rf -- "$tmp"' EXIT HUP INT TERM
-mkdir -m 700 "$tmp/bin"
+mkdir -m 700 "$tmp/bin" "$tmp/home"
+HOME="$tmp/home"
+export HOME
 cat >"$tmp/bin/omarchy" <<'SH'
 #!/bin/sh
 : >"$OMAQ_TEST_OMARCHY_CALLED"
@@ -137,6 +139,53 @@ PATH="$tmp/bin:$PATH" OMAQ_HOME="$missing_state_root/home" \
   echo "uninstall: missing-state serialization failed" >&2
   exit 1
 }
+
+run_link_case() {
+  mode=$1
+  expected=$2
+  link_root="$tmp/link-$mode"
+  link="$link_root/user/.local/bin/omaq-connect"
+  mkdir -p "$link_root/plugin/scripts" "$link_root/plugin/helper" "$link_root/home" \
+    "$link_root/runtime" "$link_root/backup" "$link_root/user/.local/bin"
+  cp "$root/scripts/uninstall-omaq.sh" "$link_root/plugin/scripts/uninstall-omaq.sh"
+  cp "$helper" "$link_root/plugin/helper/omaq"
+  chmod 755 "$link_root/plugin/scripts/uninstall-omaq.sh" "$link_root/plugin/helper/omaq"
+  case $mode in
+    dangling) ln -s "$link_root/removed/hancore.omaq/cli/omaq.py" "$link" ;;
+    present)
+      mkdir -p "$link_root/source/hancore.omaq/cli"
+      : >"$link_root/source/hancore.omaq/cli/omaq.py"
+      ln -s "$link_root/source/hancore.omaq/cli/omaq.py" "$link"
+      ;;
+    foreign) ln -s "$link_root/elsewhere/omaq-connect" "$link" ;;
+    file) printf 'not a link\n' >"$link" ;;
+  esac
+  HOME="$link_root/user" PATH="$tmp/bin:$PATH" OMAQ_HOME="$link_root/home" \
+    OMAQ_STATE="$link_root/state" XDG_RUNTIME_DIR="$link_root/runtime" \
+    OMAQ_TEST_PLUGIN_BACKUP="$link_root/backup" \
+    OMAQ_TEST_OMARCHY_CALLED="$link_root/omarchy.called" \
+    "$link_root/plugin/scripts/uninstall-omaq.sh" --yes \
+    >"$link_root/uninstall.out" 2>"$link_root/uninstall.err"
+  [ -f "$link_root/omarchy.called" ] || {
+    echo "uninstall: link case $mode did not call the plugin remover" >&2
+    exit 1
+  }
+  if [ "$expected" = removed ]; then
+    if [ -e "$link" ] || [ -L "$link" ] ||
+        ! grep -Fqx "Removed: $link" "$link_root/uninstall.out"; then
+      echo "uninstall: the omaq-connect link into the removed plugin was kept" >&2
+      exit 1
+    fi
+  elif [ ! -e "$link" ] && [ ! -L "$link" ]; then
+    echo "uninstall: omaq-connect ($mode) was removed" >&2
+    exit 1
+  fi
+}
+
+run_link_case dangling removed
+run_link_case present kept
+run_link_case foreign kept
+run_link_case file kept
 
 run_rule_cleanup_refused_case() {
   mode=$1

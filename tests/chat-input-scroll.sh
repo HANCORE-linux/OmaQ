@@ -28,6 +28,7 @@ text = path.read_text()
 replacements = {
     '  id: root\n': '''  id: root
   property alias testInput: input
+  property alias testEmojiRow: emojiRow
   property alias testInputBox: inputBox
   property alias testInputFlick: inputFlick
   property alias testComposerMenu: composerMenu
@@ -255,6 +256,34 @@ ShellRoot {
             check(input.text === longText + "🙂" && page.editingId === "synthetic-edit",
               "editing/emoji insertion changed bytes or mode")
             page.clearEdit()
+          },
+          function() {
+            check(page.composerEmojiSet.length === page.emojiSet.length + 1 &&
+              page.composerEmojiSet.slice(0, page.emojiSet.length).join(",") === page.emojiSet.join(",") &&
+              page.composerEmojiSet[page.emojiSet.length] === "🤟",
+              "composer emoji set is not the reaction set plus the love-you sign")
+            input.text = ""
+            page.emojiOpen = true
+          },
+          function() {},
+          function() {
+            var buttons = []
+            for (var i = 0; i < page.testEmojiRow.children.length; i++)
+              if (page.testEmojiRow.children[i].emojiValue !== undefined)
+                buttons.push(page.testEmojiRow.children[i])
+            var last = buttons[buttons.length - 1]
+            var fallback = null
+            for (var j = 0; last && j < last.children.length; j++)
+              if (last.children[j].text === "🤟")
+                fallback = last.children[j]
+            check(buttons.length === page.composerEmojiSet.length && last && last.emojiValue === "🤟" &&
+              fallback !== null && fallback.visible, "composer picker hides the love-you sign")
+            if (last)
+              last.clicked()
+          },
+          function() {
+            check(input.text === "🤟" && !page.emojiOpen, "love-you sign was not inserted")
+            input.text = ""
           },
           function() { input.text = "short"; input.cursorPosition = input.length },
           function() {

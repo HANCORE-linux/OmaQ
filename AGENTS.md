@@ -19,6 +19,7 @@ OmaQ is a minimal, invite-only Omarchy chat plugin. Preserve these qualities:
 - `ChatSurface.qml`: floating/pinned chat windows, demo window, notifications, sounds, per-conversation surface behavior
 - `pages/ChatPage.qml`: chat header, history, message bubbles, composer, formatting tools, context menus
 - `Service.qml`: QML client state and helper IPC; it must not become a second protocol implementation
+- `cli/`: `omaq-connect`, the terminal client and one more presentation adapter on the helper socket; it reuses the bar's wording and protocol rules, keeps its state and presentation modules free of terminal, socket and process I/O (`tests/cli_arch_test.py`), and must not become a second protocol implementation
 - `Model.js`: theme and presentation model helpers
 - `helper/`: C protocol, Tox, Ratchet, storage, avatar, invite, group, and validation logic
 - `tests/`: focused C/unit, build, protocol, and two-instance integration checks

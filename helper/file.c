@@ -57,10 +57,28 @@ static int xf_find(uint32_t friend, uint32_t fnum, int create)
 	return free_i;
 }
 
+#define PROGRESS_SLOTS 8
+#define PROGRESS_INTERVAL_MS 250
+static struct {
+	int used;
+	uint32_t friend;
+	uint32_t fnum;
+	int64_t at;
+	unsigned percent;
+} progress[PROGRESS_SLOTS];
+
+static void progress_forget(uint32_t friend, uint32_t fnum)
+{
+	for (int i = 0; i < PROGRESS_SLOTS; i++)
+		if (progress[i].used && progress[i].friend == friend && progress[i].fnum == fnum)
+			memset(&progress[i], 0, sizeof(progress[i]));
+}
+
 static void xf_drop(int i)
 {
 	if (i < 0 || !xf[i].used)
 		return;
+	progress_forget(xf[i].friend, xf[i].fnum);
 	if (xf[i].fp)
 		fclose(xf[i].fp);
 	memset(&xf[i], 0, sizeof(xf[i]));
@@ -117,6 +135,7 @@ void omaq_file_reset(void)
 		xf_drop(i);
 	}
 	memset(of, 0, sizeof(of));
+	memset(progress, 0, sizeof(progress));
 }
 #endif
 
@@ -656,6 +675,62 @@ int omaq_file_is_sending(uint32_t friend, uint32_t fnum)
 	int i = xf_find(friend, fnum, 0);
 
 	return i >= 0 && xf[i].sending;
+}
+
+int omaq_file_size(uint32_t friend, uint32_t fnum, uint64_t *size)
+{
+	int i = xf_find(friend, fnum, 0);
+
+	if (i < 0 || xf[i].avatar || !size)
+		return -1;
+	*size = xf[i].size;
+	return 0;
+}
+
+int omaq_file_receiving(uint32_t friend, uint32_t fnum, uint64_t *got, uint64_t *size)
+{
+	int i = xf_find(friend, fnum, 0);
+
+	if (i < 0 || xf[i].sending || xf[i].avatar || !got || !size)
+		return -1;
+	*got = xf[i].got;
+	*size = xf[i].size;
+	return 0;
+}
+
+int omaq_file_progress_due(uint32_t friend, uint32_t fnum, uint64_t done, uint64_t size, int64_t now_ms)
+{
+	int slot = -1;
+	unsigned percent;
+
+	if (size == 0 || done >= size)
+		return 0;
+	percent = (unsigned)(done * 100 / size);
+	for (int i = 0; i < PROGRESS_SLOTS; i++)
+		if (progress[i].used && progress[i].friend == friend && progress[i].fnum == fnum) {
+			slot = i;
+			break;
+		}
+	if (slot >= 0 && percent >= progress[slot].percent &&
+	    (percent == progress[slot].percent || now_ms - progress[slot].at < PROGRESS_INTERVAL_MS))
+		return 0;
+	if (slot < 0) {
+		slot = 0;
+		for (int i = 0; i < PROGRESS_SLOTS; i++) {
+			if (!progress[i].used) {
+				slot = i;
+				break;
+			}
+			if (progress[i].at < progress[slot].at)
+				slot = i;
+		}
+	}
+	progress[slot].used = 1;
+	progress[slot].friend = friend;
+	progress[slot].fnum = fnum;
+	progress[slot].at = now_ms;
+	progress[slot].percent = percent;
+	return 1;
 }
 
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,

@@ -37,5 +37,6 @@ The live product and release snapshot is [`../CURRENT.md`](../CURRENT.md).
 | [`helper-updater-validation.md`](helper-updater-validation.md) | Manual helper updater and earlier validation rounds |
 | [`trigger-free-updates.md`](trigger-free-updates.md) | External staging, shell-off source exchange, consumer checks, and rollback |
 | [`safe-source-install.md`](safe-source-install.md) | External first-install build, atomic placement, controlled discovery, and enablement |
+| [`terminal-client.md`](terminal-client.md) | `omaq-connect`: terminal chat with split views beside the unchanged bar (1.0.0) |
 
 Together, these notes record what landed, how the work was verified, measured RSS where relevant, and what remained outside each iteration. No note means the planned phase did not finish. Never add keys, complete Tox identifiers, or real chat logs.

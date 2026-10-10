@@ -62,7 +62,7 @@ jobs:
           cd /home/omaq-ci/OmaQ
           actionlint
           find . -type f -name '*.sh' -print0 | sort -z | xargs -0 shellcheck
-          python3 -m compileall -q scripts tests
+          python3 -m compileall -q scripts tests cli
           pkg-config --exists libtoxcore || pkg-config --exists toxcore
           pkg-config --exists libsignal-protocol-c libpulse libpng libjpeg libwebp
           if [[ "$EVENT_NAME" == "pull_request" ]]; then

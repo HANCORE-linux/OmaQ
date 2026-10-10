@@ -1,6 +1,6 @@
 # Illustrated user guide
 
-This visual guide covers the complete OmaQ workflow: connect with trusted people, use DirectChat and GroupChat, exchange files, manage notifications, protect your identity, and recover safely from interrupted state changes. Click any screenshot to open its full-size original.
+This visual guide covers the complete OmaQ workflow: connect with trusted people, use DirectChat and GroupChat, exchange files, manage notifications, chat from a terminal, protect your identity, and recover safely from interrupted state changes. Click any screenshot to open its full-size original.
 
 Use this guide by task:
 
@@ -12,6 +12,7 @@ Use this guide by task:
 - [Exchange files and images](#exchange-files-and-images)
 - [Make DirectChat voice calls](#make-directchat-voice-calls)
 - [Create and manage private groups](#create-and-manage-private-groups)
+- [Chat from the terminal](#chat-from-the-terminal)
 - [Protect and move your identity](#protect-and-move-your-identity)
 - [Handle destructive and recovery states](#handle-destructive-and-recovery-states)
 - [Maintain OmaQ](#maintain-omaq)
@@ -200,6 +201,108 @@ Click or keyboard-open another member to review presence and available moderatio
 Group messages support the same formatting, emoji-only presentation, replies, editing, confirmed deletion, reactions, unread divider, and image workflow as DirectChat. Outgoing receipts summarize member state, such as **Read by 1** or **Read by 1 · Delivered to 2**.
 
 Group attachments are offered independently to each online member and are not queued for offline members. A shell reload reconnects to the same detached helper. If the helper cannot restore a private membership after termination, another member must send a fresh invitation.
+
+## Chat from the terminal
+
+`omaq-connect` opens your chats in a terminal. It uses the same helper, identity, contacts, and history as the bar, so you can use both at once or the terminal alone.
+
+```bash
+omaq-connect           # opens your first friend
+omaq-connect alice     # opens alice
+```
+
+<a href="images/guide/38-terminal-overview.png"><img src="images/guide/38-terminal-overview.png" alt="Terminal client with two chats side by side" width="100%"></a>
+
+The top line lists your friends: a green dot means online, gray away, and dim offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
+
+The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
+
+### Commands
+
+<table>
+<thead><tr><th>Help</th><th>Command suggestions</th></tr></thead>
+<tbody><tr>
+<td><a href="images/guide/39-terminal-help.png"><img src="images/guide/39-terminal-help.png" alt="Terminal help with commands, receipts, and keys" width="100%"></a><br><code>:help</code> or <code>F1</code> lists every command, the receipt marks, and the keys. Choose a command with the arrow keys and press <code>Enter</code>. In a small window the list scrolls: <code>PgUp</code> and <code>PgDn</code> turn the page, and <code>↑ more</code> or <code>↓ more</code> shows that rows are hidden.</td>
+<td><a href="images/guide/40-terminal-commands.png"><img src="images/guide/40-terminal-commands.png" alt="Command suggestions after typing a colon" width="100%"></a><br>Typing <code>:</code> shows matching commands. <code>Tab</code> completes commands and friend names.</td>
+</tr></tbody>
+</table>
+
+| Command | Action |
+|---|---|
+| `:help` or `F1` | List every command and key |
+| `:connect <name>` | Open a chat in a new pane on the right |
+| `:split <name>` | Open a chat in a new pane below |
+| `:close` or `Ctrl+W` | Close this pane |
+| `:clear` | Clear this chat on this computer after `Clear this chat? y/n` |
+| `:invite` | Show your invite link and its QR code, and copy the link |
+| `:invite revoke` | Revoke the active invite after a confirmation |
+| `:redeem <link>` | Send a request with a friend's invite link |
+| `:requests` | Show a pending request, with the safety code for a friend request |
+| `:accept` / `:decline` | Answer the pending request |
+| `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
+| `:sendfile <path>` | Send a file to this chat |
+| `:acceptfile` / `:declinefile` | Save the offered file in `~/Downloads/omaq`, or decline it |
+| `:cancelfile` | Cancel your file transfer in this chat |
+| `:quit` or `:q` | Quit |
+
+Confirmations expire after 15 seconds.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `Ctrl+N` | Open the next friend in a new pane |
+| `Alt+Arrows` | Move the focus between panes |
+| `Alt+Shift+Arrows` | Move this pane |
+| `Alt+=` / `Alt+-` | Make this column wider or narrower |
+| `Tab` | Switch the chat in this pane |
+| `Up` / `Down` | Recall your earlier messages in this chat |
+| `PgUp` / `PgDn` | Scroll |
+| `Shift+Enter` | Start a new line |
+| `Esc` | Clear the message, then hide a file notice |
+| `Ctrl+K` | Open the emoji picker |
+| `Ctrl+C` | Clear the message; it never quits |
+
+### Invite a friend from the terminal
+
+<table>
+<thead><tr><th>Your invite</th><th>Incoming request</th></tr></thead>
+<tbody><tr>
+<td><a href="images/guide/41-terminal-invite.png"><img src="images/guide/41-terminal-invite.png" alt="Invite link and QR code in the terminal" width="100%"></a><br><code>:invite</code> shows your one-time link, its QR code, and how long it stays valid. The link is also copied to the clipboard.</td>
+<td><a href="images/guide/42-terminal-request.png"><img src="images/guide/42-terminal-request.png" alt="Friend request with safety code in the terminal" width="100%"></a><br><code>1 request</code> appears in the top line. <code>:requests</code> shows the safety code to compare before you accept.</td>
+</tr></tbody>
+</table>
+
+1. Run `:invite`. The link is copied to the clipboard and shown with its QR code.
+2. Your friend runs `:redeem <link>` in their terminal or pastes the link into the bar's **Add contact**.
+3. When `1 request` appears in your top line, run `:requests` and compare the safety code with your friend.
+4. Run `:accept`.
+
+### Send and receive files
+
+Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it. While it travels, the chat shows its progress, such as `Sending notes.pdf  ███████░░░ 70%`.
+
+An incoming file waits until you decide: the chat shows `File offer: notes.pdf (2.3 MB)`. `:acceptfile` saves it in `~/Downloads/omaq`, shows `Receiving notes.pdf` with the same bar while it arrives, and then shows the full path. `:declinefile` rejects it.
+
+### Emoji, receipts, and text size
+
+<table>
+<thead><tr><th>Emoji picker</th><th>Text size</th></tr></thead>
+<tbody><tr>
+<td><a href="images/guide/43-terminal-emoji-picker.png"><img src="images/guide/43-terminal-emoji-picker.png" alt="Emoji picker above the input line" width="100%"></a><br><code>Ctrl+K</code> opens the picker above the input line. Arrows choose, <code>Enter</code> inserts, and typing searches by English name.</td>
+<td><a href="images/guide/44-terminal-text-size.png"><img src="images/guide/44-terminal-text-size.png" alt="Text size shown after a zoom" width="100%"></a><br>After you zoom the terminal, the bottom line briefly shows the new size.</td>
+</tr></tbody>
+</table>
+
+Standalone `:)` `:D` `;)` `:(` `:'(` `:P` `;P` `:O` `:*` `:/` `:|` `xD` `^^` `<3` and `(y)` become emoji when a space follows or when you send. Links stay intact. The picker offers the same emoji as the bar's picker.
+
+Receipts use arrows: `·` sending, `→` sent, `⇉` delivered, `⇉` in green read, and `✕` failed.
+
+Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` resets (kitty: `Ctrl+Shift+=`, `Ctrl+Shift+-`, and `Ctrl+Shift+Backspace`). After a zoom, the bottom line briefly shows the new size, such as `Text 112%`. 100% is the size when the session started.
+
+### Terminals and limits
+
+The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, edits, and search stay in the bar.
 
 ## Protect and move your identity
 

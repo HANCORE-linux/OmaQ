@@ -2,7 +2,7 @@
 
 ## User documentation
 
-- [Illustrated user guide](USER-GUIDE.md): invitations, chats, files, calls, groups, identity protection, and recovery
+- [Illustrated user guide](USER-GUIDE.md): invitations, chats, files, calls, groups, the terminal client, identity protection, and recovery
 - [Installation lifecycle](INSTALLATION.md): installation, shell-off updates, helper status, rollback, removal, and retained data
 - [Security and privacy](SECURITY.md): encryption, relay privacy, local storage, identity protection, and safety codes
 

@@ -258,6 +258,7 @@ FocusScope {
     "👎", "❤️", "🔥", "✨", "🎉", "🙏", "😮", "😢",
     "😡", "🤔", "👀", "✅", "👋", "💯"
   ]
+  readonly property var composerEmojiSet: root.emojiSet.concat(["🤟"])
 
   function mostUsedReactionSet(limit) {
     var maximum = Math.max(1, Math.min(Number(limit) || 5, root.emojiSet.length))
@@ -5225,10 +5226,10 @@ FocusScope {
               spacing: Style.space(3)
 
               Repeater {
-                model: root.emojiSet
+                model: root.composerEmojiSet
                 EmojiPickerBtn {
                   required property int index
-                  emojiValue: String(root.emojiSet[index] || "")
+                  emojiValue: String(root.composerEmojiSet[index] || "")
                   onClicked: root.insertEmoji(emojiValue)
                 }
               }

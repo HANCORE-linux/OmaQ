@@ -48,6 +48,9 @@ int omaq_file_recv_begin(const char *home, const char *conv, uint32_t friend,
 int omaq_file_is_avatar(uint32_t friend, uint32_t fnum);
 int omaq_file_can_cancel(uint32_t friend, uint32_t fnum);
 int omaq_file_is_sending(uint32_t friend, uint32_t fnum);
+int omaq_file_size(uint32_t friend, uint32_t fnum, uint64_t *size);
+int omaq_file_receiving(uint32_t friend, uint32_t fnum, uint64_t *got, uint64_t *size);
+int omaq_file_progress_due(uint32_t friend, uint32_t fnum, uint64_t done, uint64_t size, int64_t now_ms);
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, size_t len);
 int omaq_file_chunk_in(uint32_t friend, uint32_t fnum, uint64_t pos,
