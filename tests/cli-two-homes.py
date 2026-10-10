@@ -105,6 +105,8 @@ def main():
         if not request:
             fail("no friend request (network?)")
         a.send({"op": "contact.decide", "id": "x", "key": request["key"], "accept": True})
+        if not a.wait(lambda e: e.get("event") == "contact.decided" and e.get("request") == "x" and e.get("ok") is True, 30):
+            fail("the helper did not report the decision with its request")
         online = lambda r: r.wait(lambda e: e.get("event") == "friend.info" and e.get("id") == "0"
                                   and e.get("online") is True and len(str(e.get("key") or "")) == 64, 180)
         fa, fb = online(a), online(b)
@@ -253,6 +255,112 @@ def main():
             starts = [e for e in a.events[since_a:] if e.get("event") == "file.sending"]
             fail("the CLI never drew a progress bar: plain line %s, sending %r, progress %d %r" % (
                 "Sending big.bin" in rendered, starts[:1], len(sent), sent[:2]))
+        inbox = os.path.join(dirs["sa"], "downloads", "omaq")
+        if not os.path.isdir(inbox):
+            fail("alice's download folder is missing: %s" % inbox)
+        blocked = os.path.join(base, "blocked.txt")
+        with open(blocked, "wb") as f:
+            f.write(b"blocked")
+        since_a = len(a.events)
+        os.chmod(inbox, 0o500)
+        try:
+            b.send({"op": "file.send", "conversation": "0", "key": fb["key"], "path": blocked, "kind": "file",
+                    "id": "bob-f2"})
+            offered = fresh(a, since_a, lambda e: e.get("event") == "file.offer" and e.get("name") == "blocked.txt", 60)
+            if not offered or not term.wait_for("File offer from bob: blocked.txt", 30):
+                fail("the CLI did not show the offer for the blocked folder")
+            term.send(":acceptfile\r")
+            failed = fresh(a, since_a, lambda e: e.get("event") == "file.failed" and e.get("id") == offered["id"], 30)
+            if not failed or (failed.get("code"), failed.get("dir"), failed.get("key")) != ("accept_failed", "in",
+                                                                                          fa["key"]):
+                fail("the helper sent no correlated accept failure: %r" % failed)
+            if not term.wait_for("File transfer failed: accept_failed", 15):
+                fail("the CLI did not report the failed accept")
+        finally:
+            os.chmod(inbox, 0o700)
+        after_file = os.path.join(base, "after.txt")
+        with open(after_file, "wb") as f:
+            f.write(b"after")
+        b.send({"op": "file.send", "conversation": "0", "key": fb["key"], "path": after_file, "kind": "file",
+                "id": "bob-f3"})
+        if not term.wait_for("File offer from bob: after.txt", 60):
+            fail("the CLI dropped the next offer after a failed accept")
+        since_a = len(a.events)
+        term.send(":acceptfile\r")
+        arrived = fresh(a, since_a, lambda e: e.get("event") == "file.done" and e.get("dir") == "in"
+                        and str(e.get("path") or "").endswith("after.txt"), 120)
+        if not arrived:
+            fail("the transfer after a failed accept did not complete")
+        with open(arrived["path"], "rb") as f:
+            if f.read() != b"after":
+                fail("the transfer after a failed accept delivered different bytes")
+
+        def from_bob(name, payload, request):
+            path = os.path.join(base, name)
+            with open(path, "wb") as f:
+                f.write(payload)
+            since = len(a.events)
+            b.send({"op": "file.send", "conversation": "0", "key": fb["key"], "path": path, "kind": "file",
+                    "id": request})
+            offered = fresh(a, since, lambda e: e.get("event") == "file.offer" and e.get("name") == name, 60)
+            if not offered or not term.wait_for("File offer from bob: %s" % name, 30):
+                fail("the CLI did not show bob's %s" % name)
+            return offered, since
+
+        first, since_a = from_bob("x1.txt", b"one", "bob-x1")
+        a.send({"op": "file.status", "conversation": "0", "key": fa["key"], "id": first["id"]})
+        state = fresh(a, since_a, lambda e: e.get("event") == "file.state" and e.get("id") == first["id"], 15)
+        if not state or (state.get("state"), state.get("name"), state.get("dir")) != ("offer", "x1.txt", "in"):
+            fail("file.status did not report the pending incoming offer: %r" % state)
+        term.send(":declinefile\r")
+        if not term.wait_for("Declined file: x1.txt", 10):
+            fail("the CLI did not decline x1.txt")
+        since_a = len(a.events)
+        a.send({"op": "file.status", "conversation": "0", "key": fa["key"], "id": first["id"]})
+        gone = fresh(a, since_a, lambda e: e.get("event") == "file.state" and e.get("id") == first["id"], 15)
+        if not gone or gone.get("state") != "unknown":
+            fail("file.status did not report the declined transfer as unknown: %r" % gone)
+        payload = os.urandom(200000)
+        second, since_a = from_bob("x2.txt", payload, "bob-x2")
+        term.send(":acceptfile\r")
+        arrived = fresh(a, since_a, lambda e: e.get("event") == "file.done" and e.get("dir") == "in"
+                        and str(e.get("path") or "").endswith("x2.txt"), 120)
+        if not arrived:
+            fail("a file sent right after a decline did not arrive (cancel echo)")
+        with open(arrived["path"], "rb") as f:
+            if f.read() != payload:
+                fail("the file after a decline delivered different bytes")
+        y1 = os.path.join(base, "y1.txt")
+        with open(y1, "wb") as f:
+            f.write(b"y1")
+        since_b, mark = len(b.events), len(term.out)
+        term.send(":sendfile %s\r" % y1)
+        offered = fresh(b, since_b, lambda e: e.get("event") == "file.offer" and e.get("name") == "y1.txt", 60)
+        if not offered:
+            fail(":sendfile did not offer y1.txt")
+        b.send({"op": "file.cancel", "conversation": "0", "key": fb["key"], "id": offered["id"]})
+        end = time.monotonic() + 30
+        while time.monotonic() < end and "File transfer canceled" not in term.out[mark:].decode("utf-8", "replace"):
+            term.pump(0.3)
+        if "File transfer canceled" not in term.out[mark:].decode("utf-8", "replace"):
+            fail("the CLI did not report bob's decline")
+        y2 = os.path.join(base, "y2.txt")
+        payload = os.urandom(200000)
+        with open(y2, "wb") as f:
+            f.write(payload)
+        since_b = len(b.events)
+        term.send(":sendfile %s\r" % y2)
+        offered = fresh(b, since_b, lambda e: e.get("event") == "file.offer" and e.get("name") == "y2.txt", 60)
+        if not offered:
+            fail(":sendfile did not offer y2.txt after the decline")
+        b.send({"op": "file.accept", "conversation": "0", "key": fb["key"], "id": offered["id"]})
+        arrived = fresh(b, since_b, lambda e: e.get("event") == "file.done" and e.get("dir") == "in"
+                        and e.get("id") == offered["id"], 120)
+        if not arrived:
+            fail("a file sent right after the peer's decline did not arrive (cancel echo)")
+        with open(arrived["path"], "rb") as f:
+            if f.read() != payload:
+                fail("bob received different bytes after his decline")
         shot = os.environ.get("CLI_SCREEN")
         if shot:
             with open(shot, "w", encoding="utf-8") as f:

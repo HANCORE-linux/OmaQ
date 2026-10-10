@@ -215,14 +215,14 @@ omaq-connect alice     # opens alice
 
 The top line lists your friends: a green dot means online, gray away, and dim offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
 
-The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group. While the bar runs, quitting changes nothing.
+The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
 
 ### Commands
 
 <table>
 <thead><tr><th>Help</th><th>Command suggestions</th></tr></thead>
 <tbody><tr>
-<td><a href="images/guide/39-terminal-help.png"><img src="images/guide/39-terminal-help.png" alt="Terminal help with commands, receipts, and keys" width="100%"></a><br><code>:help</code> or <code>F1</code> lists every command, the receipt marks, and the keys. Choose a command with the arrow keys and press <code>Enter</code>.</td>
+<td><a href="images/guide/39-terminal-help.png"><img src="images/guide/39-terminal-help.png" alt="Terminal help with commands, receipts, and keys" width="100%"></a><br><code>:help</code> or <code>F1</code> lists every command, the receipt marks, and the keys. Choose a command with the arrow keys and press <code>Enter</code>. In a small window the list scrolls: <code>PgUp</code> and <code>PgDn</code> turn the page, and <code>↑ more</code> or <code>↓ more</code> shows that rows are hidden.</td>
 <td><a href="images/guide/40-terminal-commands.png"><img src="images/guide/40-terminal-commands.png" alt="Command suggestions after typing a colon" width="100%"></a><br>Typing <code>:</code> shows matching commands. <code>Tab</code> completes commands and friend names.</td>
 </tr></tbody>
 </table>

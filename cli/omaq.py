@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import codecs
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -77,6 +78,12 @@ ACTION_SECONDS = 10
 NAME_MAX = 18
 REDEEMED_DIRECT = "Invite checked. Waiting for the other person to accept."
 REDEEMED_GROUP = "Group invite checked. Waiting for the incoming group request."
+HISTORY_ITEM_FAILED = "An item could not be added to chat history"
+UNSAVED_SENT = "Message sent, but could not be saved locally."
+EXIT_WAIT = 20.0
+SETTLE_SECONDS = 5.0
+UNCONFIRMED_EXIT = "could not confirm that OmaQ went offline; it may still be running"
+UNCOORDINATED_EXIT = "another omaq-connect is still quitting; OmaQ may still be running"
 FILE_ERRORS = {
     "busy": "A file is already sending",
     "forbidden": "The file could not be sent",
@@ -601,15 +608,16 @@ class Link:
 class Presence:
     def __init__(self, state_dir):
         base = os.environ.get("XDG_RUNTIME_DIR")
-        if not base:
-            base = state_dir
-            if ensure_private_dir(base):
-                base = ""
-        self.dir = os.path.join(base, "omaq-cli") if base else ""
+        if base:
+            scope = hashlib.sha256(os.path.realpath(state_dir).encode("utf-8", "surrogateescape")).hexdigest()[:16]
+            self.dir = os.path.join(base, "omaq-cli", scope)
+        else:
+            self.dir = "" if ensure_private_dir(state_dir) else os.path.join(state_dir, "omaq-cli")
         self.lock = None
         if not self.dir:
             return
         try:
+            os.makedirs(os.path.dirname(self.dir), mode=0o700, exist_ok=True)
             os.makedirs(self.dir, mode=0o700, exist_ok=True)
             path = os.path.join(self.dir, "%d.lock" % os.getpid())
             fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
@@ -675,6 +683,25 @@ class Presence:
             return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600), path
         except OSError:
             return None, ""
+
+    def exit_lock(self, seconds):
+        if not self.dir:
+            return None
+        try:
+            fd = os.open(os.path.join(self.dir, "exit.mutex"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                         0o600)
+        except OSError:
+            return None
+        end = time.monotonic() + seconds
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except OSError:
+                if time.monotonic() >= end:
+                    os.close(fd)
+                    return None
+                time.sleep(0.05)
 
     def release(self):
         if self.lock:
@@ -787,11 +814,11 @@ class Keys:
 
 
 class Message:
-    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed")
+    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed", "local")
 
-    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed=""):
+    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed="", local=False):
         self.id, self.request, self.dir, self.text = mid, request, direction, text
-        self.ts, self.sender, self.ack, self.failed = ts, sender, ack, failed
+        self.ts, self.sender, self.ack, self.failed, self.local = ts, sender, ack, failed, local
 
 
 def message_from(item):
@@ -972,6 +999,8 @@ class App:
         self.unlock_request = ""
         self.status = ""
         self.status_until = 0.0
+        self.status_set, self.status_seconds = 0.0, STATUS_SECONDS
+        self.decide_request = ""
         self.focused = True
         self.typing_sent = 0.0
         self.typing_on = ""
@@ -984,6 +1013,7 @@ class App:
         self.size = (0, 0)
         self.visible = set()
         self.help = None
+        self.help_top, self.help_follow, self.help_seen = 0, True, (0, 0)
         self.completion = None
         self.scratch = Pane("")
         self.exit_note = ""
@@ -999,6 +1029,7 @@ class App:
         self.addr = ""
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
         self.offers, self.sends = {}, {}
+        self.file_result = ("", "", 0.0)
         self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
         self.confirm = None
         self.clears = {}
@@ -1015,6 +1046,7 @@ class App:
     def say(self, text, seconds=STATUS_SECONDS):
         self.status = clean_line(text)
         self.status_until = time.monotonic() + seconds
+        self.status_set, self.status_seconds = time.monotonic(), seconds
         self.dirty = True
 
     def friend(self, fid):
@@ -1147,7 +1179,7 @@ class App:
             self.link.close()
         self.link = None
         if self.confirm is not None:
-            self.confirm, self.status = None, ""
+            self.drop_confirm()
         self.handshake = False
         self.friend_build = None
         self.conn = "reconnecting"
@@ -1164,9 +1196,6 @@ class App:
         if self.invite_request or self.redeem_request:
             self.invite_request = self.redeem_request = ""
             self.say("Invite result unknown; try again")
-        if self.offers or self.sends:
-            self.offers, self.sends = {}, {}
-            self.say("File transfer status unknown; check the chat")
         self.dirty = True
 
     def reset_identity(self):
@@ -1176,15 +1205,79 @@ class App:
         self.friends, self.friend_build, self.friends_ready = [], None, False
         self.convs, self.unread, self.read_pending, self.retry_at, self.drafts = {}, {}, {}, {}, {}
         if self.confirm is not None:
-            self.confirm, self.status = None, ""
+            self.drop_confirm()
         self.clears = {}
         self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
         self.invite_request = self.redeem_request = ""
         self.offers, self.sends = {}, {}
         self.typing_on = ""
+        self.commands = []
+        self.file_result = ("", "", 0.0)
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
+            self.forget_recall(pane)
         self.handshake_request()
+
+    def drop_confirm(self):
+        notice = self.notice_behind(self.confirm)
+        kept = "Invite kept" if self.confirm["action"] == "revoke" else "Chat kept"
+        self.confirm = None
+        self.say(kept)
+        self.show_notice(notice)
+
+    def notice_behind(self, confirm):
+        if self.status and self.status_set > confirm["at"]:
+            return self.status, self.status_seconds
+        return None
+
+    def show_notice(self, notice):
+        if not notice:
+            return
+        text, seconds = notice
+        if self.status and self.status != text:
+            self.say("%s \u00b7 %s" % (self.status, text), max(STATUS_SECONDS, seconds))
+        else:
+            self.say(text, seconds)
+
+    def forget_recall(self, pane):
+        pane.hist, pane.hist_items, pane.stash = None, None, ("", 0)
+
+    def resume_transfers(self, restarted):
+        if restarted:
+            if self.sends:
+                self.say("File transfer failed: helper_restarted", 15)
+            self.offers, self.sends = {}, {}
+            return
+        for conversation, send in self.sends.items():
+            self.send({"op": "file.status", "conversation": conversation, "id": send["request"], "key": send["key"]})
+        for conversation, offer in self.offers.items():
+            offer["unconfirmed"] = True
+            self.send({"op": "file.status", "conversation": conversation, "id": offer["id"], "key": offer["key"]})
+
+    def settle(self):
+        if self.handshake or self.proc is None or self.proc.poll() is not None:
+            return
+        end = time.monotonic() + SETTLE_SECONDS
+        path = os.path.join(self.state, "omaq.sock")
+        while not self.link and time.monotonic() < end:
+            try:
+                self.link = Link(path)
+            except OSError:
+                time.sleep(0.1)
+        if not self.link:
+            return
+        self.handshake_request()
+        while self.link and not self.handshake and time.monotonic() < end:
+            ready, _, _ = select.select([self.link], [], [], 0.2)
+            if not ready:
+                continue
+            try:
+                events = self.link.read()
+            except (ConnectionError, OSError):
+                return
+            for ev in events:
+                if ev.get("event") == "snapshot" and not self.handshake:
+                    self.on_event(ev)
 
     def owned_by_cli(self):
         instance, nonce = self.presence.started()
@@ -1223,13 +1316,15 @@ class App:
                     self.say(FAILURES["helper_incompatible"], 3600)
                     return
                 addr = str(ev.get("addr") or "")
-                if addr and self.addr and addr != self.addr:
+                if addr and self.addr and addr[:64] != self.addr[:64]:
                     self.addr = addr
                     self.reset_identity()
                     return
                 self.addr = addr or self.addr
+                instance = str(ev.get("instance"))
+                restarted = bool(self.instance) and instance != self.instance
                 self.handshake = True
-                self.instance = str(ev.get("instance"))
+                self.instance = instance
                 self.protocol = protocol
                 try:
                     self.history_clear = int(ev.get("historyClear") or 0)
@@ -1242,9 +1337,12 @@ class App:
                 if self.owns:
                     self.presence.mark_started(self.instance, self.launch_nonce)
                 self.send({"op": "identity.ready", "id": self.instance})
+                self.resume_transfers(restarted)
             self.locked = ev.get("locked") is True
             if self.locked:
                 self.conn = "locked"
+                if self.confirm is not None:
+                    self.drop_confirm()
             elif "online" in ev:
                 self.conn = "online" if ev.get("online") else "connecting"
             self.dirty = True
@@ -1275,19 +1373,30 @@ class App:
             elif ev.get("op") in ("import", "recovered"):
                 self.reset_identity()
         elif name == "error":
-            code = str(ev.get("code") or "")
+            code, request = str(ev.get("code") or ""), str(ev.get("request") or "")
+            conversation = str(ev.get("conversation") or "")
             if code == "locked":
                 self.locked = True
                 self.conn = "locked"
-            if self.unlock_request and str(ev.get("request") or "") == self.unlock_request:
+                if self.confirm is not None:
+                    self.drop_confirm()
+            if self.unlock_request and request == self.unlock_request:
                 self.unlock_request = ""
                 self.say("The identity passphrase is incorrect.")
-            elif self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
-                self.redeem_request = ""
+            elif self.redeem_request and request == self.redeem_request:
+                self.redeem_request, self.action_until = "", 0.0
                 self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be added.", 15)
-            elif self.invite_request and str(ev.get("request") or "") == self.invite_request:
-                self.invite_request = ""
+            elif self.invite_request and request == self.invite_request:
+                self.invite_request, self.action_until = "", 0.0
                 self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be created.", 15)
+            elif self.decide_request and request == self.decide_request:
+                self.say(self.decide_failure(code), 15)
+            elif code == "history_failed" and conversation:
+                last_conv, last_text, last_at = self.file_result
+                if last_conv == conversation and time.monotonic() - last_at < 3.0:
+                    self.say("%s \u00b7 %s" % (last_text, HISTORY_ITEM_FAILED), 15)
+                else:
+                    self.say(HISTORY_ITEM_FAILED, 15)
             elif code == "identity_changed":
                 now = time.monotonic()
                 if now > self.rehandshake_at:
@@ -1295,9 +1404,9 @@ class App:
                     for c in self.convs.values():
                         c["loaded"], c["request"] = False, ""
                     self.handshake_request()
-            elif code and code != "locked" and time.monotonic() < self.action_until:
-                if code == "forbidden" and self.action == "accept":
-                    self.say("The request could not be accepted.")
+            elif code and code != "locked" and not conversation and not request and time.monotonic() < self.action_until:
+                if self.action in ("accept", "decline"):
+                    self.say(self.decide_failure(code), 15)
                 else:
                     self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code, 15)
                 if self.action == "redeem":
@@ -1320,8 +1429,11 @@ class App:
             c = self.convs.get(conversation)
             if c and c["request"] and str(ev.get("request") or "") == c["request"] and self.bound(ev):
                 items = ev.get("items") if isinstance(ev.get("items"), list) else []
+                keep = [m for m in c["items"] if m.local or (m.dir == "out" and m.request and (m.failed or not m.id))]
+                keep += [m for owner, m in self.pending.values() if owner == conversation and m not in keep]
                 c["items"] = [message_from(i) for i in items if isinstance(i, dict)]
-                c["items"].extend(m for request, (owner, m) in self.pending.items() if owner == conversation)
+                ids = {m.id for m in c["items"] if m.id}
+                c["items"].extend(m for m in keep if not (m.id and m.id in ids))
                 c["loaded"], c["request"] = True, ""
                 self.retry_at.pop(conversation, None)
         elif name == "history.failed":
@@ -1335,8 +1447,20 @@ class App:
             if self.bound(ev):
                 self.on_message(ev)
         elif name == "message.failed":
-            entry = self.pending.pop(str(ev.get("request") or ""), None)
-            if entry:
+            request = str(ev.get("request") or "")
+            entry = self.pending.pop(request, None)
+            if not entry and request:
+                conversation = str(ev.get("conversation") or "")
+                for m in self.convs.get(conversation, {}).get("items", []):
+                    if m.dir == "out" and m.request == request:
+                        entry = (conversation, m)
+            if entry and ev.get("delivered") is True:
+                owner, m = entry
+                m.failed, m.ack, m.local = "", max(m.ack, 1), True
+                items = self.conv(owner)["items"]
+                note = Message("", "", "sys", UNSAVED_SENT, m.ts or time.time(), local=True)
+                items.insert(items.index(m) + 1 if m in items else len(items), note)
+            elif entry:
                 entry[1].failed = str(ev.get("code") or "error")
         elif name == "receipt":
             if self.bound(ev):
@@ -1366,7 +1490,7 @@ class App:
                     self.overlay = None
             request = str(ev.get("request") or "")
             if request and request == self.invite_request:
-                self.invite_request = ""
+                self.invite_request, self.action_until = "", 0.0
                 if ev.get("op") == "revoke":
                     self.say("Invite revoked")
                 elif self.invite["url"]:
@@ -1375,6 +1499,9 @@ class App:
             conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
             if fid and is_direct(conversation) and self.bound(ev):
                 held = self.offers.get(conversation)
+                if held and held.get("unconfirmed"):
+                    del self.offers[conversation]
+                    held = None
                 if held and held["id"] != fid:
                     self.send_bound({"op": "file.cancel", "conversation": conversation, "id": fid})
                 elif not held:
@@ -1383,7 +1510,8 @@ class App:
                     except (TypeError, ValueError):
                         size = 0
                     name = str(ev.get("name") or "file")
-                    self.offers[conversation] = {"id": fid, "name": name, "size": size, "accepted": False}
+                    self.offers[conversation] = {"id": fid, "name": name, "size": size, "accepted": False,
+                                                 "key": str(ev.get("key") or "")}
                     f = self.friend(conversation)
                     self.say("File offer from %s: %s (%s)" % (f["name"] if f else "a friend", name, human_size(size)), 15)
         elif name == "file.sending":
@@ -1392,7 +1520,7 @@ class App:
             if send and str(ev.get("request") or "") == send["request"] and self.bound(ev):
                 send["id"] = str(ev.get("id") or "")
                 if send["cancel"] and send["id"]:
-                    self.send_bound({"op": "file.cancel", "conversation": conversation, "id": send["id"]})
+                    self.send({"op": "file.cancel", "conversation": conversation, "id": send["id"], "key": send["key"]})
         elif name == "file.progress":
             conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
             try:
@@ -1418,6 +1546,7 @@ class App:
                     self.finish_file(conversation)
                     if name == "file.done":
                         self.say(FILE_ERRORS.get(code) or "File transfer successful: %s" % send["name"], 15)
+                        self.file_result = (conversation, self.status, time.monotonic())
                     elif name == "file.canceled":
                         self.say("File transfer canceled")
                     else:
@@ -1429,13 +1558,40 @@ class App:
                     self.finish_file(conversation)
                     if name == "file.done":
                         self.say("File transfer successful: %s" % home_path(ev.get("path") or offer["name"]), 15)
+                        self.file_result = (conversation, self.status, time.monotonic())
                     elif name == "file.canceled":
                         self.say("File transfer canceled")
                     else:
                         self.say("File transfer failed: %s" % (FAILURES.get(code) or code or "error"), 15)
+        elif name == "contact.decided":
+            if self.decide_request and str(ev.get("request") or "") == self.decide_request:
+                self.decide_request, self.action_until = "", 0.0
+                if ev.get("ok") is True:
+                    self.say("Accepted" if self.action == "accept" else "Declined")
+                else:
+                    self.say(self.decide_failure(str(ev.get("code") or "")), 15)
+        elif name == "file.state":
+            conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
+            offer = self.offers.get(conversation)
+            if offer and offer.get("unconfirmed") and fid == offer["id"] and self.bound(ev):
+                state = str(ev.get("state") or "")
+                if state == "offer":
+                    offer["unconfirmed"], offer["accepted"] = False, False
+                elif state == "receiving":
+                    offer["unconfirmed"], offer["accepted"] = False, True
+                    try:
+                        done, size = max(0, int(ev.get("done") or 0)), max(0, int(ev.get("size") or 0))
+                    except (TypeError, ValueError):
+                        done, size = 0, 0
+                    if size:
+                        offer["done"], offer["size"] = min(done, size), size
+                else:
+                    del self.offers[conversation]
+                    self.finish_file(conversation)
+                    self.say("File transfer status unknown; check the chat")
         elif name == "invite.redeemed":
             if self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
-                self.redeem_request = ""
+                self.redeem_request, self.action_until = "", 0.0
                 kind = str(ev.get("kind") or "")
                 safety = str(ev.get("safety") or "")
                 if kind not in ("direct", "group") or (kind == "direct" and not (hex64(ev.get("key")) and safety_ok(safety))):
@@ -1487,6 +1643,13 @@ class App:
         self.retry_at.pop(fid, None)
         if self.typing_on == fid:
             self.typing_on = ""
+        if self.confirm is not None and self.confirm.get("conv") == fid:
+            self.drop_confirm()
+        if self.clears.pop(fid, None):
+            self.say("Clear result unknown; check the chat")
+        self.offers.pop(fid, None)
+        if self.sends.pop(fid, None):
+            self.say("File transfer failed: %s" % FAILURES["identity_changed"], 15)
         for request, (conversation, m) in list(self.pending.items()):
             if conversation == fid:
                 m.failed = "identity_changed"
@@ -1510,6 +1673,7 @@ class App:
             if id(pane) in moved:
                 pane.conv = moved[id(pane)]
                 pane.scroll = 0
+                self.forget_recall(pane)
                 self.restore_draft(pane)
         if not self.layout.columns and friends:
             pick = None
@@ -1640,13 +1804,11 @@ class App:
         self.typing_sent = 0.0
 
     def tick(self, now):
-        if self.status and now > self.status_until:
+        if self.status and now > self.status_until and self.confirm is None:
             self.status = ""
             self.dirty = True
         if self.confirm is not None and now > self.confirm["until"]:
-            kept = "Invite kept" if self.confirm["action"] == "revoke" else "Chat kept"
-            self.confirm = None
-            self.say(kept)
+            self.drop_confirm()
         if self.zoom_until and now >= self.zoom_until:
             self.zoom_until = 0.0
             self.dirty = True
@@ -1704,8 +1866,8 @@ class App:
                 if not self.invite["url"]:
                     self.say("No active invite")
                 else:
-                    self.confirm = {"action": "revoke", "until": time.monotonic() + CONFIRM_SECONDS}
-                    self.say("Revoke this invite? It cannot be used again. y/n", CONFIRM_SECONDS)
+                    self.confirm = {"action": "revoke", "at": time.monotonic(), "until": time.monotonic() + CONFIRM_SECONDS,
+                                    "prompt": "Revoke this invite? It cannot be used again. y/n"}
             elif arg:
                 self.say("Usage: :invite or :invite revoke")
             elif self.invite["url"] and self.invite["expires"] > time.time():
@@ -1741,7 +1903,8 @@ class App:
             if not self.request:
                 self.say("No pending request")
             else:
-                operation = {"op": "contact.decide", "id": "x", "accept": verb == "accept"}
+                self.decide_request = "cli-decide-" + secrets.token_hex(8)
+                operation = {"op": "contact.decide", "id": self.decide_request, "accept": verb == "accept"}
                 if self.request["kind"] == "direct":
                     operation["key"] = self.request["key"]
                 if self.send(operation):
@@ -1774,24 +1937,28 @@ class App:
                 name = os.path.basename(path)
                 if self.send_bound({"op": "file.send", "conversation": pane.conv, "path": path, "kind": "file",
                                     "id": request}):
-                    self.sends[pane.conv] = {"request": request, "id": "", "name": name, "cancel": False}
+                    self.sends[pane.conv] = {"request": request, "id": "", "name": name, "cancel": False,
+                                             "key": self.key_for(pane.conv)}
                     self.say("Sending %s…" % name, 10)
                 else:
                     self.send_failed()
         elif verb in ("acceptfile", "declinefile"):
-            conv = self.offer_conv()
+            conv = self.current
             offer = self.offers.get(conv)
+            if offer and offer["key"] != self.key_for(conv):
+                del self.offers[conv]
+                offer = None
             if not offer:
                 self.say("No file offer in this chat")
             elif verb == "acceptfile":
                 if offer["accepted"]:
                     self.say("Already receiving %s" % clean_line(offer["name"]))
-                elif self.send_bound({"op": "file.accept", "conversation": conv, "id": offer["id"]}):
+                elif self.send({"op": "file.accept", "conversation": conv, "id": offer["id"], "key": offer["key"]}):
                     offer["accepted"] = True
                     self.say("Receiving %s…" % clean_line(offer["name"]), 10)
                 else:
                     self.send_failed()
-            elif self.send_bound({"op": "file.cancel", "conversation": conv, "id": offer["id"]}):
+            elif self.send({"op": "file.cancel", "conversation": conv, "id": offer["id"], "key": offer["key"]}):
                 del self.offers[conv]
                 self.say("Declined file: %s" % clean_line(offer["name"]))
             else:
@@ -1804,7 +1971,7 @@ class App:
             elif not send["id"]:
                 send["cancel"] = True
                 self.say("Canceling…")
-            elif self.send_bound({"op": "file.cancel", "conversation": pane.conv, "id": send["id"]}):
+            elif self.send({"op": "file.cancel", "conversation": pane.conv, "id": send["id"], "key": send["key"]}):
                 self.say("Canceling…")
             else:
                 self.send_failed()
@@ -1817,10 +1984,11 @@ class App:
             elif pane.conv in self.clears:
                 self.say("Clearing is already in progress")
             else:
-                self.confirm = {"action": "clear", "conv": pane.conv, "until": time.monotonic() + CONFIRM_SECONDS}
-                self.say("Clear this chat? y/n", CONFIRM_SECONDS)
+                self.confirm = {"action": "clear", "conv": pane.conv, "key": self.key_for(pane.conv),
+                                "instance": self.instance, "at": time.monotonic(),
+                                "until": time.monotonic() + CONFIRM_SECONDS, "prompt": "Clear this chat? y/n"}
         elif verb in ("help", "h"):
-            self.help = 0
+            self.help, self.help_top, self.help_follow = 0, 0, True
         elif verb in NAMED:
             pick = self.match(arg)
             if not pick:
@@ -1884,11 +2052,10 @@ class App:
         return self.palette.row([(text, "dim", ""), (" " * gap, "dim", ""),
                                  (label, "dim" if self.zoom == 100 else "accent", "")], cols)
 
-    def offer_conv(self):
-        pane = self.pane
-        if pane and pane.conv in self.offers:
-            return pane.conv
-        return next(iter(self.offers)) if len(self.offers) == 1 else ""
+    def decide_failure(self, code):
+        if code == "forbidden" and self.action == "accept":
+            return "The request could not be accepted."
+        return INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The request could not be answered."
 
     def finish_file(self, conversation):
         c = self.convs.get(conversation)
@@ -1898,9 +2065,9 @@ class App:
     def send_failed(self):
         self.say("Not connected" if not self.link else "Could not send the request")
 
-    def clear_chat(self, conversation):
+    def clear_chat(self, conversation, key):
         request = "cli-clear-" + secrets.token_hex(8)
-        if self.send_bound({"op": "history.clear", "conversation": conversation, "id": request}):
+        if self.send({"op": "history.clear", "conversation": conversation, "key": key, "id": request}):
             self.clears[conversation] = (request, self.instance)
             self.say("Clearing this chat…", 10)
         else:
@@ -1962,39 +2129,70 @@ class App:
             for chunk in chunks:
                 rows.append(p.row([(" " + chunk, "text", "")], width))
             qr = o["qr"]
-            if qr and max(text_width(line) for line in qr) + 2 <= width and len(qr) + 4 + len(chunks) <= height:
+            notes = (self.text_rows("Send the link or let your friend scan the code. They run :redeem <link>,", "dim", width)
+                     + self.text_rows("then :requests shows their request here and :accept adds them.", "dim", width))
+            if qr and max(text_width(line) for line in qr) + 2 <= width and len(qr) + len(notes) + 2 + len(chunks) <= height:
                 for line in qr:
                     rows.append(p.row([(" ", "dim", ""), (line, "qr", "")], width))
             elif not qr:
-                rows.append(p.row([(" no QR code: qrencode is not installed", "dim", "")], width))
+                rows.extend(self.text_rows("no QR code: qrencode is not installed", "dim", width))
             else:
-                rows.append(p.row([(" the window is too small for the QR code", "dim", "")], width))
-            rows.append(p.row([(" Send the link or let your friend scan the code. They run :redeem <link>,", "dim", "")], width))
-            rows.append(p.row([(" then :requests shows their request here and :accept adds them.", "dim", "")], width))
+                rows.extend(self.text_rows("the window is too small for the QR code", "dim", width))
+            rows.extend(notes)
         elif o["kind"] == "request" and self.request:
             r = self.request
             if r["kind"] == "group":
                 rows.append(p.row([(" group invitation", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
-                rows.append(p.row([(" A friend invited you to a private group. Group chats show in the bar for now.", "dim", "")], width))
+                rows.extend(self.text_rows("A friend invited you to a private group. Group chats show in the bar for now.", "dim", width))
             else:
                 rows.append(p.row([(" friend request", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
-                rows.append(p.row([(" Compare this code with your friend before accepting", "dim", "")], width))
-                for half in r["safety"].split(" / "):
-                    rows.append(p.row([(" " + half, "text", "")], width))
+                rows.extend(self.text_rows("Compare this code with your friend before accepting", "dim", width))
+                rows.extend(self.code_rows(r["safety"], width))
                 if r["conflict"]:
-                    rows.append(p.row([(" Another device used this invite link", "unread", "")], width))
+                    rows.extend(self.text_rows("Another device used this invite link", "unread", width))
         elif o["kind"] == "redeemed":
             rows.append(p.row([(" " + (REDEEMED_GROUP if o.get("group") else REDEEMED_DIRECT), "name", "1"),
                                ("   esc close", "dim", "")], width))
             if o.get("safety"):
-                rows.append(p.row([(" Compare this code with your friend before they accept", "dim", "")], width))
-                for half in o["safety"].split(" / "):
-                    rows.append(p.row([(" " + half, "text", "")], width))
+                rows.extend(self.text_rows("Compare this code with your friend before they accept", "dim", width))
+                rows.extend(self.code_rows(o["safety"], width))
         else:
             self.overlay = None
-        rows = rows[:height]
-        rows.extend([" " * width] * (height - len(rows)))
+            return [" " * width] * height
+        rows, o["top"], _ = self.window(rows, width, height, o.get("top", 0))
         return rows
+
+    def code_rows(self, safety, width):
+        rows, per = [], max(1, width // 5)
+        for n, half in enumerate(safety.split(" / ")):
+            groups = half.split()
+            if n and len(groups) > per:
+                rows.append(" " * width)
+            for k in range(0, len(groups), per):
+                rows.append(self.palette.row([(" " + " ".join(groups[k:k + per]), "text", "")], width))
+        return rows
+
+    def text_rows(self, text, role, width):
+        return [self.palette.row([(" " + line, role, "")], width) for line in wrap(text, width - 2)]
+
+    def window(self, rows, width, height, top, keep=None):
+        if len(rows) <= height:
+            return rows + [" " * width] * (height - len(rows)), 0, len(rows)
+        if height < 3:
+            top = max(0, min(top if keep is None else keep, len(rows) - height))
+            return rows[top:top + height], top, height
+        room = height - 2
+        if keep is not None:
+            if keep < top:
+                top = keep
+            elif keep >= top + room:
+                top = keep - room + 1
+        top = max(0, min(top, len(rows) - room))
+        shown = rows[top:top + room]
+        above, below = top, len(rows) - top - len(shown)
+        head = self.palette.row([("   \u2191 %d more \u00b7 pgup" % above, "dim", "")], width) if above else " " * width
+        foot = self.palette.row([("   \u2193 %d more \u00b7 pgdn" % below, "dim", "")], width) if below else " " * width
+        return [head] + shown + [foot], top, len(shown)
 
     def picker_items(self):
         query = self.picker["query"].strip().lower()
@@ -2086,13 +2284,25 @@ class App:
 
     def help_key(self, kind, value):
         count = len(COMMANDS)
+        self.help_follow = True
         if kind == "key" and value in ("up", "backtab"):
             self.help = (self.help - 1) % count
         elif kind == "key" and value in ("down", "tab"):
             self.help = (self.help + 1) % count
+        elif kind == "key" and value in ("pgup", "pgdn"):
+            step = max(1, self.size[1] - 8)
+            self.help_top = max(0, self.help_top + (step if value == "pgdn" else -step))
+            self.help_follow = False
+            self.dirty = True
+            return
         elif kind == "text" and value in ("k", "j"):
             self.help = (self.help + (1 if value == "j" else -1)) % count
         elif kind == "key" and value == "enter":
+            first, span = self.help_seen
+            if not first <= 1 + self.help < first + span:
+                self.help_follow = True
+                self.dirty = True
+                return
             command, _, needs = COMMANDS[self.help]
             self.help = None
             if needs:
@@ -2120,8 +2330,9 @@ class App:
         rows.append(p.row([(" keys", "name", "1")], width))
         for key, text in KEYS:
             rows.append(p.row([("   " + key.ljust(18), "text", ""), ("  " + text, "dim", "")], width))
-        rows = rows[:height]
-        rows.extend([" " * width] * (height - len(rows)))
+        rows, self.help_top, span = self.window(rows, width, height, self.help_top,
+                                                1 + self.help if self.help_follow else None)
+        self.help_seen = (self.help_top, span)
         return rows
 
     def close_pane(self, quiet=False):
@@ -2162,13 +2373,16 @@ class App:
             self.help_key(kind, value)
             return
         if self.confirm is not None and now > self.confirm["until"]:
-            self.confirm, self.status = None, ""
+            self.drop_confirm()
         if self.confirm is not None and kind in ("text", "key", "ctrl", "paste", "alt"):
             confirm, self.confirm = self.confirm, None
+            notice = self.notice_behind(confirm)
             yes = kind == "text" and value.lower() == "y"
             if confirm["action"] == "clear":
-                if yes:
-                    self.clear_chat(confirm["conv"])
+                bound = (self.handshake and confirm["instance"] == self.instance and bool(confirm["key"])
+                         and confirm["key"] == self.key_for(confirm["conv"]))
+                if yes and bound:
+                    self.clear_chat(confirm["conv"], confirm["key"])
                 else:
                     self.say("Chat kept")
             elif confirm["action"] == "revoke":
@@ -2181,10 +2395,16 @@ class App:
                         self.send_failed()
                 else:
                     self.say("Invite kept")
+            self.show_notice(notice)
             self.dirty = True
             return
         if self.picker is not None:
             self.picker_key(kind, value)
+            return
+        if self.overlay is not None and kind == "key" and value in ("pgup", "pgdn"):
+            step = max(1, self.size[1] - 8)
+            self.overlay["top"] = max(0, self.overlay.get("top", 0) + (step if value == "pgdn" else -step))
+            self.dirty = True
             return
         if self.overlay is not None and kind == "key" and value == "esc":
             self.overlay = None
@@ -2196,7 +2416,7 @@ class App:
             self.say("Type :quit and press Enter to quit")
             return
         if kind == "key" and value == "f1":
-            self.help = 0
+            self.help, self.help_top, self.help_follow = 0, 0, True
             self.dirty = True
             return
         layout_keys = {"alt-left": ("focus", "left"), "alt-right": ("focus", "right"), "alt-up": ("focus", "up"),
@@ -2421,7 +2641,7 @@ class App:
         drawer_row = len(out) + 1
         out.extend(drawer)
         out[0] = self.friends_bar(cols)
-        hint = self.status or ""
+        hint = self.confirm["prompt"] if self.confirm is not None and not self.locked else (self.status or "")
         rule = cols - text_width(hint) - 3 if hint else cols
         out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + clip(hint, cols - 2)[0] + " ", "unread") if hint else ""))
         if self.locked:
@@ -2523,7 +2743,8 @@ class App:
             lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer["name"]), "text", ""),
                           (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
         elif offer:
-            hint = "  receiving…" if offer["accepted"] else "  :acceptfile or :declinefile"
+            hint = ("  checking\u2026" if offer.get("unconfirmed") else
+                    "  receiving\u2026" if offer["accepted"] else "  :acceptfile or :declinefile")
             lines.append([(" \u21e3 ", "accent", "1"),
                           ("File offer: %s (%s)" % (clean_line(offer["name"]), human_size(offer["size"])), "text", ""),
                           (hint, "dim", "")])
@@ -2570,20 +2791,32 @@ class App:
                         self.exit_note = ("%s: OmaQ stays online because its group state is uncertain; closing it "
                                           "could lose a private group membership" % COMMAND)
                     return
+        self.exit_note = "%s: %s" % (COMMAND, UNCONFIRMED_EXIT)
 
     def cleanup(self, fd, saved, out):
         blocked = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT}
         signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
         try:
+            exiting = None
             try:
                 self.stop_typing()
-                self.exit_helper()
+                self.settle()
+                exiting = self.presence.exit_lock(EXIT_WAIT)
+                self.presence.release()
+                if exiting is None and self.presence.dir:
+                    self.exit_note = "%s: %s" % (COMMAND, UNCOORDINATED_EXIT)
+                else:
+                    self.exit_helper()
+                    if not self.handshake and self.proc is not None and self.proc.poll() is None:
+                        self.exit_note = "%s: %s" % (COMMAND, UNCONFIRMED_EXIT)
             except BaseException:
                 pass
             try:
                 if self.link:
                     self.link.close()
                 self.presence.release()
+                if exiting is not None:
+                    os.close(exiting)
             except BaseException:
                 pass
         finally:
@@ -2613,6 +2846,8 @@ class App:
             self.track_zoom(pixel_size(fd))
             for kind, value in self.keys.feed(typed):
                 self.edit(kind, value)
+            if not self.running:
+                return
             out.write(self.render())
             out.flush()
             self.connect()

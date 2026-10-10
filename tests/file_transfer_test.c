@@ -13,6 +13,7 @@ struct omaq_tox { int unused; };
 
 static int fails;
 static int fail_file_control;
+static int file_control_calls;
 
 static void fail(const char *message)
 {
@@ -62,6 +63,7 @@ int omaq_tox_file_control(struct omaq_tox *t, uint32_t friend, uint32_t fnum, in
 	(void)friend;
 	(void)fnum;
 	(void)control;
+	file_control_calls++;
 	return fail_file_control ? -1 : 0;
 }
 
@@ -297,6 +299,42 @@ int main(void)
 			fail("avatar success uses stored status");
 		unlink(staging);
 	}
+
+	if (snprintf(dest, sizeof(dest), "%s/peer-cancel.bin", home) >= (int)sizeof(dest) ||
+	    omaq_file_recv_begin(home, "41", 41, 41, "peer-cancel.bin", sizeof(data),
+				 dest, got, sizeof(got), 0) != 0 ||
+	    omaq_file_chunk_in(41, 41, 0, data, 2, NULL, 0) != 0)
+		fail("peer cancel fixture");
+	else {
+		uint64_t have = 0, size = 0;
+		int calls = file_control_calls;
+
+		if (omaq_file_receiving(41, 41, &have, &size) != 0 || have != 2 || size != sizeof(data) ||
+		    omaq_file_receiving(41, 99, &have, &size) == 0)
+			fail("receive state lookup");
+		if (omaq_file_progress_due(41, 41, 2, sizeof(data), 0) != 1)
+			fail("progress before the peer cancel");
+		omaq_file_drop(41, 41);
+		if (file_control_calls != calls || omaq_file_can_cancel(41, 41) || access(got, F_OK) == 0 ||
+		    omaq_file_receiving(41, 41, &have, &size) == 0)
+			fail("a peer cancel drops local state without another transport cancel");
+		if (omaq_file_recv_begin(home, "41", 41, 41, "peer-cancel.bin", sizeof(data),
+					 dest, got, sizeof(got), 0) != 0 ||
+		    omaq_file_progress_due(41, 41, 2, sizeof(data), 10) != 1)
+			fail("a reused transfer number starts with fresh progress");
+		calls = file_control_calls;
+		if (omaq_file_cancel((struct omaq_tox *)1, 41, 41) != 0 || file_control_calls != calls + 1)
+			fail("a local cancel sends exactly one transport cancel");
+	}
+
+	if (omaq_file_progress_due(1, 2, 10, 1000, 0) != 1 ||
+	    omaq_file_progress_due(1, 2, 15, 1000, 100) != 0 ||
+	    omaq_file_progress_due(1, 2, 30, 1000, 200) != 0 ||
+	    omaq_file_progress_due(1, 2, 30, 1000, 300) != 1 ||
+	    omaq_file_progress_due(1, 2, 5, 1000, 310) != 1 ||
+	    omaq_file_progress_due(1, 2, 1000, 1000, 900) != 0 ||
+	    omaq_file_progress_due(1, 3, 1, 0, 900) != 0)
+		fail("progress throttle");
 
 out:
 	if (home[0]) {

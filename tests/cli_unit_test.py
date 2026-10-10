@@ -518,7 +518,7 @@ class PackageA(Sandbox):
         app.history_clear = 2
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        self.assertEqual(app.status, "Clear this chat? y/n")
+        self.assertEqual(app.confirm["prompt"], "Clear this chat? y/n")
         app.edit("text", "n")
         self.assertEqual(app.link.ops("history.clear"), [])
         self.assertEqual(app.status, "Chat kept")
@@ -565,7 +565,7 @@ class PackageA(Sandbox):
         self.assertIsNone(app.overlay)
         app.edit("text", ":invite revoke")
         app.edit("key", "enter")
-        self.assertEqual(app.status, "Revoke this invite? It cannot be used again. y/n")
+        self.assertEqual(app.confirm["prompt"], "Revoke this invite? It cannot be used again. y/n")
         app.edit("text", "n")
         self.assertEqual(app.link.ops("invite.revoke"), [])
         app.edit("text", ":invite revoke")
@@ -613,13 +613,16 @@ class PackageA(Sandbox):
         self.assertIn("Compare this code with your friend before accepting", frame)
         app.edit("text", ":accept")
         app.edit("key", "enter")
-        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": "x", "accept": True, "key": C})
+        op = app.link.ops("contact.decide")[-1]
+        self.assertEqual(op, {"op": "contact.decide", "id": app.decide_request, "accept": True, "key": C})
+        self.assertTrue(op["id"].startswith("cli-decide-"))
         app.on_event({"event": "invite", "url": "", "expires": 0})
         self.assertIsNone(app.request)
         app.on_event({"event": "request", "kind": "group"})
         app.edit("text", ":decline")
         app.edit("key", "enter")
-        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": "x", "accept": False})
+        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": app.decide_request,
+                                                              "accept": False})
         self.assertIsNone(app.request)
         app.edit("text", ":accept")
         app.edit("key", "enter")
@@ -800,7 +803,7 @@ class PackageA(Sandbox):
         app.edit("text", ":clear")
         app.edit("key", "enter")
         app.drop_link()
-        self.assertEqual((app.confirm, app.status), (None, ""))
+        self.assertEqual((app.confirm, app.status), (None, "Chat kept"))
 
     def test_identity_changed_error_keeps_panes_and_drafts(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
@@ -1092,9 +1095,21 @@ class PackageA(Sandbox):
         self.assertIn("Receiving big.iso  \u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 25%",
                       plain(app.render()))
         self.assertEqual(cli.progress_bar(5, 5), ("\u2588" * 10, "", 100))
-        app.offers["0"] = {"id": "in4", "name": "y", "size": 1, "accepted": False}
+        app.offers["0"] = {"id": "in4", "name": "y", "size": 1, "accepted": False, "key": A}
         app.drop_link()
-        self.assertEqual((app.offers, app.sends, app.status), ({}, {}, "File transfer status unknown; check the chat"))
+        self.assertEqual((set(app.offers), set(app.sends)), ({"0"}, {"0"}))
+        app.link = FakeLink()
+        app.handshake_request()
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": app.instance, "protocol": 16,
+                      "online": True})
+        self.assertEqual(app.link.ops("file.status"), [{"op": "file.status", "conversation": "0", "id": rid, "key": A},
+                                                       {"op": "file.status", "conversation": "0", "id": "in4", "key": A}])
+        self.assertEqual((set(app.offers), app.offers["0"]["unconfirmed"]), ({"0"}, True))
+        app.drop_link()
+        app.link = FakeLink()
+        app.handshake_request()
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": "j" * 32, "protocol": 16, "online": True})
+        self.assertEqual((app.offers, app.sends, app.status), ({}, {}, "File transfer failed: helper_restarted"))
         self.assertEqual(cli.human_size(999), "999 B")
 
     def test_bar_wording_stays_in_sync(self):
@@ -1110,7 +1125,8 @@ class PackageA(Sandbox):
                      "Invite expired. Create a new link.", "This invite belongs to your own identity.",
                      "The direct-contact limit has been reached.", "A file is already sending",
                      "File transfer successful", "File transfer canceled", "File transfer failed: ",
-                     "File delivered, but local history could not be saved", "Clear this chat?"):
+                     "File delivered, but local history could not be saved", "Clear this chat?",
+                     cli.HISTORY_ITEM_FAILED, cli.UNSAVED_SENT):
             self.assertIn(text, bar)
             self.assertIn(text, client)
 
@@ -1127,6 +1143,494 @@ class PackageA(Sandbox):
         self.assertEqual(labels[2], ("⇉", "dim", ""))
         self.assertEqual(labels[3], ("⇉", "online", "1"))
         self.assertEqual(labels[4][:2], ("✕ Contact is offline", "unread"))
+
+
+class Blockers(Sandbox):
+    def plain(self, text):
+        return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    def snapshot(self, app, instance=None):
+        app.link = FakeLink()
+        app.handshake_request()
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": instance or app.instance, "protocol": 16,
+                      "online": True})
+
+    def offer(self, app, conversation, key, fid, name="old.txt"):
+        app.on_event({"event": "file.offer", "id": fid, "conversation": conversation, "key": key, "name": name,
+                      "size": 4, "dir": "in", "request": ""})
+
+    def file(self, name="a.txt"):
+        home = os.environ["HOME"]
+        os.makedirs(home, exist_ok=True)
+        path = os.path.join(home, name)
+        with open(path, "w") as f:
+            f.write("x")
+        return path
+
+    def test_r01_recall_ends_with_the_identity(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.edit("text", "private Alice message")
+        app.edit("key", "enter")
+        app.edit("text", ":requests")
+        app.edit("key", "enter")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "private Alice message")
+        app.on_event({"event": "identity", "op": "import"})
+        app.handshake = True
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"}])
+        self.loaded(app, "0")
+        app.edit("key", "up")
+        app.edit("key", "enter")
+        app.edit("key", "down")
+        app.edit("key", "enter")
+        self.assertEqual(len(app.link.ops("msg.send")), 1)
+        app.edit("text", ":")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, ":")
+
+    def test_r01_recall_ends_when_the_number_moves(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.loaded(app, "0")
+        app.edit("text", "for alice")
+        app.edit("key", "enter")
+        app.edit("key", "up")
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"},
+                           {"id": "1", "key": B, "name": "bob", "online": True, "status": "online"}])
+        self.loaded(app, app.pane.conv)
+        app.edit("key", "up")
+        app.edit("key", "enter")
+        self.assertEqual([o["key"] for o in app.link.ops("msg.send")], [A])
+
+    def test_r02_clear_confirmation_follows_the_contact(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.history_clear = 2
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        self.assertEqual((app.confirm["key"], app.confirm["instance"]), (A, app.instance))
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"}])
+        self.assertEqual((app.confirm, app.status), (None, "Chat kept"))
+        app.edit("text", "y")
+        app.edit("key", "esc")
+        self.assertEqual(app.link.ops("history.clear"), [])
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.confirm["key"] = A
+        app.edit("text", "y")
+        self.assertEqual((app.link.ops("history.clear"), app.status), ([], "Chat kept"))
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.edit("text", "y")
+        self.assertEqual([(o["conversation"], o["key"]) for o in app.link.ops("history.clear")], [("0", C)])
+
+    def test_r03_background_status_keeps_the_prompt(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.loaded(app, "0")
+        app.history_clear = 2
+        app.size = (100, 20)
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.on_event({"event": "message", "conversation": "1", "key": B, "dir": "in", "id": "m1", "text": "hello",
+                      "ts": time.time()})
+        self.assertEqual(app.status, "bob: hello")
+        frame = self.plain(app.render())
+        self.assertIn("Clear this chat? y/n", frame)
+        self.assertNotIn("bob: hello", frame)
+        app.edit("text", "y")
+        self.assertEqual(len(app.link.ops("history.clear")), 1)
+        locked = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(locked, "0")
+        locked.history_clear = 2
+        locked.edit("text", ":clear")
+        locked.edit("key", "enter")
+        locked.on_event({"event": "error", "code": "locked"})
+        self.assertEqual((locked.confirm, locked.status), (None, "Chat kept"))
+
+    def test_r04_nospam_change_keeps_the_identity_state(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.pane.draft = "draft"
+        app.addr = "d" * 64 + "11111111" + "2222"
+        app.handshake_request()
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": app.instance, "protocol": 16,
+                      "addr": "d" * 64 + "33333333" + "4444", "online": True})
+        self.assertEqual((app.pane.draft, len(app.friends), app.handshake), ("draft", 1, True))
+        self.assertEqual(app.addr, "d" * 64 + "33333333" + "4444")
+
+    def test_r05_unknown_delivery_survives_the_reload(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.edit("text", "unsaved text")
+        app.edit("key", "enter")
+        app.edit("text", "confirmed")
+        app.edit("key", "enter")
+        confirmed = app.link.ops("msg.send")[-1]["id"]
+        app.on_event({"event": "message", "conversation": "0", "key": A, "dir": "out", "id": "m9",
+                      "request": confirmed, "text": "confirmed", "ts": 1700000000})
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        app.load("0")
+        request = app.link.ops("history")[-1]["id"]
+        app.on_event({"event": "history", "request": request, "conversation": "0", "key": A,
+                      "items": [{"id": "m9", "dir": "out", "text": "confirmed", "ts": 1700000000}]})
+        self.assertEqual([(m.text, m.failed) for m in app.conv("0")["items"]],
+                         [("confirmed", ""), ("unsaved text", "delivery_unknown")])
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "unsaved text")
+
+    def test_r06_file_errors_follow_the_helper(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        self.offer(app, "0", A, "0:65536")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        app.on_event({"event": "file.failed", "id": "0:65536", "conversation": "0", "key": A, "dir": "in",
+                      "request": "", "code": "accept_failed"})
+        app.on_event({"event": "error", "code": "forbidden"})
+        self.assertEqual((app.offers, app.status), ({}, "File transfer failed: accept_failed"))
+        self.offer(app, "0", A, "0:65537", "report.pdf")
+        self.assertEqual((app.offers["0"]["id"], app.link.ops("file.cancel")), ("0:65537", []))
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        app.on_event({"event": "file.done", "id": "0:65537", "conversation": "0", "key": A,
+                      "path": "/srv/x/report.pdf", "dir": "in", "request": ""})
+        app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
+        self.assertEqual(app.status, "File transfer successful: /srv/x/report.pdf \u00b7 " + cli.HISTORY_ITEM_FAILED)
+        app.file_result = ("0", "old", time.monotonic() - 10)
+        app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
+        self.assertEqual(app.status, cli.HISTORY_ITEM_FAILED)
+
+    def test_r07_reconnect_keeps_transfer_control(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.edit("text", ":sendfile " + self.file())
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        app.drop_link()
+        self.snapshot(app)
+        self.assertEqual(app.link.ops("file.status"), [{"op": "file.status", "conversation": "0", "id": rid, "key": A}])
+        app.on_event({"event": "file.sending", "id": "0:3", "conversation": "0", "key": A, "dir": "out", "request": rid})
+        self.assertEqual(app.link.ops("file.cancel"), [{"op": "file.cancel", "conversation": "0", "id": "0:3", "key": A}])
+        app.on_event({"event": "file.canceled", "id": "0:3", "conversation": "0", "key": A, "dir": "out", "request": rid})
+        self.assertEqual((app.sends, app.status), ({}, "File transfer canceled"))
+
+    def test_r08_rebind_drops_offers_and_sends(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        self.offer(app, "0", A, "0:65536")
+        app.edit("text", ":sendfile " + self.file())
+        app.edit("key", "enter")
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"}])
+        self.assertEqual((app.offers, app.sends), ({}, {}))
+        self.assertEqual(app.status, "File transfer failed: " + cli.FAILURES["identity_changed"])
+        self.offer(app, "0", C, "0:65536", "carol.txt")
+        app.offers["0"]["key"] = A
+        app.edit("text", ":declinefile")
+        app.edit("key", "enter")
+        self.assertEqual((app.link.ops("file.cancel"), app.status, app.offers), ([], "No file offer in this chat", {}))
+
+    def test_r09_file_commands_stay_in_the_focused_chat(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.loaded(app, "0")
+        self.offer(app, "1", B, "1:65536")
+        for verb in ("acceptfile", "declinefile"):
+            app.edit("text", ":" + verb)
+            app.edit("key", "enter")
+            self.assertEqual(app.status, "No file offer in this chat")
+        self.assertEqual((app.link.ops("file.accept"), app.link.ops("file.cancel")), ([], []))
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.conv, "1")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.accept"), [{"op": "file.accept", "conversation": "1", "id": "1:65536",
+                                                         "key": B}])
+
+    def test_r10_foreign_errors_and_finished_actions_are_ignored(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.edit("text", ":redeem omaq://x")
+        app.edit("key", "enter")
+        rid = app.link.ops("invite.redeem")[-1]["id"]
+        app.on_event({"event": "error", "code": "unsupported", "request": "bar-request"})
+        app.on_event({"event": "error", "code": "forbidden", "conversation": "0"})
+        self.assertEqual((app.redeem_request, app.status), (rid, "Checking the invite\u2026"))
+        app.on_event({"event": "invite.redeemed", "kind": "group", "request": rid})
+        app.on_event({"event": "error", "code": "unsupported"})
+        self.assertEqual(app.status, cli.REDEEMED_GROUP)
+        app.request = {"kind": "direct", "key": B, "safety": "", "conflict": ""}
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "forbidden", "request": "x"})
+        self.assertEqual(app.status, "Accepted")
+        app.on_event({"event": "error", "code": "forbidden"})
+        self.assertEqual(app.status, "The request could not be accepted.")
+        app.on_event({"event": "contact.decided", "request": "other", "ok": True})
+        self.assertEqual(app.status, "The request could not be accepted.")
+        app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": True})
+        app.on_event({"event": "error", "code": "forbidden"})
+        self.assertEqual((app.status, app.decide_request), ("Accepted", ""))
+        app.request = {"kind": "direct", "key": B, "safety": "", "conflict": ""}
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": False, "code": "forbidden"})
+        self.assertEqual(app.status, "The request could not be accepted.")
+
+    def test_r11_quit_before_the_handshake_settles_it(self):
+        sent, (readable, writable) = [], os.pipe()
+        os.write(writable, b"x")
+
+        class Sock:
+            def __init__(self, path):
+                pass
+
+            def send(self, obj):
+                sent.append(obj)
+                return True
+
+            def read(self):
+                status = [o for o in sent if o.get("op") == "status"]
+                return [{"event": "snapshot", "request": status[-1]["id"], "instance": "k" * 32, "protocol": 16,
+                         "online": True}] if status else []
+
+            def fileno(self):
+                return readable
+
+            def close(self):
+                pass
+
+        original = cli.Link
+        try:
+            cli.Link = Sock
+            app = cli.App("")
+            app.settle()
+            self.assertEqual(sent, [])
+            app.proc = type("Proc", (), {"poll": lambda self: None, "pid": 1})()
+            app.settle()
+            self.assertEqual((app.handshake, app.instance), (True, "k" * 32))
+            self.assertEqual([o["op"] for o in sent], ["status", "identity.ready"])
+            app.settle()
+            self.assertEqual(len(sent), 2)
+        finally:
+            cli.Link = original
+            os.close(readable)
+            os.close(writable)
+
+    def test_r12_small_windows_wrap_codes_and_scroll(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
+        groups = safety.replace(" / ", " ").split()
+        app.request = {"kind": "direct", "key": C, "safety": safety, "conflict": ""}
+        app.overlay = {"kind": "request"}
+        app.size = (40, 16)
+        frame = self.plain(app.render())
+        self.assertEqual([g for g in groups if g not in frame], [])
+        self.assertIn(" " + " ".join(groups[8:16]) + "\x1b[K", frame)
+        app.size = (160, 16)
+        self.assertIn(" " + " ".join(groups[:16]) + " ", self.plain(app.render()))
+        app.size = (40, 8)
+        self.assertRegex(self.plain(app.render()), "\u2193 \\d+ more \u00b7 pgdn")
+        app.edit("key", "pgdn")
+        self.assertGreater(app.overlay["top"], 0)
+        self.assertRegex(self.plain(app.render()), "\u2191 \\d+ more \u00b7 pgup")
+        app.edit("key", "pgup")
+        self.assertEqual(app.overlay["top"], 0)
+        app.overlay = None
+        app.size = (80, 24)
+        app.edit("key", "f1")
+        frame = self.plain(app.render())
+        self.assertNotIn("ctrl+n", frame)
+        self.assertRegex(frame, "\u2193 \\d+ more \u00b7 pgdn")
+        app.edit("key", "pgdn")
+        self.assertIn("ctrl+n", self.plain(app.render()))
+        app.edit("key", "esc")
+        app.edit("key", "f1")
+        self.assertEqual(app.help_top, 0)
+        app.size = (80, 12)
+        for _ in range([command for command, _, _ in cli.COMMANDS].index(":close")):
+            app.edit("key", "down")
+        self.assertIn("\u25b8 :close", self.plain(app.render()))
+        app.edit("key", "esc")
+        app.size = (100, 60)
+        app.edit("key", "f1")
+        app.edit("key", "pgdn")
+        frame = self.plain(app.render())
+        self.assertNotIn(" more \u00b7 pg", frame)
+        self.assertIn("ctrl+n", frame)
+
+    def test_f02_incoming_transfers_resync_after_a_reconnect(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}, {"id": "1", "key": B, "name": "carol"}])
+        self.loaded(app, "0")
+        app.size = (100, 20)
+        self.offer(app, "0", A, "0:65536")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        self.offer(app, "1", B, "1:65536", "pending.txt")
+        app.drop_link()
+        self.snapshot(app)
+        asked = {o["id"]: o["conversation"] for o in app.link.ops("file.status")}
+        self.assertEqual(asked, {"0:65536": "0", "1:65536": "1"})
+        self.assertIn("File offer: old.txt (4 B)  checking\u2026", self.plain(app.render()))
+        self.offer(app, "0", A, "0:131072", "new.txt")
+        self.assertEqual((app.offers["0"]["name"], app.link.ops("file.cancel")), ("new.txt", []))
+        app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
+                      "state": "offer", "name": "pending.txt", "size": 4, "done": 0})
+        self.assertEqual((app.offers["1"]["unconfirmed"], app.offers["1"]["accepted"]), (False, False))
+        app.offers["1"]["unconfirmed"] = True
+        app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
+                      "state": "receiving", "name": "", "size": 4000, "done": 1000})
+        self.assertEqual((app.offers["1"]["accepted"], app.offers["1"]["done"]), (True, 1000))
+        app.offers["1"]["unconfirmed"] = True
+        app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": A, "dir": "in",
+                      "state": "unknown", "name": "", "size": 0, "done": 0})
+        self.assertIn("1", app.offers)
+        app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
+                      "state": "unknown", "name": "", "size": 0, "done": 0})
+        self.assertEqual(("1" in app.offers, app.status), (False, "File transfer status unknown; check the chat"))
+
+    def test_f03_notices_behind_a_confirmation_are_kept(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.history_clear = 2
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
+        app.edit("text", "n")
+        self.assertEqual(app.status, "Chat kept \u00b7 " + cli.HISTORY_ITEM_FAILED)
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
+        app.tick(app.confirm["until"] + 1)
+        self.assertEqual(app.status, "Chat kept \u00b7 " + cli.HISTORY_ITEM_FAILED)
+        app.say("")
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.edit("text", "n")
+        self.assertEqual(app.status, "Chat kept")
+
+    def test_f05_f07_unconfirmed_exits_say_so(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        sent = []
+        app.owned_by_cli = lambda: True
+        app.bar_attached = lambda: False
+        app.presence.others_alive = lambda: False
+        app.link = type("L", (), {"send": lambda s, o: sent.append(o) or True, "read": lambda s: [],
+                                  "fileno": lambda s: os.open("/dev/null", os.O_RDONLY), "close": lambda s: None})()
+        original = cli.select.select
+        try:
+            cli.select.select = lambda r, w, x, t: ([], [], [])
+            original_monotonic = cli.time.monotonic
+            clock = [original_monotonic()]
+            cli.time.monotonic = lambda: clock.__setitem__(0, clock[0] + 1) or clock[0]
+            app.exit_helper()
+        finally:
+            cli.select.select = original
+            cli.time.monotonic = original_monotonic
+        self.assertEqual([o["op"] for o in sent], ["helper.shutdown_if_no_groups"])
+        self.assertEqual(app.exit_note, "%s: %s" % (cli.COMMAND, cli.UNCONFIRMED_EXIT))
+        other = self.app([{"id": "0", "key": A, "name": "alice"}])
+        calls = []
+        other.presence.exit_lock = lambda seconds: None
+        other.exit_helper = lambda: calls.append("exit")
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            other.cleanup(fd, None, __import__("io").StringIO())
+        except BaseException:
+            pass
+        finally:
+            os.close(fd)
+        self.assertEqual((calls, other.exit_note), ([], "%s: %s" % (cli.COMMAND, cli.UNCOORDINATED_EXIT)))
+
+    def test_f06_help_enter_never_runs_a_hidden_command(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.size = (80, 12)
+        app.edit("key", "f1")
+        for _ in range([command for command, _, _ in cli.COMMANDS].index(":quit")):
+            app.edit("key", "down")
+        app.render()
+        app.edit("key", "pgup")
+        app.render()
+        app.edit("key", "enter")
+        self.assertEqual((app.running, app.help is not None), (True, True))
+        self.assertIn("\u25b8 :quit", self.plain(app.render()))
+        app.edit("key", "enter")
+        self.assertFalse(app.running)
+        for height in (1, 2, 3, 4):
+            rows, top, span = app.window(["r%d" % k for k in range(10)], 20, height, 0)
+            self.assertEqual(len(rows), height)
+        self.assertEqual(app.window(["a", "b"], 20, 5, 0)[2], 2)
+
+    def test_r12_notes_wrap_texts_and_separate_halves(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
+        app.request = {"kind": "direct", "key": C, "safety": safety, "conflict": B}
+        app.overlay = {"kind": "request"}
+        app.size = (40, 24)
+        rows = [re.sub(r"\x1b\[[0-9;]*m", "", r) for r in app.overlay_rows(40, 20)]
+        self.assertIn(" Compare this code with your friend", [r.rstrip() for r in rows])
+        self.assertIn(" before accepting", [r.rstrip() for r in rows])
+        codes = [k for k, r in enumerate(rows) if r.strip()[:4] in ("0000", "0008", "0010", "0018")]
+        self.assertEqual(len(codes), 4)
+        self.assertEqual(rows[codes[2] - 1].strip(), "")
+        app.size = (160, 24)
+        wide = [re.sub(r"\x1b\[[0-9;]*m", "", r).rstrip() for r in app.overlay_rows(160, 20)]
+        halves = [k for k, r in enumerate(wide) if r.strip().startswith(("0000", "0010"))]
+        self.assertEqual(halves[1] - halves[0], 1)
+
+    def test_m09_delivered_but_unsaved_message_is_shown(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.edit("text", "hello")
+        app.edit("key", "enter")
+        rid = app.link.ops("msg.send")[-1]["id"]
+        app.on_event({"event": "message", "conversation": "0", "key": A, "dir": "out", "id": "m5", "request": rid,
+                      "text": "hello", "ts": 0})
+        app.on_event({"event": "message.failed", "conversation": "0", "request": rid, "code": "history_failed",
+                      "delivered": True})
+        shown = [(m.dir, m.text, m.failed, m.ack) for m in app.conv("0")["items"]]
+        self.assertEqual(shown, [("out", "hello", "", 1), ("sys", cli.UNSAVED_SENT, "", 0)])
+        self.assertIn(cli.UNSAVED_SENT, "".join(seg[0] for line in app.message_lines("0", 100) for seg in line))
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        app.load("0")
+        app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
+                      "items": []})
+        self.assertEqual([m.text for m in app.conv("0")["items"]], ["hello", cli.UNSAVED_SENT])
+        app.edit("text", "later")
+        app.edit("key", "enter")
+        rid = app.link.ops("msg.send")[-1]["id"]
+        app.on_event({"event": "message.failed", "conversation": "0", "request": rid, "code": "offline",
+                      "delivered": False})
+        self.assertEqual(app.conv("0")["items"][-1].failed, "offline")
+
+    def test_m03_presence_is_per_state_and_exits_take_turns(self):
+        import fcntl
+        one = cli.Presence(os.path.join(self.base, "state-one"))
+        two = cli.Presence(os.path.join(self.base, "state-two"))
+        root = os.path.join(os.environ["XDG_RUNTIME_DIR"], "omaq-cli")
+        self.assertNotEqual(one.dir, two.dir)
+        self.assertEqual({os.path.dirname(one.dir), os.path.dirname(two.dir)}, {root})
+        self.assertFalse(one.others_alive())
+        held = one.exit_lock(1.0)
+        self.assertIsNotNone(held)
+        start = time.monotonic()
+        self.assertIsNone(one.exit_lock(0.3))
+        self.assertGreaterEqual(time.monotonic() - start, 0.3)
+        os.close(held)
+        again = one.exit_lock(0.3)
+        self.assertIsNotNone(again)
+        os.close(again)
+        self.assertFalse(one.others_alive())
+        self.assertTrue(os.path.exists(os.path.join(one.dir, "exit.mutex")))
+        peer = os.open(os.path.join(one.dir, "424242.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(peer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertTrue(one.others_alive())
+        self.assertFalse(two.others_alive())
+        os.close(peer)
+        self.assertFalse(one.others_alive())
+        for presence in (one, two):
+            presence.release()
 
 
 class Input(unittest.TestCase):

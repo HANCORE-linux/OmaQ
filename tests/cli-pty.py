@@ -176,6 +176,16 @@ def main():
     env = dict(os.environ, OMAQ_HOME=home, OMAQ_STATE=state, XDG_RUNTIME_DIR=runtime, TERM="xterm-256color")
     pid = 0
     try:
+        early = Term(env)
+        end = time.monotonic() + 10
+        while "\x1b[6n" not in early.text() and time.monotonic() < end:
+            early.pump(0.01)
+        early.send(":quit\r")
+        if early.finish(5) != 0:
+            fail("a :quit typed during startup did not quit:\n" + early.text()[-1500:])
+        time.sleep(1.0)
+        if helper_pid(state):
+            fail("a :quit typed during startup left a helper running")
         term = Term(env)
         if not term.wait_for("no friends yet", 20):
             fail("no friend list shown:\n" + term.text()[-2000:])
@@ -227,7 +237,12 @@ def main():
             time.sleep(0.2)
         if helper_pid(state):
             fail("CLI-only exit left the helper running")
-        left = [n for n in os.listdir(os.path.join(runtime, "omaq-cli")) if n != "helper.log"]
+        presence = os.path.join(runtime, "omaq-cli")
+        scopes = os.listdir(presence)
+        if len(scopes) != 1 or not re.fullmatch(r"[0-9a-f]{16}", scopes[0]):
+            fail("presence is not scoped by state directory: %r" % scopes)
+        left = [os.path.relpath(os.path.join(d, n), presence) for d, _, names in os.walk(presence) for n in names
+                if n not in ("helper.log", "exit.mutex")]
         if left:
             fail("presence files left behind: %r" % left)
         term = Term(env, cols=60, rows=12)
