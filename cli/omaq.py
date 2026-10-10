@@ -48,8 +48,8 @@ FAILURES = {
 BIDI = frozenset(list(range(0x202A, 0x202F)) + list(range(0x2066, 0x206A)))
 DIRECT_DIGITS = frozenset("0123456789")
 VERBS = [("help", False), ("connect", True), ("split", True), ("invite", False), ("redeem", True),
-         ("requests", False), ("accept", False), ("decline", False), ("clear", False), ("close", False),
-         ("quit", False)]
+         ("requests", False), ("accept", False), ("decline", False), ("sendfile", True), ("acceptfile", False),
+         ("declinefile", False), ("cancelfile", False), ("clear", False), ("close", False), ("quit", False)]
 HINT = " " + "   ".join(":" + verb for verb in ("help", "connect", "split", "invite", "requests", "clear",
                                                    "close", "quit"))
 COMMANDS = [
@@ -62,6 +62,10 @@ COMMANDS = [
     (":requests", "Show a pending friend or group request", ""),
     (":accept", "Accept the pending request", ""),
     (":decline", "Decline the pending request", ""),
+    (":sendfile ", "Send a file to this chat", "<path>"),
+    (":acceptfile", "Save the offered file in ~/Downloads/omaq", ""),
+    (":declinefile", "Decline the offered file", ""),
+    (":cancelfile", "Cancel your file transfer in this chat", ""),
     (":clear", "Clear this chat on this computer (asks first)", ""),
     (":close", "Close this pane (also ctrl+w)", ""),
     (":quit", "Quit OmaQ (also :q)", ""),
@@ -73,6 +77,12 @@ ACTION_SECONDS = 10
 NAME_MAX = 18
 REDEEMED_DIRECT = "Invite checked. Waiting for the other person to accept."
 REDEEMED_GROUP = "Group invite checked. Waiting for the incoming group request."
+FILE_ERRORS = {
+    "busy": "A file is already sending",
+    "forbidden": "The file could not be sent",
+    "unsupported": "The file path is not supported",
+    "history_failed": "File delivered, but local history could not be saved",
+}
 INVITE_ERRORS = {
     "invite_expired": "Invite expired. Create a new link.",
     "invite_self": "This invite belongs to your own identity.",
@@ -136,6 +146,8 @@ TIPS = [
     (":redeem <link>", "sends a request with a friend's invite link"),
     (":requests", "shows a pending friend request"),
     (":accept / :decline", "answer a pending request"),
+    (":sendfile <path>", "sends a file to this chat"),
+    (":acceptfile", "saves an offered file in ~/Downloads/omaq"),
     (":clear", "clears this chat on this computer"),
     (":close / ctrl+w", "closes this pane"),
     (ZOOM_KEYS, "change the text size"),
@@ -277,6 +289,20 @@ def cells(text):
         else:
             out.append((ch, w))
     return out
+
+
+def human_size(size):
+    size = float(size or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return "%d B" % size if unit == "B" else "%.1f %s" % (size, unit)
+        size /= 1000
+
+
+def home_path(path):
+    home = os.path.expanduser("~")
+    path = str(path or "")
+    return "~" + path[len(home):] if home and path.startswith(home + "/") else path
 
 
 def pixel_size(fd):
@@ -967,6 +993,7 @@ class App:
         self.action, self.action_until = "", 0.0
         self.addr = ""
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
+        self.offers, self.sends = {}, {}
         self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
         self.confirm = None
         self.clears = {}
@@ -1132,6 +1159,9 @@ class App:
         if self.invite_request or self.redeem_request:
             self.invite_request = self.redeem_request = ""
             self.say("Invite result unknown; try again")
+        if self.offers or self.sends:
+            self.offers, self.sends = {}, {}
+            self.say("File transfer status unknown; check the chat")
         self.dirty = True
 
     def reset_identity(self):
@@ -1145,6 +1175,7 @@ class App:
         self.clears = {}
         self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
         self.invite_request = self.redeem_request = ""
+        self.offers, self.sends = {}, {}
         self.typing_on = ""
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
@@ -1335,6 +1366,54 @@ class App:
                     self.say("Invite revoked")
                 elif self.invite["url"]:
                     self.show_invite(copy=True)
+        elif name == "file.offer":
+            conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
+            if fid and is_direct(conversation) and self.bound(ev):
+                held = self.offers.get(conversation)
+                if held and held["id"] != fid:
+                    self.send_bound({"op": "file.cancel", "conversation": conversation, "id": fid})
+                elif not held:
+                    try:
+                        size = max(0, int(ev.get("size") or 0))
+                    except (TypeError, ValueError):
+                        size = 0
+                    name = str(ev.get("name") or "file")
+                    self.offers[conversation] = {"id": fid, "name": name, "size": size, "accepted": False}
+                    f = self.friend(conversation)
+                    self.say("File offer from %s: %s (%s)" % (f["name"] if f else "a friend", name, human_size(size)), 15)
+        elif name == "file.sending":
+            conversation = str(ev.get("conversation") or "")
+            send = self.sends.get(conversation)
+            if send and str(ev.get("request") or "") == send["request"] and self.bound(ev):
+                send["id"] = str(ev.get("id") or "")
+                if send["cancel"] and send["id"]:
+                    self.send_bound({"op": "file.cancel", "conversation": conversation, "id": send["id"]})
+        elif name in ("file.done", "file.failed", "file.canceled"):
+            conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
+            request, code = str(ev.get("request") or ""), str(ev.get("code") or "")
+            keyed = self.bound(ev) if ev.get("key") else True
+            if ev.get("dir") == "out":
+                send = self.sends.get(conversation)
+                if send and keyed and ((request and request == send["request"]) or (fid and fid == send["id"])):
+                    del self.sends[conversation]
+                    self.finish_file(conversation)
+                    if name == "file.done":
+                        self.say(FILE_ERRORS.get(code) or "File transfer successful: %s" % send["name"], 15)
+                    elif name == "file.canceled":
+                        self.say("File transfer canceled")
+                    else:
+                        self.say("File transfer failed: %s" % (FILE_ERRORS.get(code) or FAILURES.get(code) or code or "error"), 15)
+            else:
+                offer = self.offers.get(conversation)
+                if offer and fid == offer["id"] and self.bound(ev):
+                    del self.offers[conversation]
+                    self.finish_file(conversation)
+                    if name == "file.done":
+                        self.say("File transfer successful: %s" % home_path(ev.get("path") or offer["name"]), 15)
+                    elif name == "file.canceled":
+                        self.say("File transfer canceled")
+                    else:
+                        self.say("File transfer failed: %s" % (FAILURES.get(code) or code or "error"), 15)
         elif name == "invite.redeemed":
             if self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
                 self.redeem_request = ""
@@ -1591,9 +1670,10 @@ class App:
         verb = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
         known = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
-                 "accept", "decline") + NAMED
+                 "accept", "decline", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
         if verb and verb not in known:
-            candidates = [name for name, _ in VERBS if name.startswith(verb) and name not in ("accept", "decline")]
+            candidates = [name for name, _ in VERBS
+                          if name.startswith(verb) and name not in ("accept", "decline", "acceptfile", "declinefile")]
             if len(candidates) == 1:
                 verb = candidates[0]
         if verb in ("q", "q!", "quit", "quit!"):
@@ -1654,6 +1734,61 @@ class App:
                     self.say("Accepted" if verb == "accept" else "Declined")
                 else:
                     self.send_failed()
+        elif verb == "sendfile":
+            pane = self.pane
+            given = arg.strip()
+            if len(given) > 1 and given[0] == given[-1] and given[0] in "'\"":
+                given = given[1:-1]
+            path = os.path.abspath(os.path.expanduser(given)) if given else ""
+            if not pane or not pane.conv:
+                self.say("No chat is open")
+            elif not path:
+                self.say("Usage: :sendfile <path>")
+            elif not os.path.isfile(path) or not os.access(path, os.R_OK):
+                self.say("No readable file at %s" % clean_line(given))
+            elif len(path.encode("utf-8")) > TEXT_MAX:
+                self.say("Path is too long")
+            elif pane.conv in self.sends:
+                self.say(FILE_ERRORS["busy"])
+            else:
+                request = "cli-file-" + secrets.token_hex(8)
+                name = os.path.basename(path)
+                if self.send_bound({"op": "file.send", "conversation": pane.conv, "path": path, "kind": "file",
+                                    "id": request}):
+                    self.sends[pane.conv] = {"request": request, "id": "", "name": name, "cancel": False}
+                    self.say("Sending %s…" % name, 10)
+                else:
+                    self.send_failed()
+        elif verb in ("acceptfile", "declinefile"):
+            conv = self.offer_conv()
+            offer = self.offers.get(conv)
+            if not offer:
+                self.say("No file offer in this chat")
+            elif verb == "acceptfile":
+                if offer["accepted"]:
+                    self.say("Already receiving %s" % clean_line(offer["name"]))
+                elif self.send_bound({"op": "file.accept", "conversation": conv, "id": offer["id"]}):
+                    offer["accepted"] = True
+                    self.say("Receiving %s…" % clean_line(offer["name"]), 10)
+                else:
+                    self.send_failed()
+            elif self.send_bound({"op": "file.cancel", "conversation": conv, "id": offer["id"]}):
+                del self.offers[conv]
+                self.say("Declined file: %s" % clean_line(offer["name"]))
+            else:
+                self.send_failed()
+        elif verb == "cancelfile":
+            pane = self.pane
+            send = self.sends.get(pane.conv) if pane else None
+            if not send:
+                self.say("No file is sending in this chat")
+            elif not send["id"]:
+                send["cancel"] = True
+                self.say("Canceling…")
+            elif self.send_bound({"op": "file.cancel", "conversation": pane.conv, "id": send["id"]}):
+                self.say("Canceling…")
+            else:
+                self.send_failed()
         elif verb == "clear":
             pane = self.pane
             if not pane or not pane.conv:
@@ -1729,6 +1864,17 @@ class App:
             return self.palette.paint(text, "dim")
         return self.palette.row([(text, "dim", ""), (" " * gap, "dim", ""),
                                  (label, "dim" if self.zoom == 100 else "accent", "")], cols)
+
+    def offer_conv(self):
+        pane = self.pane
+        if pane and pane.conv in self.offers:
+            return pane.conv
+        return next(iter(self.offers)) if len(self.offers) == 1 else ""
+
+    def finish_file(self, conversation):
+        c = self.convs.get(conversation)
+        if c:
+            c["loaded"], c["request"] = False, ""
 
     def send_failed(self):
         self.say("Not connected" if not self.link else "Could not send the request")
@@ -2153,7 +2299,7 @@ class App:
         if self.friends_ready and not self.friends:
             bar.append(("no friends yet", "dim", ""))
         used = sum(text_width(text) for text, _, _ in bar)
-        hot = lambda f: bool(self.unread.get(f["id"])) and f["id"] not in self.visible
+        hot = lambda f: bool(self.unread.get(f["id"]) or f["id"] in self.offers) and f["id"] not in self.visible
         for k, f in enumerate(self.friends):
             role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
             name = shorten(f["name"], NAME_MAX)
@@ -2298,7 +2444,7 @@ class App:
         if not c:
             return []
         if not c["loaded"] and not c["items"]:
-            return [[("   loading…", "dim", "")]]
+            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation)
         f = self.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
@@ -2348,6 +2494,20 @@ class App:
                 lines.append(segs)
         if not c["items"]:
             lines.append([("   no messages yet", "dim", "")])
+        return lines + self.transfer_lines(conversation)
+
+    def transfer_lines(self, conversation):
+        lines = []
+        offer = self.offers.get(conversation)
+        if offer:
+            hint = "  receiving…" if offer["accepted"] else "  :acceptfile or :declinefile"
+            lines.append([(" \u21e3 ", "accent", "1"),
+                          ("File offer: %s (%s)" % (clean_line(offer["name"]), human_size(offer["size"])), "text", ""),
+                          (hint, "dim", "")])
+        send = self.sends.get(conversation)
+        if send:
+            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send["name"]), "text", ""),
+                          ("  :cancelfile", "dim", "")])
         return lines
 
     def exit_helper(self):

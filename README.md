@@ -106,6 +106,7 @@ omaq-connect alice     # chat with alice
 
 - Split views you move with the keyboard, receipts, and typing state
 - Invitations: `:invite` shows your link and QR code, `:redeem` uses a friend's link, and `:requests` with `:accept` answers a request
+- Files: `:sendfile` sends a file, and `:acceptfile` saves an offered file in `~/Downloads/omaq`
 - `:)` and `<3` become emoji, and `Ctrl+K` opens the emoji picker
 - `:help` lists every command and key, and the bottom line shows a new tip every few seconds
 

@@ -35,6 +35,14 @@
   - A pending request (the `request` event, which every `status` repeats) shows `1 request` or `1 group invitation` at the front of the friends bar. `:requests` shows it with the safety code ("Compare this code with your friend before accepting") and the bar's `request.conflict` warning "Another device used this invite link".
   - `:accept` and `:decline` send `contact.decide`, with the request key for a direct request, like the bar. A direct request disappears when the helper clears the invite; a group invitation disappears at once. Both commands need the full word.
   - Group invitations can be accepted, but group chats stay in the bar for now.
+- **Files:**
+  - `:sendfile <path>` sends `file.send` (kind `file`) with the friend's stable key. Relative paths, `~` and quoted paths work.
+  - The client first checks for a readable regular file and a path of at most 511 bytes, the helper's field limit. The helper keeps the final say.
+  - One transfer per chat, as in the bar ("A file is already sending"). `file.sending` supplies the transfer id. `:cancelfile` sends `file.cancel`, and waits for that id if it has not arrived yet.
+  - A `file.offer` bound to the friend's key is held per chat; a second offer is declined, as in the bar. The chat shows `⇣ File offer: name (size)` with `:acceptfile or :declinefile`, the status line names the sender, and a friend whose chat is off screen is highlighted.
+  - Incoming files stay paused until accepted. `:acceptfile` sends `file.accept` without a path, so the helper picks its default folder: `$OMAQ_DOWNLOAD_DIR/omaq` or `$XDG_DOWNLOAD_DIR/omaq`, else `~/Downloads/omaq`. The status line shows the saved path. `:declinefile` sends `file.cancel`.
+  - Results (`file.done`, `file.failed`, `file.canceled`) are matched by request or transfer id and key, and use the bar's wording. After a transfer the chat reloads its history. A dropped connection clears transfer state with a notice.
+  - The helper reports no progress, so the client shows `Sending …` without a percentage.
 - **Emoji:**
   - `:)` `:D` `;)` `:(` `:'(` `:P` `;P` `:O` `:*` `:/` `:|` (also with a `-` nose), `xD`, `^^`, `<3` and `(y)` become 🙂 😀 😉 🙁 😢 😛 😜 😮 😘 😕 😐 😆 😊 ❤️ 👍.
   - An emoticon converts only when it stands alone and a space or a new line follows; on Enter the whole message is converted. Links such as `https://` stay intact.
@@ -90,9 +98,9 @@ python3 -I tests/cli-split.py
 python3 -I tests/cli-invite.py
 ```
 
-- `cli_unit_test.py` (64 tests) pins each review finding: rebound numbers, drafts, ownership nonce, the bar probe, history retry and reconnect reload, `identity.ready`, private directories, header-only panes, narrow panes and the tab strip, interrupted cleanup, semantic palettes and the receipt glyphs.
+- `cli_unit_test.py` (66 tests, also run by `make test` and `make test-ci`) pins each review finding: rebound numbers, drafts, ownership nonce, the bar probe, history retry and reconnect reload, `identity.ready`, private directories, header-only panes, narrow panes and the tab strip, interrupted cleanup, semantic palettes and the receipt glyphs.
 - `cli-pty.py` needs no peer; its helper still bootstraps Tox. It covers the self-started helper and its shutdown, the command line, `:help`, `ctrl+c`, paste, resize, SIGTERM, SIGHUP, a locked identity with wrong and correct passphrases, and a foreign helper restart. It also checks that the pty is back in canonical, echoing mode.
-- `cli-two-homes.py` and `cli-split.py` need the Tox network. They pair two or three throwaway identities and check delivery, `Delivered`/`Read`, typing, sanitizing, read marking and two side-by-side panes. `cli-two-homes.py` also recalls the last message with `up`, clears the chat through the real helper and sends `:) hallo <3`, which must arrive as `🙂 hallo ❤️`. `cli-invite.py` pairs two CLIs with `:invite`, `:invite revoke`, a fresh `:invite`, `:redeem`, `:requests` and `:accept`, and checks the clipboard write and the shared safety code.
+- `cli-two-homes.py` and `cli-split.py` need the Tox network. They pair two or three throwaway identities and check delivery, `Delivered`/`Read`, typing, sanitizing, read marking and two side-by-side panes. `cli-two-homes.py` also recalls the last message with `up`, clears the chat through the real helper and sends `:) hallo <3`, which must arrive as `🙂 hallo ❤️`. It also sends a 3000-byte file with `:sendfile` and receives one with `:acceptfile`, compares the bytes, and checks that both copies stay in the test download folders. `cli-invite.py` pairs two CLIs with `:invite`, `:invite revoke`, a fresh `:invite`, `:redeem`, `:requests` and `:accept`, and checks the clipboard write and the shared safety code.
 
 ## Known open points (review package B)
 
@@ -105,5 +113,5 @@ python3 -I tests/cli-invite.py
 ## Stays out
 
 - Group chats, creating and leaving groups, and contact removal.
-- Files, calls, reactions, edits, deletes and search.
+- Calls, reactions, edits, deletes and search.
 - The keyboard-and-hands visual.

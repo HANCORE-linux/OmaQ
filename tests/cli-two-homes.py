@@ -74,7 +74,7 @@ class Raw:
 
 
 def start(home, state):
-    env = dict(os.environ, OMAQ_HOME=home, OMAQ_STATE=state)
+    env = dict(os.environ, OMAQ_HOME=home, OMAQ_STATE=state, OMAQ_DOWNLOAD_DIR=os.path.join(state, "downloads"))
     return subprocess.Popen([HELPER], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -173,6 +173,43 @@ def main():
         term.send(":) hallo <3\r")
         if not b.wait(lambda e: e.get("event") == "message" and e.get("text") == "\U0001F642 hallo \u2764\ufe0f", 30):
             fail("the emoticons did not arrive as emoji")
+        payload = os.urandom(3000)
+        outgoing = os.path.join(base, "cli file.bin")
+        with open(outgoing, "wb") as f:
+            f.write(payload)
+        term.send(":sendfile %s\r" % outgoing)
+        offer = b.wait(lambda e: e.get("event") == "file.offer" and e.get("dir") == "in", 60)
+        if not offer:
+            fail(":sendfile did not offer the file to bob")
+        b.send({"op": "file.accept", "conversation": "0", "key": fb["key"], "id": offer["id"]})
+        done = b.wait(lambda e: e.get("event") == "file.done" and e.get("dir") == "in" and e.get("id") == offer["id"], 120)
+        if not done or not done["path"].startswith(os.path.join(dirs["sb"], "downloads") + "/"):
+            fail("bob's copy did not land in the test download folder: %r" % done)
+        with open(done["path"], "rb") as f:
+            if f.read() != payload:
+                fail("bob received different bytes")
+        if not term.wait_for("File transfer successful: cli file.bin", 60):
+            fail("the CLI did not report the sent file")
+        incoming = os.path.join(base, "from-bob.txt")
+        content = ("hallo datei " * 300).encode()
+        with open(incoming, "wb") as f:
+            f.write(content)
+        mark = len(term.out)
+        b.send({"op": "file.send", "conversation": "0", "key": fb["key"], "path": incoming, "kind": "file", "id": "bob-f1"})
+        if not term.wait_for("File offer from bob: from-bob.txt", 60):
+            fail("the CLI did not show bob's file offer")
+        term.send(":acceptfile\r")
+        got = a.wait(lambda e: e.get("event") == "file.done" and e.get("dir") == "in", 120)
+        if not got or not got["path"].startswith(os.path.join(dirs["sa"], "downloads") + "/"):
+            fail("alice's copy did not land in the test download folder: %r" % got)
+        with open(got["path"], "rb") as f:
+            if f.read() != content:
+                fail("alice received different bytes")
+        end = time.monotonic() + 30
+        while time.monotonic() < end and got["path"] not in term.out[mark:].decode("utf-8", "replace"):
+            term.pump(0.5)
+        if got["path"] not in term.out[mark:].decode("utf-8", "replace"):
+            fail("the CLI did not report where the file was saved")
         shot = os.environ.get("CLI_SCREEN")
         if shot:
             with open(shot, "w", encoding="utf-8") as f:

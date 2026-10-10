@@ -239,6 +239,9 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:redeem <link>` | Send a request with a friend's invite link |
 | `:requests` | Show a pending request, with the safety code for a friend request |
 | `:accept` / `:decline` | Answer the pending request |
+| `:sendfile <path>` | Send a file to this chat |
+| `:acceptfile` / `:declinefile` | Save the offered file in `~/Downloads/omaq`, or decline it |
+| `:cancelfile` | Cancel your file transfer in this chat |
 | `:quit` or `:q` | Quit |
 
 Confirmations expire after 15 seconds.
@@ -274,6 +277,12 @@ Confirmations expire after 15 seconds.
 3. When `1 request` appears in your top line, run `:requests` and compare the safety code with your friend.
 4. Run `:accept`.
 
+### Send and receive files
+
+Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it.
+
+An incoming file waits until you decide: the chat shows `File offer: notes.pdf (2.3 MB)`. `:acceptfile` saves it in `~/Downloads/omaq` and shows the full path, and `:declinefile` rejects it.
+
 ### Emoji, receipts, and text size
 
 <table>
@@ -292,7 +301,7 @@ Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` reset
 
 ### Terminals and limits
 
-The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, files, calls, reactions, edits, and search stay in the bar.
+The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, edits, and search stay in the bar.
 
 ## Protect and move your identity
 

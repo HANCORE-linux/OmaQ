@@ -426,11 +426,13 @@ class PackageA(Sandbox):
         app.tip = 0
         self.assertEqual(plain(app.command_hint(120)), ":help   :quit   \u00b7   ctrl+k opens the emoji picker")
         app.edit("text", ":")
-        self.assertEqual(plain(app.command_hint(200)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
-                                                                ":requests", ":accept", ":decline", ":clear", ":close", ":quit"])
+        self.assertEqual(plain(app.command_hint(300)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
+                                                                ":requests", ":accept", ":decline", ":sendfile",
+                                                                ":acceptfile", ":declinefile", ":cancelfile", ":clear",
+                                                                ":close", ":quit"])
         self.assertIn("1;7m:help", app.command_hint(80))
         app.edit("text", "c")
-        self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":clear", ":close"])
+        self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":cancelfile", ":clear", ":close"])
         app.edit("key", "tab")
         self.assertEqual(app.pane.draft, ":connect")
         app.edit("text", " ")
@@ -1007,6 +1009,90 @@ class PackageA(Sandbox):
             self.assertTrue(line.rstrip().endswith("Text 112%"))
         app.tip = 0
         self.assertEqual(plain(app.command_hint(30)), " :help   :quit      Text 112% ")
+
+    def test_sendfile_and_offers_follow_the_helper(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
+        home = os.environ["HOME"]
+        os.makedirs(home, exist_ok=True)
+        path = os.path.join(home, "my notes.txt")
+        with open(path, "w") as f:
+            f.write("x")
+        app.edit("text", ':sendfile "~/my notes.txt"')
+        app.edit("key", "enter")
+        op = app.link.ops("file.send")[-1]
+        self.assertEqual(sorted(op), ["conversation", "id", "key", "kind", "op", "path"])
+        self.assertEqual((op["path"], op["kind"], op["key"]), (path, "file", A))
+        app.edit("text", ":sendfile " + path)
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "A file is already sending")
+        app.on_event({"event": "file.sending", "id": "f1", "conversation": "0", "key": A, "dir": "out", "request": op["id"]})
+        app.on_event({"event": "file.done", "id": "f1", "conversation": "0", "key": A, "path": path, "dir": "out",
+                      "request": op["id"]})
+        self.assertEqual((app.status, app.sends, app.conv("0")["loaded"]), ("File transfer successful: my notes.txt", {}, False))
+        app.edit("text", ":sendfile /nonexistent/x")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "No readable file at /nonexistent/x")
+        app.edit("text", ":sendfile " + path)
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.on_event({"event": "file.failed", "id": "", "conversation": "0", "dir": "out", "request": rid, "code": "busy"})
+        self.assertEqual((app.status, app.sends), ("File transfer failed: A file is already sending", {}))
+        app.on_event({"event": "file.offer", "id": "in0", "conversation": "0", "key": B, "name": "evil", "size": 1,
+                      "dir": "in", "request": ""})
+        self.assertEqual(app.offers, {})
+        app.on_event({"event": "file.offer", "id": "in1", "conversation": "0", "key": A, "name": "report.pdf",
+                      "size": 2300000, "dir": "in", "request": ""})
+        self.assertEqual(app.status, "File offer from bob: report.pdf (2.3 MB)")
+        self.assertIn("1;7m bob ", app.friends_bar(100))
+        app.size = (100, 20)
+        self.assertIn("File offer: report.pdf (2.3 MB)  :acceptfile or :declinefile", plain(app.render()))
+        app.on_event({"event": "file.offer", "id": "in2", "conversation": "0", "key": A, "name": "second", "size": 5,
+                      "dir": "in", "request": ""})
+        self.assertEqual(app.link.ops("file.cancel")[-1], {"op": "file.cancel", "conversation": "0", "id": "in2", "key": A})
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.accept")[-1], {"op": "file.accept", "conversation": "0", "id": "in1", "key": A})
+        saved = os.path.join(home, "Downloads", "omaq", "report.pdf")
+        app.on_event({"event": "file.done", "id": "in1", "conversation": "0", "key": A, "path": saved, "dir": "in",
+                      "request": ""})
+        self.assertEqual((app.status, app.offers), ("File transfer successful: ~/Downloads/omaq/report.pdf", {}))
+        app.on_event({"event": "file.offer", "id": "in3", "conversation": "0", "key": A, "name": "x.bin", "size": 9,
+                      "dir": "in", "request": ""})
+        app.edit("text", ":declinefile")
+        app.edit("key", "enter")
+        self.assertEqual((app.link.ops("file.cancel")[-1]["id"], app.offers, app.status), ("in3", {}, "Declined file: x.bin"))
+        app.edit("text", ":sendfile " + path)
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        cancels = len(app.link.ops("file.cancel"))
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        self.assertEqual((app.status, len(app.link.ops("file.cancel"))), ("Canceling…", cancels))
+        app.on_event({"event": "file.sending", "id": "f2", "conversation": "0", "key": A, "dir": "out", "request": rid})
+        self.assertEqual(app.link.ops("file.cancel")[-1]["id"], "f2")
+        app.offers["0"] = {"id": "in4", "name": "y", "size": 1, "accepted": False}
+        app.drop_link()
+        self.assertEqual((app.offers, app.sends, app.status), ({}, {}, "File transfer status unknown; check the chat"))
+        self.assertEqual(cli.human_size(999), "999 B")
+
+    def test_bar_wording_stays_in_sync(self):
+        bar = "".join(open(os.path.join(ROOT, path), encoding="utf-8").read()
+                      for path in ("Panel.qml", "pages/ChatPage.qml", "Service.qml"))
+        with open(os.path.join(ROOT, "cli", "omaq.py"), encoding="utf-8") as f:
+            client = f.read()
+        for text in ("That is not an OmaQ invite.", "Finish active calls, transfers, invites, or read receipts first.",
+                     "Compare this code with your friend before accepting", "Another device used this invite link",
+                     "Revoke this invite? It cannot be used again.",
+                     "Invite checked. Waiting for the other person to accept.",
+                     "Group invite checked. Waiting for the incoming group request.",
+                     "Invite expired. Create a new link.", "This invite belongs to your own identity.",
+                     "The direct-contact limit has been reached.", "A file is already sending",
+                     "File transfer successful", "File transfer canceled", "File transfer failed: ",
+                     "File delivered, but local history could not be saved", "Clear this chat?"):
+            self.assertIn(text, bar)
+            self.assertIn(text, client)
 
     def test_receipt_glyphs(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
