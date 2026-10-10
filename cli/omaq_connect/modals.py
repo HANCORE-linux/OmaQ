@@ -177,7 +177,7 @@ class InviteOverlay(Overlay):
     def rows(self, screen, width, height):
         p = screen.app.palette
         rows = []
-        left = max(0, screen.app.invite.expires - int(time.time()))
+        left = max(0, screen.app.invites.invite.expires - int(time.time()))
         valid = "valid %d h %02d min" % (left // 3600, left % 3600 // 60) if left else "expired; :invite creates a new link"
         rows.append(p.row([(" invite", "name", "1"), ("   %s · esc close" % valid, "dim", "")], width))
         url = clean_line(self.url)
@@ -204,7 +204,7 @@ class RequestOverlay(Overlay):
     kind: ClassVar[str] = "request"
 
     def rows(self, screen, width, height):
-        r = screen.app.request
+        r = screen.app.invites.request
         if not r:
             screen.app.overlay = None
             return [" " * width] * height

@@ -111,13 +111,13 @@ class Screen:
     def friends_bar(self, cols):
         shown = {pane.conv for pane in self.app.layout.panes()}
         bar = [(" omaq ", "accent", "1"), (self.conn_label(), "online" if self.app.conn == "online" else "dim", ""), ("   ", "dim", "")]
-        if self.app.request:
-            bar.append(("1 request" if self.app.request.kind == "direct" else "1 group invitation", "unread", "1"))
+        if self.app.invites.request:
+            bar.append(("1 request" if self.app.invites.request.kind == "direct" else "1 group invitation", "unread", "1"))
             bar.append(("   ", "dim", ""))
         if self.app.friends_ready and not self.app.friends:
             bar.append(("no friends yet", "dim", ""))
         used = sum(text_width(text) for text, _, _ in bar)
-        hot = lambda f: bool(self.app.chat.unread.get(f["id"]) or f["id"] in self.app.offers) and f["id"] not in self.app.visible
+        hot = lambda f: bool(self.app.chat.unread.get(f["id"]) or f["id"] in self.app.files.offers) and f["id"] not in self.app.visible
         for k, f in enumerate(self.app.friends):
             role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
             name = shorten(f["name"], NAME_MAX)
@@ -316,7 +316,7 @@ class Screen:
 
     def transfer_lines(self, conversation):
         lines = []
-        offer = self.app.offers.get(conversation)
+        offer = self.app.files.offers.get(conversation)
         if offer and offer.accepted and offer.done is not None:
             full, empty, percent = progress_bar(offer.done, offer.size)
             lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer.name), "text", ""),
@@ -327,7 +327,7 @@ class Screen:
             lines.append([(" \u21e3 ", "accent", "1"),
                           ("File offer: %s (%s)" % (clean_line(offer.name), human_size(offer.size)), "text", ""),
                           (hint, "dim", "")])
-        send = self.app.sends.get(conversation)
+        send = self.app.files.sends.get(conversation)
         if send and send.done is not None:
             full, empty, percent = progress_bar(send.done, send.size)
             lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send.name), "text", ""),

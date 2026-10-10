@@ -157,86 +157,6 @@ class App:
         self.history_clear = 0
 
     @property
-    def invite(self):
-        return self.invites.invite
-
-    @invite.setter
-    def invite(self, value):
-        self.invites.invite = value
-
-    @property
-    def invite_request(self):
-        return self.invites.invite_request
-
-    @invite_request.setter
-    def invite_request(self, value):
-        self.invites.invite_request = value
-
-    @property
-    def redeem_request(self):
-        return self.invites.redeem_request
-
-    @redeem_request.setter
-    def redeem_request(self, value):
-        self.invites.redeem_request = value
-
-    @property
-    def decide_request(self):
-        return self.invites.decide_request
-
-    @decide_request.setter
-    def decide_request(self, value):
-        self.invites.decide_request = value
-
-    @property
-    def request(self):
-        return self.invites.request
-
-    @request.setter
-    def request(self, value):
-        self.invites.request = value
-
-    @property
-    def action(self):
-        return self.invites.action
-
-    @action.setter
-    def action(self, value):
-        self.invites.action = value
-
-    @property
-    def action_until(self):
-        return self.invites.action_until
-
-    @action_until.setter
-    def action_until(self, value):
-        self.invites.action_until = value
-
-    @property
-    def offers(self):
-        return self.files.offers
-
-    @offers.setter
-    def offers(self, value):
-        self.files.offers = value
-
-    @property
-    def sends(self):
-        return self.files.sends
-
-    @sends.setter
-    def sends(self, value):
-        self.files.sends = value
-
-    @property
-    def file_result(self):
-        return self.files.result
-
-    @file_result.setter
-    def file_result(self, value):
-        self.files.result = value
-
-    @property
     def pane(self):
         return self.layout.focused()
 
@@ -616,7 +536,7 @@ class App:
             self.overlay = None
 
     def show_invite(self, copy=False):
-        url = self.invite.url
+        url = self.invites.invite.url
         if not url:
             return
         self.overlay = InviteOverlay(url, qr_lines(url))
@@ -1024,7 +944,7 @@ class App:
         elif self.invites.on_correlated_error(code, request):
             pass
         elif code == "history_failed" and conversation:
-            last_conv, last_text, last_at = self.file_result
+            last_conv, last_text, last_at = self.files.result
             if last_conv == conversation and time.monotonic() - last_at < 3.0:
                 self.say("%s \u00b7 %s" % (last_text, HISTORY_ITEM_FAILED), 15)
             else:
@@ -1063,7 +983,7 @@ class App:
 
     def _cmd_invite(self, verb, arg):
         if arg.lower() == "revoke":
-            if not self.invite.url:
+            if not self.invites.invite.url:
                 self.say("No active invite")
             else:
                 self.confirm = Confirmation("revoke", "Revoke this invite? It cannot be used again. y/n",

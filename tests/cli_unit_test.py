@@ -618,7 +618,7 @@ class PackageA(Sandbox):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("cd%02d" % k for k in range(16)) for _ in range(2))
         app.on_event({"event": "request", "kind": "direct", "key": C, "safety": "broken"})
-        self.assertIsNone(app.request)
+        self.assertIsNone(app.invites.request)
         app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
         self.assertIn("1 request", re.sub(r"\x1b\[[0-9;]*m", "", app.friends_bar(120)))
         app.on_event({"event": "request.conflict", "kind": "direct", "key": B})
@@ -632,16 +632,16 @@ class PackageA(Sandbox):
         app.edit("text", ":accept")
         app.edit("key", "enter")
         op = app.link.ops("contact.decide")[-1]
-        self.assertEqual(op, {"op": "contact.decide", "id": app.decide_request, "accept": True, "key": C})
+        self.assertEqual(op, {"op": "contact.decide", "id": app.invites.decide_request, "accept": True, "key": C})
         self.assertTrue(op["id"].startswith("cli-decide-"))
         app.on_event({"event": "invite", "url": "", "expires": 0})
-        self.assertIsNone(app.request)
+        self.assertIsNone(app.invites.request)
         app.on_event({"event": "request", "kind": "group"})
         app.edit("text", ":decline")
         app.edit("key", "enter")
-        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": app.decide_request,
+        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": app.invites.decide_request,
                                                               "accept": False})
-        self.assertIsNone(app.request)
+        self.assertIsNone(app.invites.request)
         app.edit("text", ":accept")
         app.edit("key", "enter")
         self.assertEqual(app.status, "No pending request")
@@ -661,7 +661,7 @@ class PackageA(Sandbox):
             app.edit("key", "enter")
         self.assertEqual(app.link.ops("contact.decide"), [])
         app.on_event({"event": "request", "kind": "direct", "key": C, "safety": "bad"})
-        self.assertIsNone(app.request)
+        self.assertIsNone(app.invites.request)
         app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
         app.edit("text", ":accept")
         app.edit("key", "enter")
@@ -673,10 +673,10 @@ class PackageA(Sandbox):
         app.edit("key", "enter")
         app.on_event({"event": "error", "code": "contact_limit"})
         self.assertEqual(app.status, "The direct-contact limit has been reached.")
-        app.redeem_request = "cli-redeem-1"
+        app.invites.redeem_request = "cli-redeem-1"
         app.overlay = cli.RedeemedOverlay(False, "")
         app.drop_link()
-        self.assertEqual((app.request, app.overlay, app.redeem_request, app.invite.url), (None, None, "", ""))
+        self.assertEqual((app.invites.request, app.overlay, app.invites.redeem_request, app.invites.invite.url), (None, None, "", ""))
         self.assertEqual(app.status, "Invite result unknown; try again")
 
     def test_focus_marker_and_name_pill(self):
@@ -862,13 +862,13 @@ class PackageA(Sandbox):
         app.on_event({"event": "error", "code": "unsupported", "request": rid})
         self.assertEqual(app.status, "That is not an OmaQ invite.")
         app.say("")
-        app.action_until = 0.0
+        app.invites.action_until = 0.0
         app.on_event({"event": "error", "code": "offline"})
         self.assertEqual(app.status, "")
         app.edit("text", ":redeem omaq://x")
         app.edit("key", "enter")
         app.on_event({"event": "error", "code": "unsupported"})
-        self.assertEqual((app.status, app.redeem_request), ("That is not an OmaQ invite.", ""))
+        self.assertEqual((app.status, app.invites.redeem_request), ("That is not an OmaQ invite.", ""))
 
     def test_qr_is_white_on_black_and_checked(self):
         theme = os.path.join(os.environ["HOME"], ".local", "state", "omarchy", "current", "theme")
@@ -940,14 +940,14 @@ class PackageA(Sandbox):
     def test_invite_countdown_redraws_every_minute(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         app.out = __import__("io").StringIO()
-        app.invite = cli.Invite("omaq://x", int(time.time()) + 86400)
+        app.invites.invite = cli.Invite("omaq://x", int(time.time()) + 86400)
         app.overlay = cli.InviteOverlay("omaq://x", [])
         app.tick(time.monotonic())
         app.dirty = False
         app.overlay.minute -= 1
         app.tick(time.monotonic())
         self.assertTrue(app.dirty)
-        app.invite.expires = int(time.time()) - 5
+        app.invites.invite.expires = int(time.time()) - 5
         app.size = (100, 20)
         self.assertIn("expired; :invite creates a new link", app.render())
 
@@ -1051,7 +1051,7 @@ class PackageA(Sandbox):
         app.on_event({"event": "file.sending", "id": "f1", "conversation": "0", "key": A, "dir": "out", "request": op["id"]})
         app.on_event({"event": "file.done", "id": "f1", "conversation": "0", "key": A, "path": path, "dir": "out",
                       "request": op["id"]})
-        self.assertEqual((app.status, app.sends, app.chat.conv("0").loaded), ("File transfer successful: my notes.txt", {}, False))
+        self.assertEqual((app.status, app.files.sends, app.chat.conv("0").loaded), ("File transfer successful: my notes.txt", {}, False))
         app.edit("text", ":sendfile /nonexistent/x")
         app.edit("key", "enter")
         self.assertEqual(app.status, "No readable file at /nonexistent/x")
@@ -1059,10 +1059,10 @@ class PackageA(Sandbox):
         app.edit("key", "enter")
         rid = app.link.ops("file.send")[-1]["id"]
         app.on_event({"event": "file.failed", "id": "", "conversation": "0", "dir": "out", "request": rid, "code": "busy"})
-        self.assertEqual((app.status, app.sends), ("File transfer failed: A file is already sending", {}))
+        self.assertEqual((app.status, app.files.sends), ("File transfer failed: A file is already sending", {}))
         app.on_event({"event": "file.offer", "id": "in0", "conversation": "0", "key": B, "name": "evil", "size": 1,
                       "dir": "in", "request": ""})
-        self.assertEqual(app.offers, {})
+        self.assertEqual(app.files.offers, {})
         app.on_event({"event": "file.offer", "id": "in1", "conversation": "0", "key": A, "name": "report.pdf",
                       "size": 2300000, "dir": "in", "request": ""})
         self.assertEqual(app.status, "File offer from bob: report.pdf (2.3 MB)")
@@ -1078,12 +1078,12 @@ class PackageA(Sandbox):
         saved = os.path.join(home, "Downloads", "omaq", "report.pdf")
         app.on_event({"event": "file.done", "id": "in1", "conversation": "0", "key": A, "path": saved, "dir": "in",
                       "request": ""})
-        self.assertEqual((app.status, app.offers), ("File transfer successful: ~/Downloads/omaq/report.pdf", {}))
+        self.assertEqual((app.status, app.files.offers), ("File transfer successful: ~/Downloads/omaq/report.pdf", {}))
         app.on_event({"event": "file.offer", "id": "in3", "conversation": "0", "key": A, "name": "x.bin", "size": 9,
                       "dir": "in", "request": ""})
         app.edit("text", ":declinefile")
         app.edit("key", "enter")
-        self.assertEqual((app.link.ops("file.cancel")[-1]["id"], app.offers, app.status), ("in3", {}, "Declined file: x.bin"))
+        self.assertEqual((app.link.ops("file.cancel")[-1]["id"], app.files.offers, app.status), ("in3", {}, "Declined file: x.bin"))
         app.edit("text", ":sendfile " + path)
         app.edit("key", "enter")
         rid = app.link.ops("file.send")[-1]["id"]
@@ -1102,7 +1102,7 @@ class PackageA(Sandbox):
                       plain(app.render()))
         app.on_event({"event": "file.progress", "id": "f3", "conversation": "0", "key": B, "dir": "out", "request": rid,
                       "done": 900, "size": 1000})
-        self.assertEqual(app.sends["0"].done, 700)
+        self.assertEqual(app.files.sends["0"].done, 700)
         app.on_event({"event": "file.offer", "id": "in5", "conversation": "0", "key": A, "name": "big.iso", "size": 4000,
                       "dir": "in", "request": ""})
         app.edit("text", ":acceptfile")
@@ -1113,21 +1113,21 @@ class PackageA(Sandbox):
         self.assertIn("Receiving big.iso  \u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 25%",
                       plain(app.render()))
         self.assertEqual(cli.progress_bar(5, 5), ("\u2588" * 10, "", 100))
-        app.offers["0"] = cli.FileOffer("in4", "y", 1, A)
+        app.files.offers["0"] = cli.FileOffer("in4", "y", 1, A)
         app.drop_link()
-        self.assertEqual((set(app.offers), set(app.sends)), ({"0"}, {"0"}))
+        self.assertEqual((set(app.files.offers), set(app.files.sends)), ({"0"}, {"0"}))
         app.link = FakeLink()
         app.handshake_request()
         app.on_event({"event": "snapshot", "request": app.nonce, "instance": app.instance, "protocol": 16,
                       "online": True})
         self.assertEqual(app.link.ops("file.status"), [{"op": "file.status", "conversation": "0", "id": rid, "key": A},
                                                        {"op": "file.status", "conversation": "0", "id": "in4", "key": A}])
-        self.assertEqual((set(app.offers), app.offers["0"].unconfirmed), ({"0"}, True))
+        self.assertEqual((set(app.files.offers), app.files.offers["0"].unconfirmed), ({"0"}, True))
         app.drop_link()
         app.link = FakeLink()
         app.handshake_request()
         app.on_event({"event": "snapshot", "request": app.nonce, "instance": "j" * 32, "protocol": 16, "online": True})
-        self.assertEqual((app.offers, app.sends, app.status), ({}, {}, "File transfer failed: helper_restarted"))
+        self.assertEqual((app.files.offers, app.files.sends, app.status), ({}, {}, "File transfer failed: helper_restarted"))
         self.assertEqual(cli.human_size(999), "999 B")
 
     def test_bar_wording_stays_in_sync(self):
@@ -1342,16 +1342,16 @@ class Blockers(Sandbox):
         app.on_event({"event": "file.failed", "id": "0:65536", "conversation": "0", "key": A, "dir": "in",
                       "request": "", "code": "accept_failed"})
         app.on_event({"event": "error", "code": "forbidden"})
-        self.assertEqual((app.offers, app.status), ({}, "File transfer failed: accept_failed"))
+        self.assertEqual((app.files.offers, app.status), ({}, "File transfer failed: accept_failed"))
         self.offer(app, "0", A, "0:65537", "report.pdf")
-        self.assertEqual((app.offers["0"].id, app.link.ops("file.cancel")), ("0:65537", []))
+        self.assertEqual((app.files.offers["0"].id, app.link.ops("file.cancel")), ("0:65537", []))
         app.edit("text", ":acceptfile")
         app.edit("key", "enter")
         app.on_event({"event": "file.done", "id": "0:65537", "conversation": "0", "key": A,
                       "path": "/srv/x/report.pdf", "dir": "in", "request": ""})
         app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
         self.assertEqual(app.status, "File transfer successful: /srv/x/report.pdf \u00b7 " + cli.HISTORY_ITEM_FAILED)
-        app.file_result = ("0", "old", time.monotonic() - 10)
+        app.files.result = ("0", "old", time.monotonic() - 10)
         app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
         self.assertEqual(app.status, cli.HISTORY_ITEM_FAILED)
 
@@ -1369,7 +1369,7 @@ class Blockers(Sandbox):
         app.on_event({"event": "file.sending", "id": "0:3", "conversation": "0", "key": A, "dir": "out", "request": rid})
         self.assertEqual(app.link.ops("file.cancel"), [{"op": "file.cancel", "conversation": "0", "id": "0:3", "key": A}])
         app.on_event({"event": "file.canceled", "id": "0:3", "conversation": "0", "key": A, "dir": "out", "request": rid})
-        self.assertEqual((app.sends, app.status), ({}, "File transfer canceled"))
+        self.assertEqual((app.files.sends, app.status), ({}, "File transfer canceled"))
 
     def test_r08_rebind_drops_offers_and_sends(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
@@ -1378,13 +1378,13 @@ class Blockers(Sandbox):
         app.edit("text", ":sendfile " + self.file())
         app.edit("key", "enter")
         app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"}])
-        self.assertEqual((app.offers, app.sends), ({}, {}))
+        self.assertEqual((app.files.offers, app.files.sends), ({}, {}))
         self.assertEqual(app.status, "File transfer failed: " + cli.FAILURES["identity_changed"])
         self.offer(app, "0", C, "0:65536", "carol.txt")
-        app.offers["0"].key = A
+        app.files.offers["0"].key = A
         app.edit("text", ":declinefile")
         app.edit("key", "enter")
-        self.assertEqual((app.link.ops("file.cancel"), app.status, app.offers), ([], "No file offer in this chat", {}))
+        self.assertEqual((app.link.ops("file.cancel"), app.status, app.files.offers), ([], "No file offer in this chat", {}))
 
     def test_r09_file_commands_stay_in_the_focused_chat(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
@@ -1409,11 +1409,11 @@ class Blockers(Sandbox):
         rid = app.link.ops("invite.redeem")[-1]["id"]
         app.on_event({"event": "error", "code": "unsupported", "request": "bar-request"})
         app.on_event({"event": "error", "code": "forbidden", "conversation": "0"})
-        self.assertEqual((app.redeem_request, app.status), (rid, "Checking the invite\u2026"))
+        self.assertEqual((app.invites.redeem_request, app.status), (rid, "Checking the invite\u2026"))
         app.on_event({"event": "invite.redeemed", "kind": "group", "request": rid})
         app.on_event({"event": "error", "code": "unsupported"})
         self.assertEqual(app.status, cli.REDEEMED_GROUP)
-        app.request = cli.PendingRequest("direct", B, "", "")
+        app.invites.request = cli.PendingRequest("direct", B, "", "")
         app.edit("text", ":accept")
         app.edit("key", "enter")
         app.on_event({"event": "error", "code": "forbidden", "request": "x"})
@@ -1422,13 +1422,13 @@ class Blockers(Sandbox):
         self.assertEqual(app.status, "The request could not be accepted.")
         app.on_event({"event": "contact.decided", "request": "other", "ok": True})
         self.assertEqual(app.status, "The request could not be accepted.")
-        app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": True})
+        app.on_event({"event": "contact.decided", "request": app.invites.decide_request, "ok": True})
         app.on_event({"event": "error", "code": "forbidden"})
-        self.assertEqual((app.status, app.decide_request), ("Accepted", ""))
-        app.request = cli.PendingRequest("direct", B, "", "")
+        self.assertEqual((app.status, app.invites.decide_request), ("Accepted", ""))
+        app.invites.request = cli.PendingRequest("direct", B, "", "")
         app.edit("text", ":accept")
         app.edit("key", "enter")
-        app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": False, "code": "forbidden"})
+        app.on_event({"event": "contact.decided", "request": app.invites.decide_request, "ok": False, "code": "forbidden"})
         self.assertEqual(app.status, "The request could not be accepted.")
 
     def test_r11_quit_before_the_handshake_settles_it(self):
@@ -1473,7 +1473,7 @@ class Blockers(Sandbox):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
         groups = safety.replace(" / ", " ").split()
-        app.request = cli.PendingRequest("direct", C, safety, "")
+        app.invites.request = cli.PendingRequest("direct", C, safety, "")
         app.overlay = cli.RequestOverlay()
         app.size = (40, 16)
         frame = self.plain(app.render())
@@ -1541,21 +1541,21 @@ class Blockers(Sandbox):
         self.assertEqual(asked, {"0:65536": "0", "1:65536": "1"})
         self.assertIn("File offer: old.txt (4 B)  checking\u2026", self.plain(app.render()))
         self.offer(app, "0", A, "0:131072", "new.txt")
-        self.assertEqual((app.offers["0"].name, app.link.ops("file.cancel")), ("new.txt", []))
+        self.assertEqual((app.files.offers["0"].name, app.link.ops("file.cancel")), ("new.txt", []))
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
                       "state": "offer", "name": "pending.txt", "size": 4, "done": 0})
-        self.assertEqual((app.offers["1"].unconfirmed, app.offers["1"].accepted), (False, False))
-        app.offers["1"].unconfirmed = True
+        self.assertEqual((app.files.offers["1"].unconfirmed, app.files.offers["1"].accepted), (False, False))
+        app.files.offers["1"].unconfirmed = True
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
                       "state": "receiving", "name": "", "size": 4000, "done": 1000})
-        self.assertEqual((app.offers["1"].accepted, app.offers["1"].done), (True, 1000))
-        app.offers["1"].unconfirmed = True
+        self.assertEqual((app.files.offers["1"].accepted, app.files.offers["1"].done), (True, 1000))
+        app.files.offers["1"].unconfirmed = True
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": A, "dir": "in",
                       "state": "unknown", "name": "", "size": 0, "done": 0})
-        self.assertIn("1", app.offers)
+        self.assertIn("1", app.files.offers)
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
                       "state": "unknown", "name": "", "size": 0, "done": 0})
-        self.assertEqual(("1" in app.offers, app.status), (False, "File transfer status unknown; check the chat"))
+        self.assertEqual(("1" in app.files.offers, app.status), (False, "File transfer status unknown; check the chat"))
 
     def test_f03_notices_behind_a_confirmation_are_kept(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
@@ -1646,7 +1646,7 @@ class Blockers(Sandbox):
     def test_r12_notes_wrap_texts_and_separate_halves(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
-        app.request = cli.PendingRequest("direct", C, safety, B)
+        app.invites.request = cli.PendingRequest("direct", C, safety, B)
         app.overlay = cli.RequestOverlay()
         app.size = (40, 24)
         rows = [re.sub(r"\x1b\[[0-9;]*m", "", r) for r in app.overlay_rows(40, 20)]
