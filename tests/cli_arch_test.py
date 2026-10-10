@@ -26,6 +26,8 @@ ALLOWED = {
     "commands": set(),
     "view": {"commands", "protocol", "text"},
     "modals": {"commands", "protocol", "text"},
+    "app": {"text", "protocol", "session", "chat", "files", "invites", "commands", "view", "modals", "palette", "keys",
+            "link", "helper_process", "presence", "terminal", "system", "layout"},
 }
 PURE = {"text", "protocol", "layout", "keys", "palette", "session", "chat", "files", "invites", "commands", "view",
         "modals"}
