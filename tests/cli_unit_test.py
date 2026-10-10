@@ -1131,8 +1131,10 @@ class PackageA(Sandbox):
         self.assertEqual(cli.human_size(999), "999 B")
 
     def test_bar_wording_stays_in_sync(self):
-        bar = "".join(open(os.path.join(ROOT, path), encoding="utf-8").read()
-                      for path in ("Panel.qml", "pages/ChatPage.qml", "Service.qml"))
+        bar = ""
+        for path in ("Panel.qml", "pages/ChatPage.qml", "Service.qml"):
+            with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+                bar += f.read()
         client = ""
         for folder, _, names in sorted(os.walk(os.path.join(ROOT, "cli"))):
             for name in sorted(names):
