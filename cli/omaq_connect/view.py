@@ -103,7 +103,7 @@ class Screen:
         if self.app.conn != "online":
             return ("reconnecting…" if self.app.conn == "reconnecting" else "connecting…"), "dim"
         c = self.app.convs.get(conversation)
-        if c and c["typing_until"]:
+        if c and c.typing_until:
             return "typing…", "status"
         f = self.app.friend(conversation)
         return ("online" if f and f["online"] else "offline"), "status"
@@ -261,14 +261,14 @@ class Screen:
         c = self.app.convs.get(conversation)
         if not c:
             return []
-        if not c["loaded"] and not c["items"]:
+        if not c.loaded and not c.items:
             return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation)
         f = self.app.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
         lines = []
         shown_day = None
-        for m in c["items"]:
+        for m in c.items:
             if m.ts:
                 local = time.localtime(m.ts)
                 day = (local.tm_year, local.tm_yday)
@@ -310,7 +310,7 @@ class Screen:
                         lines.append(segs)
                         segs = [(" " * pad, "dim", ""), (label, role, extra)]
                 lines.append(segs)
-        if not c["items"]:
+        if not c.items:
             lines.append([("   no messages yet", "dim", "")])
         return lines + self.transfer_lines(conversation)
 

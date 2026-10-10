@@ -1,4 +1,14 @@
+from dataclasses import dataclass, field
+
 from .protocol import UNSAVED_SENT, Message, is_direct, message_from
+
+
+@dataclass(eq=False, slots=True)
+class Conversation:
+    items: list = field(default_factory=list)
+    loaded: bool = False
+    request: str = ""
+    typing_until: float = 0.0
 
 
 def friend_of(friends, fid):

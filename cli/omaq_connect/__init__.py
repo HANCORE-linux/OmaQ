@@ -269,7 +269,7 @@ class App:
     def conv(self, conversation):
         c = self.convs.get(conversation)
         if c is None:
-            c = {"items": [], "loaded": False, "request": "", "typing_until": 0.0}
+            c = Conversation()
             self.convs[conversation] = c
         return c
 
@@ -385,7 +385,7 @@ class App:
         self.conn = "reconnecting"
         self.next_connect = time.monotonic() + 1.0
         for c in self.convs.values():
-            c["loaded"], c["request"] = False, ""
+            c.loaded, c.request = False, ""
         for conversation, m in self.pending.values():
             m.failed = "delivery_unknown"
         self.pending.clear()
@@ -562,12 +562,12 @@ class App:
         if not conversation or not self.handshake:
             return
         c = self.conv(conversation)
-        if c["loaded"] or c["request"] or time.monotonic() < self.retry_at.get(conversation, 0.0):
+        if c.loaded or c.request or time.monotonic() < self.retry_at.get(conversation, 0.0):
             return
-        c["request"] = "cli-history-" + secrets.token_hex(6)
+        c.request = "cli-history-" + secrets.token_hex(6)
         if not self.send_bound({"op": "history", "conversation": conversation, "limit": HISTORY_LIMIT,
-                                "id": c["request"]}):
-            c["request"] = ""
+                                "id": c.request}):
+            c.request = ""
 
     def show(self, conversation):
         pane = self.pane
@@ -621,9 +621,9 @@ class App:
                 m.ts = message_from(ev).ts
             return
         m = message_from(ev)
-        if m.id and any(x.id == m.id for x in c["items"]):
+        if m.id and any(x.id == m.id for x in c.items):
             return
-        c["items"].append(m)
+        c.items.append(m)
         for pane in self.layout.panes():
             if pane.conv == conversation and m.dir == "in":
                 pane.scroll = 0
@@ -647,7 +647,7 @@ class App:
             return
         request = "cli-" + secrets.token_hex(10)
         m = Message("", request, "out", text, time.time(), ack=0)
-        self.conv(pane.conv)["items"].append(m)
+        self.conv(pane.conv).items.append(m)
         self.pending[request] = (pane.conv, m)
         if not self.send_bound({"op": "msg.send", "conversation": pane.conv, "text": text, "reply": "",
                                 "id": request}):
@@ -685,19 +685,21 @@ class App:
         if self.typing_on and now - self.last_edit > TYPING_IDLE:
             self.stop_typing()
         for c in self.convs.values():
-            if c["typing_until"] and now > c["typing_until"]:
-                c["typing_until"] = 0.0
+            if c.typing_until and now > c.typing_until:
+                c.typing_until = 0.0
                 self.dirty = True
         if self.handshake and not self.locked:
             for pane in self.layout.panes():
-                if pane.conv and not self.convs.get(pane.conv, {}).get("loaded"):
+                c = self.convs.get(pane.conv)
+                if pane.conv and not (c and c.loaded):
                     self.load(pane.conv)
 
     def mark_read(self, now):
         if not (self.focused and self.handshake and not self.locked):
             return
         for conversation in self.visible:
-            if (self.unread.get(conversation) and self.convs.get(conversation, {}).get("loaded")
+            c = self.convs.get(conversation)
+            if (self.unread.get(conversation) and c and c.loaded
                     and now > self.read_pending.get(conversation, 0.0)):
                 if self.send_bound({"op": "conversation.read", "conversation": conversation}):
                     self.read_pending[conversation] = now + 5.0
@@ -728,7 +730,7 @@ class App:
     def finish_file(self, conversation):
         c = self.convs.get(conversation)
         if c:
-            c["loaded"], c["request"] = False, ""
+            c.loaded, c.request = False, ""
 
     def send_failed(self):
         self.say("Not connected" if not self.link else "Could not send the request")
@@ -743,7 +745,8 @@ class App:
 
     def sent_texts(self, conversation):
         texts = []
-        for m in reversed(self.convs.get(conversation, {}).get("items", [])):
+        c = self.convs.get(conversation)
+        for m in reversed(c.items if c else []):
             if m.dir == "out" and m.text and (not texts or texts[-1] != m.text):
                 texts.append(m.text)
         return texts
@@ -1229,7 +1232,7 @@ class App:
             if now > self.rehandshake_at:
                 self.rehandshake_at = now + 2.0
                 for c in self.convs.values():
-                    c["loaded"], c["request"] = False, ""
+                    c.loaded, c.request = False, ""
                 self.handshake_request()
         else:
             self.invites.on_window_error(code, request, conversation)
@@ -1250,18 +1253,18 @@ class App:
     def _ev_history(self, ev):
         conversation = str(ev.get("conversation") or "")
         c = self.convs.get(conversation)
-        if c and c["request"] and str(ev.get("request") or "") == c["request"] and self.bound(ev):
+        if c and c.request and str(ev.get("request") or "") == c.request and self.bound(ev):
             items = ev.get("items") if isinstance(ev.get("items"), list) else []
             pending = [m for owner, m in self.pending.values() if owner == conversation]
-            c["items"] = merge_history(c["items"], items, pending)
-            c["loaded"], c["request"] = True, ""
+            c.items = merge_history(c.items, items, pending)
+            c.loaded, c.request = True, ""
             self.retry_at.pop(conversation, None)
 
     def _ev_history_failed(self, ev):
         conversation = str(ev.get("conversation") or "")
         c = self.convs.get(conversation)
-        if c and c["request"] and str(ev.get("request") or "") == c["request"]:
-            c["request"] = ""
+        if c and c.request and str(ev.get("request") or "") == c.request:
+            c.request = ""
             self.retry_at[conversation] = time.monotonic() + HISTORY_RETRY
             self.say("History could not be loaded; retrying")
 
@@ -1274,12 +1277,13 @@ class App:
         entry = self.pending.pop(request, None)
         if not entry and request:
             conversation = str(ev.get("conversation") or "")
-            sent = find_sent(self.convs.get(conversation, {}).get("items", []), request)
+            c = self.convs.get(conversation)
+            sent = find_sent(c.items if c else [], request)
             if sent is not None:
                 entry = (conversation, sent)
         if entry and ev.get("delivered") is True:
             owner, m = entry
-            mark_unsaved(self.conv(owner)["items"], m, time.time())
+            mark_unsaved(self.conv(owner).items, m, time.time())
         elif entry:
             entry[1].failed = str(ev.get("code") or "error")
 
@@ -1288,7 +1292,7 @@ class App:
             c = self.convs.get(str(ev.get("conversation") or ""))
             if c:
                 level = 3 if ev.get("state") == "read" else (2 if ev.get("state") == "delivered" else 0)
-                for m in c["items"]:
+                for m in c.items:
                     if m.id and m.id == str(ev.get("id") or "") and m.dir == "out":
                         m.ack = max(m.ack, level)
 
@@ -1296,7 +1300,7 @@ class App:
         if self.bound(ev):
             conversation = str(ev.get("conversation") or "")
             if is_direct(conversation):
-                self.conv(conversation)["typing_until"] = time.monotonic() + TYPING_EXPIRE if ev.get("typing") else 0.0
+                self.conv(conversation).typing_until = time.monotonic() + TYPING_EXPIRE if ev.get("typing") else 0.0
 
     def _ev_invite(self, ev):
         self.invites.on_invite(ev)
@@ -1337,7 +1341,7 @@ class App:
             del self.clears[conversation]
             if name == "history.clear.succeeded":
                 c = self.conv(conversation)
-                c["items"], c["loaded"], c["request"] = [], False, ""
+                c.items, c.loaded, c.request = [], False, ""
                 self.unread.pop(conversation, None)
                 self.load(conversation)
                 self.say("Chat cleared on this computer")
