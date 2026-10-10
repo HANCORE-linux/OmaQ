@@ -402,23 +402,23 @@ class Screen:
     def transfer_lines(self, conversation):
         lines = []
         offer = self.app.offers.get(conversation)
-        if offer and offer["accepted"] and "done" in offer:
-            full, empty, percent = progress_bar(offer["done"], offer["size"])
-            lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer["name"]), "text", ""),
+        if offer and offer.accepted and offer.done is not None:
+            full, empty, percent = progress_bar(offer.done, offer.size)
+            lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer.name), "text", ""),
                           (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
         elif offer:
-            hint = ("  checking\u2026" if offer.get("unconfirmed") else
-                    "  receiving\u2026" if offer["accepted"] else "  :acceptfile or :declinefile")
+            hint = ("  checking\u2026" if offer.unconfirmed else
+                    "  receiving\u2026" if offer.accepted else "  :acceptfile or :declinefile")
             lines.append([(" \u21e3 ", "accent", "1"),
-                          ("File offer: %s (%s)" % (clean_line(offer["name"]), human_size(offer["size"])), "text", ""),
+                          ("File offer: %s (%s)" % (clean_line(offer.name), human_size(offer.size)), "text", ""),
                           (hint, "dim", "")])
         send = self.app.sends.get(conversation)
-        if send and "done" in send:
-            full, empty, percent = progress_bar(send["done"], send["size"])
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send["name"]), "text", ""),
+        if send and send.done is not None:
+            full, empty, percent = progress_bar(send.done, send.size)
+            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send.name), "text", ""),
                           (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", ""),
                           ("  :cancelfile", "dim", "")])
         elif send:
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send["name"]), "text", ""),
+            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send.name), "text", ""),
                           ("  :cancelfile", "dim", "")])
         return lines

@@ -1,12 +1,49 @@
 import os
 import secrets
 import time
+from dataclasses import dataclass
 
 from .protocol import FAILURES, FILE_ERRORS, TEXT_MAX, is_direct
 from .session import bound, friend_of, key_for
 from .text import clean_line, home_path, human_size
 
 DONE_SECONDS = 7.5
+
+
+@dataclass(eq=False, slots=True)
+class FileOffer:
+    id: str
+    name: str
+    size: int
+    key: str
+    accepted: bool = False
+    unconfirmed: bool = False
+    done: int | None = None
+
+    def progress(self, done, size):
+        self.done, self.size = min(done, size), size
+
+    def confirm_pending(self):
+        self.unconfirmed, self.accepted = False, False
+
+    def confirm_receiving(self, done, size):
+        self.unconfirmed, self.accepted = False, True
+        if size:
+            self.progress(done, size)
+
+
+@dataclass(eq=False, slots=True)
+class OutgoingSend:
+    request: str
+    name: str
+    key: str
+    id: str = ""
+    cancel: bool = False
+    done: int | None = None
+    size: int = 0
+
+    def progress(self, done, size):
+        self.done, self.size = min(done, size), size
 
 
 class FileTransfers:
@@ -39,10 +76,10 @@ class FileTransfers:
         conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
         if fid and is_direct(conversation) and self.bound(ev):
             held = self.offers.get(conversation)
-            if held and held.get("unconfirmed"):
+            if held and held.unconfirmed:
                 del self.offers[conversation]
                 held = None
-            if held and held["id"] != fid:
+            if held and held.id != fid:
                 self.send_bound({"op": "file.cancel", "conversation": conversation, "id": fid})
             elif not held:
                 try:
@@ -50,18 +87,17 @@ class FileTransfers:
                 except (TypeError, ValueError):
                     size = 0
                 name = str(ev.get("name") or "file")
-                self.offers[conversation] = {"id": fid, "name": name, "size": size, "accepted": False,
-                                             "key": str(ev.get("key") or "")}
+                self.offers[conversation] = FileOffer(fid, name, size, str(ev.get("key") or ""))
                 f = friend_of(self.friends(), conversation)
                 self.say("File offer from %s: %s (%s)" % (f["name"] if f else "a friend", name, human_size(size)), 15)
 
     def on_sending(self, ev):
         conversation = str(ev.get("conversation") or "")
         send = self.sends.get(conversation)
-        if send and str(ev.get("request") or "") == send["request"] and self.bound(ev):
-            send["id"] = str(ev.get("id") or "")
-            if send["cancel"] and send["id"]:
-                self.send({"op": "file.cancel", "conversation": conversation, "id": send["id"], "key": send["key"]})
+        if send and str(ev.get("request") or "") == send.request and self.bound(ev):
+            send.id = str(ev.get("id") or "")
+            if send.cancel and send.id:
+                self.send({"op": "file.cancel", "conversation": conversation, "id": send.id, "key": send.key})
 
     def on_progress(self, ev):
         conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
@@ -71,12 +107,12 @@ class FileTransfers:
             done, size = 0, 0
         if ev.get("dir") == "out":
             target = self.sends.get(conversation)
-            match = target is not None and (fid == target["id"] or str(ev.get("request") or "") == target["request"])
+            match = target is not None and (fid == target.id or str(ev.get("request") or "") == target.request)
         else:
             target = self.offers.get(conversation)
-            match = target is not None and fid == target["id"]
+            match = target is not None and fid == target.id
         if match and size and self.bound(ev):
-            target["done"], target["size"] = min(done, size), size
+            target.progress(done, size)
 
     def on_result(self, ev):
         name = ev.get("event")
@@ -85,12 +121,12 @@ class FileTransfers:
         keyed = self.bound(ev) if ev.get("key") else True
         if ev.get("dir") == "out":
             send = self.sends.get(conversation)
-            if send and keyed and ((request and request == send["request"]) or (fid and fid == send["id"])):
+            if send and keyed and ((request and request == send.request) or (fid and fid == send.id)):
                 del self.sends[conversation]
                 self.reload(conversation)
                 if name == "file.done":
                     warning = FILE_ERRORS.get(code)
-                    self.finished(conversation, warning or "File transfer successful: %s" % send["name"],
+                    self.finished(conversation, warning or "File transfer successful: %s" % send.name,
                                   15 if warning else DONE_SECONDS)
                 elif name == "file.canceled":
                     self.say("File transfer canceled")
@@ -98,11 +134,11 @@ class FileTransfers:
                     self.say("File transfer failed: %s" % (FILE_ERRORS.get(code) or FAILURES.get(code) or code or "error"), 15)
         else:
             offer = self.offers.get(conversation)
-            if offer and fid == offer["id"] and self.bound(ev):
+            if offer and fid == offer.id and self.bound(ev):
                 del self.offers[conversation]
                 self.reload(conversation)
                 if name == "file.done":
-                    self.finished(conversation, "File transfer successful: %s" % home_path(ev.get("path") or offer["name"]),
+                    self.finished(conversation, "File transfer successful: %s" % home_path(ev.get("path") or offer.name),
                                   DONE_SECONDS)
                 elif name == "file.canceled":
                     self.say("File transfer canceled")
@@ -112,18 +148,16 @@ class FileTransfers:
     def on_state(self, ev):
         conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
         offer = self.offers.get(conversation)
-        if offer and offer.get("unconfirmed") and fid == offer["id"] and self.bound(ev):
+        if offer and offer.unconfirmed and fid == offer.id and self.bound(ev):
             state = str(ev.get("state") or "")
             if state == "offer":
-                offer["unconfirmed"], offer["accepted"] = False, False
+                offer.confirm_pending()
             elif state == "receiving":
-                offer["unconfirmed"], offer["accepted"] = False, True
                 try:
                     done, size = max(0, int(ev.get("done") or 0)), max(0, int(ev.get("size") or 0))
                 except (TypeError, ValueError):
                     done, size = 0, 0
-                if size:
-                    offer["done"], offer["size"] = min(done, size), size
+                offer.confirm_receiving(done, size)
             else:
                 del self.offers[conversation]
                 self.reload(conversation)
@@ -149,30 +183,29 @@ class FileTransfers:
             name = os.path.basename(path)
             if self.send_bound({"op": "file.send", "conversation": conversation, "path": path, "kind": "file",
                                 "id": request}):
-                self.sends[conversation] = {"request": request, "id": "", "name": name, "cancel": False,
-                                            "key": self.key_for(conversation)}
+                self.sends[conversation] = OutgoingSend(request, name, self.key_for(conversation))
                 self.say("Sending %s…" % name, 10)
             else:
                 self.failed()
 
     def answer(self, verb, conversation):
         offer = self.offers.get(conversation)
-        if offer and offer["key"] != self.key_for(conversation):
+        if offer and offer.key != self.key_for(conversation):
             del self.offers[conversation]
             offer = None
         if not offer:
             self.say("No file offer in this chat")
         elif verb == "acceptfile":
-            if offer["accepted"]:
-                self.say("Already receiving %s" % clean_line(offer["name"]))
-            elif self.send({"op": "file.accept", "conversation": conversation, "id": offer["id"], "key": offer["key"]}):
-                offer["accepted"] = True
-                self.say("Receiving %s…" % clean_line(offer["name"]), 10)
+            if offer.accepted:
+                self.say("Already receiving %s" % clean_line(offer.name))
+            elif self.send({"op": "file.accept", "conversation": conversation, "id": offer.id, "key": offer.key}):
+                offer.accepted = True
+                self.say("Receiving %s…" % clean_line(offer.name), 10)
             else:
                 self.failed()
-        elif self.send({"op": "file.cancel", "conversation": conversation, "id": offer["id"], "key": offer["key"]}):
+        elif self.send({"op": "file.cancel", "conversation": conversation, "id": offer.id, "key": offer.key}):
             del self.offers[conversation]
-            self.say("Declined file: %s" % clean_line(offer["name"]))
+            self.say("Declined file: %s" % clean_line(offer.name))
         else:
             self.failed()
 
@@ -180,10 +213,10 @@ class FileTransfers:
         send = self.sends.get(conversation) if conversation else None
         if not send:
             self.say("No file is sending in this chat")
-        elif not send["id"]:
-            send["cancel"] = True
+        elif not send.id:
+            send.cancel = True
             self.say("Canceling…")
-        elif self.send({"op": "file.cancel", "conversation": conversation, "id": send["id"], "key": send["key"]}):
+        elif self.send({"op": "file.cancel", "conversation": conversation, "id": send.id, "key": send.key}):
             self.say("Canceling…")
         else:
             self.failed()
@@ -195,10 +228,10 @@ class FileTransfers:
             self.offers, self.sends = {}, {}
             return
         for conversation, send in self.sends.items():
-            self.send({"op": "file.status", "conversation": conversation, "id": send["request"], "key": send["key"]})
+            self.send({"op": "file.status", "conversation": conversation, "id": send.request, "key": send.key})
         for conversation, offer in self.offers.items():
-            offer["unconfirmed"] = True
-            self.send({"op": "file.status", "conversation": conversation, "id": offer["id"], "key": offer["key"]})
+            offer.unconfirmed = True
+            self.send({"op": "file.status", "conversation": conversation, "id": offer.id, "key": offer.key})
 
     def forget(self, conversation):
         self.offers.pop(conversation, None)

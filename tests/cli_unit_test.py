@@ -1101,7 +1101,7 @@ class PackageA(Sandbox):
                       plain(app.render()))
         app.on_event({"event": "file.progress", "id": "f3", "conversation": "0", "key": B, "dir": "out", "request": rid,
                       "done": 900, "size": 1000})
-        self.assertEqual(app.sends["0"]["done"], 700)
+        self.assertEqual(app.sends["0"].done, 700)
         app.on_event({"event": "file.offer", "id": "in5", "conversation": "0", "key": A, "name": "big.iso", "size": 4000,
                       "dir": "in", "request": ""})
         app.edit("text", ":acceptfile")
@@ -1112,7 +1112,7 @@ class PackageA(Sandbox):
         self.assertIn("Receiving big.iso  \u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 25%",
                       plain(app.render()))
         self.assertEqual(cli.progress_bar(5, 5), ("\u2588" * 10, "", 100))
-        app.offers["0"] = {"id": "in4", "name": "y", "size": 1, "accepted": False, "key": A}
+        app.offers["0"] = cli.FileOffer("in4", "y", 1, A)
         app.drop_link()
         self.assertEqual((set(app.offers), set(app.sends)), ({"0"}, {"0"}))
         app.link = FakeLink()
@@ -1121,7 +1121,7 @@ class PackageA(Sandbox):
                       "online": True})
         self.assertEqual(app.link.ops("file.status"), [{"op": "file.status", "conversation": "0", "id": rid, "key": A},
                                                        {"op": "file.status", "conversation": "0", "id": "in4", "key": A}])
-        self.assertEqual((set(app.offers), app.offers["0"]["unconfirmed"]), ({"0"}, True))
+        self.assertEqual((set(app.offers), app.offers["0"].unconfirmed), ({"0"}, True))
         app.drop_link()
         app.link = FakeLink()
         app.handshake_request()
@@ -1338,7 +1338,7 @@ class Blockers(Sandbox):
         app.on_event({"event": "error", "code": "forbidden"})
         self.assertEqual((app.offers, app.status), ({}, "File transfer failed: accept_failed"))
         self.offer(app, "0", A, "0:65537", "report.pdf")
-        self.assertEqual((app.offers["0"]["id"], app.link.ops("file.cancel")), ("0:65537", []))
+        self.assertEqual((app.offers["0"].id, app.link.ops("file.cancel")), ("0:65537", []))
         app.edit("text", ":acceptfile")
         app.edit("key", "enter")
         app.on_event({"event": "file.done", "id": "0:65537", "conversation": "0", "key": A,
@@ -1375,7 +1375,7 @@ class Blockers(Sandbox):
         self.assertEqual((app.offers, app.sends), ({}, {}))
         self.assertEqual(app.status, "File transfer failed: " + cli.FAILURES["identity_changed"])
         self.offer(app, "0", C, "0:65536", "carol.txt")
-        app.offers["0"]["key"] = A
+        app.offers["0"].key = A
         app.edit("text", ":declinefile")
         app.edit("key", "enter")
         self.assertEqual((app.link.ops("file.cancel"), app.status, app.offers), ([], "No file offer in this chat", {}))
@@ -1535,15 +1535,15 @@ class Blockers(Sandbox):
         self.assertEqual(asked, {"0:65536": "0", "1:65536": "1"})
         self.assertIn("File offer: old.txt (4 B)  checking\u2026", self.plain(app.render()))
         self.offer(app, "0", A, "0:131072", "new.txt")
-        self.assertEqual((app.offers["0"]["name"], app.link.ops("file.cancel")), ("new.txt", []))
+        self.assertEqual((app.offers["0"].name, app.link.ops("file.cancel")), ("new.txt", []))
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
                       "state": "offer", "name": "pending.txt", "size": 4, "done": 0})
-        self.assertEqual((app.offers["1"]["unconfirmed"], app.offers["1"]["accepted"]), (False, False))
-        app.offers["1"]["unconfirmed"] = True
+        self.assertEqual((app.offers["1"].unconfirmed, app.offers["1"].accepted), (False, False))
+        app.offers["1"].unconfirmed = True
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": B, "dir": "in",
                       "state": "receiving", "name": "", "size": 4000, "done": 1000})
-        self.assertEqual((app.offers["1"]["accepted"], app.offers["1"]["done"]), (True, 1000))
-        app.offers["1"]["unconfirmed"] = True
+        self.assertEqual((app.offers["1"].accepted, app.offers["1"].done), (True, 1000))
+        app.offers["1"].unconfirmed = True
         app.on_event({"event": "file.state", "id": "1:65536", "conversation": "1", "key": A, "dir": "in",
                       "state": "unknown", "name": "", "size": 0, "done": 0})
         self.assertIn("1", app.offers)
