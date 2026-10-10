@@ -1494,10 +1494,10 @@ class Blockers(Sandbox):
         app.size = (80, 24)
         app.edit("key", "f1")
         frame = self.plain(app.render())
-        self.assertNotIn("ctrl+n", frame)
+        self.assertNotIn("New pane with the next friend", frame)
         self.assertRegex(frame, "\u2193 \\d+ more \u00b7 pgdn")
         app.edit("key", "pgdn")
-        self.assertIn("ctrl+n", self.plain(app.render()))
+        self.assertIn("New pane with the next friend", self.plain(app.render()))
         app.edit("key", "esc")
         app.edit("key", "f1")
         self.assertEqual(app.help.top, 0)
@@ -1511,7 +1511,7 @@ class Blockers(Sandbox):
         app.edit("key", "pgdn")
         frame = self.plain(app.render())
         self.assertNotIn(" more \u00b7 pg", frame)
-        self.assertIn("ctrl+n", frame)
+        self.assertIn("New pane with the next friend", frame)
 
     def test_success_notice_is_short_and_warnings_stay(self):
         app = self.app([{"id": "0", "key": A, "name": "bob"}])
