@@ -1166,6 +1166,33 @@ class PackageA(Sandbox):
         self.assertEqual(labels[4][:2], ("✕ Contact is offline", "unread"))
 
 
+class SessionRules(unittest.TestCase):
+    def test_rebound_reports_moved_and_vanished_keys(self):
+        old = [{"id": "0", "key": A}, {"id": "1", "key": B}, {"id": "2", "key": C}]
+        new = [{"id": "0", "key": B}, {"id": "2", "key": C}, {"id": "3", "key": A}]
+        self.assertEqual(cli.rebound(old, new), [("0", "3"), ("1", "0")])
+        self.assertEqual(cli.rebound(old, old), [])
+
+    def test_merge_history_keeps_unresolved_messages_once(self):
+        sent = cli.Message("m1", "r1", "out", "kept by id", 1.0)
+        unknown = cli.Message("", "r2", "out", "unknown", 2.0, failed="delivery_unknown")
+        pending = cli.Message("", "r3", "out", "pending", 3.0)
+        saved = cli.Message("m4", "r4", "out", "sent", 4.0)
+        merged = cli.merge_history([sent, unknown, saved], [{"id": "m1", "dir": "out", "text": "kept by id"}],
+                                   [pending, unknown])
+        self.assertEqual([m.text for m in merged], ["kept by id", "unknown", "pending"])
+        self.assertIsNot(merged[0], sent)
+
+    def test_unsaved_note_follows_its_message(self):
+        first, second = cli.Message("a", "ra", "out", "a", 5.0), cli.Message("b", "rb", "out", "b", 6.0)
+        items = [first, second]
+        self.assertIs(cli.find_sent(items, "ra"), first)
+        cli.mark_unsaved(items, first, 9.0)
+        self.assertEqual([(m.dir, m.text, m.ts) for m in items],
+                         [("out", "a", 5.0), ("sys", cli.UNSAVED_SENT, 5.0), ("out", "b", 6.0)])
+        self.assertEqual((first.failed, first.ack, first.local), ("", 1, True))
+
+
 class Blockers(Sandbox):
     def plain(self, text):
         return re.sub(r"\x1b\[[0-9;]*m", "", text)

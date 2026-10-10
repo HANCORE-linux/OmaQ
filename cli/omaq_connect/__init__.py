@@ -583,17 +583,13 @@ class App:
                 del self.pending[request]
 
     def apply_friends(self, friends):
-        old = {f["id"]: f["key"] for f in self.friends}
-        new = {f["id"]: f["key"] for f in friends}
-        by_key = {f["key"]: f["id"] for f in friends if f["key"]}
         moved = {}
-        for fid, key in old.items():
-            if new.get(fid) != key:
-                for pane in self.layout.panes() + [self.scratch]:
-                    if pane.conv == fid:
-                        self.stash_draft(pane)
-                        moved[id(pane)] = by_key.get(key, "")
-                self.purge(fid)
+        for fid, target in rebound(self.friends, friends):
+            for pane in self.layout.panes() + [self.scratch]:
+                if pane.conv == fid:
+                    self.stash_draft(pane)
+                    moved[id(pane)] = target
+            self.purge(fid)
         self.friends = friends
         self.friends_ready = True
         for pane in self.layout.panes() + [self.scratch]:
@@ -1801,11 +1797,8 @@ class App:
         c = self.convs.get(conversation)
         if c and c["request"] and str(ev.get("request") or "") == c["request"] and self.bound(ev):
             items = ev.get("items") if isinstance(ev.get("items"), list) else []
-            keep = [m for m in c["items"] if m.local or (m.dir == "out" and m.request and (m.failed or not m.id))]
-            keep += [m for owner, m in self.pending.values() if owner == conversation and m not in keep]
-            c["items"] = [message_from(i) for i in items if isinstance(i, dict)]
-            ids = {m.id for m in c["items"] if m.id}
-            c["items"].extend(m for m in keep if not (m.id and m.id in ids))
+            pending = [m for owner, m in self.pending.values() if owner == conversation]
+            c["items"] = merge_history(c["items"], items, pending)
             c["loaded"], c["request"] = True, ""
             self.retry_at.pop(conversation, None)
 
@@ -1826,15 +1819,12 @@ class App:
         entry = self.pending.pop(request, None)
         if not entry and request:
             conversation = str(ev.get("conversation") or "")
-            for m in self.convs.get(conversation, {}).get("items", []):
-                if m.dir == "out" and m.request == request:
-                    entry = (conversation, m)
+            sent = find_sent(self.convs.get(conversation, {}).get("items", []), request)
+            if sent is not None:
+                entry = (conversation, sent)
         if entry and ev.get("delivered") is True:
             owner, m = entry
-            m.failed, m.ack, m.local = "", max(m.ack, 1), True
-            items = self.conv(owner)["items"]
-            note = Message("", "", "sys", UNSAVED_SENT, m.ts or time.time(), local=True)
-            items.insert(items.index(m) + 1 if m in items else len(items), note)
+            mark_unsaved(self.conv(owner)["items"], m, time.time())
         elif entry:
             entry[1].failed = str(ev.get("code") or "error")
 
