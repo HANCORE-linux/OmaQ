@@ -22,8 +22,10 @@ ALLOWED = {
     "session": {"protocol"},
     "files": {"protocol", "session", "text"},
     "invites": {"protocol"},
+    "commands": set(),
+    "view": {"commands", "protocol", "text"},
 }
-PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files", "invites"}
+PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files", "invites", "commands", "view"}
 failures = []
 
 
