@@ -279,9 +279,9 @@ Confirmations expire after 15 seconds.
 
 ### Send and receive files
 
-Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it.
+Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it. While it travels, the chat shows its progress, such as `Sending notes.pdf  ███████░░░ 70%`.
 
-An incoming file waits until you decide: the chat shows `File offer: notes.pdf (2.3 MB)`. `:acceptfile` saves it in `~/Downloads/omaq` and shows the full path, and `:declinefile` rejects it.
+An incoming file waits until you decide: the chat shows `File offer: notes.pdf (2.3 MB)`. `:acceptfile` saves it in `~/Downloads/omaq`, shows `Receiving notes.pdf` with the same bar while it arrives, and then shows the full path. `:declinefile` rejects it.
 
 ### Emoji, receipts, and text size
 

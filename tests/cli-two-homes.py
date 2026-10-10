@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -210,6 +211,48 @@ def main():
             term.pump(0.5)
         if got["path"] not in term.out[mark:].decode("utf-8", "replace"):
             fail("the CLI did not report where the file was saved")
+        blob = os.urandom(1500000)
+        big = os.path.join(base, "big.bin")
+        with open(big, "wb") as f:
+            f.write(blob)
+        mark = len(term.out)
+        since_a, since_b = len(a.events), len(b.events)
+
+        def fresh(raw, since, test, seconds):
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                for ev in raw.events[since:]:
+                    if test(ev):
+                        return ev
+                term.pump(0.05)
+                raw.pump(0.2)
+            return None
+        term.send(":sendfile %s\r" % big)
+        offer = fresh(b, since_b, lambda e: e.get("event") == "file.offer" and e.get("name") == "big.bin", 60)
+        if not offer:
+            fail(":sendfile did not offer the big file")
+        b.send({"op": "file.accept", "conversation": "0", "key": fb["key"], "id": offer["id"]})
+        done = fresh(b, since_b, lambda e: e.get("event") == "file.done" and e.get("dir") == "in"
+                     and e.get("id") == offer["id"], 300)
+        if not done:
+            fail("the big file did not arrive")
+        with open(done["path"], "rb") as f:
+            got = f.read()
+        if got != blob:
+            fail("bob received different bytes for the big file: %s, %d of %d bytes" % (done["path"], len(got), len(blob)))
+        steps = [e["done"] for e in b.events[since_b:] if e.get("event") == "file.progress" and e.get("id") == offer["id"]
+                 and e.get("dir") == "in" and e.get("size") == len(blob)]
+        if not steps or steps != sorted(steps) or not 0 < steps[0] <= steps[-1] < len(blob) or len(steps) > 101:
+            fail("bad incoming progress events: %d %r" % (len(steps), steps[:5]))
+        a.pump(1.0)
+        sent = [e for e in a.events[since_a:] if e.get("event") == "file.progress" and e.get("dir") == "out"]
+        if not sent:
+            fail("alice's helper sent no outgoing progress events")
+        rendered = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", term.out[mark:].decode("utf-8", "replace"))
+        if not re.search(r"Sending big\.bin\s+[\u2588\u2591]+ \d+%", rendered):
+            starts = [e for e in a.events[since_a:] if e.get("event") == "file.sending"]
+            fail("the CLI never drew a progress bar: plain line %s, sending %r, progress %d %r" % (
+                "Sending big.bin" in rendered, starts[:1], len(sent), sent[:2]))
         shot = os.environ.get("CLI_SCREEN")
         if shot:
             with open(shot, "w", encoding="utf-8") as f:

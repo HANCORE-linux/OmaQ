@@ -1072,6 +1072,26 @@ class PackageA(Sandbox):
         self.assertEqual((app.status, len(app.link.ops("file.cancel"))), ("Canceling…", cancels))
         app.on_event({"event": "file.sending", "id": "f2", "conversation": "0", "key": A, "dir": "out", "request": rid})
         self.assertEqual(app.link.ops("file.cancel")[-1]["id"], "f2")
+        app.edit("text", ":sendfile " + path)
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.on_event({"event": "file.progress", "id": "f3", "conversation": "0", "key": A, "dir": "out", "request": rid,
+                      "done": 700, "size": 1000})
+        self.assertIn("Sending my notes.txt  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591 70%",
+                      plain(app.render()))
+        app.on_event({"event": "file.progress", "id": "f3", "conversation": "0", "key": B, "dir": "out", "request": rid,
+                      "done": 900, "size": 1000})
+        self.assertEqual(app.sends["0"]["done"], 700)
+        app.on_event({"event": "file.offer", "id": "in5", "conversation": "0", "key": A, "name": "big.iso", "size": 4000,
+                      "dir": "in", "request": ""})
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        self.assertIn("File offer: big.iso (4.0 KB)  receiving…", plain(app.render()))
+        app.on_event({"event": "file.progress", "id": "in5", "conversation": "0", "key": A, "dir": "in", "request": "",
+                      "done": 1000, "size": 4000})
+        self.assertIn("Receiving big.iso  \u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 25%",
+                      plain(app.render()))
+        self.assertEqual(cli.progress_bar(5, 5), ("\u2588" * 10, "", 100))
         app.offers["0"] = {"id": "in4", "name": "y", "size": 1, "accepted": False}
         app.drop_link()
         self.assertEqual((app.offers, app.sends, app.status), ({}, {}, "File transfer status unknown; check the chat"))

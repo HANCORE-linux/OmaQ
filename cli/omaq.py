@@ -299,6 +299,11 @@ def human_size(size):
         size /= 1000
 
 
+def progress_bar(done, size, width=10):
+    filled = min(width, int(width * done / size)) if size else 0
+    return "\u2588" * filled, "\u2591" * (width - filled), (int(done * 100 / size) if size else 0)
+
+
 def home_path(path):
     home = os.path.expanduser("~")
     path = str(path or "")
@@ -1388,6 +1393,20 @@ class App:
                 send["id"] = str(ev.get("id") or "")
                 if send["cancel"] and send["id"]:
                     self.send_bound({"op": "file.cancel", "conversation": conversation, "id": send["id"]})
+        elif name == "file.progress":
+            conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
+            try:
+                done, size = max(0, int(ev.get("done") or 0)), max(0, int(ev.get("size") or 0))
+            except (TypeError, ValueError):
+                done, size = 0, 0
+            if ev.get("dir") == "out":
+                target = self.sends.get(conversation)
+                match = target is not None and (fid == target["id"] or str(ev.get("request") or "") == target["request"])
+            else:
+                target = self.offers.get(conversation)
+                match = target is not None and fid == target["id"]
+            if match and size and self.bound(ev):
+                target["done"], target["size"] = min(done, size), size
         elif name in ("file.done", "file.failed", "file.canceled"):
             conversation, fid = str(ev.get("conversation") or ""), str(ev.get("id") or "")
             request, code = str(ev.get("request") or ""), str(ev.get("code") or "")
@@ -2499,13 +2518,22 @@ class App:
     def transfer_lines(self, conversation):
         lines = []
         offer = self.offers.get(conversation)
-        if offer:
+        if offer and offer["accepted"] and "done" in offer:
+            full, empty, percent = progress_bar(offer["done"], offer["size"])
+            lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer["name"]), "text", ""),
+                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
+        elif offer:
             hint = "  receiving…" if offer["accepted"] else "  :acceptfile or :declinefile"
             lines.append([(" \u21e3 ", "accent", "1"),
                           ("File offer: %s (%s)" % (clean_line(offer["name"]), human_size(offer["size"])), "text", ""),
                           (hint, "dim", "")])
         send = self.sends.get(conversation)
-        if send:
+        if send and "done" in send:
+            full, empty, percent = progress_bar(send["done"], send["size"])
+            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send["name"]), "text", ""),
+                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", ""),
+                          ("  :cancelfile", "dim", "")])
+        elif send:
             lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send["name"]), "text", ""),
                           ("  :cancelfile", "dim", "")])
         return lines

@@ -658,6 +658,16 @@ int omaq_file_is_sending(uint32_t friend, uint32_t fnum)
 	return i >= 0 && xf[i].sending;
 }
 
+int omaq_file_size(uint32_t friend, uint32_t fnum, uint64_t *size)
+{
+	int i = xf_find(friend, fnum, 0);
+
+	if (i < 0 || xf[i].avatar || !size)
+		return -1;
+	*size = xf[i].size;
+	return 0;
+}
+
 int omaq_file_chunk_out(struct omaq_tox *t, uint32_t friend, uint32_t fnum,
 			uint64_t pos, size_t len)
 {

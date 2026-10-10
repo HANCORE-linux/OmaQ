@@ -8263,6 +8263,75 @@ static void cancel_file_after_error(uint32_t friend, uint32_t fnum)
 		omaq_file_drop(friend, fnum);
 }
 
+#define FILE_PROGRESS_SLOTS 8
+#define FILE_PROGRESS_INTERVAL_MS 250
+static struct {
+	int used;
+	uint32_t friend;
+	uint32_t fnum;
+	int64_t at;
+	unsigned percent;
+} g_file_progress[FILE_PROGRESS_SLOTS];
+
+static const char *file_request_of(uint32_t friend, uint32_t fnum)
+{
+	for (int i = 0; i < FILE_REQUEST_CACHE; i++)
+		if (g_file_requests[i].used && g_file_requests[i].friend == friend &&
+		    g_file_requests[i].fnum == fnum)
+			return g_file_requests[i].request;
+	return "";
+}
+
+static void emit_file_progress(uint32_t friend, uint32_t fnum, const char *dir, uint64_t done)
+{
+	char id[OMAQ_FILE_ID_MAX], conv[16], key[65], erequest[80 * 6 + 1], ev[1024];
+	uint64_t size;
+	unsigned percent;
+	int64_t now = monotonic_millis();
+	int slot = -1, wr;
+
+	if (omaq_file_size(friend, fnum, &size) != 0 || size == 0 || done >= size)
+		return;
+	percent = (unsigned)(done * 100 / size);
+	for (int i = 0; i < FILE_PROGRESS_SLOTS; i++)
+		if (g_file_progress[i].used && g_file_progress[i].friend == friend &&
+		    g_file_progress[i].fnum == fnum) {
+			slot = i;
+			break;
+		}
+	if (slot >= 0 && percent >= g_file_progress[slot].percent &&
+	    (percent == g_file_progress[slot].percent ||
+	     now - g_file_progress[slot].at < FILE_PROGRESS_INTERVAL_MS))
+		return;
+	if (slot < 0) {
+		slot = 0;
+		for (int i = 0; i < FILE_PROGRESS_SLOTS; i++) {
+			if (!g_file_progress[i].used) {
+				slot = i;
+				break;
+			}
+			if (g_file_progress[i].at < g_file_progress[slot].at)
+				slot = i;
+		}
+	}
+	g_file_progress[slot].used = 1;
+	g_file_progress[slot].friend = friend;
+	g_file_progress[slot].fnum = fnum;
+	g_file_progress[slot].at = now;
+	g_file_progress[slot].percent = percent;
+	if (omaq_file_id_format(friend, fnum, id, sizeof(id)) != 0 ||
+	    omaq_tox_friend_pk_hex(g_tox, friend, key) != 0 ||
+	    omaq_json_escape(strcmp(dir, "out") == 0 ? file_request_of(friend, fnum) : "",
+			     erequest, sizeof(erequest)) != 0)
+		return;
+	snprintf(conv, sizeof(conv), "%u", friend);
+	wr = snprintf(ev, sizeof(ev),
+		      "{\"event\":\"file.progress\",\"id\":\"%s\",\"conversation\":\"%s\",\"key\":\"%s\",\"dir\":\"%s\",\"request\":\"%s\",\"done\":%llu,\"size\":%llu}",
+		      id, conv, key, dir, erequest, (unsigned long long)done, (unsigned long long)size);
+	if (wr > 0 && (size_t)wr < sizeof(ev))
+		emit(ev);
+}
+
 static void hook_file_recv(void *ud, uint32_t friend, uint32_t fnum,
 			   const char *name, uint64_t size)
 {
@@ -8290,6 +8359,8 @@ static void hook_file_creq(void *ud, uint32_t friend, uint32_t fnum, uint64_t po
 			emit_file("failed", friend, fnum, NULL, 0, NULL, "out", request);
 		return;
 	}
+	if (len > 0 && !avatar)
+		emit_file_progress(friend, fnum, "out", pos + len);
 	event = omaq_file_event_for(avatar, OMAQ_FILE_OUTCOME_DONE);
 	if (len == 0 && event == OMAQ_FILE_EVENT_DONE) {
 		char conv[16], state_conv[OMAQ_DIRECT_STATE_ID_MAX], path[512], mid[64];
@@ -8339,6 +8410,8 @@ static void hook_file_chunk(void *ud, uint32_t friend, uint32_t fnum, uint64_t p
 			emit_file("failed", friend, fnum, NULL, 0, NULL, "in", NULL);
 		return;
 	}
+	if (rc == 0 && !avatar)
+		emit_file_progress(friend, fnum, "in", pos + len);
 	if (rc == 1) {
 		char conv[16], state_conv[OMAQ_DIRECT_STATE_ID_MAX], mid[64];
 		int stored;

@@ -191,6 +191,11 @@ int main(void)
 	    access(dest, F_OK) != 0 || !omaq_file_busy())
 		fail("identity reset partial fixture");
 	else {
+		uint64_t size = 0;
+
+		if (omaq_file_size(10, 14, &size) != 0 || size != sizeof(data) ||
+		    omaq_file_size(10, 99, &size) == 0 || omaq_file_size(10, 14, NULL) == 0)
+			fail("file size lookup for progress");
 		omaq_file_reset();
 		if (access(dest, F_OK) == 0 || omaq_file_can_cancel(10, 14) || omaq_file_busy())
 			fail("identity reset partial cleanup");
