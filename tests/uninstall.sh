@@ -171,11 +171,11 @@ run_link_case() {
     exit 1
   }
   if [ "$expected" = removed ]; then
-    [ ! -e "$link" ] && [ ! -L "$link" ] &&
-      grep -Fqx "Removed: $link" "$link_root/uninstall.out" || {
+    if [ -e "$link" ] || [ -L "$link" ] ||
+        ! grep -Fqx "Removed: $link" "$link_root/uninstall.out"; then
       echo "uninstall: the omaq-connect link into the removed plugin was kept" >&2
       exit 1
-    }
+    fi
   elif [ ! -e "$link" ] && [ ! -L "$link" ]; then
     echo "uninstall: omaq-connect ($mode) was removed" >&2
     exit 1
