@@ -39,7 +39,7 @@ KEYS = [
     ("pgup / pgdn", "Scroll"),
     ("shift+enter", "New line in a message"),
     ("ctrl+k", "Choose an emoji"),
-    ("esc", "Clear the message"),
+    ("esc", "Clear the message, then hide a file notice"),
     (ZOOM_KEYS, "Text size: your terminal's zoom (%s resets); 100%% is the size at start"
      % ("ctrl+shift+backspace" if KITTY else "ctrl+0")),
 ]

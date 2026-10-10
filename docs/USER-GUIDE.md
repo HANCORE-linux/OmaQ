@@ -259,7 +259,7 @@ Confirmations expire after 15 seconds.
 | `Up` / `Down` | Recall your earlier messages in this chat |
 | `PgUp` / `PgDn` | Scroll |
 | `Shift+Enter` | Start a new line |
-| `Esc` | Clear the message |
+| `Esc` | Clear the message, then hide a file notice |
 | `Ctrl+K` | Open the emoji picker |
 | `Ctrl+C` | Clear the message; it never quits |
 

@@ -718,6 +718,8 @@ class App:
             return
         elif kind == "key" and value in ("tab", "backtab") and self.friends:
             self.show(self.next_free(pane.conv, 1 if value == "tab" else -1))
+        elif kind == "key" and value == "esc" and not pane.draft:
+            self.files.dismiss(pane.conv)
         else:
             pane.edit(kind, value)
         self.dirty = True

@@ -336,4 +336,8 @@ class Screen:
         elif send:
             lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send.name), "text", ""),
                           ("  :cancelfile", "dim", "")])
+        canceled = self.app.files.notice(conversation)
+        if not lines and canceled is not None:
+            lines.append([(" \u2715 ", "unread", "1"), ("File transfer canceled: %s" % clean_line(canceled), "text", ""),
+                          ("  esc hides", "dim", "")])
         return lines

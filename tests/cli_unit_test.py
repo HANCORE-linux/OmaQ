@@ -1517,6 +1517,36 @@ class Blockers(Sandbox):
             os.close(readable)
             os.close(writable)
 
+    def test_r13_canceled_transfer_stays_until_dismissed(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (100, 20)
+        self.offer(app, "0", A, "0:65536", "notes.pdf")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        app.on_event({"event": "file.canceled", "id": "0:65536", "conversation": "0", "key": A, "dir": "in"})
+        app.tick(time.monotonic() + 60)
+        line = "\u2715 File transfer canceled: notes.pdf  esc hides"
+        self.assertIn(line, self.plain(app.render()))
+        app.edit("text", "draft")
+        app.edit("key", "esc")
+        self.assertEqual(app.pane.draft, "")
+        self.assertIn(line, self.plain(app.render()))
+        app.edit("key", "esc")
+        self.assertNotIn("\u2715 File transfer canceled", self.plain(app.render()))
+        app.edit("text", ":sendfile " + self.file("report.txt"))
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.on_event({"event": "file.canceled", "id": "0:1", "conversation": "0", "key": A, "dir": "out", "request": rid})
+        self.assertIn("File transfer canceled: report.txt", self.plain(app.render()))
+        self.offer(app, "0", A, "0:65537", "next.pdf")
+        frame = self.plain(app.render())
+        self.assertEqual(("\u2715 File transfer canceled" in frame, "File offer: next.pdf" in frame), (False, True))
+        app.on_event({"event": "file.canceled", "id": "0:65537", "conversation": "0", "key": A, "dir": "in"})
+        self.assertIn("File transfer canceled: next.pdf", self.plain(app.render()))
+        app.apply_friends([{"id": "0", "key": B, "name": "bob", "online": True, "status": "online"}])
+        self.assertNotIn("\u2715 File transfer canceled", self.plain(app.render()))
+
     def test_r12_small_windows_wrap_codes_and_scroll(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))

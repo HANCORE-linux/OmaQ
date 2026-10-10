@@ -50,7 +50,7 @@ class FileTransfers:
     def __init__(self, send, say, failed, friends, reload):
         self.send, self.say, self.failed = send, say, failed
         self.friends, self.reload = friends, reload
-        self.offers, self.sends = {}, {}
+        self.offers, self.sends, self.notices = {}, {}, {}
         self.result = ("", "", 0.0)
 
     def bound(self, ev):
@@ -88,6 +88,7 @@ class FileTransfers:
                     size = 0
                 name = str(ev.get("name") or "file")
                 self.offers[conversation] = FileOffer(fid, name, size, str(ev.get("key") or ""))
+                self.notices.pop(conversation, None)
                 f = friend_of(self.friends(), conversation)
                 self.say("File offer from %s: %s (%s)" % (f["name"] if f else "a friend", name, human_size(size)), 15)
 
@@ -124,11 +125,13 @@ class FileTransfers:
             if send and keyed and ((request and request == send.request) or (fid and fid == send.id)):
                 del self.sends[conversation]
                 self.reload(conversation)
+                self.notices.pop(conversation, None)
                 if name == "file.done":
                     warning = FILE_ERRORS.get(code)
                     self.finished(conversation, warning or "File transfer successful: %s" % send.name,
                                   15 if warning else DONE_SECONDS)
                 elif name == "file.canceled":
+                    self.notices[conversation] = (send.key, send.name)
                     self.say("File transfer canceled")
                 else:
                     self.say("File transfer failed: %s" % (FILE_ERRORS.get(code) or FAILURES.get(code) or code or "error"), 15)
@@ -137,10 +140,12 @@ class FileTransfers:
             if offer and fid == offer.id and self.bound(ev):
                 del self.offers[conversation]
                 self.reload(conversation)
+                self.notices.pop(conversation, None)
                 if name == "file.done":
                     self.finished(conversation, "File transfer successful: %s" % home_path(ev.get("path") or offer.name),
                                   DONE_SECONDS)
                 elif name == "file.canceled":
+                    self.notices[conversation] = (offer.key, offer.name)
                     self.say("File transfer canceled")
                 else:
                     self.say("File transfer failed: %s" % (FAILURES.get(code) or code or "error"), 15)
@@ -184,6 +189,7 @@ class FileTransfers:
             if self.send_bound({"op": "file.send", "conversation": conversation, "path": path, "kind": "file",
                                 "id": request}):
                 self.sends[conversation] = OutgoingSend(request, name, self.key_for(conversation))
+                self.notices.pop(conversation, None)
                 self.say("Sending %s…" % name, 10)
             else:
                 self.failed()
@@ -233,11 +239,19 @@ class FileTransfers:
             offer.unconfirmed = True
             self.send({"op": "file.status", "conversation": conversation, "id": offer.id, "key": offer.key})
 
+    def notice(self, conversation):
+        key, name = self.notices.get(conversation, ("", ""))
+        return name if key and key == self.key_for(conversation) else None
+
+    def dismiss(self, conversation):
+        self.notices.pop(conversation, None)
+
     def forget(self, conversation):
         self.offers.pop(conversation, None)
+        self.notices.pop(conversation, None)
         if self.sends.pop(conversation, None):
             self.say("File transfer failed: %s" % FAILURES["identity_changed"], 15)
 
     def reset(self):
-        self.offers, self.sends = {}, {}
+        self.offers, self.sends, self.notices = {}, {}, {}
         self.result = ("", "", 0.0)
