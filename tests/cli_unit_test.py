@@ -194,6 +194,8 @@ class InstallerHook(unittest.TestCase):
             root = Path(base) / "plugins" / "hancore.omaq"
             (root / "cli").mkdir(parents=True)
             shutil.copy2(os.path.join(ROOT, "cli", "omaq.py"), root / "cli" / "omaq.py")
+            shutil.copytree(os.path.join(ROOT, "cli", "omaq_connect"), root / "cli" / "omaq_connect",
+                            ignore=shutil.ignore_patterns("__pycache__"))
             shutil.copy2(os.path.join(ROOT, "manifest.json"), root / "manifest.json")
             module.link_cli(root)
             link = os.path.join(base, "home", ".local", "bin", "omaq-connect")
@@ -202,6 +204,21 @@ class InstallerHook(unittest.TestCase):
             self.assertEqual(os.readlink(link), str(root / "cli" / "omaq.py"))
         finally:
             os.environ["HOME"] = old
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_entry_point_writes_no_bytecode(self):
+        import shutil
+        import subprocess
+        import tempfile
+        base = os.path.realpath(tempfile.mkdtemp(prefix="omaq-cli-pyc-"))
+        try:
+            shutil.copytree(os.path.join(ROOT, "cli"), os.path.join(base, "cli"),
+                            ignore=shutil.ignore_patterns("__pycache__"))
+            result = subprocess.run([sys.executable, "-I", os.path.join(base, "cli", "omaq.py"), "--help"],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual((result.returncode, result.stdout.startswith("usage: omaq-connect")), (0, True))
+            self.assertEqual([d for d, _, _ in os.walk(base) if os.path.basename(d) == "__pycache__"], [])
+        finally:
             shutil.rmtree(base, ignore_errors=True)
 
 
@@ -1115,8 +1132,12 @@ class PackageA(Sandbox):
     def test_bar_wording_stays_in_sync(self):
         bar = "".join(open(os.path.join(ROOT, path), encoding="utf-8").read()
                       for path in ("Panel.qml", "pages/ChatPage.qml", "Service.qml"))
-        with open(os.path.join(ROOT, "cli", "omaq.py"), encoding="utf-8") as f:
-            client = f.read()
+        client = ""
+        for folder, _, names in sorted(os.walk(os.path.join(ROOT, "cli"))):
+            for name in sorted(names):
+                if name.endswith(".py"):
+                    with open(os.path.join(folder, name), encoding="utf-8") as f:
+                        client += f.read()
         for text in ("That is not an OmaQ invite.", "Finish active calls, transfers, invites, or read receipts first.",
                      "Compare this code with your friend before accepting", "Another device used this invite link",
                      "Revoke this invite? It cannot be used again.",
@@ -1400,10 +1421,9 @@ class Blockers(Sandbox):
             def close(self):
                 pass
 
-        original = cli.Link
         try:
-            cli.Link = Sock
             app = cli.App("")
+            app.open_link = Sock
             app.settle()
             self.assertEqual(sent, [])
             app.proc = type("Proc", (), {"poll": lambda self: None, "pid": 1})()
@@ -1413,7 +1433,6 @@ class Blockers(Sandbox):
             app.settle()
             self.assertEqual(len(sent), 2)
         finally:
-            cli.Link = original
             os.close(readable)
             os.close(writable)
 
