@@ -196,6 +196,9 @@ if [ "$root" = "$live_root" ]; then
       "$helper_runtime" status --root "$root" --json || true
     fail "OmaQ was enabled, but its plugin IPC and helper did not become ready"
   }
+  if ! PATH=/usr/bin:/bin /usr/bin/python3 -I "$root/cli/omaq.py" --link; then
+    printf '%s\n' "omaq-connect: command not linked; run $root/cli/omaq.py --link" >&2
+  fi
   printf 'source: installed (%s)\n' "$head"
   printf 'helper: current\n'
   exit 0

@@ -9,7 +9,9 @@ helper="$root/tests/omaq_ipc_test_helper"
 
 tmp=$(mktemp -d)
 trap 'jobs -p | xargs -r kill 2>/dev/null || true; rm -rf -- "$tmp"' EXIT HUP INT TERM
-mkdir -m 700 "$tmp/bin"
+mkdir -m 700 "$tmp/bin" "$tmp/home"
+HOME="$tmp/home"
+export HOME
 cat >"$tmp/bin/omarchy" <<'SH'
 #!/bin/sh
 : >"$OMAQ_TEST_OMARCHY_CALLED"

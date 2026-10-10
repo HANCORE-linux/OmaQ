@@ -769,6 +769,18 @@ if (( remove_status != 0 )); then
   exit "$remove_status"
 fi
 
+cli_link="$HOME/.local/bin/omaq-connect"
+if [[ -L $cli_link && ! -e $cli_link ]]; then
+  cli_target=$(/usr/bin/readlink -- "$cli_link" || true)
+  case $cli_target in
+    */hancore.omaq/cli/omaq.py)
+      if /usr/bin/rm -f -- "$cli_link"; then
+        printf 'Removed: %q\n' "$cli_link"
+      fi
+      ;;
+  esac
+fi
+
 selected_paths=()
 declined_paths=()
 if (( ! assume_yes )); then
