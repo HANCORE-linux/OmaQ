@@ -19,8 +19,10 @@ ALLOWED = {
     "presence": {"helper_process"},
     "terminal": {"text"},
     "system": set(),
+    "session": {"protocol"},
+    "files": {"protocol", "session", "text"},
 }
-PURE = {"text", "protocol", "layout", "keys", "palette"}
+PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files"}
 failures = []
 
 
