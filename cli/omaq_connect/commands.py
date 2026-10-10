@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 
 VERBS = [("help", False), ("connect", True), ("split", True), ("invite", False), ("redeem", True),
-         ("requests", False), ("accept", False), ("decline", False), ("sendfile", True), ("acceptfile", False),
+         ("requests", False), ("accept", False), ("decline", False), ("nickname", True), ("sendfile", True), ("acceptfile", False),
          ("declinefile", False), ("cancelfile", False), ("clear", False), ("close", False), ("quit", False)]
 HINT = " " + "   ".join(":" + verb for verb in ("help", "connect", "split", "invite", "requests", "clear",
                                                    "close", "quit"))
@@ -17,6 +17,7 @@ COMMANDS = [
     (":requests", "Show a pending friend or group request", ""),
     (":accept", "Accept the pending request", ""),
     (":decline", "Decline the pending request", ""),
+    (":nickname ", "Change the name your friends see", "<name>"),
     (":sendfile ", "Send a file to this chat", "<path>"),
     (":acceptfile", "Save the offered file in ~/Downloads/omaq", ""),
     (":declinefile", "Decline the offered file", ""),
@@ -67,7 +68,7 @@ TIPS = [
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
 KNOWN = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
-         "accept", "decline", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
+         "accept", "decline", "nickname", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
 RECEIPTS = ["·", "→", "⇉", "⇉"]
 
 
@@ -77,7 +78,7 @@ def parse_command(line):
     arg = parts[1].strip() if len(parts) > 1 else ""
     if verb and verb not in KNOWN:
         candidates = [name for name, _ in VERBS
-                      if name.startswith(verb) and name not in ("accept", "decline", "acceptfile", "declinefile")]
+                      if name.startswith(verb) and name not in ("accept", "decline", "nickname", "acceptfile", "declinefile")]
         if len(candidates) == 1:
             verb = candidates[0]
     return verb, arg

@@ -195,6 +195,12 @@ def main():
         term.send(":nope\r")
         if not term.wait_for("Unknown command :nope", 5):
             fail("command line did not answer")
+        term.send(":nickname Pty Tester\r")
+        if not term.wait_for("Nickname changed to Pty Tester", 15):
+            fail(":nickname did not reach the helper:\n" + "\n".join(term.screen()[-3:]))
+        term.send(":nickname\r")
+        if not term.wait_for("Your nickname: Pty Tester", 5):
+            fail(":nickname did not show the saved name")
         term.send(b"\x1b[200~line one\r\nline two\x1b[201~")
         term.send("\x15")
         term.send("\x03")
@@ -248,6 +254,9 @@ def main():
         term = Term(env, cols=60, rows=12)
         if not term.wait_for("no friends yet", 20):
             fail("second start failed:\n" + term.text()[-1500:])
+        term.send(":nickname\r")
+        if not term.wait_for("Your nickname: Pty Tester", 5):
+            fail("the saved nickname did not come back with the snapshot")
         fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 980, 646))
         term.pump(1.0)
         fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 122, 980, 646))

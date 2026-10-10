@@ -445,9 +445,9 @@ class PackageA(Sandbox):
         self.assertEqual(plain(app.command_hint(120)), ":help   :quit   \u00b7   ctrl+k opens the emoji picker")
         app.edit("text", ":")
         self.assertEqual(plain(app.command_hint(300)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
-                                                                ":requests", ":accept", ":decline", ":sendfile",
-                                                                ":acceptfile", ":declinefile", ":cancelfile", ":clear",
-                                                                ":close", ":quit"])
+                                                                ":requests", ":accept", ":decline", ":nickname",
+                                                                ":sendfile", ":acceptfile", ":declinefile", ":cancelfile",
+                                                                ":clear", ":close", ":quit"])
         self.assertIn("1;7m:help", app.command_hint(80))
         app.edit("text", "c")
         self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":cancelfile", ":clear", ":close"])
@@ -1150,9 +1150,55 @@ class PackageA(Sandbox):
                      "The direct-contact limit has been reached.", "A file is already sending",
                      "File transfer successful", "File transfer canceled", "File transfer failed: ",
                      "File delivered, but local history could not be saved", "Clear this chat?",
-                     cli.HISTORY_ITEM_FAILED, cli.UNSAVED_SENT):
+                     "Nickname must contain 1–18 valid characters.", "Nickname update failed. Try again.",
+                     "Nickname saved; group updates are unconfirmed.", "Nickname update is unavailable.",
+                     "Nickname update timed out. Try again.", cli.HISTORY_ITEM_FAILED, cli.UNSAVED_SENT):
             self.assertIn(text, bar)
             self.assertIn(text, client)
+
+    def test_nickname_follows_the_helper(self):
+        app = cli.App("")
+        app.link = FakeLink()
+        app.handshake_request()
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": "n" * 32, "protocol": 16, "online": True,
+                      "nickname": "mo"})
+        app.command(":nickname")
+        self.assertEqual(app.status, "Your nickname: mo")
+        for name in ("x" * 19, "a\x7fb", "a\x85b"):
+            app.command(":nickname " + name)
+            self.assertEqual((app.status, app.link.ops("nickname.set")), ("Nickname must contain 1–18 valid characters.", []))
+        app.command(":n Neo")
+        self.assertEqual(app.link.ops("nickname.set"), [])
+        app.command(":nickname  Neo the One ")
+        op = app.link.ops("nickname.set")[-1]
+        self.assertEqual((op["nickname"], app.status), ("Neo the One", "Saving nickname…"))
+        app.on_event({"event": "nickname", "value": "from the bar"})
+        self.assertEqual((app.profile.nickname, app.status), ("from the bar", "Saving nickname…"))
+        app.on_event({"event": "nickname", "value": "Neo the One", "request": op["id"]})
+        self.assertEqual(app.status, "Nickname changed to Neo the One")
+        for code, text in (("nickname_invalid", "Nickname must contain 1–18 valid characters."),
+                           ("nickname_update_failed", "Nickname update failed. Try again."),
+                           ("unsupported", "Nickname update is unavailable."),
+                           ("busy", "Nickname update failed. Try again.")):
+            app.command(":nickname Trinity")
+            rid = app.link.ops("nickname.set")[-1]["id"]
+            app.on_event({"event": "error", "code": code, "request": "someone-else"})
+            self.assertEqual(app.status, "Saving nickname…")
+            app.on_event({"event": "error", "code": code, "request": rid})
+            self.assertEqual(app.status, text)
+        app.command(":nickname Trinity")
+        rid = app.link.ops("nickname.set")[-1]["id"]
+        app.on_event({"event": "nickname", "value": "Trinity"})
+        app.on_event({"event": "error", "code": "nickname_group_sync_failed", "request": rid})
+        self.assertEqual((app.profile.nickname, app.status), ("Trinity", "Nickname saved; group updates are unconfirmed."))
+        app.command(":nickname Morpheus")
+        app.tick(time.monotonic() + 11)
+        self.assertEqual((app.status, app.profile.request), ("Nickname update timed out. Try again.", ""))
+        app.command(":nickname Morpheus")
+        app.drop_link()
+        self.assertIn("Nickname result unknown; try again", app.status)
+        app.command(":nickname Morpheus")
+        self.assertEqual(app.status, "Not connected")
 
     def test_every_table_handler_exists(self):
         app = self.app([])

@@ -15,4 +15,5 @@ from .presence import *
 from .terminal import *
 from .system import *
 from .layout import *
+from .profile import *
 from .app import *

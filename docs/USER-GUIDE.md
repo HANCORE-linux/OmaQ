@@ -239,6 +239,7 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:redeem <link>` | Send a request with a friend's invite link |
 | `:requests` | Show a pending request, with the safety code for a friend request |
 | `:accept` / `:decline` | Answer the pending request |
+| `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
 | `:sendfile <path>` | Send a file to this chat |
 | `:acceptfile` / `:declinefile` | Save the offered file in `~/Downloads/omaq`, or decline it |
 | `:cancelfile` | Cancel your file transfer in this chat |

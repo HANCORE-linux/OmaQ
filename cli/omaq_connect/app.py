@@ -15,6 +15,7 @@ from .session import bound, friend_of, key_for, rebound
 from .chat import Chat
 from .files import FileTransfers
 from .invites import Invites
+from .profile import Profile
 from .commands import TIPS, Completion, parse_command, suggestions
 from .view import Screen
 from .modals import OVERLAYS, Confirmation, Help, InviteOverlay, Picker
@@ -67,6 +68,7 @@ EVENT_HANDLERS = {
     "invite.redeemed": "invites.on_redeemed",
     "request": "invites.on_request",
     "request.conflict": "invites.on_conflict",
+    "nickname": "profile.on_nickname",
     "history.clear.succeeded": "_ev_history_clear_result",
     "history.clear.failed": "_ev_history_clear_result",
 }
@@ -80,6 +82,7 @@ COMMAND_HANDLERS = {
     "clo": "_cmd_close",
     "invite": "_cmd_invite",
     "redeem": "_cmd_redeem",
+    "nickname": "_cmd_nickname",
     "requests": "_cmd_requests",
     "accept": "_cmd_decide",
     "decline": "_cmd_decide",
@@ -151,6 +154,7 @@ class App:
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
         self.screen = Screen(self)
         self.chat = Chat(self.send, self.send_bound, self.say, lambda: self.friends, lambda: self.handshake)
+        self.profile = Profile(self.send, self.say, self.send_failed)
         self.files = FileTransfers(self.send, self.say, self.send_failed, lambda: self.friends, self.chat.reload)
         self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
         self.confirm = None
@@ -257,6 +261,7 @@ class App:
         self.chat.drop()
         self.overlay = None
         self.invites.drop()
+        self.profile.drop()
         self.dirty = True
 
     def reset_identity(self):
@@ -268,6 +273,7 @@ class App:
         self.overlay = None
         self.invites.reset()
         self.files.reset()
+        self.profile.reset()
         self.typing_on = ""
         self.commands = []
         for pane in self.layout.panes() + [self.scratch]:
@@ -476,6 +482,7 @@ class App:
             self.dirty = True
         if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
+        self.profile.tick(now)
         if self.zoom_until and now >= self.zoom_until:
             self.zoom_until = 0.0
             self.dirty = True
@@ -889,6 +896,7 @@ class App:
             self.helper.adopt(self.state, self.instance)
             self.send({"op": "identity.ready", "id": self.instance})
             self.resume_transfers(restarted)
+        self.profile.on_snapshot(ev)
         self.locked = ev.get("locked") is True
         if self.locked:
             self.conn = "locked"
@@ -943,6 +951,8 @@ class App:
             self.say("The identity passphrase is incorrect.")
         elif self.invites.on_correlated_error(code, request):
             pass
+        elif self.profile.on_correlated_error(code, request):
+            pass
         elif code == "history_failed" and conversation:
             last_conv, last_text, last_at = self.files.result
             if last_conv == conversation and time.monotonic() - last_at < 3.0:
@@ -995,6 +1005,9 @@ class App:
 
     def _cmd_redeem(self, verb, arg):
         self.invites.redeem(arg)
+
+    def _cmd_nickname(self, verb, arg):
+        self.profile.set_nickname(arg)
 
     def _cmd_requests(self, verb, arg):
         self.invites.show_request()
