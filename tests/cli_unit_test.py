@@ -1505,6 +1505,22 @@ class Blockers(Sandbox):
         self.assertNotIn(" more \u00b7 pg", frame)
         self.assertIn("ctrl+n", frame)
 
+    def test_success_notice_is_short_and_warnings_stay(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        self.offer(app, "0", A, "0:65536", "short.txt")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        app.on_event({"event": "file.done", "id": "0:65536", "conversation": "0", "key": A, "path": "/srv/short.txt",
+                      "dir": "in", "request": ""})
+        self.assertEqual((app.status, app.status_seconds), ("File transfer successful: /srv/short.txt", 7.5))
+        app.edit("text", ":sendfile " + self.file())
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.on_event({"event": "file.done", "id": "0:1", "conversation": "0", "key": A, "path": "", "dir": "out",
+                      "request": rid, "code": "history_failed"})
+        self.assertEqual((app.status, app.status_seconds), (cli.FILE_ERRORS["history_failed"], 15))
+
     def test_f02_incoming_transfers_resync_after_a_reconnect(self):
         app = self.app([{"id": "0", "key": A, "name": "bob"}, {"id": "1", "key": B, "name": "carol"}])
         self.loaded(app, "0")

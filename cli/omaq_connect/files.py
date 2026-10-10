@@ -6,6 +6,8 @@ from .protocol import FAILURES, FILE_ERRORS, TEXT_MAX, is_direct
 from .session import bound, friend_of, key_for
 from .text import clean_line, home_path, human_size
 
+DONE_SECONDS = 7.5
+
 
 class FileTransfers:
     def __init__(self, send, say, failed, friends, reload):
@@ -87,7 +89,9 @@ class FileTransfers:
                 del self.sends[conversation]
                 self.reload(conversation)
                 if name == "file.done":
-                    self.finished(conversation, FILE_ERRORS.get(code) or "File transfer successful: %s" % send["name"], 15)
+                    warning = FILE_ERRORS.get(code)
+                    self.finished(conversation, warning or "File transfer successful: %s" % send["name"],
+                                  15 if warning else DONE_SECONDS)
                 elif name == "file.canceled":
                     self.say("File transfer canceled")
                 else:
@@ -98,7 +102,8 @@ class FileTransfers:
                 del self.offers[conversation]
                 self.reload(conversation)
                 if name == "file.done":
-                    self.finished(conversation, "File transfer successful: %s" % home_path(ev.get("path") or offer["name"]), 15)
+                    self.finished(conversation, "File transfer successful: %s" % home_path(ev.get("path") or offer["name"]),
+                                  DONE_SECONDS)
                 elif name == "file.canceled":
                     self.say("File transfer canceled")
                 else:
