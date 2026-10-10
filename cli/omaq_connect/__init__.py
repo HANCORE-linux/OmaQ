@@ -12,6 +12,7 @@ from .text import *
 from .protocol import *
 from .session import *
 from .files import *
+from .invites import *
 from .palette import *
 from .keys import *
 from .link import *
@@ -56,7 +57,6 @@ COMMANDS = [
 CONFIRM_SECONDS = 15
 TIP_SECONDS = 8
 ZOOM_SECONDS = 4
-ACTION_SECONDS = 10
 NAME_MAX = 18
 EXIT_WAIT = 20.0
 SETTLE_SECONDS = 5.0
@@ -197,7 +197,6 @@ class App:
         self.status = ""
         self.status_until = 0.0
         self.status_set, self.status_seconds = 0.0, STATUS_SECONDS
-        self.decide_request = ""
         self.focused = True
         self.typing_sent = 0.0
         self.typing_on = ""
@@ -216,13 +215,10 @@ class App:
         self.exit_note = ""
         self.commands = []
         self.out = sys.stdout
-        self.invite = {"url": "", "expires": 0}
-        self.invite_request = ""
-        self.redeem_request = ""
-        self.request = None
+        self.invites = Invites(self.send, self.say, self.send_failed, self.show_invite, self.open_overlay,
+                               self.close_overlays)
         self.overlay = None
         self.picker = None
-        self.action, self.action_until = "", 0.0
         self.addr = ""
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
         self.files = FileTransfers(self.send, self.say, self.send_failed, lambda: self.friends, self.finish_file)
@@ -230,6 +226,62 @@ class App:
         self.confirm = None
         self.clears = {}
         self.history_clear = 0
+
+    @property
+    def invite(self):
+        return self.invites.invite
+
+    @invite.setter
+    def invite(self, value):
+        self.invites.invite = value
+
+    @property
+    def invite_request(self):
+        return self.invites.invite_request
+
+    @invite_request.setter
+    def invite_request(self, value):
+        self.invites.invite_request = value
+
+    @property
+    def redeem_request(self):
+        return self.invites.redeem_request
+
+    @redeem_request.setter
+    def redeem_request(self, value):
+        self.invites.redeem_request = value
+
+    @property
+    def decide_request(self):
+        return self.invites.decide_request
+
+    @decide_request.setter
+    def decide_request(self, value):
+        self.invites.decide_request = value
+
+    @property
+    def request(self):
+        return self.invites.request
+
+    @request.setter
+    def request(self, value):
+        self.invites.request = value
+
+    @property
+    def action(self):
+        return self.invites.action
+
+    @action.setter
+    def action(self, value):
+        self.invites.action = value
+
+    @property
+    def action_until(self):
+        return self.invites.action_until
+
+    @action_until.setter
+    def action_until(self, value):
+        self.invites.action_until = value
 
     @property
     def offers(self):
@@ -404,10 +456,8 @@ class App:
         if self.clears:
             self.clears.clear()
             self.say("Clear result unknown; check the chat")
-        self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
-        if self.invite_request or self.redeem_request:
-            self.invite_request = self.redeem_request = ""
-            self.say("Invite result unknown; try again")
+        self.overlay = None
+        self.invites.drop()
         self.dirty = True
 
     def reset_identity(self):
@@ -419,8 +469,8 @@ class App:
         if self.confirm is not None:
             self.drop_confirm()
         self.clears = {}
-        self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
-        self.invite_request = self.redeem_request = ""
+        self.overlay = None
+        self.invites.reset()
         self.files.reset()
         self.typing_on = ""
         self.commands = []
@@ -790,9 +840,7 @@ class App:
                                  (label, "dim" if self.zoom == 100 else "accent", "")], cols)
 
     def decide_failure(self, code):
-        if code == "forbidden" and self.action == "accept":
-            return "The request could not be accepted."
-        return INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The request could not be answered."
+        return self.invites.decide_failure(code)
 
     def finish_file(self, conversation):
         c = self.convs.get(conversation)
@@ -836,6 +884,13 @@ class App:
         pane.draft = pane.hist_items[pane.hist]
         pane.cursor = len(pane.draft)
         self.dirty = True
+
+    def open_overlay(self, overlay):
+        self.overlay = overlay
+
+    def close_overlays(self, *kinds):
+        if self.overlay and self.overlay.get("kind") in kinds:
+            self.overlay = None
 
     def show_invite(self, copy=False):
         url = self.invite["url"]
@@ -1124,12 +1179,7 @@ class App:
                     self.say("Chat kept")
             elif confirm["action"] == "revoke":
                 if yes:
-                    self.invite_request = "cli-revoke-" + secrets.token_hex(8)
-                    if self.send({"op": "invite.revoke", "request": self.invite_request}):
-                        self.action, self.action_until = "invite", time.monotonic() + ACTION_SECONDS
-                    else:
-                        self.invite_request = ""
-                        self.send_failed()
+                    self.invites.revoke()
                 else:
                     self.say("Invite kept")
             self.show_notice(notice)
@@ -1715,14 +1765,8 @@ class App:
         if self.unlock_request and request == self.unlock_request:
             self.unlock_request = ""
             self.say("The identity passphrase is incorrect.")
-        elif self.redeem_request and request == self.redeem_request:
-            self.redeem_request, self.action_until = "", 0.0
-            self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be added.", 15)
-        elif self.invite_request and request == self.invite_request:
-            self.invite_request, self.action_until = "", 0.0
-            self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be created.", 15)
-        elif self.decide_request and request == self.decide_request:
-            self.say(self.decide_failure(code), 15)
+        elif self.invites.on_correlated_error(code, request):
+            pass
         elif code == "history_failed" and conversation:
             last_conv, last_text, last_at = self.file_result
             if last_conv == conversation and time.monotonic() - last_at < 3.0:
@@ -1736,14 +1780,8 @@ class App:
                 for c in self.convs.values():
                     c["loaded"], c["request"] = False, ""
                 self.handshake_request()
-        elif code and code != "locked" and not conversation and not request and time.monotonic() < self.action_until:
-            if self.action in ("accept", "decline"):
-                self.say(self.decide_failure(code), 15)
-            else:
-                self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code, 15)
-            if self.action == "redeem":
-                self.redeem_request = ""
-            self.action_until = 0.0
+        else:
+            self.invites.on_window_error(code, request, conversation)
 
     def _ev_unread(self, ev):
         if self.bound(ev):
@@ -1816,25 +1854,7 @@ class App:
                 self.conv(conversation)["typing_until"] = time.monotonic() + TYPING_EXPIRE if ev.get("typing") else 0.0
 
     def _ev_invite(self, ev):
-        if "url" in ev:
-            self.invite["url"] = str(ev.get("url") or "")
-        if "expires" in ev:
-            try:
-                self.invite["expires"] = max(0, int(ev.get("expires") or 0))
-            except (TypeError, ValueError):
-                self.invite["expires"] = 0
-        if not self.invite["url"] and not self.invite["expires"]:
-            if self.request and self.request["kind"] == "direct":
-                self.request = None
-            if self.overlay and self.overlay.get("kind") in ("invite", "request"):
-                self.overlay = None
-        request = str(ev.get("request") or "")
-        if request and request == self.invite_request:
-            self.invite_request, self.action_until = "", 0.0
-            if ev.get("op") == "revoke":
-                self.say("Invite revoked")
-            elif self.invite["url"]:
-                self.show_invite(copy=True)
+        self.invites.on_invite(ev)
 
     def _ev_file_offer(self, ev):
         self.files.on_offer(ev)
@@ -1849,49 +1869,19 @@ class App:
         self.files.on_result(ev)
 
     def _ev_contact_decided(self, ev):
-        if self.decide_request and str(ev.get("request") or "") == self.decide_request:
-            self.decide_request, self.action_until = "", 0.0
-            if ev.get("ok") is True:
-                self.say("Accepted" if self.action == "accept" else "Declined")
-            else:
-                self.say(self.decide_failure(str(ev.get("code") or "")), 15)
+        self.invites.on_decided(ev)
 
     def _ev_file_state(self, ev):
         self.files.on_state(ev)
 
     def _ev_invite_redeemed(self, ev):
-        if self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
-            self.redeem_request, self.action_until = "", 0.0
-            kind = str(ev.get("kind") or "")
-            safety = str(ev.get("safety") or "")
-            if kind not in ("direct", "group") or (kind == "direct" and not (hex64(ev.get("key")) and safety_ok(safety))):
-                self.say("OmaQ received an invalid response from the running helper.")
-            else:
-                self.overlay = {"kind": "redeemed", "group": kind == "group", "safety": safety}
-                self.say(REDEEMED_GROUP if kind == "group" else REDEEMED_DIRECT, 15)
+        self.invites.on_redeemed(ev)
 
     def _ev_request(self, ev):
-        kind = str(ev.get("kind") or "")
-        if kind == "direct":
-            key, safety = str(ev.get("key") or ""), str(ev.get("safety") or "")
-            if not hex64(key) or not safety_ok(safety):
-                self.request = None
-            elif self.request and self.request["kind"] == "direct" and self.request["key"] == key:
-                self.request["safety"] = safety
-            else:
-                self.request = {"kind": "direct", "key": key, "safety": safety, "conflict": ""}
-                self.say("Friend request; :requests shows it", 15)
-        elif kind == "group":
-            if not self.request or self.request["kind"] != "group":
-                self.say("Group invitation; :requests shows it", 15)
-            self.request = {"kind": "group", "key": "", "safety": "", "conflict": ""}
+        self.invites.on_request(ev)
 
     def _ev_request_conflict(self, ev):
-        key = str(ev.get("key") or "")
-        if (self.request and self.request["kind"] == "direct" and ev.get("kind") == "direct" and hex64(key)
-                and key != self.request["key"]):
-            self.request["conflict"] = key
-            self.say("Another device used this invite link", 15)
+        self.invites.on_conflict(ev)
 
     def _ev_history_clear_result(self, ev):
         name = ev.get("event")
@@ -1924,55 +1914,17 @@ class App:
                                 "prompt": "Revoke this invite? It cannot be used again. y/n"}
         elif arg:
             self.say("Usage: :invite or :invite revoke")
-        elif self.invite["url"] and self.invite["expires"] > time.time():
-            self.show_invite(copy=True)
         else:
-            self.invite_request = "cli-invite-" + secrets.token_hex(8)
-            if self.send({"op": "invite.create", "kind": "direct", "ttlSec": 86400,
-                          "request": self.invite_request}):
-                self.action, self.action_until = "invite", time.monotonic() + ACTION_SECONDS
-            else:
-                self.invite_request = ""
-                self.send_failed()
+            self.invites.create()
 
     def _cmd_redeem(self, verb, arg):
-        link = arg.strip()
-        if not link.startswith("omaq://"):
-            self.say("Paste the omaq:// link after :redeem")
-        elif len(link.encode("utf-8")) > TEXT_MAX:
-            self.say("Link is too long")
-        else:
-            self.redeem_request = "cli-redeem-" + secrets.token_hex(8)
-            if self.send({"op": "invite.redeem", "payload": link, "id": self.redeem_request}):
-                self.action, self.action_until = "redeem", time.monotonic() + ACTION_SECONDS
-                self.say("Checking the invite…", 15)
-            else:
-                self.redeem_request = ""
-                self.send_failed()
+        self.invites.redeem(arg)
 
     def _cmd_requests(self, verb, arg):
-        if self.request:
-            self.overlay = {"kind": "request"}
-        else:
-            self.say("No pending request")
+        self.invites.show_request()
 
     def _cmd_decide(self, verb, arg):
-        if not self.request:
-            self.say("No pending request")
-        else:
-            self.decide_request = "cli-decide-" + secrets.token_hex(8)
-            operation = {"op": "contact.decide", "id": self.decide_request, "accept": verb == "accept"}
-            if self.request["kind"] == "direct":
-                operation["key"] = self.request["key"]
-            if self.send(operation):
-                self.action, self.action_until = verb, time.monotonic() + ACTION_SECONDS
-                if self.request["kind"] == "group":
-                    self.request = None
-                if self.overlay and self.overlay.get("kind") == "request":
-                    self.overlay = None
-                self.say("Accepted" if verb == "accept" else "Declined")
-            else:
-                self.send_failed()
+        self.invites.decide(verb)
 
     def _cmd_sendfile(self, verb, arg):
         self.files.send_file(self.current, arg)

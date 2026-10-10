@@ -21,8 +21,9 @@ ALLOWED = {
     "system": set(),
     "session": {"protocol"},
     "files": {"protocol", "session", "text"},
+    "invites": {"protocol"},
 }
-PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files"}
+PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files", "invites"}
 failures = []
 
 
