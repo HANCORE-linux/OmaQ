@@ -7,7 +7,7 @@
 
 ## Landed
 
-- `cli/omaq.py`, Python 3.11 or newer, standard library only. It speaks the helper's JSON-line protocol on `$OMAQ_STATE/omaq.sock` exactly like `Service.qml`:
+- `cli/omaq.py` with the `cli/omaq_connect/` package, Python 3.11 or newer, standard library only. It speaks the helper's JSON-line protocol on `$OMAQ_STATE/omaq.sock` exactly like `Service.qml`:
   - **Handshake:** `status` with a nonce, and a snapshot correlated by `request`.
   - **Protocol gate:** Protocol 16 or newer.
   - **Key binding:** every direct operation carries the stable `key`, and direct events whose `key` does not match the friend are dropped.
@@ -96,17 +96,31 @@
   - `scripts/uninstall-omaq.sh` removes the link after a successful plugin removal when it points to `…/hancore.omaq/cli/omaq.py` and its target is gone. A link to a still existing tree, or to anything else, stays.
   - Updating an existing installation does not create the link; run `~/.config/omarchy/plugins/hancore.omaq/cli/omaq.py --link` once.
 
+## Structure
+
+The client is one more presentation adapter on the helper socket. The helper stays authoritative for protocol, persistence, permissions and domain rules; the client sends ops, applies events and reuses the bar's wording.
+
+- `cli/omaq.py` is the entry point. It loads `cli/omaq_connect/` by path, so it also works under `python3 -I`, and sets `sys.dont_write_bytecode` first, so no `__pycache__` lands in the plugin tree. It keeps `--link`, `--unlink` and `main()`.
+- `cli/omaq_connect/` is a flat package with one job per module:
+  - **State and rules:** `session.py` (`Conversation` and the friend rules), `chat.py` (`Chat`: conversations, pending messages, unread counts, read marks, history retries and clears), `files.py` (`FileTransfers` with `FileOffer` and `OutgoingSend`), `invites.py` (`Invites` with `Invite` and `PendingRequest`), `profile.py` (`Profile`: the own nickname), `protocol.py` (limits, wording and `Message`) and `text.py` (widths, wrapping, sanitizing, emoji).
+  - **Presentation:** `view.py` (`Screen` draws the frame from the app state), `modals.py` (`Confirmation`, `Help`, `Picker` and the `Overlay` classes; each modal handles its keys and draws its rows), `commands.py` (command, key and tip tables, command parsing, suggestions, `Completion`), `layout.py` (`Pane` with draft editing and recall, `Layout`), `keys.py` and `palette.py`.
+  - **I/O adapters:** `link.py` (socket), `presence.py` (flock files), `helper_process.py` (paths and `HelperProcess`), `terminal.py` and `system.py`.
+  - **Composition:** `app.py` holds `App`. It wires the objects, routes helper events and commands through two tables, keeps the input order (lock, help, confirmation, picker, overlay), and runs the main loop, settle, exit and cleanup.
+- The state and presentation modules never import `socket`, `termios`, `tty`, `subprocess`, `fcntl`, `select` or `signal`. `Chat`, `FileTransfers`, `Invites` and `Profile` reach the rest only through callbacks such as `send`, `say` and the friend list.
+- `tests/cli_arch_test.py` checks this in `make test` and `make test-ci`. Each module may import only its listed neighbors, there are no cycles, and no module writes `from time import …` (or `os`, `subprocess`, `select`), because the tests patch those modules' attributes.
+
 ## How to check
 
 ```text
 python3 -I tests/cli_unit_test.py
+python3 -I tests/cli_arch_test.py
 python3 -I tests/cli-pty.py
 python3 -I tests/cli-two-homes.py
 python3 -I tests/cli-split.py
 python3 -I tests/cli-invite.py
 ```
 
-- `cli_unit_test.py` (86 tests, also run by `make test` and `make test-ci`) pins each review finding: rebound numbers, drafts, ownership nonce, the bar probe, history retry and reconnect reload, `identity.ready`, private directories, header-only panes, narrow panes and the tab strip, interrupted cleanup, semantic palettes and the receipt glyphs. The `Blockers` tests pin the second review: recall across identities and numbers, the bound and visible clear confirmation, nospam changes, unknown delivery across reloads, file errors, reconnects and rebinds, file commands in the focused chat, foreign errors, finishing the handshake before quitting, wrapped safety codes and scrolling in small windows, the third review's findings (incoming resync, notices behind a confirmation, unconfirmed exits, hidden help selections), sent-but-unsaved messages, and the per-state presence with its exit turns.
+- `cli_unit_test.py` (94 tests, also run by `make test` and `make test-ci`) pins each review finding: rebound numbers, drafts, ownership nonce, the bar probe, history retry and reconnect reload, `identity.ready`, private directories, header-only panes, narrow panes and the tab strip, interrupted cleanup, semantic palettes and the receipt glyphs. The `Blockers` tests pin the second review: recall across identities and numbers, the bound and visible clear confirmation, nospam changes, unknown delivery across reloads, file errors, reconnects and rebinds, file commands in the focused chat, foreign errors, finishing the handshake before quitting, wrapped safety codes and scrolling in small windows, the third review's findings (incoming resync, notices behind a confirmation, unconfirmed exits, hidden help selections), sent-but-unsaved messages, and the per-state presence with its exit turns.
 - `cli-pty.py` needs no peer; its helper still bootstraps Tox. It covers a `:quit` typed during the startup width query, the self-started helper and its shutdown, `:nickname` with the real helper and the saved name after a restart, the per-state presence directory, the command line, `:help`, `ctrl+c`, paste, resize, SIGTERM, SIGHUP, a locked identity with wrong and correct passphrases, and a foreign helper restart. It also checks that the pty is back in canonical, echoing mode.
 - `cli-two-homes.py` and `cli-split.py` need the Tox network. They pair two or three throwaway identities and check delivery, `Delivered`/`Read`, typing, sanitizing, read marking and two side-by-side panes. `cli-two-homes.py` also recalls the last message with `up`, clears the chat through the real helper and sends `:) hallo <3`, which must arrive as `🙂 hallo ❤️`. It also sends a 3000-byte file with `:sendfile` and receives one with `:acceptfile`, compares the bytes, and checks that both copies stay in the test download folders. With alice's download folder made read-only, `:acceptfile` must bring the helper's correlated `accept_failed` and `File transfer failed: accept_failed`, and the next offer must still arrive completely. A decline followed at once by a new file must deliver that file byte for byte in both directions; this pins the cancel echo. The helper must answer `file.status` for an incoming transfer with `file.state` (`offer`, then `unknown` after the decline) and every decision with `contact.decided`. `cli-invite.py` pairs two CLIs with `:invite`, `:invite revoke`, a fresh `:invite`, `:redeem`, `:requests` and `:accept`, and checks the clipboard write and the shared safety code.
 
