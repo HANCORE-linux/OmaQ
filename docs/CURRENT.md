@@ -1,4 +1,4 @@
-# Current status: 2026-09-08
+# Current status: 2026-10-11
 
 This page is the current product and release snapshot. Completed phase and follow-up history lives in the [stage notes](stages/README.md).
 
@@ -6,7 +6,7 @@ This page is the current product and release snapshot. Completed phase and follo
 
 - **Project:** OmaQ, plugin id `hancore.omaq`
 - **Branch:** `main`
-- **Manifest version:** `0.9.0-beta.2`, Protocol 16
+- **Manifest version:** `1.0.0`, Protocol 16
 - **AUR:** paused; no registration or upload
 - **Documentation:** the task-based [documentation index](README.md) links the illustrated guide, security model, installation lifecycle, and historical notes
 
@@ -20,7 +20,7 @@ This page is the current product and release snapshot. Completed phase and follo
 - **Calls:** DirectChat provides audio calls through PulseAudio with Answer, Decline, and Hang up actions, a call timer, one process-wide ringing tone, and a pulsing incoming-call bar icon. Protocol 15 keeps the UI in **Ending…** until the helper confirms that local capture, its audio thread and buffers, and the old ToxAV transport are closed. The controlling IPC socket has a renewable lease; socket loss or lease expiry ends the call locally. Correlated action failures restore an incoming ringing tone when the call remains authoritative, stale owner results are rejected, and unavailable controls report failure immediately. Audio stays in bounded memory and is not recorded. Network loss can prevent the peer from receiving the cancellation, so OmaQ confirms only the local stop.
 - **Identity:** `tox.save` remains local and can use passphrase protection. Export bundles include Tox savedata and private group mappings but exclude Ratchet sessions, local history, avatars, receipts, and files. **Validate bundle** does not activate a bundle; **Import identity** is separately confirmed and rollback-protected.
 - **Notifications and appearance:** the fixed 400-pixel panel follows Omarchy, while chat windows support the system palette and bundled themes. Message size, formatting tools, the bundled Knock notification, other sounds, custom bounded PCM WAV imports, global Mute, per-conversation **Pop up: On/Off**, badges, and notification surfaces remain configurable. Floating windows keep their full drag area without displaying a drag glyph.
-- **Terminal client (unreleased, `feat/cli`):** `omaq-connect` opens direct chats in any terminal with online state, typing, receipts, split views, invitations and friend requests, nickname changes, file transfer with progress, emoji, rotating tips, and `:help`, beside the bar. The helper emits a throttled `file.progress` event (`done`, `size`) for direct transfers; the bar does not show it yet. When a direct `file.accept` cannot start the download, the helper now also sends `file.failed` for that transfer (`accept_failed`, or `transfer_unknown` when the offer is gone), so the bar and the CLI drop the offer. `file.status` with an incoming transfer id returns the new `file.state` event, every `contact.decide` now ends with a correlated `contact.decided`, and a cancel from the peer no longer echoes a Tox cancel that killed the next transfer in the reused slot. The bar ignores both new events. The client is a package of focused modules whose import rule `tests/cli_arch_test.py` checks. See [terminal-client.md](stages/terminal-client.md).
+- **Terminal client (new in 1.0.0):** `omaq-connect` opens direct chats in any terminal with online state, typing, receipts, split views, invitations and friend requests, nickname changes, file transfer with progress, emoji, rotating tips, and `:help`, beside the bar. The helper emits a throttled `file.progress` event (`done`, `size`) for direct transfers; the bar does not show it yet. When a direct `file.accept` cannot start the download, the helper now also sends `file.failed` for that transfer (`accept_failed`, or `transfer_unknown` when the offer is gone), so the bar and the CLI drop the offer. `file.status` with an incoming transfer id returns the new `file.state` event, every `contact.decide` now ends with a correlated `contact.decided`, and a cancel from the peer no longer echoes a Tox cancel that killed the next transfer in the reused slot. The bar ignores both new events. The client is a package of focused modules whose import rule `tests/cli_arch_test.py` checks. See [terminal-client.md](stages/terminal-client.md).
 - **Connection state:** the panel and chat distinguish connecting or reconnecting service state from an offline contact. Tox uses TCP relays with UDP discovery and hole punching disabled. Startup and periodic retries register both bootstrap nodes and compiled TCP relays.
 
 ## Security boundaries
@@ -50,11 +50,11 @@ This page is the current product and release snapshot. Completed phase and follo
 
 ## Latest validation
 
-### Reaction picker and composer (unreleased)
+### Reaction picker and composer (1.0.0)
 
 The [scrolling follow-up](stages/reaction-composer-scroll.md) adds local offscreen interaction coverage for reaction paging and long-text editing in DirectChat and GroupChat. It reproduces the original hidden-cursor failure and checks actual Qt key, pointer, and wheel events, all five message scales, narrow/wide resizing, selection, copy/paste, and send/reset behavior. Focused composer, message-action, transcript-layout, and PlainText gates pass, as do full `make test`, local `make test-ci`, helper hardening, architecture, plugin validation, and ShellCheck. `qmllint` exits 0 with import/type warnings; it is not warning-free. Native Wayland acceptance remains open; neither the live installations nor the beta.2 tag were updated.
 
-### Material Symbols (unreleased)
+### Material Symbols (1.0.0)
 
 The [icon follow-up](stages/material-symbols.md) explicitly loads the installed symbol font into Qt and uses codepoints instead of icon-name ligatures. A private Qt probe reproduced stale font availability after installation; registration restored glyphs without restarting that process. Source, native HarfBuzz, and isolated Quickshell checks cover mapping, loader readiness, bounded fallback, and recovery. The original [ARM report](https://github.com/HANCORE-linux/OmaQ/issues/55) still needs confirmation; no ARM root cause or Omarchy 4.0.3 compatibility fix is claimed.
 
