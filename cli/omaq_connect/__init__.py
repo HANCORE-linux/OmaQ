@@ -7,10 +7,12 @@ import sys
 import termios
 import time
 import tty
+from operator import attrgetter
 
 from .text import *
 from .protocol import *
 from .session import *
+from .chat import *
 from .files import *
 from .invites import *
 from .commands import *
@@ -26,10 +28,8 @@ from .system import *
 from .layout import *
 
 
-HISTORY_RETRY = 3.0
 TYPING_SEND_EVERY = 3.0
 TYPING_IDLE = 3.0
-TYPING_EXPIRE = 4.5
 STATUS_SECONDS = 6.0
 COMMAND = "omaq-connect"
 CONFIRM_SECONDS = 15
@@ -48,25 +48,25 @@ EVENT_HANDLERS = {
     "friend.list.end": "_ev_friend_list_end",
     "identity": "_ev_identity",
     "error": "_ev_error",
-    "unread": "_ev_unread",
-    "history": "_ev_history",
-    "history.failed": "_ev_history_failed",
+    "unread": "chat.on_unread",
+    "history": "chat.on_history",
+    "history.failed": "chat.on_history_failed",
     "message": "_ev_message",
-    "message.failed": "_ev_message_failed",
-    "receipt": "_ev_receipt",
-    "typing": "_ev_typing",
-    "invite": "_ev_invite",
-    "file.offer": "_ev_file_offer",
-    "file.sending": "_ev_file_sending",
-    "file.progress": "_ev_file_progress",
-    "file.done": "_ev_file_result",
-    "file.failed": "_ev_file_result",
-    "file.canceled": "_ev_file_result",
-    "contact.decided": "_ev_contact_decided",
-    "file.state": "_ev_file_state",
-    "invite.redeemed": "_ev_invite_redeemed",
-    "request": "_ev_request",
-    "request.conflict": "_ev_request_conflict",
+    "message.failed": "chat.on_message_failed",
+    "receipt": "chat.on_receipt",
+    "typing": "chat.on_typing",
+    "invite": "invites.on_invite",
+    "file.offer": "files.on_offer",
+    "file.sending": "files.on_sending",
+    "file.progress": "files.on_progress",
+    "file.done": "files.on_result",
+    "file.failed": "files.on_result",
+    "file.canceled": "files.on_result",
+    "contact.decided": "invites.on_decided",
+    "file.state": "files.on_state",
+    "invite.redeemed": "invites.on_redeemed",
+    "request": "invites.on_request",
+    "request.conflict": "invites.on_conflict",
     "history.clear.succeeded": "_ev_history_clear_result",
     "history.clear.failed": "_ev_history_clear_result",
 }
@@ -121,11 +121,6 @@ class App:
         self.friend_build = None
         self.friend_generation = ""
         self.friends_ready = False
-        self.unread = {}
-        self.read_pending = {}
-        self.retry_at = {}
-        self.convs = {}
-        self.pending = {}
         self.drafts = {}
         self.layout = Layout()
         self.secret = ""
@@ -157,10 +152,10 @@ class App:
         self.addr = ""
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
         self.screen = Screen(self)
-        self.files = FileTransfers(self.send, self.say, self.send_failed, lambda: self.friends, self.finish_file)
+        self.chat = Chat(self.send, self.send_bound, self.say, lambda: self.friends, lambda: self.handshake)
+        self.files = FileTransfers(self.send, self.say, self.send_failed, lambda: self.friends, self.chat.reload)
         self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
         self.confirm = None
-        self.clears = {}
         self.history_clear = 0
 
     @property
@@ -265,13 +260,6 @@ class App:
 
     def bound(self, ev):
         return bound(self.friends, ev)
-
-    def conv(self, conversation):
-        c = self.convs.get(conversation)
-        if c is None:
-            c = Conversation()
-            self.convs[conversation] = c
-        return c
 
     def draft_key(self, conversation):
         f = self.friend(conversation) if is_direct(conversation) else None
@@ -384,27 +372,17 @@ class App:
         self.friend_build = None
         self.conn = "reconnecting"
         self.next_connect = time.monotonic() + 1.0
-        for c in self.convs.values():
-            c.loaded, c.request = False, ""
-        for conversation, m in self.pending.values():
-            m.failed = "delivery_unknown"
-        self.pending.clear()
-        if self.clears:
-            self.clears.clear()
-            self.say("Clear result unknown; check the chat")
+        self.chat.drop()
         self.overlay = None
         self.invites.drop()
         self.dirty = True
 
     def reset_identity(self):
-        for conversation, m in self.pending.values():
-            m.failed = "delivery_unknown"
-        self.pending.clear()
+        self.chat.reset()
         self.friends, self.friend_build, self.friends_ready = [], None, False
-        self.convs, self.unread, self.read_pending, self.retry_at, self.drafts = {}, {}, {}, {}, {}
+        self.drafts = {}
         if self.confirm is not None:
             self.drop_confirm()
-        self.clears = {}
         self.overlay = None
         self.invites.reset()
         self.files.reset()
@@ -498,25 +476,16 @@ class App:
             return
         handler = EVENT_HANDLERS.get(name) if isinstance(name, str) else None
         if handler:
-            getattr(self, handler)(ev)
+            attrgetter(handler)(self)(ev)
         self.dirty = True
 
     def purge(self, fid):
-        self.convs.pop(fid, None)
-        self.unread.pop(fid, None)
-        self.read_pending.pop(fid, None)
-        self.retry_at.pop(fid, None)
         if self.typing_on == fid:
             self.typing_on = ""
         if self.confirm is not None and self.confirm.conv == fid:
             self.drop_confirm()
-        if self.clears.pop(fid, None):
-            self.say("Clear result unknown; check the chat")
+        self.chat.forget(fid)
         self.files.forget(fid)
-        for request, (conversation, m) in list(self.pending.items()):
-            if conversation == fid:
-                m.failed = "identity_changed"
-                del self.pending[request]
 
     def apply_friends(self, friends):
         moved = {}
@@ -548,7 +517,7 @@ class App:
             if not pane.conv and friends:
                 pane.conv = self.next_free("")
                 self.restore_draft(pane)
-            self.load(pane.conv)
+            self.chat.load(pane.conv)
 
     def match(self, name):
         want = name.casefold().strip()
@@ -557,17 +526,6 @@ class App:
         exact = [f for f in self.friends if f["name"].casefold() == want]
         prefix = [f for f in self.friends if f["name"].casefold().startswith(want)]
         return exact[0] if len(exact) == 1 else (prefix[0] if len(prefix) == 1 else None)
-
-    def load(self, conversation):
-        if not conversation or not self.handshake:
-            return
-        c = self.conv(conversation)
-        if c.loaded or c.request or time.monotonic() < self.retry_at.get(conversation, 0.0):
-            return
-        c.request = "cli-history-" + secrets.token_hex(6)
-        if not self.send_bound({"op": "history", "conversation": conversation, "limit": HISTORY_LIMIT,
-                                "id": c.request}):
-            c.request = ""
 
     def show(self, conversation):
         pane = self.pane
@@ -579,7 +537,7 @@ class App:
             pane.conv = conversation
             self.restore_draft(pane)
         pane.scroll = 0
-        self.load(conversation)
+        self.chat.load(conversation)
         self.dirty = True
 
     def next_free(self, after, step=1):
@@ -606,30 +564,8 @@ class App:
         pane = Pane(conversation)
         self.layout.add(pane, vertical)
         self.restore_draft(pane)
-        self.load(conversation)
+        self.chat.load(conversation)
         self.dirty = True
-
-    def on_message(self, ev):
-        conversation = str(ev.get("conversation") or "")
-        c = self.conv(conversation)
-        request = str(ev.get("request") or "")
-        if ev.get("dir") == "out" and request in self.pending:
-            owner, m = self.pending.pop(request)
-            m.id = str(ev.get("id") or m.id)
-            m.ack = max(m.ack, 1)
-            if ev.get("ts"):
-                m.ts = message_from(ev).ts
-            return
-        m = message_from(ev)
-        if m.id and any(x.id == m.id for x in c.items):
-            return
-        c.items.append(m)
-        for pane in self.layout.panes():
-            if pane.conv == conversation and m.dir == "in":
-                pane.scroll = 0
-        f = self.friend(conversation)
-        if m.dir == "in" and f and conversation not in self.visible:
-            self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
     def send_text(self):
         pane = self.pane or self.scratch
@@ -645,14 +581,7 @@ class App:
         if self.locked or not self.handshake:
             self.say(FAILURES["locked"] if self.locked else "Not connected")
             return
-        request = "cli-" + secrets.token_hex(10)
-        m = Message("", request, "out", text, time.time(), ack=0)
-        self.conv(pane.conv).items.append(m)
-        self.pending[request] = (pane.conv, m)
-        if not self.send_bound({"op": "msg.send", "conversation": pane.conv, "text": text, "reply": "",
-                                "id": request}):
-            self.pending.pop(request, None)
-            m.failed = "error"
+        self.chat.send_message(pane.conv, text)
         pane.draft, pane.cursor, pane.scroll = "", 0, 0
         self.stop_typing()
 
@@ -684,25 +613,16 @@ class App:
             self.connect()
         if self.typing_on and now - self.last_edit > TYPING_IDLE:
             self.stop_typing()
-        for c in self.convs.values():
-            if c.typing_until and now > c.typing_until:
-                c.typing_until = 0.0
-                self.dirty = True
+        if self.chat.expire_typing(now):
+            self.dirty = True
         if self.handshake and not self.locked:
             for pane in self.layout.panes():
-                c = self.convs.get(pane.conv)
-                if pane.conv and not (c and c.loaded):
-                    self.load(pane.conv)
+                self.chat.load(pane.conv)
 
     def mark_read(self, now):
         if not (self.focused and self.handshake and not self.locked):
             return
-        for conversation in self.visible:
-            c = self.convs.get(conversation)
-            if (self.unread.get(conversation) and c and c.loaded
-                    and now > self.read_pending.get(conversation, 0.0)):
-                if self.send_bound({"op": "conversation.read", "conversation": conversation}):
-                    self.read_pending[conversation] = now + 5.0
+        self.chat.mark_read(self.visible, now)
 
     def command(self, line):
         verb, arg = parse_command(line)
@@ -727,35 +647,14 @@ class App:
     def decide_failure(self, code):
         return self.invites.decide_failure(code)
 
-    def finish_file(self, conversation):
-        c = self.convs.get(conversation)
-        if c:
-            c.loaded, c.request = False, ""
-
     def send_failed(self):
         self.say("Not connected" if not self.link else "Could not send the request")
-
-    def clear_chat(self, conversation, key):
-        request = "cli-clear-" + secrets.token_hex(8)
-        if self.send({"op": "history.clear", "conversation": conversation, "key": key, "id": request}):
-            self.clears[conversation] = (request, self.instance)
-            self.say("Clearing this chat…", 10)
-        else:
-            self.say("Chat could not be cleared")
-
-    def sent_texts(self, conversation):
-        texts = []
-        c = self.convs.get(conversation)
-        for m in reversed(c.items if c else []):
-            if m.dir == "out" and m.text and (not texts or texts[-1] != m.text):
-                texts.append(m.text)
-        return texts
 
     def history_step(self, pane, step):
         if pane.hist is None:
             if step < 0:
                 return
-            items = self.commands[::-1] if pane.draft.startswith(":") else self.sent_texts(pane.conv)
+            items = self.commands[::-1] if pane.draft.startswith(":") else self.chat.sent_texts(pane.conv)
             if not items:
                 return
             pane.hist_items, pane.stash, pane.hist = items, (pane.draft, pane.cursor), 0
@@ -866,7 +765,7 @@ class App:
                 bound = (self.handshake and confirm.instance == self.instance and bool(confirm.key)
                          and confirm.key == self.key_for(confirm.conv))
                 if yes and bound:
-                    self.clear_chat(confirm.conv, confirm.key)
+                    self.chat.clear(confirm.conv, confirm.key, self.instance)
                 else:
                     self.say("Chat kept")
             elif confirm.action == "revoke":
@@ -1231,122 +1130,27 @@ class App:
             now = time.monotonic()
             if now > self.rehandshake_at:
                 self.rehandshake_at = now + 2.0
-                for c in self.convs.values():
-                    c.loaded, c.request = False, ""
+                self.chat.unload()
                 self.handshake_request()
         else:
             self.invites.on_window_error(code, request, conversation)
 
-    def _ev_unread(self, ev):
-        if self.bound(ev):
-            conversation = str(ev.get("conversation") or "")
-            try:
-                count = max(0, int(ev.get("count") or 0))
-            except (TypeError, ValueError):
-                count = 0
-            if count:
-                self.unread[conversation] = count
-            else:
-                self.unread.pop(conversation, None)
-            self.read_pending.pop(conversation, None)
-
-    def _ev_history(self, ev):
-        conversation = str(ev.get("conversation") or "")
-        c = self.convs.get(conversation)
-        if c and c.request and str(ev.get("request") or "") == c.request and self.bound(ev):
-            items = ev.get("items") if isinstance(ev.get("items"), list) else []
-            pending = [m for owner, m in self.pending.values() if owner == conversation]
-            c.items = merge_history(c.items, items, pending)
-            c.loaded, c.request = True, ""
-            self.retry_at.pop(conversation, None)
-
-    def _ev_history_failed(self, ev):
-        conversation = str(ev.get("conversation") or "")
-        c = self.convs.get(conversation)
-        if c and c.request and str(ev.get("request") or "") == c.request:
-            c.request = ""
-            self.retry_at[conversation] = time.monotonic() + HISTORY_RETRY
-            self.say("History could not be loaded; retrying")
-
     def _ev_message(self, ev):
-        if self.bound(ev):
-            self.on_message(ev)
-
-    def _ev_message_failed(self, ev):
-        request = str(ev.get("request") or "")
-        entry = self.pending.pop(request, None)
-        if not entry and request:
-            conversation = str(ev.get("conversation") or "")
-            c = self.convs.get(conversation)
-            sent = find_sent(c.items if c else [], request)
-            if sent is not None:
-                entry = (conversation, sent)
-        if entry and ev.get("delivered") is True:
-            owner, m = entry
-            mark_unsaved(self.conv(owner).items, m, time.time())
-        elif entry:
-            entry[1].failed = str(ev.get("code") or "error")
-
-    def _ev_receipt(self, ev):
-        if self.bound(ev):
-            c = self.convs.get(str(ev.get("conversation") or ""))
-            if c:
-                level = 3 if ev.get("state") == "read" else (2 if ev.get("state") == "delivered" else 0)
-                for m in c.items:
-                    if m.id and m.id == str(ev.get("id") or "") and m.dir == "out":
-                        m.ack = max(m.ack, level)
-
-    def _ev_typing(self, ev):
-        if self.bound(ev):
-            conversation = str(ev.get("conversation") or "")
-            if is_direct(conversation):
-                self.conv(conversation).typing_until = time.monotonic() + TYPING_EXPIRE if ev.get("typing") else 0.0
-
-    def _ev_invite(self, ev):
-        self.invites.on_invite(ev)
-
-    def _ev_file_offer(self, ev):
-        self.files.on_offer(ev)
-
-    def _ev_file_sending(self, ev):
-        self.files.on_sending(ev)
-
-    def _ev_file_progress(self, ev):
-        self.files.on_progress(ev)
-
-    def _ev_file_result(self, ev):
-        self.files.on_result(ev)
-
-    def _ev_contact_decided(self, ev):
-        self.invites.on_decided(ev)
-
-    def _ev_file_state(self, ev):
-        self.files.on_state(ev)
-
-    def _ev_invite_redeemed(self, ev):
-        self.invites.on_redeemed(ev)
-
-    def _ev_request(self, ev):
-        self.invites.on_request(ev)
-
-    def _ev_request_conflict(self, ev):
-        self.invites.on_conflict(ev)
+        if not self.bound(ev):
+            return
+        m = self.chat.on_message(ev)
+        if m is None:
+            return
+        conversation = str(ev.get("conversation") or "")
+        for pane in self.layout.panes():
+            if pane.conv == conversation and m.dir == "in":
+                pane.scroll = 0
+        f = self.friend(conversation)
+        if m.dir == "in" and f and conversation not in self.visible:
+            self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
     def _ev_history_clear_result(self, ev):
-        name = ev.get("event")
-        conversation = str(ev.get("conversation") or "")
-        request, instance = self.clears.get(conversation) or ("", "")
-        if (request and str(ev.get("request") or "") == request and self.bound(ev)
-                and str(ev.get("instance") or "") == instance == self.instance):
-            del self.clears[conversation]
-            if name == "history.clear.succeeded":
-                c = self.conv(conversation)
-                c.items, c.loaded, c.request = [], False, ""
-                self.unread.pop(conversation, None)
-                self.load(conversation)
-                self.say("Chat cleared on this computer")
-            else:
-                self.say("Chat could not be cleared (%s)" % clean_line(ev.get("code") or "error"))
+        self.chat.on_clear_result(ev, self.instance)
 
     def _cmd_quit(self, verb, arg):
         self.running = False
@@ -1390,7 +1194,7 @@ class App:
             self.say("No chat is open")
         elif self.history_clear != 2:
             self.say("Helper update required")
-        elif pane.conv in self.clears:
+        elif pane.conv in self.chat.clears:
             self.say("Clearing is already in progress")
         else:
             self.confirm = Confirmation("clear", "Clear this chat? y/n", time.monotonic(),
@@ -1408,7 +1212,7 @@ class App:
             pane = Pane(pick["id"])
             self.layout.add(pane)
             self.restore_draft(pane)
-            self.load(pick["id"])
+            self.chat.load(pick["id"])
         else:
             self.open_pane(pick["id"], vertical=verb not in ("split", "sp"))
 

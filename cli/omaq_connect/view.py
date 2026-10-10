@@ -102,7 +102,7 @@ class Screen:
     def peer_status(self, conversation):
         if self.app.conn != "online":
             return ("reconnecting…" if self.app.conn == "reconnecting" else "connecting…"), "dim"
-        c = self.app.convs.get(conversation)
+        c = self.app.chat.convs.get(conversation)
         if c and c.typing_until:
             return "typing…", "status"
         f = self.app.friend(conversation)
@@ -117,7 +117,7 @@ class Screen:
         if self.app.friends_ready and not self.app.friends:
             bar.append(("no friends yet", "dim", ""))
         used = sum(text_width(text) for text, _, _ in bar)
-        hot = lambda f: bool(self.app.unread.get(f["id"]) or f["id"] in self.app.offers) and f["id"] not in self.app.visible
+        hot = lambda f: bool(self.app.chat.unread.get(f["id"]) or f["id"] in self.app.offers) and f["id"] not in self.app.visible
         for k, f in enumerate(self.app.friends):
             role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
             name = shorten(f["name"], NAME_MAX)
@@ -258,7 +258,7 @@ class Screen:
         return "".join(frame)
 
     def message_lines(self, conversation, cols):
-        c = self.app.convs.get(conversation)
+        c = self.app.chat.convs.get(conversation)
         if not c:
             return []
         if not c.loaded and not c.items:

@@ -20,13 +20,15 @@ ALLOWED = {
     "terminal": {"text"},
     "system": set(),
     "session": {"protocol"},
+    "chat": {"protocol", "session", "text"},
     "files": {"protocol", "session", "text"},
     "invites": {"protocol"},
     "commands": set(),
     "view": {"commands", "protocol", "text"},
     "modals": {"commands", "protocol", "text"},
 }
-PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files", "invites", "commands", "view", "modals"}
+PURE = {"text", "protocol", "layout", "keys", "palette", "session", "chat", "files", "invites", "commands", "view",
+        "modals"}
 failures = []
 
 

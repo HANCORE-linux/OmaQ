@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import operator
 import os
 import re
 import sys
@@ -264,7 +265,7 @@ class Sandbox(unittest.TestCase):
         return app
 
     def loaded(self, app, conversation="0", *texts):
-        c = app.conv(conversation)
+        c = app.chat.conv(conversation)
         c.loaded, c.request = True, ""
         for k, text in enumerate(texts):
             c.items.append(cli.Message("m%d" % k, "", "in", text, 1700000000.0))
@@ -284,7 +285,7 @@ class PackageA(Sandbox):
                            {"id": "1", "key": B, "name": "bob", "online": True, "status": "online"}])
         self.assertEqual(app.pane.conv, "5")
         self.assertEqual(app.pane.draft, "secret for alice")
-        self.assertNotIn("for alice", [m.text for m in app.conv("0").items])
+        self.assertNotIn("for alice", [m.text for m in app.chat.conv("0").items])
         app.edit("key", "enter")
         sent = app.link.ops("msg.send")[-1]
         self.assertEqual((sent["conversation"], sent["key"]), ("5", A))
@@ -331,19 +332,19 @@ class PackageA(Sandbox):
 
     def test_m01_history_failure_retries_and_reconnect_reloads(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
-        request = app.conv("0").request
+        request = app.chat.conv("0").request
         app.on_event({"event": "history.failed", "conversation": "0", "request": request, "code": "history_failed"})
-        self.assertEqual(app.conv("0").request, "")
+        self.assertEqual(app.chat.conv("0").request, "")
         app.tick(time.monotonic())
         self.assertEqual(len(app.link.ops("history")), 1)
-        app.retry_at["0"] = 0.0
+        app.chat.retry_at["0"] = 0.0
         app.tick(time.monotonic())
         self.assertEqual(len(app.link.ops("history")), 2)
         self.loaded(app, "0", "old")
         app.edit("text", "in flight")
         app.edit("key", "enter")
         app.drop_link()
-        self.assertEqual(app.conv("0").items[-1].failed, "delivery_unknown")
+        self.assertEqual(app.chat.conv("0").items[-1].failed, "delivery_unknown")
         app.link, app.handshake = FakeLink(), True
         app.on_event({"event": "friend.list.begin", "generation": "2"})
         app.on_event({"event": "friend.info", "generation": "2", "id": "0", "key": A, "name": "alice", "online": True})
@@ -382,7 +383,7 @@ class PackageA(Sandbox):
     def test_m05_header_only_pane_is_not_read(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         self.loaded(app, "0", "unseen")
-        app.unread["0"] = 1
+        app.chat.unread["0"] = 1
         app.size = (24, 6)
         app.render()
         app.mark_read(time.monotonic())
@@ -552,7 +553,7 @@ class PackageA(Sandbox):
         self.assertEqual([m.text for m in c.items], ["old one"])
         app.on_event({"event": "history.clear.succeeded", "conversation": "0", "key": A, "request": op["id"],
                       "instance": app.instance})
-        self.assertEqual(app.conv("0").items, [])
+        self.assertEqual(app.chat.conv("0").items, [])
         self.assertEqual(app.link.ops("history")[-1]["conversation"], "0")
         app.history_clear = 0
         app.edit("text", ":clear")
@@ -832,7 +833,7 @@ class PackageA(Sandbox):
         asked = len(app.link.ops("status"))
         app.on_event({"event": "error", "code": "identity_changed", "conversation": "3"})
         self.assertEqual([(pane.conv, pane.draft) for pane in app.layout.panes()], before)
-        self.assertEqual((len(app.link.ops("status")), app.conv("0").loaded), (asked + 1, False))
+        self.assertEqual((len(app.link.ops("status")), app.chat.conv("0").loaded), (asked + 1, False))
         app.addr = "a" * 76
         app.on_event({"event": "snapshot", "request": app.nonce, "instance": app.instance, "protocol": 16,
                       "addr": "b" * 76, "online": True})
@@ -904,7 +905,7 @@ class PackageA(Sandbox):
         friends = [{"id": str(k), "key": ("%02d" % k) * 32, "name": "friend%02d" % k} for k in range(15)]
         friends[0]["name"] = "n" * 60
         app = self.app(friends)
-        app.unread["14"] = 2
+        app.chat.unread["14"] = 2
         bar = app.friends_bar(100)
         text = re.sub(r"\x1b\[[0-9;]*m", "", bar)
         self.assertIn("n" * 17 + "\u2026", text)
@@ -1050,7 +1051,7 @@ class PackageA(Sandbox):
         app.on_event({"event": "file.sending", "id": "f1", "conversation": "0", "key": A, "dir": "out", "request": op["id"]})
         app.on_event({"event": "file.done", "id": "f1", "conversation": "0", "key": A, "path": path, "dir": "out",
                       "request": op["id"]})
-        self.assertEqual((app.status, app.sends, app.conv("0").loaded), ("File transfer successful: my notes.txt", {}, False))
+        self.assertEqual((app.status, app.sends, app.chat.conv("0").loaded), ("File transfer successful: my notes.txt", {}, False))
         app.edit("text", ":sendfile /nonexistent/x")
         app.edit("key", "enter")
         self.assertEqual(app.status, "No readable file at /nonexistent/x")
@@ -1150,6 +1151,11 @@ class PackageA(Sandbox):
                      cli.HISTORY_ITEM_FAILED, cli.UNSAVED_SENT):
             self.assertIn(text, bar)
             self.assertIn(text, client)
+
+    def test_every_table_handler_exists(self):
+        app = self.app([])
+        for handler in list(cli.EVENT_HANDLERS.values()) + list(cli.COMMAND_HANDLERS.values()):
+            self.assertTrue(callable(operator.attrgetter(handler)(app)), handler)
 
     def test_receipt_glyphs(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
@@ -1318,11 +1324,11 @@ class Blockers(Sandbox):
                       "request": confirmed, "text": "confirmed", "ts": 1700000000})
         app.drop_link()
         app.link, app.handshake = FakeLink(), True
-        app.load("0")
+        app.chat.load("0")
         request = app.link.ops("history")[-1]["id"]
         app.on_event({"event": "history", "request": request, "conversation": "0", "key": A,
                       "items": [{"id": "m9", "dir": "out", "text": "confirmed", "ts": 1700000000}]})
-        self.assertEqual([(m.text, m.failed) for m in app.conv("0").items],
+        self.assertEqual([(m.text, m.failed) for m in app.chat.conv("0").items],
                          [("confirmed", ""), ("unsaved text", "delivery_unknown")])
         app.edit("key", "up")
         self.assertEqual(app.pane.draft, "unsaved text")
@@ -1664,21 +1670,21 @@ class Blockers(Sandbox):
                       "text": "hello", "ts": 0})
         app.on_event({"event": "message.failed", "conversation": "0", "request": rid, "code": "history_failed",
                       "delivered": True})
-        shown = [(m.dir, m.text, m.failed, m.ack) for m in app.conv("0").items]
+        shown = [(m.dir, m.text, m.failed, m.ack) for m in app.chat.conv("0").items]
         self.assertEqual(shown, [("out", "hello", "", 1), ("sys", cli.UNSAVED_SENT, "", 0)])
         self.assertIn(cli.UNSAVED_SENT, "".join(seg[0] for line in app.message_lines("0", 100) for seg in line))
         app.drop_link()
         app.link, app.handshake = FakeLink(), True
-        app.load("0")
+        app.chat.load("0")
         app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
                       "items": []})
-        self.assertEqual([m.text for m in app.conv("0").items], ["hello", cli.UNSAVED_SENT])
+        self.assertEqual([m.text for m in app.chat.conv("0").items], ["hello", cli.UNSAVED_SENT])
         app.edit("text", "later")
         app.edit("key", "enter")
         rid = app.link.ops("msg.send")[-1]["id"]
         app.on_event({"event": "message.failed", "conversation": "0", "request": rid, "code": "offline",
                       "delivered": False})
-        self.assertEqual(app.conv("0").items[-1].failed, "offline")
+        self.assertEqual(app.chat.conv("0").items[-1].failed, "offline")
 
     def test_m03_presence_is_per_state_and_exits_take_turns(self):
         import fcntl
