@@ -535,7 +535,7 @@ class PackageA(Sandbox):
         app.history_clear = 2
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        self.assertEqual(app.confirm["prompt"], "Clear this chat? y/n")
+        self.assertEqual(app.confirm.prompt, "Clear this chat? y/n")
         app.edit("text", "n")
         self.assertEqual(app.link.ops("history.clear"), [])
         self.assertEqual(app.status, "Chat kept")
@@ -582,7 +582,7 @@ class PackageA(Sandbox):
         self.assertIsNone(app.overlay)
         app.edit("text", ":invite revoke")
         app.edit("key", "enter")
-        self.assertEqual(app.confirm["prompt"], "Revoke this invite? It cannot be used again. y/n")
+        self.assertEqual(app.confirm.prompt, "Revoke this invite? It cannot be used again. y/n")
         app.edit("text", "n")
         self.assertEqual(app.link.ops("invite.revoke"), [])
         app.edit("text", ":invite revoke")
@@ -806,14 +806,14 @@ class PackageA(Sandbox):
         app.history_clear = 2
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        app.tick(app.confirm["until"] + 1)
+        app.tick(app.confirm.until + 1)
         self.assertEqual((app.confirm, app.status), (None, "Chat kept"))
         app.edit("text", "y")
         self.assertEqual((app.link.ops("history.clear"), app.pane.draft), ([], "y"))
         app.edit("key", "esc")
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        app.confirm["until"] = time.monotonic() - 1
+        app.confirm.until = time.monotonic() - 1
         app.edit("text", "y")
         self.assertEqual((app.link.ops("history.clear"), app.pane.draft), ([], "y"))
         app.edit("key", "esc")
@@ -1256,7 +1256,7 @@ class Blockers(Sandbox):
         app.history_clear = 2
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        self.assertEqual((app.confirm["key"], app.confirm["instance"]), (A, app.instance))
+        self.assertEqual((app.confirm.key, app.confirm.instance), (A, app.instance))
         app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"}])
         self.assertEqual((app.confirm, app.status), (None, "Chat kept"))
         app.edit("text", "y")
@@ -1264,7 +1264,7 @@ class Blockers(Sandbox):
         self.assertEqual(app.link.ops("history.clear"), [])
         app.edit("text", ":clear")
         app.edit("key", "enter")
-        app.confirm["key"] = A
+        app.confirm.key = A
         app.edit("text", "y")
         self.assertEqual((app.link.ops("history.clear"), app.status), ([], "Chat kept"))
         app.edit("text", ":clear")
@@ -1563,7 +1563,7 @@ class Blockers(Sandbox):
         app.edit("text", ":clear")
         app.edit("key", "enter")
         app.on_event({"event": "error", "code": "history_failed", "conversation": "0"})
-        app.tick(app.confirm["until"] + 1)
+        app.tick(app.confirm.until + 1)
         self.assertEqual(app.status, "Chat kept \u00b7 " + cli.HISTORY_ITEM_FAILED)
         app.say("")
         app.edit("text", ":clear")

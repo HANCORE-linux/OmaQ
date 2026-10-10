@@ -305,7 +305,7 @@ class Screen:
         drawer_row = len(out) + 1
         out.extend(drawer)
         out[0] = self.friends_bar(cols)
-        hint = self.app.confirm["prompt"] if self.app.confirm is not None and not self.app.locked else (self.app.status or "")
+        hint = self.app.confirm.prompt if self.app.confirm is not None and not self.app.locked else (self.app.status or "")
         rule = cols - text_width(hint) - 3 if hint else cols
         out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + clip(hint, cols - 2)[0] + " ", "unread") if hint else ""))
         if self.app.locked:

@@ -15,6 +15,7 @@ from .files import *
 from .invites import *
 from .commands import *
 from .view import *
+from .modals import *
 from .palette import *
 from .keys import *
 from .link import *
@@ -417,13 +418,13 @@ class App:
 
     def drop_confirm(self):
         notice = self.notice_behind(self.confirm)
-        kept = "Invite kept" if self.confirm["action"] == "revoke" else "Chat kept"
+        kept = self.confirm.kept
         self.confirm = None
         self.say(kept)
         self.show_notice(notice)
 
     def notice_behind(self, confirm):
-        if self.status and self.status_set > confirm["at"]:
+        if self.status and self.status_set > confirm.at:
             return self.status, self.status_seconds
         return None
 
@@ -508,7 +509,7 @@ class App:
         self.retry_at.pop(fid, None)
         if self.typing_on == fid:
             self.typing_on = ""
-        if self.confirm is not None and self.confirm.get("conv") == fid:
+        if self.confirm is not None and self.confirm.conv == fid:
             self.drop_confirm()
         if self.clears.pop(fid, None):
             self.say("Clear result unknown; check the chat")
@@ -666,7 +667,7 @@ class App:
         if self.status and now > self.status_until and self.confirm is None:
             self.status = ""
             self.dirty = True
-        if self.confirm is not None and now > self.confirm["until"]:
+        if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
         if self.zoom_until and now >= self.zoom_until:
             self.zoom_until = 0.0
@@ -940,20 +941,20 @@ class App:
         if self.help is not None:
             self.help_key(kind, value)
             return
-        if self.confirm is not None and now > self.confirm["until"]:
+        if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
         if self.confirm is not None and kind in ("text", "key", "ctrl", "paste", "alt"):
             confirm, self.confirm = self.confirm, None
             notice = self.notice_behind(confirm)
             yes = kind == "text" and value.lower() == "y"
-            if confirm["action"] == "clear":
-                bound = (self.handshake and confirm["instance"] == self.instance and bool(confirm["key"])
-                         and confirm["key"] == self.key_for(confirm["conv"]))
+            if confirm.action == "clear":
+                bound = (self.handshake and confirm.instance == self.instance and bool(confirm.key)
+                         and confirm.key == self.key_for(confirm.conv))
                 if yes and bound:
-                    self.clear_chat(confirm["conv"], confirm["key"])
+                    self.clear_chat(confirm.conv, confirm.key)
                 else:
                     self.say("Chat kept")
-            elif confirm["action"] == "revoke":
+            elif confirm.action == "revoke":
                 if yes:
                     self.invites.revoke()
                 else:
@@ -1449,8 +1450,8 @@ class App:
             if not self.invite.url:
                 self.say("No active invite")
             else:
-                self.confirm = {"action": "revoke", "at": time.monotonic(), "until": time.monotonic() + CONFIRM_SECONDS,
-                                "prompt": "Revoke this invite? It cannot be used again. y/n"}
+                self.confirm = Confirmation("revoke", "Revoke this invite? It cannot be used again. y/n",
+                                            time.monotonic(), time.monotonic() + CONFIRM_SECONDS)
         elif arg:
             self.say("Usage: :invite or :invite revoke")
         else:
@@ -1483,9 +1484,9 @@ class App:
         elif pane.conv in self.clears:
             self.say("Clearing is already in progress")
         else:
-            self.confirm = {"action": "clear", "conv": pane.conv, "key": self.key_for(pane.conv),
-                            "instance": self.instance, "at": time.monotonic(),
-                            "until": time.monotonic() + CONFIRM_SECONDS, "prompt": "Clear this chat? y/n"}
+            self.confirm = Confirmation("clear", "Clear this chat? y/n", time.monotonic(),
+                                        time.monotonic() + CONFIRM_SECONDS, pane.conv, self.key_for(pane.conv),
+                                        self.instance)
 
     def _cmd_help(self, verb, arg):
         self.help, self.help_top, self.help_follow = 0, 0, True
