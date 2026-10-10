@@ -675,7 +675,7 @@ class PackageA(Sandbox):
         app.redeem_request = "cli-redeem-1"
         app.overlay = {"kind": "redeemed", "group": False, "safety": ""}
         app.drop_link()
-        self.assertEqual((app.request, app.overlay, app.redeem_request, app.invite["url"]), (None, None, "", ""))
+        self.assertEqual((app.request, app.overlay, app.redeem_request, app.invite.url), (None, None, "", ""))
         self.assertEqual(app.status, "Invite result unknown; try again")
 
     def test_focus_marker_and_name_pill(self):
@@ -939,14 +939,14 @@ class PackageA(Sandbox):
     def test_invite_countdown_redraws_every_minute(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         app.out = __import__("io").StringIO()
-        app.invite = {"url": "omaq://x", "expires": int(time.time()) + 86400}
+        app.invite = cli.Invite("omaq://x", int(time.time()) + 86400)
         app.overlay = {"kind": "invite", "url": "omaq://x", "qr": []}
         app.tick(time.monotonic())
         app.dirty = False
         app.overlay["minute"] -= 1
         app.tick(time.monotonic())
         self.assertTrue(app.dirty)
-        app.invite["expires"] = int(time.time()) - 5
+        app.invite.expires = int(time.time()) - 5
         app.size = (100, 20)
         self.assertIn("expired; :invite creates a new link", app.render())
 
@@ -1407,7 +1407,7 @@ class Blockers(Sandbox):
         app.on_event({"event": "invite.redeemed", "kind": "group", "request": rid})
         app.on_event({"event": "error", "code": "unsupported"})
         self.assertEqual(app.status, cli.REDEEMED_GROUP)
-        app.request = {"kind": "direct", "key": B, "safety": "", "conflict": ""}
+        app.request = cli.PendingRequest("direct", B, "", "")
         app.edit("text", ":accept")
         app.edit("key", "enter")
         app.on_event({"event": "error", "code": "forbidden", "request": "x"})
@@ -1419,7 +1419,7 @@ class Blockers(Sandbox):
         app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": True})
         app.on_event({"event": "error", "code": "forbidden"})
         self.assertEqual((app.status, app.decide_request), ("Accepted", ""))
-        app.request = {"kind": "direct", "key": B, "safety": "", "conflict": ""}
+        app.request = cli.PendingRequest("direct", B, "", "")
         app.edit("text", ":accept")
         app.edit("key", "enter")
         app.on_event({"event": "contact.decided", "request": app.decide_request, "ok": False, "code": "forbidden"})
@@ -1467,7 +1467,7 @@ class Blockers(Sandbox):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
         groups = safety.replace(" / ", " ").split()
-        app.request = {"kind": "direct", "key": C, "safety": safety, "conflict": ""}
+        app.request = cli.PendingRequest("direct", C, safety, "")
         app.overlay = {"kind": "request"}
         app.size = (40, 16)
         frame = self.plain(app.render())
@@ -1626,7 +1626,7 @@ class Blockers(Sandbox):
     def test_r12_notes_wrap_texts_and_separate_halves(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
-        app.request = {"kind": "direct", "key": C, "safety": safety, "conflict": B}
+        app.request = cli.PendingRequest("direct", C, safety, B)
         app.overlay = {"kind": "request"}
         app.size = (40, 24)
         rows = [re.sub(r"\x1b\[[0-9;]*m", "", r) for r in app.overlay_rows(40, 20)]

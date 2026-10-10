@@ -799,7 +799,7 @@ class App:
             self.overlay = None
 
     def show_invite(self, copy=False):
-        url = self.invite["url"]
+        url = self.invite.url
         if not url:
             return
         self.overlay = {"kind": "invite", "url": url, "qr": qr_lines(url)}
@@ -1446,7 +1446,7 @@ class App:
 
     def _cmd_invite(self, verb, arg):
         if arg.lower() == "revoke":
-            if not self.invite["url"]:
+            if not self.invite.url:
                 self.say("No active invite")
             else:
                 self.confirm = {"action": "revoke", "at": time.monotonic(), "until": time.monotonic() + CONFIRM_SECONDS,

@@ -1,16 +1,37 @@
 import secrets
 import time
+from dataclasses import dataclass
 
 from .protocol import FAILURES, INVITE_ERRORS, REDEEMED_DIRECT, REDEEMED_GROUP, TEXT_MAX, hex64, safety_ok
 
 ACTION_SECONDS = 10
 
 
+@dataclass(eq=False, slots=True)
+class Invite:
+    url: str = ""
+    expires: int = 0
+
+    def active(self, now):
+        return bool(self.url) and self.expires > now
+
+    def cleared(self):
+        return not self.url and not self.expires
+
+
+@dataclass(eq=False, slots=True)
+class PendingRequest:
+    kind: str
+    key: str = ""
+    safety: str = ""
+    conflict: str = ""
+
+
 class Invites:
     def __init__(self, send, say, failed, show_link, show_overlay, close_overlays):
         self.send, self.say, self.failed = send, say, failed
         self.show_link, self.show_overlay, self.close_overlays = show_link, show_overlay, close_overlays
-        self.invite = {"url": "", "expires": 0}
+        self.invite = Invite()
         self.invite_request = ""
         self.redeem_request = ""
         self.decide_request = ""
@@ -23,7 +44,7 @@ class Invites:
         return INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The request could not be answered."
 
     def create(self):
-        if self.invite["url"] and self.invite["expires"] > time.time():
+        if self.invite.active(time.time()):
             self.show_link(copy=True)
         else:
             self.invite_request = "cli-invite-" + secrets.token_hex(8)
@@ -69,11 +90,11 @@ class Invites:
         else:
             self.decide_request = "cli-decide-" + secrets.token_hex(8)
             operation = {"op": "contact.decide", "id": self.decide_request, "accept": verb == "accept"}
-            if self.request["kind"] == "direct":
-                operation["key"] = self.request["key"]
+            if self.request.kind == "direct":
+                operation["key"] = self.request.key
             if self.send(operation):
                 self.action, self.action_until = verb, time.monotonic() + ACTION_SECONDS
-                if self.request["kind"] == "group":
+                if self.request.kind == "group":
                     self.request = None
                 self.close_overlays("request")
                 self.say("Accepted" if verb == "accept" else "Declined")
@@ -82,14 +103,14 @@ class Invites:
 
     def on_invite(self, ev):
         if "url" in ev:
-            self.invite["url"] = str(ev.get("url") or "")
+            self.invite.url = str(ev.get("url") or "")
         if "expires" in ev:
             try:
-                self.invite["expires"] = max(0, int(ev.get("expires") or 0))
+                self.invite.expires = max(0, int(ev.get("expires") or 0))
             except (TypeError, ValueError):
-                self.invite["expires"] = 0
-        if not self.invite["url"] and not self.invite["expires"]:
-            if self.request and self.request["kind"] == "direct":
+                self.invite.expires = 0
+        if self.invite.cleared():
+            if self.request and self.request.kind == "direct":
                 self.request = None
             self.close_overlays("invite", "request")
         request = str(ev.get("request") or "")
@@ -97,7 +118,7 @@ class Invites:
             self.invite_request, self.action_until = "", 0.0
             if ev.get("op") == "revoke":
                 self.say("Invite revoked")
-            elif self.invite["url"]:
+            elif self.invite.url:
                 self.show_link(copy=True)
 
     def on_decided(self, ev):
@@ -125,21 +146,21 @@ class Invites:
             key, safety = str(ev.get("key") or ""), str(ev.get("safety") or "")
             if not hex64(key) or not safety_ok(safety):
                 self.request = None
-            elif self.request and self.request["kind"] == "direct" and self.request["key"] == key:
-                self.request["safety"] = safety
+            elif self.request and self.request.kind == "direct" and self.request.key == key:
+                self.request.safety = safety
             else:
-                self.request = {"kind": "direct", "key": key, "safety": safety, "conflict": ""}
+                self.request = PendingRequest("direct", key, safety)
                 self.say("Friend request; :requests shows it", 15)
         elif kind == "group":
-            if not self.request or self.request["kind"] != "group":
+            if not self.request or self.request.kind != "group":
                 self.say("Group invitation; :requests shows it", 15)
-            self.request = {"kind": "group", "key": "", "safety": "", "conflict": ""}
+            self.request = PendingRequest("group")
 
     def on_conflict(self, ev):
         key = str(ev.get("key") or "")
-        if (self.request and self.request["kind"] == "direct" and ev.get("kind") == "direct" and hex64(key)
-                and key != self.request["key"]):
-            self.request["conflict"] = key
+        if (self.request and self.request.kind == "direct" and ev.get("kind") == "direct" and hex64(key)
+                and key != self.request.key):
+            self.request.conflict = key
             self.say("Another device used this invite link", 15)
 
     def on_correlated_error(self, code, request):
@@ -168,11 +189,11 @@ class Invites:
         return True
 
     def drop(self):
-        self.invite, self.request = {"url": "", "expires": 0}, None
+        self.invite, self.request = Invite(), None
         if self.invite_request or self.redeem_request:
             self.invite_request = self.redeem_request = ""
             self.say("Invite result unknown; try again")
 
     def reset(self):
-        self.invite, self.request = {"url": "", "expires": 0}, None
+        self.invite, self.request = Invite(), None
         self.invite_request = self.redeem_request = ""

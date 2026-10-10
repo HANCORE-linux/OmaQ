@@ -46,7 +46,7 @@ class Screen:
         o = self.app.overlay
         rows = []
         if o["kind"] == "invite":
-            left = max(0, self.app.invite["expires"] - int(time.time()))
+            left = max(0, self.app.invite.expires - int(time.time()))
             valid = "valid %d h %02d min" % (left // 3600, left % 3600 // 60) if left else "expired; :invite creates a new link"
             rows.append(p.row([(" invite", "name", "1"), ("   %s · esc close" % valid, "dim", "")], width))
             url = clean_line(o["url"])
@@ -67,14 +67,14 @@ class Screen:
             rows.extend(notes)
         elif o["kind"] == "request" and self.app.request:
             r = self.app.request
-            if r["kind"] == "group":
+            if r.kind == "group":
                 rows.append(p.row([(" group invitation", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
                 rows.extend(self.text_rows("A friend invited you to a private group. Group chats show in the bar for now.", "dim", width))
             else:
                 rows.append(p.row([(" friend request", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
                 rows.extend(self.text_rows("Compare this code with your friend before accepting", "dim", width))
-                rows.extend(self.code_rows(r["safety"], width))
-                if r["conflict"]:
+                rows.extend(self.code_rows(r.safety, width))
+                if r.conflict:
                     rows.extend(self.text_rows("Another device used this invite link", "unread", width))
         elif o["kind"] == "redeemed":
             rows.append(p.row([(" " + (REDEEMED_GROUP if o.get("group") else REDEEMED_DIRECT), "name", "1"),
@@ -197,7 +197,7 @@ class Screen:
         shown = {pane.conv for pane in self.app.layout.panes()}
         bar = [(" omaq ", "accent", "1"), (self.conn_label(), "online" if self.app.conn == "online" else "dim", ""), ("   ", "dim", "")]
         if self.app.request:
-            bar.append(("1 request" if self.app.request["kind"] == "direct" else "1 group invitation", "unread", "1"))
+            bar.append(("1 request" if self.app.request.kind == "direct" else "1 group invitation", "unread", "1"))
             bar.append(("   ", "dim", ""))
         if self.app.friends_ready and not self.app.friends:
             bar.append(("no friends yet", "dim", ""))
