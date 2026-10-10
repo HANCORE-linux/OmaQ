@@ -44,7 +44,7 @@ Use either one or both. They share one identity, contact list, and history.
 
 The terminal client does not need the bar; it starts OmaQ's helper itself. To use only the terminal, run `omarchy plugin disable hancore.omaq` after installing. The updater needs the plugin enabled, so run `omarchy plugin enable hancore.omaq` before an update.
 
-While the bar runs, quitting the terminal client changes nothing; a terminal-only session goes offline unless you belong to a private group. After updating an older installation, create the command once with `~/.config/omarchy/plugins/hancore.omaq/cli/omaq.py --link`.
+While the bar runs, quitting the terminal client changes nothing. Once the bar is disabled, quitting takes you offline from the next login on, unless you belong to a private group. After updating an older installation, create the command once with `~/.config/omarchy/plugins/hancore.omaq/cli/omaq.py --link`.
 
 ## Install
 
