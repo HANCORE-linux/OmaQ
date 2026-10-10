@@ -105,11 +105,9 @@ class App:
         self.target = target
         self.palette = Palette()
         self.presence = Presence(self.state)
+        self.helper = HelperProcess(self.presence, self.say)
         self.link = None
         self.open_link = Link
-        self.proc = None
-        self.owns = False
-        self.launch_nonce = ""
         self.nonce = ""
         self.instance = ""
         self.protocol = 0
@@ -307,13 +305,12 @@ class App:
             self.link = self.open_link(path)
         except OSError:
             self.link = None
-        if not self.link and self.proc is None and (self.owns or not self.instance):
-            self.proc = self.start_helper()
+        if not self.link and self.helper.proc is None and (self.helper.owns or not self.instance):
+            self.helper.start(self.home, self.state)
             deadline = time.monotonic() + 10.0
-            while self.proc is not None and time.monotonic() < deadline and not self.link:
-                if self.proc.poll() is not None and self.proc.returncode != 2:
-                    self.report_start_failure()
-                    self.proc = None
+            while self.helper.proc is not None and time.monotonic() < deadline and not self.link:
+                if self.helper.failed():
+                    self.helper.abandon()
                     break
                 try:
                     self.link = self.open_link(path)
@@ -326,41 +323,6 @@ class App:
             return
         self.handshake_request()
         self.dirty = True
-
-    def start_helper(self):
-        binary = helper_binary()
-        if not os.access(binary, os.X_OK):
-            self.say("OmaQ helper not found: %s" % binary, 30)
-            return None
-        for path in (self.home, self.state):
-            problem = ensure_private_dir(path)
-            if problem:
-                self.say(problem, 60)
-                return None
-        self.launch_nonce = secrets.token_hex(16)
-        env = dict(os.environ, OMAQ_HOME=self.home, OMAQ_STATE=self.state, OMAQ_PROTOCOL_NONCE=self.launch_nonce)
-        log_fd, self.log_path = self.presence.log()
-        try:
-            return subprocess.Popen([binary], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=log_fd if log_fd is not None else subprocess.DEVNULL,
-                                    start_new_session=True, close_fds=True)
-        except OSError:
-            return None
-        finally:
-            if log_fd is not None:
-                os.close(log_fd)
-
-    def report_start_failure(self):
-        detail = ""
-        try:
-            with open(self.log_path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell() - 400))
-                lines = [line for line in f.read().decode("utf-8", "replace").splitlines() if line.strip()]
-            detail = lines[-1] if lines else ""
-        except (OSError, AttributeError, TypeError):
-            pass
-        self.say("Helper could not start" + (": " + detail if detail else ""), 60)
 
     def drop_link(self):
         if self.link:
@@ -421,7 +383,7 @@ class App:
         self.files.resume(restarted)
 
     def settle(self):
-        if self.handshake or self.proc is None or self.proc.poll() is not None:
+        if self.handshake or not self.helper.running():
             return
         end = time.monotonic() + SETTLE_SECONDS
         path = os.path.join(self.state, "omaq.sock")
@@ -607,8 +569,7 @@ class App:
                 self.dirty = True
         if self.overlay is not None and self.overlay.tick():
             self.dirty = True
-        if self.proc is not None and self.proc.poll() is not None:
-            self.proc = None
+        self.helper.reap()
         if not self.link and now >= self.next_connect:
             self.connect()
         if self.typing_on and now - self.last_edit > TYPING_IDLE:
@@ -947,7 +908,7 @@ class App:
                     self.exit_note = "%s: %s" % (COMMAND, UNCOORDINATED_EXIT)
                 else:
                     self.exit_helper()
-                    if not self.handshake and self.proc is not None and self.proc.poll() is None:
+                    if not self.handshake and self.helper.running():
                         self.exit_note = "%s: %s" % (COMMAND, UNCONFIRMED_EXIT)
             except BaseException:
                 pass
@@ -1058,12 +1019,7 @@ class App:
                 self.history_clear = int(ev.get("historyClear") or 0)
             except (TypeError, ValueError):
                 self.history_clear = 0
-            running = self.proc is not None and self.proc.poll() is None
-            launched = read_protocol(self.state)
-            self.owns = running and bool(self.launch_nonce) and launched.get("nonce") == self.launch_nonce \
-                and launched.get("instance") == self.instance and launched.get("pid") == self.proc.pid
-            if self.owns:
-                self.presence.mark_started(self.instance, self.launch_nonce)
+            self.helper.adopt(self.state, self.instance)
             self.send({"op": "identity.ready", "id": self.instance})
             self.resume_transfers(restarted)
         self.locked = ev.get("locked") is True

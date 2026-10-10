@@ -1,6 +1,8 @@
 import json
 import os
+import secrets
 import stat
+import subprocess
 
 
 def default_home():
@@ -46,3 +48,66 @@ def read_protocol(state):
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+class HelperProcess:
+    def __init__(self, presence, say):
+        self.presence, self.say = presence, say
+        self.proc = None
+        self.owns = False
+        self.nonce = ""
+        self.log_path = None
+
+    def start(self, home, state):
+        binary = helper_binary()
+        if not os.access(binary, os.X_OK):
+            self.say("OmaQ helper not found: %s" % binary, 30)
+            return
+        for path in (home, state):
+            problem = ensure_private_dir(path)
+            if problem:
+                self.say(problem, 60)
+                return
+        self.nonce = secrets.token_hex(16)
+        env = dict(os.environ, OMAQ_HOME=home, OMAQ_STATE=state, OMAQ_PROTOCOL_NONCE=self.nonce)
+        log_fd, self.log_path = self.presence.log()
+        try:
+            self.proc = subprocess.Popen([binary], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=log_fd if log_fd is not None else subprocess.DEVNULL,
+                                         start_new_session=True, close_fds=True)
+        except OSError:
+            self.proc = None
+        finally:
+            if log_fd is not None:
+                os.close(log_fd)
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def failed(self):
+        return self.proc.poll() is not None and self.proc.returncode != 2
+
+    def abandon(self):
+        detail = ""
+        try:
+            with open(self.log_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 400))
+                lines = [line for line in f.read().decode("utf-8", "replace").splitlines() if line.strip()]
+            detail = lines[-1] if lines else ""
+        except (OSError, AttributeError, TypeError):
+            pass
+        self.say("Helper could not start" + (": " + detail if detail else ""), 60)
+        self.proc = None
+
+    def reap(self):
+        if self.proc is not None and self.proc.poll() is not None:
+            self.proc = None
+
+    def adopt(self, state, instance):
+        running = self.running()
+        launched = read_protocol(state)
+        self.owns = running and bool(self.nonce) and launched.get("nonce") == self.nonce \
+            and launched.get("instance") == instance and launched.get("pid") == self.proc.pid
+        if self.owns:
+            self.presence.mark_started(instance, self.nonce)

@@ -1459,7 +1459,7 @@ class Blockers(Sandbox):
             app.open_link = Sock
             app.settle()
             self.assertEqual(sent, [])
-            app.proc = type("Proc", (), {"poll": lambda self: None, "pid": 1})()
+            app.helper.proc = type("Proc", (), {"poll": lambda self: None, "pid": 1})()
             app.settle()
             self.assertEqual((app.handshake, app.instance), (True, "k" * 32))
             self.assertEqual([o["op"] for o in sent], ["status", "identity.ready"])
