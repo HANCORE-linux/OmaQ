@@ -495,8 +495,8 @@ grep -Fq '<summary>Pin a reviewed commit and limit acquisition</summary>' \
 grep -Fq '"/usr/bin/git", "-c", "core.hooksPath=/dev/null"' \
   "$root/docs/INSTALLATION.md" || exit 1
 ! grep -Eq '<sub>|<br[ >]' "$root/README.md" || exit 1
-[ "$(grep -Fc '<td width="25%" align="center"><a href="docs/images/guide/' \
-  "$root/README.md")" -eq 4 ] || exit 1
+grep -Fq '<th width="50%">Bar plugin</th>' "$root/README.md" || exit 1
+grep -Fq '<th width="50%">Terminal client</th>' "$root/README.md" || exit 1
 grep -Fq 'the updater builds outside the monitored plugin tree' \
   "$root/README.md" || exit 1
 grep -Fq 'Dependency packages are never removed automatically' "$root/README.md" || exit 1
