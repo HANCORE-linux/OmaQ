@@ -212,6 +212,7 @@ test-ci: check-tox check-signal check-audio check-images check-node check-qml $(
 	python3 tests/material-symbols.py
 	python3 tests/qml_plaintext_test.py
 	python3 -I tests/cli_unit_test.py
+	python3 -I tests/cli_arch_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/group-chat-parity.sh
 	sh tests/redeem-feedback.sh
@@ -251,6 +252,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/material-symbols.sh
 	python3 tests/qml_plaintext_test.py
 	python3 -I tests/cli_unit_test.py
+	python3 -I tests/cli_arch_test.py
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/helper-detached.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/stable-direct-state.sh
