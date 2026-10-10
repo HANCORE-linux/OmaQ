@@ -124,12 +124,16 @@ class Panes(unittest.TestCase):
         layout.resize(3.0)
         self.assertLessEqual(max(layout.weights), 3.0)
 
-    def test_stamp(self):
-        now = 1760000000.0
-        today = cli.time.strftime("%Y-%m-%d", cli.time.localtime(now))
-        self.assertEqual(len(cli.stamp(now, today)), 5)
-        self.assertEqual(len(cli.stamp(now - 3 * 86400, today)), 16)
-        self.assertEqual(cli.stamp(0, today), "")
+    def test_day_labels_and_clock(self):
+        now = cli.time.mktime((2026, 10, 10, 15, 0, 0, 0, 0, -1))
+        at = lambda *d: cli.time.mktime(d + (0, 0, -1))
+        self.assertEqual(cli.day_label(at(2026, 10, 10, 9, 12, 0), now), "today")
+        self.assertEqual(cli.day_label(at(2026, 10, 9, 23, 59, 0), now), "yesterday")
+        self.assertEqual(cli.day_label(at(2026, 10, 8, 14, 5, 0), now), "Thu 8 Oct")
+        self.assertEqual(cli.day_label(at(2025, 12, 31, 8, 0, 0), now), "Wed 31 Dec 2025")
+        self.assertEqual(cli.day_label(at(2026, 1, 1, 8, 0, 0), cli.time.mktime((2026, 1, 2, 9, 0, 0, 0, 0, -1))), "yesterday")
+        self.assertEqual(cli.clock(at(2026, 10, 8, 14, 5, 0)), "14:05")
+        self.assertEqual(cli.clock(0), "--:--")
 
 
 class Link(unittest.TestCase):
@@ -242,7 +246,7 @@ class Sandbox(unittest.TestCase):
         app.apply_friends([dict(f, online=True, status="online") for f in friends])
         return app
 
-    def loaded(self, app, conversation, *texts):
+    def loaded(self, app, conversation="0", *texts):
         c = app.conv(conversation)
         c["loaded"], c["request"] = True, ""
         for k, text in enumerate(texts):
@@ -419,12 +423,14 @@ class PackageA(Sandbox):
     def test_command_hint_and_colon_suggestions(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
         plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text).strip()
-        self.assertEqual(plain(app.command_hint(80)), ":help   :connect   :split   :quit   :qa")
+        app.tip = 0
+        self.assertEqual(plain(app.command_hint(120)), ":help   :quit   \u00b7   ctrl+k opens the emoji picker")
         app.edit("text", ":")
-        self.assertEqual(plain(app.command_hint(80)).split(), [":help", ":connect", ":split", ":quit", ":qa"])
+        self.assertEqual(plain(app.command_hint(200)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
+                                                                ":requests", ":accept", ":decline", ":clear", ":close", ":quit"])
         self.assertIn("1;7m:help", app.command_hint(80))
         app.edit("text", "c")
-        self.assertEqual(plain(app.command_hint(80)).split(), [":connect"])
+        self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":clear", ":close"])
         app.edit("key", "tab")
         self.assertEqual(app.pane.draft, ":connect")
         app.edit("text", " ")
@@ -447,6 +453,560 @@ class PackageA(Sandbox):
         app.edit("text", ":he")
         app.edit("key", "enter")
         self.assertEqual(app.help, 0)
+        app.help = None
+        app.edit("text", ":qa")
+        app.edit("key", "enter")
+        self.assertTrue(app.running)
+        self.assertIn("Unknown command :qa", app.status)
+        app.open_pane("1")
+        app.edit("text", ":close")
+        app.edit("key", "enter")
+        self.assertEqual((len(app.layout.panes()), app.running), (1, True))
+        app.edit("text", ":close")
+        app.edit("key", "enter")
+        self.assertEqual((len(app.layout.panes()), app.running), (1, True))
+        app.open_pane("1")
+        app.edit("text", ":quit")
+        app.edit("key", "enter")
+        self.assertFalse(app.running)
+
+    def test_day_dividers_appear_once_per_day(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = self.loaded(app)
+        base = time.time()
+        for k, ts in enumerate((base - 2 * 86400, base - 2 * 86400 + 60, base)):
+            c["items"].append(cli.Message("d%d" % k, "", "in", "msg%d" % k, ts))
+        rows = [re.sub(r"\x1b\[[0-9;]*m", "", app.palette.row(segs, 60)).rstrip() for segs in app.message_lines("0", 60)]
+        dividers = [r for r in rows if r.startswith(" \u2500\u2500")]
+        self.assertEqual(len(dividers), 2, rows)
+        self.assertTrue(dividers[1].endswith("today \u2500\u2500"))
+        self.assertTrue(all(re.match(r" \d\d:\d\d  ", r) for r in rows if "msg" in r), rows)
+
+    def test_up_and_down_recall_this_chat_only(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.loaded(app, "0")
+        for text in ("first", "second"):
+            app.edit("text", text)
+            app.edit("key", "enter")
+        app.edit("text", "draft")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "second")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "first")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "first")
+        app.edit("key", "down")
+        app.edit("key", "down")
+        self.assertEqual(app.pane.draft, "draft")
+        app.edit("key", "esc")
+        app.edit("key", "tab")
+        self.loaded(app, "1")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "")
+        app.edit("text", ":he")
+        app.edit("key", "enter")
+        app.edit("key", "esc")
+        app.edit("text", ":")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, ":he")
+
+    def test_clear_asks_first_and_follows_the_helper(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = self.loaded(app, "0", "old one")
+        app.history_clear = 2
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "Clear this chat? y/n")
+        app.edit("text", "n")
+        self.assertEqual(app.link.ops("history.clear"), [])
+        self.assertEqual(app.status, "Chat kept")
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.edit("text", "y")
+        op = app.link.ops("history.clear")[-1]
+        self.assertEqual(sorted(op), ["conversation", "id", "key", "op"])
+        self.assertEqual((op["conversation"], op["key"]), ("0", A))
+        app.on_event({"event": "history.clear.succeeded", "conversation": "0", "key": A, "request": "other",
+                      "instance": app.instance})
+        app.on_event({"event": "history.clear.succeeded", "conversation": "0", "key": A, "request": op["id"],
+                      "instance": "j" * 32})
+        self.assertEqual([m.text for m in c["items"]], ["old one"])
+        app.on_event({"event": "history.clear.succeeded", "conversation": "0", "key": A, "request": op["id"],
+                      "instance": app.instance})
+        self.assertEqual(app.conv("0")["items"], [])
+        self.assertEqual(app.link.ops("history")[-1]["conversation"], "0")
+        app.history_clear = 0
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "Helper update required")
+
+    def test_invite_create_show_copy_and_revoke(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.out = __import__("io").StringIO()
+        app.edit("text", ":invite")
+        app.edit("key", "enter")
+        op = app.link.ops("invite.create")[-1]
+        self.assertEqual(sorted(op), ["kind", "op", "request", "ttlSec"])
+        self.assertEqual((op["kind"], op["ttlSec"]), ("direct", 86400))
+        link = "omaq://invite-" + "a" * 40
+        app.on_event({"event": "invite", "url": link, "expires": int(time.time()) + 86400, "op": "create",
+                      "request": op["request"]})
+        self.assertEqual(app.overlay["kind"], "invite")
+        import base64
+        self.assertIn("\x1b]52;c;%s\x07" % base64.b64encode(link.encode()).decode(), app.out.getvalue())
+        app.overlay["qr"] = ["\u2588\u2580\u2584 "]
+        app.size = (100, 40)
+        frame = app.render()
+        self.assertIn(link, frame)
+        self.assertIn("\x1b[0;97;40m\u2588\u2580\u2584 ", frame)
+        app.edit("key", "esc")
+        self.assertIsNone(app.overlay)
+        app.edit("text", ":invite revoke")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "Revoke this invite? It cannot be used again. y/n")
+        app.edit("text", "n")
+        self.assertEqual(app.link.ops("invite.revoke"), [])
+        app.edit("text", ":invite revoke")
+        app.edit("key", "enter")
+        app.edit("text", "y")
+        self.assertEqual(sorted(app.link.ops("invite.revoke")[-1]), ["op", "request"])
+
+    def test_redeem_and_its_errors(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.edit("text", ":redeem nonsense")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("invite.redeem"), [])
+        app.edit("text", ":redeem  omaq://abc ")
+        app.edit("key", "enter")
+        op = app.link.ops("invite.redeem")[-1]
+        self.assertEqual((op["payload"], sorted(op)), ("omaq://abc", ["id", "op", "payload"]))
+        app.on_event({"event": "error", "code": "invite_expired", "request": op["id"]})
+        self.assertEqual(app.status, "Invite expired. Create a new link.")
+        app.edit("text", ":redeem omaq://def")
+        app.edit("key", "enter")
+        op = app.link.ops("invite.redeem")[-1]
+        safety = " / ".join(" ".join("ab%02d" % k for k in range(16)) for _ in range(2))
+        app.on_event({"event": "invite.redeemed", "kind": "direct", "safety": safety, "request": op["id"]})
+        self.assertIsNone(app.overlay)
+        app.edit("text", ":redeem omaq://def")
+        app.edit("key", "enter")
+        op = app.link.ops("invite.redeem")[-1]
+        app.on_event({"event": "invite.redeemed", "kind": "direct", "key": B, "safety": safety, "request": op["id"]})
+        self.assertEqual((app.overlay["kind"], app.overlay["safety"]), ("redeemed", safety))
+
+    def test_requests_accept_and_decline(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        safety = " / ".join(" ".join("cd%02d" % k for k in range(16)) for _ in range(2))
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": "broken"})
+        self.assertIsNone(app.request)
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
+        self.assertIn("1 request", re.sub(r"\x1b\[[0-9;]*m", "", app.friends_bar(120)))
+        app.on_event({"event": "request.conflict", "kind": "direct", "key": B})
+        app.edit("text", ":requests")
+        app.edit("key", "enter")
+        app.size = (100, 30)
+        frame = re.sub(r"\x1b\[[0-9;]*m", "", app.render())
+        self.assertIn(safety.split(" / ")[0], frame)
+        self.assertIn("Another device used this invite link", frame)
+        self.assertIn("Compare this code with your friend before accepting", frame)
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": "x", "accept": True, "key": C})
+        app.on_event({"event": "invite", "url": "", "expires": 0})
+        self.assertIsNone(app.request)
+        app.on_event({"event": "request", "kind": "group"})
+        app.edit("text", ":decline")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("contact.decide")[-1], {"op": "contact.decide", "id": "x", "accept": False})
+        self.assertIsNone(app.request)
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "No pending request")
+
+    def test_request_state_follows_the_helper(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        safety = " / ".join(" ".join("ef%02d" % k for k in range(16)) for _ in range(2))
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
+        self.assertEqual(app.status, "Friend request; :requests shows it")
+        app.say("")
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
+        self.assertEqual(app.status, "")
+        self.assertTrue(re.sub(r"\x1b\[[0-9;]*m", "", app.friends_bar(40)).startswith(" omaq "))
+        self.assertIn("1 request", re.sub(r"\x1b\[[0-9;]*m", "", app.friends_bar(40)))
+        for typed in (":a", ":acc", ":d"):
+            app.edit("text", typed)
+            app.edit("key", "enter")
+        self.assertEqual(app.link.ops("contact.decide"), [])
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": "bad"})
+        self.assertIsNone(app.request)
+        app.on_event({"event": "request", "kind": "direct", "key": C, "safety": safety})
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "forbidden"})
+        self.assertEqual(app.status, "The request could not be accepted.")
+        app.on_event({"event": "error", "code": "contact_limit"})
+        self.assertEqual(app.status, "The request could not be accepted.")
+        app.edit("text", ":accept")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "contact_limit"})
+        self.assertEqual(app.status, "The direct-contact limit has been reached.")
+        app.redeem_request = "cli-redeem-1"
+        app.overlay = {"kind": "redeemed", "group": False, "safety": ""}
+        app.drop_link()
+        self.assertEqual((app.request, app.overlay, app.redeem_request, app.invite["url"]), (None, None, "", ""))
+        self.assertEqual(app.status, "Invite result unknown; try again")
+
+    def test_focus_marker_and_name_pill(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}, {"id": "1", "key": B, "name": "carol"}])
+        self.loaded(app, "0")
+        app.size = (80, 12)
+        frame = app.render()
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
+        self.assertIn("❯ bob  online", text)
+        self.assertNotIn("chat ›", text)
+        self.assertIn("\x1b[0;%s;1;7m bob \x1b[0m" % app.palette.roles["accent"], frame)
+        self.assertIn("\x1b[0;%s;1m ❯ \x1b[0m" % app.palette.roles["accent"], frame)
+        app.size = (12, 12)
+        composer = [r for r in re.findall(r"\x1b\[\d+;1H(.*?)\x1b\[0m\x1b\[K", app.render()) if "❯ " in r][-1]
+        self.assertLessEqual(cli.text_width(re.sub(r"\x1b\[[0-9;]*m", "", composer)), 12)
+
+    def test_unread_mark_and_preview_only_off_screen(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}, {"id": "1", "key": B, "name": "dave"}])
+        self.loaded(app, "0")
+        app.size = (80, 12)
+        app.render()
+        app.on_event({"event": "message", "conversation": "1", "key": B, "dir": "in", "id": "d1",
+                      "text": "bist du da?\nzweite Zeile", "ts": 1700000000})
+        self.assertEqual(app.status, "dave: bist du da?")
+        app.on_event({"event": "unread", "conversation": "1", "key": B, "count": 1})
+        pill = "\x1b[0;%s;1;7m dave \x1b[0m" % app.palette.roles["unread"]
+        self.assertIn(pill, app.render())
+        app.say("")
+        app.on_event({"event": "message", "conversation": "0", "key": A, "dir": "in", "id": "b1", "text": "hallo",
+                      "ts": 1700000001})
+        app.on_event({"event": "unread", "conversation": "0", "key": A, "count": 1})
+        frame = app.render()
+        self.assertEqual(app.status, "")
+        self.assertNotIn("%s;1;7m bob " % app.palette.roles["unread"], frame)
+        self.assertIn("%s;1;7m bob " % app.palette.roles["accent"], frame)
+        app.on_event({"event": "message", "conversation": "1", "key": B, "dir": "in", "id": "d2",
+                      "text": "\x1b]52;c;eA==\x07" + "x" * 80, "ts": 1700000002})
+        self.assertNotIn("\x1b", app.status)
+        self.assertTrue(app.status.endswith("…"))
+        app.on_event({"event": "unread", "conversation": "1", "key": B, "count": 0})
+        self.assertNotIn(pill, app.render())
+
+    def test_emoji_presentation_is_two_cells_and_one_cursor_step(self):
+        heart = "\u2764\ufe0f"
+        self.assertEqual(cli.text_width(heart), 2)
+        self.assertEqual(cli.text_width("\U0001F600\ufe0f"), 2)
+        self.assertEqual(cli.clip("a" + heart + "b", 2), ("a", 1))
+        self.assertEqual(cli.clip("a" + heart + "b", 3), ("a" + heart, 3))
+        self.assertEqual((cli.prev_stop("a" + heart, 3), cli.next_stop("a" + heart, 1)), (1, 3))
+
+    def test_emoticons_become_emoji_but_commands_and_links_stay(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.edit("text", ":) ")
+        self.assertEqual(app.pane.draft, "\U0001F642 ")
+        app.edit("key", "esc")
+        app.edit("text", ":p")
+        self.assertNotIn("no matching command", re.sub(r"\x1b\[[0-9;]*m", "", app.command_hint(80)))
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["text"], "\U0001F61B")
+        app.edit("text", "siehe https://x.y/:/ und <3")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["text"], "siehe https://x.y/:/ und \u2764\ufe0f")
+        app.edit("paste", "ok :) bye")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["text"], "ok \U0001F642 bye")
+        app.edit("text", ":connect XD ")
+        self.assertEqual(app.pane.draft, ":connect XD ")
+        app.edit("key", "esc")
+        app.edit("text", "a<3 x <3 ")
+        self.assertEqual(app.pane.draft, "a<3 x \u2764\ufe0f ")
+        app.edit("key", "backspace")
+        app.edit("key", "backspace")
+        self.assertEqual(app.pane.draft, "a<3 x ")
+        app.edit("key", "esc")
+        app.edit("text", ":quit")
+        app.edit("key", "enter")
+        self.assertFalse(app.running)
+
+    def test_ctrl_k_picker_inserts_at_the_cursor(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 14)
+        app.edit("text", "hi ")
+        app.edit("key", "left")
+        app.edit("ctrl", "k")
+        frame = app.render()
+        rows = re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)
+        head = [int(n) for n, row in rows if "emoji › " in re.sub(r"\x1b\[[0-9;]*m", "", row)]
+        self.assertEqual(len(head), 1)
+        self.assertEqual(int(re.findall(r"\x1b\[(\d+);\d+H\x1b\[\?25h", frame)[-1]), head[0])
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
+        self.assertIn("\U0001F600", text)
+        self.assertIn("grinning face", text)
+        self.assertIn("❯ bob  online", text)
+        app.edit("key", "right")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.draft, app.picker), ("hi\U0001F642 ", None))
+        app.edit("ctrl", "k")
+        app.edit("text", "fire")
+        self.assertEqual(app.picker_items()[0][0], "\U0001F525")
+        app.edit("key", "enter")
+        self.assertEqual(app.pane.draft, "hi\U0001F642\U0001F525 ")
+        app.edit("ctrl", "k")
+        app.edit("text", "cat face")
+        self.assertTrue(app.picker_items())
+        self.assertTrue(all("cat face" in name for _, name in app.picker_items()))
+        self.assertTrue(all(cli.text_width(emoji) == 2 for emoji, _ in cli.emoji_catalog()))
+        app.edit("text", "zzzz")
+        app.edit("key", "enter")
+        self.assertEqual(app.pane.draft, "hi\U0001F642\U0001F525 ")
+        app.edit("ctrl", "k")
+        app.edit("key", "esc")
+        self.assertIsNone(app.picker)
+        self.assertEqual(cli.Keys().feed(b"\x0b"), [("ctrl", "k")])
+
+    def test_picker_uses_the_bar_emoji_set(self):
+        with open(os.path.join(ROOT, "pages", "ChatPage.qml"), encoding="utf-8") as f:
+            qml = f.read()
+        bar = re.findall(r'"([^"]+)"', re.search(r"readonly property var emojiSet: \[(.*?)\]", qml, re.S).group(1))
+        extra = re.findall(r'"([^"]+)"', re.search(
+            r"readonly property var composerEmojiSet: root\.emojiSet\.concat\(\[(.*?)\]\)", qml, re.S).group(1))
+        self.assertEqual((cli.EMOJI, extra), (bar + extra, ["\U0001F91F"]))
+
+    def test_confirmation_expires_with_its_prompt(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.history_clear = 2
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.tick(app.confirm["until"] + 1)
+        self.assertEqual((app.confirm, app.status), (None, "Chat kept"))
+        app.edit("text", "y")
+        self.assertEqual((app.link.ops("history.clear"), app.pane.draft), ([], "y"))
+        app.edit("key", "esc")
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.confirm["until"] = time.monotonic() - 1
+        app.edit("text", "y")
+        self.assertEqual((app.link.ops("history.clear"), app.pane.draft), ([], "y"))
+        app.edit("key", "esc")
+        app.edit("text", ":clear")
+        app.edit("key", "enter")
+        app.drop_link()
+        self.assertEqual((app.confirm, app.status), (None, ""))
+
+    def test_identity_changed_error_keeps_panes_and_drafts(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.loaded(app, "0")
+        app.edit("text", ":connect bob")
+        app.edit("key", "enter")
+        app.pane.draft, app.pane.cursor = "an bob", 6
+        before = [(pane.conv, pane.draft) for pane in app.layout.panes()]
+        asked = len(app.link.ops("status"))
+        app.on_event({"event": "error", "code": "identity_changed", "conversation": "3"})
+        self.assertEqual([(pane.conv, pane.draft) for pane in app.layout.panes()], before)
+        self.assertEqual((len(app.link.ops("status")), app.conv("0")["loaded"]), (asked + 1, False))
+        app.addr = "a" * 76
+        app.on_event({"event": "snapshot", "request": app.nonce, "instance": app.instance, "protocol": 16,
+                      "addr": "b" * 76, "online": True})
+        self.assertEqual([pane.draft for pane in app.layout.panes()], ["", ""])
+        self.assertEqual(app.friends, [])
+
+    def test_long_draft_scrolls_in_linear_time(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.size = (80, 24)
+        app.edit("paste", "x" * 50000 + "END")
+        start = time.perf_counter()
+        frame = app.render()
+        self.assertLess(time.perf_counter() - start, 0.5)
+        rows = re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)
+        composer = re.sub(r"\x1b\[[0-9;]*m", "", rows[-2][1]).rstrip()
+        self.assertTrue(composer.endswith("END"))
+        column = int(re.findall(r"\x1b\[\d+;(\d+)H\x1b\[\?25h", frame)[-1])
+        self.assertEqual(column, cli.text_width(composer) + 1)
+
+    def test_errors_follow_the_clients_own_actions(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.edit("text", ":redeem omaq://broken")
+        app.edit("key", "enter")
+        rid = app.link.ops("invite.redeem")[-1]["id"]
+        app.on_event({"event": "error", "code": "unsupported", "request": rid})
+        self.assertEqual(app.status, "That is not an OmaQ invite.")
+        app.say("")
+        app.action_until = 0.0
+        app.on_event({"event": "error", "code": "offline"})
+        self.assertEqual(app.status, "")
+        app.edit("text", ":redeem omaq://x")
+        app.edit("key", "enter")
+        app.on_event({"event": "error", "code": "unsupported"})
+        self.assertEqual((app.status, app.redeem_request), ("That is not an OmaQ invite.", ""))
+
+    def test_qr_is_white_on_black_and_checked(self):
+        theme = os.path.join(os.environ["HOME"], ".local", "state", "omarchy", "current", "theme")
+        os.makedirs(theme)
+        with open(os.path.join(theme, "colors.toml"), "w") as f:
+            f.write("".join('color%d = "#%02x%02x%02x"\n' % (k, 200 - k * 20, 190 - k * 20, 180 - k * 20)
+                            for k in range(8)) + 'accent = "#e33d84"\n')
+        self.assertEqual(cli.Palette().roles["qr"], "38;2;255;255;255;48;2;0;0;0")
+        calls = []
+        real = cli.subprocess.run
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            return cli.subprocess.CompletedProcess(argv, 0, fake.output, b"")
+        fake.output = "\u2588\u2580 \n".encode()
+        cli.subprocess.run = fake
+        try:
+            ok = cli.qr_lines("omaq://x")
+            fake.output = "\u2588\x1b[31m\u2580\n".encode()
+            bad = cli.qr_lines("omaq://x")
+        finally:
+            cli.subprocess.run = real
+        if calls:
+            self.assertEqual((ok, bad), (["\u2588\u2580 "], []))
+            self.assertEqual(calls[0][-2:], ["--", "omaq://x"])
+
+    def test_picker_finds_symbols_outside_the_old_ranges(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        for query, emoji in (("star", "\u2b50"), ("watch", "\u231a"), ("vs", "\U0001F19A")):
+            app.picker = {"query": query, "index": 0}
+            self.assertIn(emoji, [item[0] for item in app.picker_items()])
+
+    def test_friends_bar_marks_hidden_friends(self):
+        friends = [{"id": str(k), "key": ("%02d" % k) * 32, "name": "friend%02d" % k} for k in range(15)]
+        friends[0]["name"] = "n" * 60
+        app = self.app(friends)
+        app.unread["14"] = 2
+        bar = app.friends_bar(100)
+        text = re.sub(r"\x1b\[[0-9;]*m", "", bar)
+        self.assertIn("n" * 17 + "\u2026", text)
+        shown = sum(1 for f in friends[1:] if f["name"] in text)
+        self.assertIn("\x1b[0;31;1m+%d" % (14 - shown), bar)
+        self.assertLessEqual(cli.text_width(text), 100)
+
+    def test_overlong_link_and_failed_send(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.edit("text", ":redeem omaq://" + "a" * 600)
+        app.edit("key", "enter")
+        self.assertEqual((app.status, app.link.ops("invite.redeem")), ("Link is too long", []))
+        app.link.send = lambda obj: False
+        app.edit("text", ":redeem omaq://short")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "Could not send the request")
+        app.link = None
+        app.edit("text", ":invite")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "Not connected")
+
+    def test_redeem_result_uses_the_bars_wording(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.size = (100, 20)
+        app.edit("text", ":redeem omaq://x")
+        app.edit("key", "enter")
+        rid = app.link.ops("invite.redeem")[-1]["id"]
+        app.on_event({"event": "invite.redeemed", "kind": "group", "request": rid})
+        self.assertIn("Group invite checked. Waiting for the incoming group request.", app.render())
+        self.assertEqual(app.status, "Group invite checked. Waiting for the incoming group request.")
+
+    def test_invite_countdown_redraws_every_minute(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.out = __import__("io").StringIO()
+        app.invite = {"url": "omaq://x", "expires": int(time.time()) + 86400}
+        app.overlay = {"kind": "invite", "url": "omaq://x", "qr": []}
+        app.tick(time.monotonic())
+        app.dirty = False
+        app.overlay["minute"] -= 1
+        app.tick(time.monotonic())
+        self.assertTrue(app.dirty)
+        app.invite["expires"] = int(time.time()) - 5
+        app.size = (100, 20)
+        self.assertIn("expired; :invite creates a new link", app.render())
+
+    def test_widths_follow_the_terminal(self):
+        saved = dict(cli.WIDTHS)
+        try:
+            read_fd, write_fd = os.pipe()
+            os.write(write_fd, b"\x1b[5;2R\x1b[5;3Rab")
+            typed = cli.measure_widths(read_fd, __import__("io").StringIO(), timeout=1.0)
+            os.close(read_fd)
+            os.close(write_fd)
+            self.assertEqual((typed, cli.WIDTHS), (b"ab", {"vs16": 1, "cluster": True}))
+            self.assertEqual(cli.text_width("\u2764\ufe0f"), 1)
+            self.assertEqual(cli.text_width("\U0001F469\u200d\U0001F4BB"), 2)
+            self.assertEqual(cli.text_width("\U0001F44D\U0001F3FD"), 2)
+            self.assertEqual(cli.clip("\U0001F469\u200d\U0001F4BBx", 2), ("\U0001F469\u200d\U0001F4BB", 2))
+            cli.WIDTHS.update({"vs16": 2, "cluster": False})
+            self.assertEqual(cli.text_width("\U0001F469\u200d\U0001F4BB"), 4)
+            self.assertEqual(cli.text_width("\U0001F44D\U0001F3FD"), 4)
+        finally:
+            cli.WIDTHS.clear()
+            cli.WIDTHS.update(saved)
+
+    def test_zoom_is_measured_from_the_cell_size(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
+        app.track_zoom((58, 96, 673, 934))
+        self.assertEqual((app.zoom, app.zoom_until), (100, 0.0))
+        self.assertNotIn("Text", plain(app.command_hint(100)))
+        app.track_zoom((51, 84, 673, 934))
+        self.assertEqual(app.zoom, 112)
+        self.assertIn("Text 112%", plain(app.command_hint(100)))
+        app.tick(app.zoom_until + 1)
+        self.assertNotIn("Text", plain(app.command_hint(100)))
+        app.track_zoom((40, 70, 500, 730))
+        self.assertEqual((app.zoom, app.zoom_until), (112, 0.0))
+        app.track_zoom((60, 100, 700, 980))
+        self.assertEqual(app.zoom, 100)
+        self.assertIn("Text 100%", plain(app.command_hint(100)))
+        for size in (None, (40, 70, 0, 0), (0, 0, 0, 0)):
+            app.track_zoom(size)
+        self.assertEqual(app.zoom, 100)
+        line = app.command_hint(100)
+        self.assertTrue(plain(line).startswith(" :help   :quit") and plain(line).endswith("Text 100% "))
+        self.assertIn("\x1b[0;%sm" % app.palette.roles["dim"] + "Text 100%", line)
+        app.zoom, app.zoom_until = 112, time.monotonic() + 60
+        line = app.command_hint(100)
+        self.assertIn("\x1b[0;%smText 112%%" % app.palette.roles["accent"], line)
+        self.assertEqual(cli.text_width(plain(line)), 100)
+        self.assertIn("Text 112%", plain(app.command_hint(80)))
+        self.assertNotIn("Text", plain(app.command_hint(20)))
+        self.assertLessEqual(cli.text_width(plain(app.command_hint(20))), 20)
+        app.edit("text", ":")
+        self.assertNotIn("Text 112%", plain(app.command_hint(200)))
+        app.edit("key", "esc")
+        app.locked = True
+        app.size = (100, 20)
+        self.assertIn("Text 112%", plain(app.render()))
+
+    def test_tips_rotate_while_focused(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
+        app.tip, app.tip_at, app.focused = 0, 0.0, True
+        app.tick(1.0)
+        self.assertEqual(app.tip, 1)
+        self.assertIn(" :help   :quit   \u00b7   :) <3 turn into emoji", plain(app.command_hint(100)))
+        app.focused = False
+        app.tick(app.tip_at + 1)
+        self.assertEqual(app.tip, 1)
+        app.focused = True
+        app.edit("text", ":")
+        app.tick(app.tip_at + 1)
+        self.assertEqual(app.tip, 1)
+        app.edit("key", "esc")
+        app.zoom, app.zoom_until = 112, time.monotonic() + 60
+        for k, (key, words) in enumerate(cli.TIPS):
+            app.tip = k
+            line = plain(app.command_hint(96))
+            self.assertIn("%s %s" % (key, words), line)
+            self.assertTrue(line.rstrip().endswith("Text 112%"))
+        app.tip = 0
+        self.assertEqual(plain(app.command_hint(30)), " :help   :quit      Text 112% ")
 
     def test_receipt_glyphs(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
@@ -454,7 +1014,7 @@ class PackageA(Sandbox):
         for ack in range(4):
             c["items"].append(cli.Message("o%d" % ack, "", "out", "m%d" % ack, time.time(), ack=ack))
         c["items"].append(cli.Message("f", "", "out", "failed", time.time(), failed="offline"))
-        segs = app.message_lines("0", 80)
+        segs = [s for s in app.message_lines("0", 80) if not s[0][0].startswith(" \u2500")]
         labels = [(s[-1][0], s[-1][1], s[-1][2]) for s in segs]
         self.assertEqual(labels[0][:2], ("·", "dim"))
         self.assertEqual(labels[1][:2], ("→", "dim"))

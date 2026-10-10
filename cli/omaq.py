@@ -3,11 +3,13 @@ import codecs
 import fcntl
 import json
 import os
+import re
 import secrets
 import select
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import termios
@@ -45,15 +47,64 @@ FAILURES = {
 }
 BIDI = frozenset(list(range(0x202A, 0x202F)) + list(range(0x2066, 0x206A)))
 DIRECT_DIGITS = frozenset("0123456789")
-VERBS = [("help", False), ("connect", True), ("split", True), ("quit", False), ("qa", False)]
-HINT = " " + "   ".join(":" + verb for verb, _ in VERBS)
+VERBS = [("help", False), ("connect", True), ("split", True), ("invite", False), ("redeem", True),
+         ("requests", False), ("accept", False), ("decline", False), ("clear", False), ("close", False),
+         ("quit", False)]
+HINT = " " + "   ".join(":" + verb for verb in ("help", "connect", "split", "invite", "requests", "clear",
+                                                   "close", "quit"))
 COMMANDS = [
-    (":help", "Show this list", False),
-    (":connect ", "Open a chat in a new pane on the right", True),
-    (":split ", "Open a chat in a new pane below", True),
-    (":quit", "Close this pane; the last pane quits OmaQ (also :q)", False),
-    (":qa", "Quit OmaQ", False),
+    (":help", "Show this list", ""),
+    (":connect ", "Open a chat in a new pane on the right", "<name>"),
+    (":split ", "Open a chat in a new pane below", "<name>"),
+    (":invite", "Invite link and QR code; the link is copied", ""),
+    (":invite revoke", "Revoke the active invite (asks first)", ""),
+    (":redeem ", "Send a request with a friend's invite link", "<link>"),
+    (":requests", "Show a pending friend or group request", ""),
+    (":accept", "Accept the pending request", ""),
+    (":decline", "Decline the pending request", ""),
+    (":clear", "Clear this chat on this computer (asks first)", ""),
+    (":close", "Close this pane (also ctrl+w)", ""),
+    (":quit", "Quit OmaQ (also :q)", ""),
 ]
+CONFIRM_SECONDS = 15
+TIP_SECONDS = 8
+ZOOM_SECONDS = 4
+ACTION_SECONDS = 10
+NAME_MAX = 18
+REDEEMED_DIRECT = "Invite checked. Waiting for the other person to accept."
+REDEEMED_GROUP = "Group invite checked. Waiting for the incoming group request."
+INVITE_ERRORS = {
+    "invite_expired": "Invite expired. Create a new link.",
+    "invite_self": "This invite belongs to your own identity.",
+    "contact_exists": "This person is already in your contacts. Remove the old contact on both devices before using a fresh invite.",
+    "contact_limit": "The direct-contact limit has been reached.",
+    "invite_rejected": "The invite could not be added. Create a fresh invite and try it once on the other device.",
+    "nospam_rotate_failed": "The invite was cleared, but its one-use address could not be refreshed.",
+    "safety_key_changed": "This contact's encryption identity changed. Remove the old contact state on both devices before exchanging a fresh invite.",
+    "direct_state_reinvite_required": "Your OmaQ identity and contacts are intact. Some older direct-chat encryption state was safely archived and requires fresh invites.",
+    "group_registry_failed": "Could not safely save private group state.",
+    "unsupported": "That is not an OmaQ invite.",
+    "busy": "Finish active calls, transfers, invites, or read receipts first.",
+    "locked": "Unlock your identity to continue.",
+}
+EMOJI = [
+    "😀", "🙂", "😉", "😍", "😂", "😅", "🙌", "👍", "👎", "❤\ufe0f", "🔥",
+    "✨", "🎉", "🙏", "😮", "😢", "😡", "🤔", "👀", "✅", "👋", "💯", "🤟",
+]
+EMOTICONS = {
+    ":)": "🙂", ":-)": "🙂", ":D": "😀", ":-D": "😀", ";)": "😉",
+    ";-)": "😉", ":(": "🙁", ":-(": "🙁", ":'(": "😢", ":P": "😛",
+    ":p": "😛", ":-P": "😛", ":-p": "😛", ";P": "😜", ";p": "😜",
+    ":O": "😮", ":o": "😮", ":-O": "😮", ":-o": "😮", ":*": "😘",
+    ":-*": "😘", ":/": "😕", ":-/": "😕", ":|": "😐", ":-|": "😐",
+    "xD": "😆", "XD": "😆", "^^": "😊", "<3": "❤\ufe0f", "(y)": "👍",
+}
+EMOTICON_ANY = "|".join(re.escape(k) for k in sorted(EMOTICONS, key=len, reverse=True))
+EMOTICON_DONE = re.compile(r"(?<!\S)(%s)(?=\s)" % EMOTICON_ANY)
+EMOTICON_END = re.compile(r"(?<!\S)(%s)(?=\s|$)" % EMOTICON_ANY)
+EMOJI_CATALOG = []
+KITTY = os.environ.get("TERM") == "xterm-kitty"
+ZOOM_KEYS = "ctrl+shift+= / ctrl+shift+-" if KITTY else "ctrl+= / ctrl+-"
 KEYS = [
     ("ctrl+n", "New pane with the next friend"),
     ("ctrl+w", "Close this pane"),
@@ -61,9 +112,34 @@ KEYS = [
     ("alt+shift+arrows", "Move this pane"),
     ("alt+= / alt+-", "Make this column wider or narrower"),
     ("tab", "Next chat in this pane; after : it completes commands and names"),
+    ("up / down", "Earlier messages of this chat; after : earlier commands"),
     ("pgup / pgdn", "Scroll"),
     ("shift+enter", "New line in a message"),
+    ("ctrl+k", "Choose an emoji"),
     ("esc", "Clear the message"),
+    (ZOOM_KEYS, "Text size: your terminal's zoom (%s resets); 100%% is the size at start"
+     % ("ctrl+shift+backspace" if KITTY else "ctrl+0")),
+]
+TIPS = [
+    ("ctrl+k", "opens the emoji picker"),
+    (":) <3", "turn into emoji when a space follows"),
+    ("up", "recalls your earlier messages in this chat"),
+    (":connect <name>", "opens a chat on the right"),
+    (":split <name>", "opens a chat below"),
+    ("ctrl+n", "opens the next friend in a new pane"),
+    ("alt+arrows", "move between panes"),
+    ("alt+shift+arrows", "move this pane"),
+    ("alt+= / alt+-", "resize this column"),
+    ("tab", "switches the chat in this pane"),
+    ("shift+enter", "starts a new line"),
+    (":invite", "shows your invite link and QR code"),
+    (":redeem <link>", "sends a request with a friend's invite link"),
+    (":requests", "shows a pending friend request"),
+    (":accept / :decline", "answer a pending request"),
+    (":clear", "clears this chat on this computer"),
+    (":close / ctrl+w", "closes this pane"),
+    (ZOOM_KEYS, "change the text size"),
+    ("pgup / pgdn", "scroll the chat"),
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
 SEMANTIC = {"background": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "foreground": 7}
@@ -114,6 +190,38 @@ def read_protocol(state):
     return data if isinstance(data, dict) else {}
 
 
+def safety_ok(value):
+    halves = str(value or "").split(" / ")
+    if len(halves) != 2:
+        return False
+    for half in halves:
+        groups = half.split(" ")
+        if len(groups) != 16 or not all(len(g) == 4 and all(ch in "0123456789abcdef" for ch in g) for g in groups):
+            return False
+    return True
+
+
+def hex64(value):
+    value = str(value or "")
+    return len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)
+
+
+def qr_lines(text):
+    binary = "/usr/bin/qrencode" if os.access("/usr/bin/qrencode", os.X_OK) else ""
+    if not binary:
+        return []
+    try:
+        result = subprocess.run([binary, "-t", "UTF8", "-m", "2", "-o", "-", "--", text], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    allowed = set(" \u2580\u2584\u2588")
+    lines = result.stdout.decode("utf-8", "replace").splitlines()
+    return lines if lines and all(set(line) <= allowed for line in lines) else []
+
+
 def clean(text):
     out = []
     for ch in str(text):
@@ -152,19 +260,102 @@ def char_width(ch):
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
 
+WIDTHS = {"vs16": 2, "cluster": False}
+
+
+def cells(text):
+    out, join = [], False
+    for ch in text:
+        w = char_width(ch)
+        if out and (join or (WIDTHS["cluster"] and 0x1F3FB <= ord(ch) <= 0x1F3FF)):
+            out[-1] = (out[-1][0] + ch, out[-1][1])
+            join = False
+        elif w == 0 and out:
+            base, bw = out[-1]
+            out[-1] = (base + ch, WIDTHS["vs16"] if ch == "\ufe0f" and bw == 1 else bw)
+            join = ch == "\u200d" and WIDTHS["cluster"]
+        else:
+            out.append((ch, w))
+    return out
+
+
+def pixel_size(fd):
+    try:
+        return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    except OSError:
+        return None
+
+
+def measure_widths(fd, out, timeout=0.3):
+    out.write("\r\x1b[2K\u2764\ufe0f\x1b[6n\r\x1b[2K\U0001F469\u200d\U0001F4BB\x1b[6n\r\x1b[2K")
+    out.flush()
+    buf, cols, end = b"", [], time.monotonic() + timeout
+    while len(cols) < 2:
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], left)
+        if not ready:
+            break
+        chunk = os.read(fd, 1024)
+        if not chunk:
+            break
+        buf += chunk
+        cols = [int(m.group(1)) for m in re.finditer(rb"\x1b\[\d+;(\d+)R", buf)]
+    if len(cols) >= 2:
+        WIDTHS["vs16"] = 1 if cols[0] - 1 < 2 else 2
+        WIDTHS["cluster"] = cols[1] - 1 == 2
+    return re.sub(rb"\x1b\[\d+;\d+R", b"", buf)
+
+
 def text_width(text):
-    return sum(char_width(ch) for ch in text)
+    return sum(w for _, w in cells(text))
 
 
 def clip(text, width):
     out, used = [], 0
-    for ch in text:
-        w = char_width(ch)
+    for chunk, w in cells(text):
         if used + w > width:
             break
-        out.append(ch)
+        out.append(chunk)
         used += w
     return "".join(out), used
+
+
+def prev_stop(text, i):
+    i = max(0, i - 1)
+    while i > 0 and char_width(text[i]) == 0:
+        i -= 1
+    return i
+
+
+def next_stop(text, i):
+    i = min(len(text), i + 1)
+    while i < len(text) and char_width(text[i]) == 0:
+        i += 1
+    return i
+
+
+def emojify(text, final=True):
+    return (EMOTICON_END if final else EMOTICON_DONE).sub(lambda m: EMOTICONS[m.group(1)], text)
+
+
+def is_command(draft):
+    return draft.startswith(":") and (draft.split(None, 1) or [""])[0] not in EMOTICONS
+
+
+def emoji_name(emoji):
+    return unicodedata.name(emoji[0], "").lower()
+
+
+def emoji_catalog():
+    if not EMOJI_CATALOG:
+        for cp in (list(range(0x2300, 0x2400)) + list(range(0x2600, 0x27C0)) + list(range(0x2B00, 0x2C00))
+                   + [0x303D, 0x3297, 0x3299] + list(range(0x1F000, 0x1FB00))):
+            ch = chr(cp)
+            if unicodedata.category(ch) == "So" and unicodedata.east_asian_width(ch) == "W" and emoji_name(ch):
+                EMOJI_CATALOG.append((ch, emoji_name(ch)))
+    return EMOJI_CATALOG
 
 
 def shorten(text, width):
@@ -198,13 +389,21 @@ def wrap(text, width):
     return lines
 
 
-def stamp(ts, today=None):
-    if not ts:
-        return ""
+def clock(ts):
+    return time.strftime("%H:%M", time.localtime(ts)) if ts else "--:--"
+
+
+def day_label(ts, now=None):
     local = time.localtime(ts)
-    if time.strftime("%Y-%m-%d", local) == (today or time.strftime("%Y-%m-%d")):
-        return time.strftime("%H:%M", local)
-    return time.strftime("%Y-%m-%d %H:%M", local)
+    today = time.localtime(now if now is not None else time.time())
+    day = (local.tm_year, local.tm_yday)
+    if day == (today.tm_year, today.tm_yday):
+        return "today"
+    yesterday = time.localtime(time.mktime((today.tm_year, today.tm_mon, today.tm_mday - 1, 12, 0, 0, 0, 0, -1)))
+    if day == (yesterday.tm_year, yesterday.tm_yday):
+        return "yesterday"
+    label = "%s %d %s" % (time.strftime("%a", local), local.tm_mday, time.strftime("%b", local))
+    return label if local.tm_year == today.tm_year else "%s %d" % (label, local.tm_year)
 
 
 def link_path():
@@ -262,7 +461,7 @@ class Palette:
     def __init__(self):
         path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
         self.roles = {"name": "33", "status": "32", "online": "32", "unread": "31", "accent": "34",
-                      "dim": "2", "offline": "2", "rule": "2", "text": "39", "away": "37"}
+                      "dim": "2", "offline": "2", "rule": "2", "text": "39", "away": "37", "qr": "97;40"}
         try:
             with open(path, "rb") as f:
                 data = tomllib.load(f)
@@ -286,7 +485,7 @@ class Palette:
         self.roles = {"name": true(palette[3]), "status": true(palette[2]), "online": true((0x7D, 0xCE, 0x6A)),
                       "unread": true(palette[1]), "accent": true(accent), "dim": true(blend(0.55)),
                       "offline": true(blend(0.35)), "rule": true(blend(0.22)), "text": true(fg),
-                      "away": true(blend(0.6))}
+                      "away": true(blend(0.6)), "qr": "38;2;255;255;255;48;2;0;0;0"}
 
     @staticmethod
     def rgb(value):
@@ -584,13 +783,16 @@ def message_from(item):
 
 
 class Pane:
-    __slots__ = ("conv", "scroll", "draft", "cursor")
+    __slots__ = ("conv", "scroll", "draft", "cursor", "hist", "hist_items", "stash")
 
     def __init__(self, conversation):
         self.conv = conversation
         self.scroll = 0
         self.draft = ""
         self.cursor = 0
+        self.hist = None
+        self.hist_items = None
+        self.stash = ("", 0)
 
 
 class Layout:
@@ -754,6 +956,21 @@ class App:
         self.completion = None
         self.scratch = Pane("")
         self.exit_note = ""
+        self.commands = []
+        self.out = sys.stdout
+        self.invite = {"url": "", "expires": 0}
+        self.invite_request = ""
+        self.redeem_request = ""
+        self.request = None
+        self.overlay = None
+        self.picker = None
+        self.action, self.action_until = "", 0.0
+        self.addr = ""
+        self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
+        self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
+        self.confirm = None
+        self.clears = {}
+        self.history_clear = 0
 
     @property
     def pane(self):
@@ -897,6 +1114,8 @@ class App:
         if self.link:
             self.link.close()
         self.link = None
+        if self.confirm is not None:
+            self.confirm, self.status = None, ""
         self.handshake = False
         self.friend_build = None
         self.conn = "reconnecting"
@@ -906,6 +1125,13 @@ class App:
         for conversation, m in self.pending.values():
             m.failed = "delivery_unknown"
         self.pending.clear()
+        if self.clears:
+            self.clears.clear()
+            self.say("Clear result unknown; check the chat")
+        self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
+        if self.invite_request or self.redeem_request:
+            self.invite_request = self.redeem_request = ""
+            self.say("Invite result unknown; try again")
         self.dirty = True
 
     def reset_identity(self):
@@ -914,6 +1140,11 @@ class App:
         self.pending.clear()
         self.friends, self.friend_build, self.friends_ready = [], None, False
         self.convs, self.unread, self.read_pending, self.retry_at, self.drafts = {}, {}, {}, {}, {}
+        if self.confirm is not None:
+            self.confirm, self.status = None, ""
+        self.clears = {}
+        self.invite, self.request, self.overlay = {"url": "", "expires": 0}, None, None
+        self.invite_request = self.redeem_request = ""
         self.typing_on = ""
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
@@ -955,9 +1186,19 @@ class App:
                     self.incompatible = True
                     self.say(FAILURES["helper_incompatible"], 3600)
                     return
+                addr = str(ev.get("addr") or "")
+                if addr and self.addr and addr != self.addr:
+                    self.addr = addr
+                    self.reset_identity()
+                    return
+                self.addr = addr or self.addr
                 self.handshake = True
                 self.instance = str(ev.get("instance"))
                 self.protocol = protocol
+                try:
+                    self.history_clear = int(ev.get("historyClear") or 0)
+                except (TypeError, ValueError):
+                    self.history_clear = 0
                 running = self.proc is not None and self.proc.poll() is None
                 launched = read_protocol(self.state)
                 self.owns = running and bool(self.launch_nonce) and launched.get("nonce") == self.launch_nonce \
@@ -1005,13 +1246,27 @@ class App:
             if self.unlock_request and str(ev.get("request") or "") == self.unlock_request:
                 self.unlock_request = ""
                 self.say("The identity passphrase is incorrect.")
+            elif self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
+                self.redeem_request = ""
+                self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be added.", 15)
+            elif self.invite_request and str(ev.get("request") or "") == self.invite_request:
+                self.invite_request = ""
+                self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code or "The invite could not be created.", 15)
             elif code == "identity_changed":
                 now = time.monotonic()
                 if now > self.rehandshake_at:
                     self.rehandshake_at = now + 2.0
-                    self.reset_identity()
-            elif code and code != "locked":
-                self.say(FAILURES.get(code, code))
+                    for c in self.convs.values():
+                        c["loaded"], c["request"] = False, ""
+                    self.handshake_request()
+            elif code and code != "locked" and time.monotonic() < self.action_until:
+                if code == "forbidden" and self.action == "accept":
+                    self.say("The request could not be accepted.")
+                else:
+                    self.say(INVITE_ERRORS.get(code) or FAILURES.get(code) or code, 15)
+                if self.action == "redeem":
+                    self.redeem_request = ""
+                self.action_until = 0.0
         elif name == "unread":
             if self.bound(ev):
                 conversation = str(ev.get("conversation") or "")
@@ -1060,8 +1315,71 @@ class App:
                 conversation = str(ev.get("conversation") or "")
                 if is_direct(conversation):
                     self.conv(conversation)["typing_until"] = time.monotonic() + TYPING_EXPIRE if ev.get("typing") else 0.0
-        elif name == "helper.shutdown_blocked":
-            pass
+        elif name == "invite":
+            if "url" in ev:
+                self.invite["url"] = str(ev.get("url") or "")
+            if "expires" in ev:
+                try:
+                    self.invite["expires"] = max(0, int(ev.get("expires") or 0))
+                except (TypeError, ValueError):
+                    self.invite["expires"] = 0
+            if not self.invite["url"] and not self.invite["expires"]:
+                if self.request and self.request["kind"] == "direct":
+                    self.request = None
+                if self.overlay and self.overlay.get("kind") in ("invite", "request"):
+                    self.overlay = None
+            request = str(ev.get("request") or "")
+            if request and request == self.invite_request:
+                self.invite_request = ""
+                if ev.get("op") == "revoke":
+                    self.say("Invite revoked")
+                elif self.invite["url"]:
+                    self.show_invite(copy=True)
+        elif name == "invite.redeemed":
+            if self.redeem_request and str(ev.get("request") or "") == self.redeem_request:
+                self.redeem_request = ""
+                kind = str(ev.get("kind") or "")
+                safety = str(ev.get("safety") or "")
+                if kind not in ("direct", "group") or (kind == "direct" and not (hex64(ev.get("key")) and safety_ok(safety))):
+                    self.say("OmaQ received an invalid response from the running helper.")
+                else:
+                    self.overlay = {"kind": "redeemed", "group": kind == "group", "safety": safety}
+                    self.say(REDEEMED_GROUP if kind == "group" else REDEEMED_DIRECT, 15)
+        elif name == "request":
+            kind = str(ev.get("kind") or "")
+            if kind == "direct":
+                key, safety = str(ev.get("key") or ""), str(ev.get("safety") or "")
+                if not hex64(key) or not safety_ok(safety):
+                    self.request = None
+                elif self.request and self.request["kind"] == "direct" and self.request["key"] == key:
+                    self.request["safety"] = safety
+                else:
+                    self.request = {"kind": "direct", "key": key, "safety": safety, "conflict": ""}
+                    self.say("Friend request; :requests shows it", 15)
+            elif kind == "group":
+                if not self.request or self.request["kind"] != "group":
+                    self.say("Group invitation; :requests shows it", 15)
+                self.request = {"kind": "group", "key": "", "safety": "", "conflict": ""}
+        elif name == "request.conflict":
+            key = str(ev.get("key") or "")
+            if (self.request and self.request["kind"] == "direct" and ev.get("kind") == "direct" and hex64(key)
+                    and key != self.request["key"]):
+                self.request["conflict"] = key
+                self.say("Another device used this invite link", 15)
+        elif name in ("history.clear.succeeded", "history.clear.failed"):
+            conversation = str(ev.get("conversation") or "")
+            request, instance = self.clears.get(conversation) or ("", "")
+            if (request and str(ev.get("request") or "") == request and self.bound(ev)
+                    and str(ev.get("instance") or "") == instance == self.instance):
+                del self.clears[conversation]
+                if name == "history.clear.succeeded":
+                    c = self.conv(conversation)
+                    c["items"], c["loaded"], c["request"] = [], False, ""
+                    self.unread.pop(conversation, None)
+                    self.load(conversation)
+                    self.say("Chat cleared on this computer")
+                else:
+                    self.say("Chat could not be cleared (%s)" % clean_line(ev.get("code") or "error"))
         self.dirty = True
 
     def purge(self, fid):
@@ -1188,10 +1506,13 @@ class App:
         for pane in self.layout.panes():
             if pane.conv == conversation and m.dir == "in":
                 pane.scroll = 0
+        f = self.friend(conversation)
+        if m.dir == "in" and f and conversation not in self.visible:
+            self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
     def send_text(self):
         pane = self.pane or self.scratch
-        text = outgoing(pane.draft)
+        text = outgoing(emojify(pane.draft))
         if not text.strip():
             return
         if not pane.conv:
@@ -1224,6 +1545,23 @@ class App:
         if self.status and now > self.status_until:
             self.status = ""
             self.dirty = True
+        if self.confirm is not None and now > self.confirm["until"]:
+            kept = "Invite kept" if self.confirm["action"] == "revoke" else "Chat kept"
+            self.confirm = None
+            self.say(kept)
+        if self.zoom_until and now >= self.zoom_until:
+            self.zoom_until = 0.0
+            self.dirty = True
+        if now >= self.tip_at:
+            self.tip_at = now + TIP_SECONDS
+            if self.focused and not is_command((self.pane or self.scratch).draft):
+                self.tip = (self.tip + 1) % len(TIPS)
+                self.dirty = True
+        if self.overlay and self.overlay.get("kind") == "invite":
+            minute = int(time.time() // 60)
+            if self.overlay.get("minute") != minute:
+                self.overlay["minute"] = minute
+                self.dirty = True
         if self.proc is not None and self.proc.poll() is not None:
             self.proc = None
         if not self.link and now >= self.next_connect:
@@ -1252,17 +1590,81 @@ class App:
         parts = line[1:].strip().split(None, 1)
         verb = parts[0].lower() if parts else ""
         arg = parts[1].strip() if len(parts) > 1 else ""
-        known = ("qa", "qa!", "qall", "qall!", "quitall", "quitall!", "wqa", "xa", "q", "q!", "quit", "quit!",
-                 "close", "clo", "help", "h") + NAMED
+        known = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
+                 "accept", "decline") + NAMED
         if verb and verb not in known:
-            candidates = [name for name, _ in VERBS if name.startswith(verb)]
+            candidates = [name for name, _ in VERBS if name.startswith(verb) and name not in ("accept", "decline")]
             if len(candidates) == 1:
                 verb = candidates[0]
-        if verb in ("qa", "qa!", "qall", "qall!", "quitall", "quitall!", "wqa", "xa"):
+        if verb in ("q", "q!", "quit", "quit!"):
             self.running = False
-        elif verb in ("q", "q!", "quit", "quit!", "close", "clo"):
-            if not self.close_pane(quiet=True):
-                self.running = False
+        elif verb in ("close", "clo"):
+            self.close_pane()
+        elif verb == "invite":
+            if arg.lower() == "revoke":
+                if not self.invite["url"]:
+                    self.say("No active invite")
+                else:
+                    self.confirm = {"action": "revoke", "until": time.monotonic() + CONFIRM_SECONDS}
+                    self.say("Revoke this invite? It cannot be used again. y/n", CONFIRM_SECONDS)
+            elif arg:
+                self.say("Usage: :invite or :invite revoke")
+            elif self.invite["url"] and self.invite["expires"] > time.time():
+                self.show_invite(copy=True)
+            else:
+                self.invite_request = "cli-invite-" + secrets.token_hex(8)
+                if self.send({"op": "invite.create", "kind": "direct", "ttlSec": 86400,
+                              "request": self.invite_request}):
+                    self.action, self.action_until = "invite", time.monotonic() + ACTION_SECONDS
+                else:
+                    self.invite_request = ""
+                    self.send_failed()
+        elif verb == "redeem":
+            link = arg.strip()
+            if not link.startswith("omaq://"):
+                self.say("Paste the omaq:// link after :redeem")
+            elif len(link.encode("utf-8")) > TEXT_MAX:
+                self.say("Link is too long")
+            else:
+                self.redeem_request = "cli-redeem-" + secrets.token_hex(8)
+                if self.send({"op": "invite.redeem", "payload": link, "id": self.redeem_request}):
+                    self.action, self.action_until = "redeem", time.monotonic() + ACTION_SECONDS
+                    self.say("Checking the invite…", 15)
+                else:
+                    self.redeem_request = ""
+                    self.send_failed()
+        elif verb == "requests":
+            if self.request:
+                self.overlay = {"kind": "request"}
+            else:
+                self.say("No pending request")
+        elif verb in ("accept", "decline"):
+            if not self.request:
+                self.say("No pending request")
+            else:
+                operation = {"op": "contact.decide", "id": "x", "accept": verb == "accept"}
+                if self.request["kind"] == "direct":
+                    operation["key"] = self.request["key"]
+                if self.send(operation):
+                    self.action, self.action_until = verb, time.monotonic() + ACTION_SECONDS
+                    if self.request["kind"] == "group":
+                        self.request = None
+                    if self.overlay and self.overlay.get("kind") == "request":
+                        self.overlay = None
+                    self.say("Accepted" if verb == "accept" else "Declined")
+                else:
+                    self.send_failed()
+        elif verb == "clear":
+            pane = self.pane
+            if not pane or not pane.conv:
+                self.say("No chat is open")
+            elif self.history_clear != 2:
+                self.say("Helper update required")
+            elif pane.conv in self.clears:
+                self.say("Clearing is already in progress")
+            else:
+                self.confirm = {"action": "clear", "conv": pane.conv, "until": time.monotonic() + CONFIRM_SECONDS}
+                self.say("Clear this chat? y/n", CONFIRM_SECONDS)
         elif verb in ("help", "h"):
             self.help = 0
         elif verb in NAMED:
@@ -1290,6 +1692,196 @@ class App:
         want = rest.casefold()
         return "name", rest, [f["name"] for f in self.friends if f["name"].casefold().startswith(want)]
 
+    def track_zoom(self, size):
+        if not size or not size[0] or not size[3] or size[3] < size[0]:
+            return
+        cell = size[3] // size[0]
+        self.cell_base = self.cell_base or cell
+        zoom = round(cell * 100 / self.cell_base)
+        if zoom != self.zoom:
+            if self.zoom is not None:
+                self.zoom_until = time.monotonic() + ZOOM_SECONDS
+            self.zoom = zoom
+            self.dirty = True
+
+    def hint_line(self, cols):
+        base = [(" :help   :quit", "dim", "")]
+        key, words = TIPS[self.tip % len(TIPS)]
+        tip = [("   \u00b7   ", "dim", ""), (key, "text", "1"), (" " + words, "dim", "")]
+        label = self.zoom_label()
+        reserve = text_width(label) + 3 if label else 1
+        used = lambda segs: sum(text_width(text) for text, _, _ in segs)
+        if label and used(base) + reserve > cols:
+            label, reserve = "", 1
+        segs = base + tip if used(base + tip) + reserve <= cols else base
+        if label:
+            segs += [(" " * (cols - used(segs) - text_width(label) - 1), "dim", ""),
+                     (label, "dim" if self.zoom == 100 else "accent", "")]
+        return self.palette.row(segs, cols)
+
+    def zoom_label(self):
+        return "Text %d%%" % self.zoom if self.zoom is not None and time.monotonic() < self.zoom_until else ""
+
+    def zoom_line(self, text, cols):
+        label = self.zoom_label()
+        gap = cols - text_width(text) - text_width(label) - 1
+        if not label or gap < 2:
+            return self.palette.paint(text, "dim")
+        return self.palette.row([(text, "dim", ""), (" " * gap, "dim", ""),
+                                 (label, "dim" if self.zoom == 100 else "accent", "")], cols)
+
+    def send_failed(self):
+        self.say("Not connected" if not self.link else "Could not send the request")
+
+    def clear_chat(self, conversation):
+        request = "cli-clear-" + secrets.token_hex(8)
+        if self.send_bound({"op": "history.clear", "conversation": conversation, "id": request}):
+            self.clears[conversation] = (request, self.instance)
+            self.say("Clearing this chat…", 10)
+        else:
+            self.say("Chat could not be cleared")
+
+    def sent_texts(self, conversation):
+        texts = []
+        for m in reversed(self.convs.get(conversation, {}).get("items", [])):
+            if m.dir == "out" and m.text and (not texts or texts[-1] != m.text):
+                texts.append(m.text)
+        return texts
+
+    def history_step(self, pane, step):
+        if pane.hist is None:
+            if step < 0:
+                return
+            items = self.commands[::-1] if pane.draft.startswith(":") else self.sent_texts(pane.conv)
+            if not items:
+                return
+            pane.hist_items, pane.stash, pane.hist = items, (pane.draft, pane.cursor), 0
+        else:
+            pane.hist += step
+            if pane.hist < 0:
+                pane.draft, pane.cursor = pane.stash
+                pane.hist, pane.hist_items = None, None
+                self.dirty = True
+                return
+            pane.hist = min(pane.hist, len(pane.hist_items) - 1)
+        pane.draft = pane.hist_items[pane.hist]
+        pane.cursor = len(pane.draft)
+        self.dirty = True
+
+    def show_invite(self, copy=False):
+        url = self.invite["url"]
+        if not url:
+            return
+        self.overlay = {"kind": "invite", "url": url, "qr": qr_lines(url)}
+        if copy:
+            import base64
+            try:
+                self.out.write("\x1b]52;c;%s\x07" % base64.b64encode(url.encode("utf-8")).decode("ascii"))
+                self.out.flush()
+                self.say("Invite link sent to the clipboard", 10)
+            except (OSError, ValueError):
+                pass
+        self.dirty = True
+
+    def overlay_rows(self, width, height):
+        p = self.palette
+        o = self.overlay
+        rows = []
+        if o["kind"] == "invite":
+            left = max(0, self.invite["expires"] - int(time.time()))
+            valid = "valid %d h %02d min" % (left // 3600, left % 3600 // 60) if left else "expired; :invite creates a new link"
+            rows.append(p.row([(" invite", "name", "1"), ("   %s · esc close" % valid, "dim", "")], width))
+            url = clean_line(o["url"])
+            step = max(8, width - 2)
+            chunks = [url[k:k + step] for k in range(0, len(url), step)] or [""]
+            for chunk in chunks:
+                rows.append(p.row([(" " + chunk, "text", "")], width))
+            qr = o["qr"]
+            if qr and max(text_width(line) for line in qr) + 2 <= width and len(qr) + 4 + len(chunks) <= height:
+                for line in qr:
+                    rows.append(p.row([(" ", "dim", ""), (line, "qr", "")], width))
+            elif not qr:
+                rows.append(p.row([(" no QR code: qrencode is not installed", "dim", "")], width))
+            else:
+                rows.append(p.row([(" the window is too small for the QR code", "dim", "")], width))
+            rows.append(p.row([(" Send the link or let your friend scan the code. They run :redeem <link>,", "dim", "")], width))
+            rows.append(p.row([(" then :requests shows their request here and :accept adds them.", "dim", "")], width))
+        elif o["kind"] == "request" and self.request:
+            r = self.request
+            if r["kind"] == "group":
+                rows.append(p.row([(" group invitation", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
+                rows.append(p.row([(" A friend invited you to a private group. Group chats show in the bar for now.", "dim", "")], width))
+            else:
+                rows.append(p.row([(" friend request", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
+                rows.append(p.row([(" Compare this code with your friend before accepting", "dim", "")], width))
+                for half in r["safety"].split(" / "):
+                    rows.append(p.row([(" " + half, "text", "")], width))
+                if r["conflict"]:
+                    rows.append(p.row([(" Another device used this invite link", "unread", "")], width))
+        elif o["kind"] == "redeemed":
+            rows.append(p.row([(" " + (REDEEMED_GROUP if o.get("group") else REDEEMED_DIRECT), "name", "1"),
+                               ("   esc close", "dim", "")], width))
+            if o.get("safety"):
+                rows.append(p.row([(" Compare this code with your friend before they accept", "dim", "")], width))
+                for half in o["safety"].split(" / "):
+                    rows.append(p.row([(" " + half, "text", "")], width))
+        else:
+            self.overlay = None
+        rows = rows[:height]
+        rows.extend([" " * width] * (height - len(rows)))
+        return rows
+
+    def picker_items(self):
+        query = self.picker["query"].strip().lower()
+        items = [(emoji, emoji_name(emoji)) for emoji in EMOJI]
+        if not query:
+            return items
+        hits = [item for item in items if query in item[1]]
+        return hits + [item for item in emoji_catalog() if query in item[1] and item[0] not in EMOJI]
+
+    def picker_key(self, kind, value):
+        picker = self.picker
+        items = self.picker_items()
+        per_row = max(1, (self.size[0] - 1) // 4)
+        if (kind == "key" and value == "esc") or (kind == "ctrl" and value in ("k", "c")):
+            self.picker = None
+        elif kind == "key" and value == "enter":
+            if items:
+                composer = self.pane or self.scratch
+                emoji = items[min(picker["index"], len(items) - 1)][0]
+                composer.draft = composer.draft[:composer.cursor] + emoji + composer.draft[composer.cursor:]
+                composer.cursor += len(emoji)
+                composer.hist, composer.hist_items, self.completion = None, None, None
+            self.picker = None
+        elif kind == "key" and value in ("left", "right", "up", "down"):
+            step = {"left": -1, "right": 1, "up": -per_row, "down": per_row}[value]
+            picker["index"] = max(0, min(len(items) - 1, picker["index"] + step))
+        elif kind == "key" and value == "backspace":
+            picker["query"], picker["index"] = picker["query"][:-1], 0
+        elif kind in ("text", "paste"):
+            typed = "".join(ch for ch in value if ch.isprintable())
+            picker["query"], picker["index"] = (picker["query"] + typed)[:40], 0
+        self.dirty = True
+
+    def picker_rows(self, width, height):
+        p = self.palette
+        items = self.picker_items()
+        per_row = max(1, (width - 1) // 4)
+        index = min(self.picker["index"], max(0, len(items) - 1))
+        self.picker["index"] = index
+        lines = max(1, -(-len(items) // per_row))
+        grid = max(1, min(4, lines, height - 2))
+        first = max(0, min(index // per_row - grid + 1, lines - grid))
+        rows = [p.row([(" emoji › ", "accent", "1"), (self.picker["query"], "text", ""),
+                       ("   arrows choose · enter inserts · esc closes", "dim", "")], width)]
+        for r in range(first, first + grid):
+            segs = [(" ", "dim", "")]
+            for k in range(r * per_row, min(len(items), (r + 1) * per_row)):
+                segs.append((" %s " % items[k][0], "accent" if k == index else "text", "1;7" if k == index else ""))
+            rows.append(p.row(segs, width))
+        rows.append(p.row([(" " + (items[index][1] if items else "no emoji found"), "dim", "")], width))
+        return rows[:max(1, height)]
+
     def complete(self, pane, step):
         if self.completion is None:
             kind, base, items = self.suggestions(pane.draft)
@@ -1310,8 +1902,8 @@ class App:
     def command_hint(self, cols):
         p = self.palette
         pane = self.pane or self.scratch
-        if not pane.draft.startswith(":"):
-            return p.paint(clip(HINT, cols)[0], "dim")
+        if not is_command(pane.draft):
+            return self.hint_line(cols)
         if self.completion is not None:
             kind, items, chosen = self.completion["kind"], self.completion["items"], self.completion["index"]
         else:
@@ -1352,7 +1944,7 @@ class App:
         rows = [p.row([(" commands", "name", "1"), ("   ↑↓ select · enter run · esc close", "dim", "")], width)]
         for k, (command, text, needs) in enumerate(COMMANDS):
             chosen = k == self.help
-            label = command + ("<name>" if needs else "")
+            label = command + needs
             rows.append(p.row([(" ▸ " if chosen else "   ", "accent", "1"), (label.ljust(18), "text" if chosen else "name", "7" if chosen else ""),
                                ("  " + text, "text" if chosen else "dim", "")], width))
         rows.append(" " * width)
@@ -1375,7 +1967,7 @@ class App:
             self.dirty = True
             return True
         if not quiet:
-            self.say("This is the last pane; :q or :qa quits")
+            self.say("This is the last pane; :quit quits OmaQ")
         self.dirty = True
         return False
 
@@ -1404,10 +1996,39 @@ class App:
         if self.help is not None:
             self.help_key(kind, value)
             return
+        if self.confirm is not None and now > self.confirm["until"]:
+            self.confirm, self.status = None, ""
+        if self.confirm is not None and kind in ("text", "key", "ctrl", "paste", "alt"):
+            confirm, self.confirm = self.confirm, None
+            yes = kind == "text" and value.lower() == "y"
+            if confirm["action"] == "clear":
+                if yes:
+                    self.clear_chat(confirm["conv"])
+                else:
+                    self.say("Chat kept")
+            elif confirm["action"] == "revoke":
+                if yes:
+                    self.invite_request = "cli-revoke-" + secrets.token_hex(8)
+                    if self.send({"op": "invite.revoke", "request": self.invite_request}):
+                        self.action, self.action_until = "invite", time.monotonic() + ACTION_SECONDS
+                    else:
+                        self.invite_request = ""
+                        self.send_failed()
+                else:
+                    self.say("Invite kept")
+            self.dirty = True
+            return
+        if self.picker is not None:
+            self.picker_key(kind, value)
+            return
+        if self.overlay is not None and kind == "key" and value == "esc":
+            self.overlay = None
+            self.dirty = True
+            return
         if kind == "ctrl" and value == "c":
             composer = self.pane or self.scratch
             composer.draft, composer.cursor = "", 0
-            self.say("Type :qa and press Enter to quit")
+            self.say("Type :quit and press Enter to quit")
             return
         if kind == "key" and value == "f1":
             self.help = 0
@@ -1444,42 +2065,57 @@ class App:
         if kind == "ctrl" and value == "w":
             self.close_pane()
             return
+        if kind == "ctrl" and value == "k":
+            self.picker = {"query": "", "index": 0}
+            self.dirty = True
+            return
         pane = self.pane or self.scratch
         if not (kind == "key" and value in ("tab", "backtab")):
             self.completion = None
+        if not (kind == "key" and value in ("up", "down")):
+            pane.hist, pane.hist_items = None, None
         if kind in ("text", "paste") or (kind == "key" and value in ("shift-enter", "alt-shift-enter", "alt-enter")):
             insert = "\n" if kind == "key" else value
             pane.draft = pane.draft[:pane.cursor] + insert + pane.draft[pane.cursor:]
             pane.cursor += len(insert)
+            if not is_command(pane.draft) and any(ch.isspace() for ch in insert):
+                before = emojify(pane.draft[:pane.cursor], final=False)
+                pane.draft, pane.cursor = before + pane.draft[pane.cursor:], len(before)
             self.last_edit = now
-            if pane.conv and not pane.draft.startswith(":") and now - self.typing_sent > TYPING_SEND_EVERY:
+            if pane.conv and not is_command(pane.draft) and now - self.typing_sent > TYPING_SEND_EVERY:
                 if self.send_bound({"op": "typing.set", "conversation": pane.conv, "typing": True}):
                     self.typing_on, self.typing_sent = pane.conv, now
         elif kind == "key":
             if value == "enter":
-                if pane.draft.startswith(":"):
+                self.overlay = None
+                if is_command(pane.draft):
                     line, pane.draft, pane.cursor = pane.draft, "", 0
+                    if line.strip() != ":" and (not self.commands or self.commands[-1] != line):
+                        self.commands = (self.commands + [line])[-100:]
                     self.command(line)
                 else:
                     self.send_text()
             elif value == "backspace" and pane.cursor > 0:
-                pane.draft = pane.draft[:pane.cursor - 1] + pane.draft[pane.cursor:]
-                pane.cursor -= 1
+                j = prev_stop(pane.draft, pane.cursor)
+                pane.draft, pane.cursor = pane.draft[:j] + pane.draft[pane.cursor:], j
             elif value == "delete" and pane.cursor < len(pane.draft):
-                pane.draft = pane.draft[:pane.cursor] + pane.draft[pane.cursor + 1:]
+                pane.draft = pane.draft[:pane.cursor] + pane.draft[next_stop(pane.draft, pane.cursor):]
             elif value == "left":
-                pane.cursor = max(0, pane.cursor - 1)
+                pane.cursor = prev_stop(pane.draft, pane.cursor)
             elif value == "right":
-                pane.cursor = min(len(pane.draft), pane.cursor + 1)
+                pane.cursor = next_stop(pane.draft, pane.cursor)
             elif value == "home":
                 pane.cursor = 0
             elif value == "end":
                 pane.cursor = len(pane.draft)
+            elif value in ("up", "down"):
+                self.history_step(pane, 1 if value == "up" else -1)
+                return
             elif value == "pgup":
                 pane.scroll += max(1, self.size[1] // 2)
             elif value == "pgdn":
                 pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
-            elif value in ("tab", "backtab") and pane.draft.startswith(":"):
+            elif value in ("tab", "backtab") and is_command(pane.draft):
                 self.complete(pane, 1 if value == "tab" else -1)
                 return
             elif value in ("tab", "backtab") and self.friends:
@@ -1511,14 +2147,26 @@ class App:
     def friends_bar(self, cols):
         shown = {pane.conv for pane in self.layout.panes()}
         bar = [(" omaq ", "accent", "1"), (self.conn_label(), "online" if self.conn == "online" else "dim", ""), ("   ", "dim", "")]
-        for f in self.friends:
-            role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
-            extra = ";".join(x for x in ("1" if f["id"] in shown else "", "4" if self.unread.get(f["id"]) else "") if x)
-            bar.append((f["name"], "name", extra))
-            bar.append((" ●", role, ""))
+        if self.request:
+            bar.append(("1 request" if self.request["kind"] == "direct" else "1 group invitation", "unread", "1"))
             bar.append(("   ", "dim", ""))
         if self.friends_ready and not self.friends:
             bar.append(("no friends yet", "dim", ""))
+        used = sum(text_width(text) for text, _, _ in bar)
+        hot = lambda f: bool(self.unread.get(f["id"])) and f["id"] not in self.visible
+        for k, f in enumerate(self.friends):
+            role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
+            name = shorten(f["name"], NAME_MAX)
+            group = [(" %s " % name, "unread", "1;7") if hot(f) else (name, "name", "1" if f["id"] in shown else ""),
+                     (" ●", role, ""), ("   ", "dim", "")]
+            width = sum(text_width(text) for text, _, _ in group)
+            if used + (width - 3 if k == len(self.friends) - 1 else width + 4) > cols:
+                rest = self.friends[k:]
+                alert = any(hot(h) for h in rest)
+                bar.append(("+%d" % len(rest), "unread" if alert else "dim", "1" if alert else ""))
+                break
+            bar.extend(group)
+            used += width
         return self.palette.row(bar, cols)
 
     def tab_label(self, pane):
@@ -1546,7 +2194,7 @@ class App:
             return self.palette.row(segs, width)
         f = self.friend(pane.conv)
         label, role = self.peer_status(pane.conv) if pane.conv else ("", "dim")
-        segs = [("▸ " if focused else "  ", "accent", "1"), ("chat › ", "dim", ""),
+        segs = [("❯ " if focused else "  ", "accent", "1"),
                 (f["name"] if f else (pane.conv or "no chat"), "name", "1" if focused else ""), ("  " + label, role, "")]
         return self.palette.row(segs, width)
 
@@ -1566,14 +2214,20 @@ class App:
     def render(self):
         cols, rows = self.size
         p = self.palette
-        out = [self.friends_bar(cols), p.paint("─" * cols, "rule")]
+        out = ["", p.paint("─" * cols, "rule")]
         area = max(1, rows - 5)
+        drawer = []
+        if self.picker is not None and not self.locked and self.help is None and self.overlay is None and area > 1:
+            drawer = self.picker_rows(cols, area - 1)
+            area -= len(drawer)
         self.visible = set()
         if self.locked:
             out.append(p.row([(" Identity is locked", "unread", "")], cols))
             out.extend([" " * cols] * (area - 1))
         elif self.help is not None:
             out.extend(self.help_rows(cols, area))
+        elif self.overlay is not None:
+            out.extend(self.overlay_rows(cols, area))
         elif not self.layout.columns:
             out.append(p.row([(" " + self.conn_label(), "dim", "")], cols))
             out.extend([" " * cols] * (area - 1))
@@ -1599,6 +2253,9 @@ class App:
                         line.append(text)
                         at = x + widths[x]
                     out.append("".join(line))
+        drawer_row = len(out) + 1
+        out.extend(drawer)
+        out[0] = self.friends_bar(cols)
         hint = self.status or ""
         rule = cols - text_width(hint) - 3 if hint else cols
         out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + clip(hint, cols - 2)[0] + " ", "unread") if hint else ""))
@@ -1610,22 +2267,30 @@ class App:
         else:
             pane = self.pane or self.scratch
             f = self.friend(pane.conv)
-            prompt = clip(" %s › " % (f["name"] if f else ""), max(4, cols // 3))[0]
-            room = max(1, cols - text_width(prompt) - 1)
+            prompt = [(" ", "text", ""), (" %s " % shorten(f["name"], max(1, cols // 3 - 5)), "accent", "1;7")] if f else []
+            prompt.append((" ❯ ", "accent", "1"))
+            used = sum(text_width(text) for text, _, _ in prompt)
+            room = max(1, cols - used - 1)
             shown = clean(pane.draft).replace("\n", "↵")
-            start = 0
-            while text_width(shown[start:pane.cursor]) > room - 1:
-                start += 1
-            out.append(p.paint(prompt, "accent") + p.paint(clip(shown[start:], room)[0], "text"))
-            cursor_col = text_width(prompt) + text_width(shown[start:pane.cursor]) + 1
+            prefix = cells(shown[:pane.cursor])
+            keep, behind = len(prefix), 0
+            while keep and behind + prefix[keep - 1][1] <= room - 1:
+                keep -= 1
+                behind += prefix[keep][1]
+            start = sum(len(chunk) for chunk, _ in prefix[:keep])
+            out.append(p.row(prompt + [(clip(shown[start:], room)[0], "text", "")], cols))
+            cursor_col = used + text_width(shown[start:pane.cursor]) + 1
         if self.locked:
-            out.append(p.paint(clip(" enter unlock · esc clear · ctrl+c quit", cols)[0], "dim"))
+            out.append(self.zoom_line(clip(" enter unlock · esc clear · ctrl+c quit", cols)[0], cols))
         else:
             out.append(self.command_hint(cols))
         frame = ["\x1b[?2026h\x1b[?25l"]
         for i, line in enumerate(out[:rows]):
             frame.append("\x1b[%d;1H%s\x1b[0m\x1b[K" % (i + 1, line))
-        frame.append("\x1b[%d;%dH\x1b[?25h\x1b[?2026l" % (max(1, min(rows, len(out)) - 1), max(1, cursor_col)))
+        cursor_row = max(1, min(rows, len(out)) - 1)
+        if drawer:
+            cursor_row, cursor_col = drawer_row, text_width(" emoji › " + self.picker["query"]) + 1
+        frame.append("\x1b[%d;%dH\x1b[?25h\x1b[?2026l" % (cursor_row, max(1, cursor_col)))
         return "".join(frame)
 
     def message_lines(self, conversation, cols):
@@ -1636,10 +2301,17 @@ class App:
             return [[("   loading…", "dim", "")]]
         f = self.friend(conversation)
         peer = f["name"] if f else "peer"
-        today = time.strftime("%Y-%m-%d")
+        now = time.time()
         lines = []
+        shown_day = None
         for m in c["items"]:
-            when = stamp(m.ts, today) or "-"
+            if m.ts:
+                local = time.localtime(m.ts)
+                day = (local.tm_year, local.tm_yday)
+                if day != shown_day:
+                    shown_day = day
+                    lines.append([(" ── %s ──" % day_label(m.ts, now), "dim", "")])
+            when = clock(m.ts)
             who = "you" if m.dir == "out" else ("·" if m.dir == "sys" else (clean_line(m.sender) or peer))
             who = shorten(who, max(4, cols // 3))
             who_role = "text" if m.dir == "out" else ("dim" if m.dir == "sys" else "name")
@@ -1729,7 +2401,7 @@ class App:
         finally:
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-                out.write("\x1b[?2026l\x1b[0m\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l")
+                out.write("\x1b[?2026l\x1b[0m\x1b[?2004l\x1b[?1004l\x1b[0 q\x1b[?25h\x1b[?1049l")
                 out.flush()
                 if self.exit_note:
                     print(self.exit_note, file=sys.stderr)
@@ -1740,15 +2412,19 @@ class App:
     def run(self):
         fd = sys.stdin.fileno()
         saved = termios.tcgetattr(fd)
-        out = sys.stdout
+        out = self.out
         for sig in (signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, stop)
-        out.write("\x1b[?1049h\x1b[?1004h\x1b[?2004h")
+        out.write("\x1b[?1049h\x1b[?1004h\x1b[?2004h\x1b[1 q")
         out.flush()
         try:
             tty.setraw(fd)
+            typed = measure_widths(fd, out)
             size = os.get_terminal_size(fd)
             self.size = (size.columns, size.lines)
+            self.track_zoom(pixel_size(fd))
+            for kind, value in self.keys.feed(typed):
+                self.edit(kind, value)
             out.write(self.render())
             out.flush()
             self.connect()
@@ -1758,6 +2434,7 @@ class App:
                 size = os.get_terminal_size(fd)
                 if (size.columns, size.lines) != self.size:
                     self.size = (size.columns, size.lines)
+                    self.track_zoom(pixel_size(fd))
                     self.dirty = True
                 if self.dirty:
                     out.write(self.render())

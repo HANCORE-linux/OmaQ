@@ -95,10 +95,37 @@ Run the verified wrapper:
 
 Interactive mode offers every remaining OmaQ data directory separately and defaults each answer to No. `--yes` retains all data. Dependency packages are never removed automatically. The wrapper only prints a non-recursive Pacman command for optional manual cleanup.
 
+## Terminal client
+
+`omaq-connect` opens your OmaQ chats in a terminal, beside the bar or without it. It uses the same identity, contacts, and history as the bar.
+
+```bash
+omaq-connect           # chat with your first friend
+omaq-connect alice     # chat with alice
+```
+
+- Split views you move with the keyboard, receipts, and typing state
+- Invitations: `:invite` shows your link and QR code, `:redeem` uses a friend's link, and `:requests` with `:accept` answers a request
+- `:)` and `<3` become emoji, and `Ctrl+K` opens the emoji picker
+- `:help` lists every command and key, and the bottom line shows a new tip every few seconds
+
+Quitting a terminal-only session takes you offline unless you belong to a private group. While the bar runs, quitting changes nothing.
+
+`install.sh` creates `~/.local/bin/omaq-connect`. After updating an older installation, create it once:
+
+```bash
+~/.config/omarchy/plugins/hancore.omaq/cli/omaq.py --link
+```
+
+Tested on Omarchy with Alacritty, Ghostty, foot, and kitty. The [user guide](docs/USER-GUIDE.md#chat-from-the-terminal) covers every command and key, plus text size.
+
+Other Linux distributions are not supported yet. Fedora 44, Debian 13, and Ubuntu 24.04 ship toxcore 0.2.20 or older, which lacks group functions the helper needs.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Illustrated user guide](docs/USER-GUIDE.md)
+- [Terminal client](docs/USER-GUIDE.md#chat-from-the-terminal)
 - [Installation lifecycle](docs/INSTALLATION.md)
 - [Security and privacy](docs/SECURITY.md)
 - [Current status](docs/CURRENT.md)

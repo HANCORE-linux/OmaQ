@@ -54,6 +54,14 @@ class Term:
             self.pump(0.2)
         return needle in self.text()
 
+    def wait_screen(self, pattern, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if any(re.search(pattern, row) for row in self.screen()):
+                return True
+            self.pump(0.2)
+        return any(re.search(pattern, row) for row in self.screen())
+
     def text(self):
         return self.out.decode("utf-8", "replace")
 
@@ -139,9 +147,11 @@ def restored(term):
     if lflag is not None and not (lflag & termios.ICANON and lflag & termios.ECHO):
         fail("terminal left in raw mode")
     text = term.text()
-    for seq in ("\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l"):
+    for seq in ("\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l", "\x1b[0 q"):
         if seq not in text:
             fail("terminal not restored: missing %r" % seq)
+    if text.rfind("\x1b[0 q") < text.rfind("\x1b[1 q"):
+        fail("blinking cursor style was not reset at exit")
     if "Traceback" in text:
         fail("traceback in output")
 
@@ -178,21 +188,36 @@ def main():
         term.send(b"\x1b[200~line one\r\nline two\x1b[201~")
         term.send("\x15")
         term.send("\x03")
-        if not term.wait_for("Type :qa and press Enter to quit", 5):
-            fail("ctrl+c did not show the :qa hint")
+        if not term.wait_for("Type :quit and press Enter to quit", 5):
+            fail("ctrl+c did not show the :quit hint")
         if os.waitpid(term.pid, os.WNOHANG)[0]:
             fail("ctrl+c quit the CLI")
         term.send(":help\r")
-        if not term.wait_for(":connect <name>", 5) or "Quit OmaQ" not in term.text():
+        if not term.wait_for(":connect <name>", 5) or "Quit OmaQ" not in term.text() or ":qa" in term.screen()[-1]:
             fail(":help did not list the commands")
         term.send("\x1b")
         term.pump(0.3)
-        term.send(":qa\r")
+        term.send(":) ")
+        if not term.wait_screen("\U0001F642 ", 5):
+            fail("':) ' did not become an emoji:\n" + "\n".join(term.screen()[-3:]))
+        term.send("\x0b")
+        if not term.wait_screen("emoji › ", 5):
+            fail("ctrl+k did not open the emoji picker")
+        term.send("fire")
+        term.pump(0.3)
+        term.send("\r")
+        if not term.wait_screen("\U0001F642 \U0001F525", 5):
+            fail("the picker did not insert the emoji:\n" + "\n".join(term.screen()[-3:]))
+        term.send("\x15")
+        term.pump(0.3)
+        term.send(":quit\r")
         code = term.finish()
         if code != 0:
             fail("exit code %r\n%s" % (code, term.text()[-2000:]))
         text = term.text()
-        for seq in ("\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l"):
+        if "\x1b[1 q" not in text:
+            fail("the cursor was not set to blink")
+        for seq in ("\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l", "\x1b[0 q"):
             if seq not in text:
                 fail("terminal not restored: missing %r" % seq)
         if "Traceback" in text:
@@ -208,8 +233,11 @@ def main():
         term = Term(env, cols=60, rows=12)
         if not term.wait_for("no friends yet", 20):
             fail("second start failed:\n" + term.text()[-1500:])
-        fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+        fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 980, 646))
         term.pump(1.0)
+        fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 122, 980, 646))
+        if not term.wait_screen(r"Text 112%\s*$", 5):
+            fail("the bottom line does not show the zoom:\n" + "\n".join(term.screen()[-3:]))
         fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 5, 20, 0, 0))
         term.pump(1.0)
         os.kill(term.pid, signal.SIGTERM)

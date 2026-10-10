@@ -118,7 +118,7 @@ def main():
         env = dict(os.environ, OMAQ_HOME=dirs["ha"], OMAQ_STATE=dirs["sa"], XDG_RUNTIME_DIR=dirs["run"],
                    TERM="xterm-256color")
         term = harness.Term(env, args=["bob"], cols=110, rows=30)
-        if not term.wait_for("chat › ", 20) or not term.wait_for("bob", 20):
+        if not term.wait_screen(r"❯ bob  ", 20):
             fail("CLI did not open the chat with bob:\n" + term.text()[-1500:])
         term.send("hallo von der cli\r")
         got = b.wait(lambda e: e.get("event") == "message" and e.get("text") == "hallo von der cli", 30)
@@ -155,11 +155,29 @@ def main():
         cleared = after(lambda e: e.get("event") == "unread" and e.get("conversation") == "0" and e.get("count") == 0, 15)
         if rose < 0 or cleared < rose:
             fail("CLI did not mark the new message read (rose %d, cleared %d)" % (rose, cleared))
+        term.send(b"\x1b[A")
+        term.pump(0.6)
+        if "hallo von der cli" not in term.screen()[-2]:
+            fail("up did not recall the last sent message:\n" + "\n".join(term.screen()[-3:]))
+        term.send(b"\x1b")
+        term.pump(0.4)
+        mark_clear = len(a.events)
+        term.send(":clear\r")
+        if not term.wait_for("Clear this chat? y/n", 5):
+            fail(":clear did not ask first")
+        term.send("y")
+        if after(lambda e: e.get("event") == "history.clear.succeeded" and e.get("conversation") == "0", 15) < mark_clear:
+            fail("the helper did not confirm the clear")
+        if not term.wait_for("no messages yet", 15):
+            fail("the cleared chat still shows messages")
+        term.send(":) hallo <3\r")
+        if not b.wait(lambda e: e.get("event") == "message" and e.get("text") == "\U0001F642 hallo \u2764\ufe0f", 30):
+            fail("the emoticons did not arrive as emoji")
         shot = os.environ.get("CLI_SCREEN")
         if shot:
             with open(shot, "w", encoding="utf-8") as f:
                 f.write("\n".join(term.screen()) + "\n")
-        term.send(":qa\r")
+        term.send(":quit\r")
         code = term.finish()
         if code != 0 or "Traceback" in term.text():
             fail("CLI exit %r" % code)

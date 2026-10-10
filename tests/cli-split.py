@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -25,6 +26,10 @@ homes = load("cli_two_homes", "cli-two-homes.py")
 def fail(message):
     print("cli-split: " + message, file=sys.stderr)
     sys.exit(1)
+
+
+def head(name):
+    return r"(?:❯ |  )%s  (?:online|offline|typing…)" % name
 
 
 def befriend(a, peer, nick):
@@ -80,7 +85,7 @@ def main():
         env = dict(os.environ, OMAQ_HOME=dirs["ha"], OMAQ_STATE=dirs["sa"], XDG_RUNTIME_DIR=dirs["run"],
                    TERM="xterm-256color")
         term = harness.Term(env, args=["bob"], cols=120, rows=30)
-        if not term.wait_for("chat › ", 20):
+        if not term.wait_screen(r"❯ bob  ", 20):
             fail("CLI did not open bob")
         term.send(":connect car")
         term.send("\t")
@@ -89,7 +94,7 @@ def main():
         term.send("\r")
         term.pump(1.0)
         screen = term.screen()
-        if not any("chat › bob" in row and "chat › carol" in row for row in screen):
+        if not any(re.search(head("bob"), row) and re.search(head("carol"), row) for row in screen):
             fail("panes are not side by side:\n" + "\n".join(screen))
         term.send("an carol\r")
         if not c.wait(lambda e: e.get("event") == "message" and e.get("text") == "an carol", 30):
@@ -124,18 +129,34 @@ def main():
         term.send(b"\x1b[1;4C")
         term.pump(0.8)
         moved = term.screen()
-        heads = [k for k, r in enumerate(moved) if "chat › bob" in r or "chat › carol" in r]
-        if len(heads) != 2 or any("chat › bob" in moved[k] and "chat › carol" in moved[k] for k in heads):
+        heads = [k for k, r in enumerate(moved) if re.search(head("bob"), r) or re.search(head("carol"), r)]
+        if len(heads) != 2 or any(re.search(head("bob"), moved[k]) and re.search(head("carol"), moved[k]) for k in heads):
             fail("alt+shift+right did not stack the panes:\n" + "\n".join(moved))
-        term.send(":q\r")
+        term.send(":close\r")
         term.pump(0.8)
-        if any("bob" in r and "carol" in r and "chat ›" in r for r in term.screen()):
-            fail(":q did not close a pane")
+        heads = [r for r in term.screen() if re.search(head(r"\w+"), r)]
+        if len(heads) != 1:
+            fail(":close did not close exactly one pane:\n" + "\n".join(term.screen()))
+        left = "bob" if any(re.search(head("carol"), r) for r in term.screen()) else "carol"
+        sender, info = (b, fb) if left == "bob" else (c, fc)
+        sender.send({"op": "msg.send", "conversation": info["id"], "key": info["key"], "text": "nach dem schliessen",
+                     "reply": "", "id": "late-1"})
+        if not term.wait_screen(r"%s: nach dem schliessen" % left, 30):
+            fail("no preview for the closed chat:\n" + "\n".join(term.screen()))
+        def friends_row():
+            text = term.text()
+            k = text.rfind("\x1b[1;1H")
+            return text[k:text.find("\x1b[K", k)] if k >= 0 else ""
+        end = time.monotonic() + 15
+        while time.monotonic() < end and "1;7m %s " % left not in friends_row():
+            term.pump(0.3)
+        if "1;7m %s " % left not in friends_row():
+            fail("the closed chat's friend is not marked unread:\n" + repr(friends_row()))
         shot = os.environ.get("CLI_SCREEN")
         if shot:
             with open(shot, "w", encoding="utf-8") as f:
                 f.write("\n".join(screen) + "\n\n--- after alt+shift+right ---\n" + "\n".join(moved) + "\n")
-        term.send(":qa\r")
+        term.send(":quit\r")
         if term.finish() != 0 or "Traceback" in term.text():
             fail("CLI exit failed")
         print("cli-split: ok")
