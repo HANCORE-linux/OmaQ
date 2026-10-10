@@ -24,7 +24,7 @@ ALLOWED = {
     "invites": {"protocol"},
     "commands": set(),
     "view": {"commands", "protocol", "text"},
-    "modals": set(),
+    "modals": {"commands", "protocol", "text"},
 }
 PURE = {"text", "protocol", "layout", "keys", "palette", "session", "files", "invites", "commands", "view", "modals"}
 failures = []

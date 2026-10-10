@@ -80,7 +80,7 @@ class Invites:
 
     def show_request(self):
         if self.request:
-            self.show_overlay({"kind": "request"})
+            self.show_overlay("request")
         else:
             self.say("No pending request")
 
@@ -137,7 +137,7 @@ class Invites:
             if kind not in ("direct", "group") or (kind == "direct" and not (hex64(ev.get("key")) and safety_ok(safety))):
                 self.say("OmaQ received an invalid response from the running helper.")
             else:
-                self.show_overlay({"kind": "redeemed", "group": kind == "group", "safety": safety})
+                self.show_overlay("redeemed", group=kind == "group", safety=safety)
                 self.say(REDEEMED_GROUP if kind == "group" else REDEEMED_DIRECT, 15)
 
     def on_request(self, ev):

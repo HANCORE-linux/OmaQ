@@ -1,13 +1,12 @@
 import time
 
-from .commands import COMMANDS, HINT, KEYS, TIPS
-from .protocol import FAILURES, REDEEMED_DIRECT, REDEEMED_GROUP
+from .commands import HINT, RECEIPTS, TIPS
+from .protocol import FAILURES
 from .text import (cells, clean, clean_line, clip, clock, day_label, human_size, is_command, progress_bar, shorten,
                    text_width, wrap)
 
 
 NARROW_BODY = 12
-RECEIPTS = ["·", "→", "⇉", "⇉"]
 NAME_MAX = 18
 
 
@@ -42,51 +41,7 @@ class Screen:
                                  (label, "dim" if self.app.zoom == 100 else "accent", "")], cols)
 
     def overlay_rows(self, width, height):
-        p = self.app.palette
-        o = self.app.overlay
-        rows = []
-        if o["kind"] == "invite":
-            left = max(0, self.app.invite.expires - int(time.time()))
-            valid = "valid %d h %02d min" % (left // 3600, left % 3600 // 60) if left else "expired; :invite creates a new link"
-            rows.append(p.row([(" invite", "name", "1"), ("   %s · esc close" % valid, "dim", "")], width))
-            url = clean_line(o["url"])
-            step = max(8, width - 2)
-            chunks = [url[k:k + step] for k in range(0, len(url), step)] or [""]
-            for chunk in chunks:
-                rows.append(p.row([(" " + chunk, "text", "")], width))
-            qr = o["qr"]
-            notes = (self.text_rows("Send the link or let your friend scan the code. They run :redeem <link>,", "dim", width)
-                     + self.text_rows("then :requests shows their request here and :accept adds them.", "dim", width))
-            if qr and max(text_width(line) for line in qr) + 2 <= width and len(qr) + len(notes) + 2 + len(chunks) <= height:
-                for line in qr:
-                    rows.append(p.row([(" ", "dim", ""), (line, "qr", "")], width))
-            elif not qr:
-                rows.extend(self.text_rows("no QR code: qrencode is not installed", "dim", width))
-            else:
-                rows.extend(self.text_rows("the window is too small for the QR code", "dim", width))
-            rows.extend(notes)
-        elif o["kind"] == "request" and self.app.request:
-            r = self.app.request
-            if r.kind == "group":
-                rows.append(p.row([(" group invitation", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
-                rows.extend(self.text_rows("A friend invited you to a private group. Group chats show in the bar for now.", "dim", width))
-            else:
-                rows.append(p.row([(" friend request", "name", "1"), ("   :accept or :decline · esc close", "dim", "")], width))
-                rows.extend(self.text_rows("Compare this code with your friend before accepting", "dim", width))
-                rows.extend(self.code_rows(r.safety, width))
-                if r.conflict:
-                    rows.extend(self.text_rows("Another device used this invite link", "unread", width))
-        elif o["kind"] == "redeemed":
-            rows.append(p.row([(" " + (REDEEMED_GROUP if o.get("group") else REDEEMED_DIRECT), "name", "1"),
-                               ("   esc close", "dim", "")], width))
-            if o.get("safety"):
-                rows.extend(self.text_rows("Compare this code with your friend before they accept", "dim", width))
-                rows.extend(self.code_rows(o["safety"], width))
-        else:
-            self.app.overlay = None
-            return [" " * width] * height
-        rows, o["top"], _ = self.window(rows, width, height, o.get("top", 0))
-        return rows
+        return self.app.overlay.rows(self, width, height)
 
     def code_rows(self, safety, width):
         rows, per = [], max(1, width // 5)
@@ -120,25 +75,6 @@ class Screen:
         foot = self.app.palette.row([("   \u2193 %d more \u00b7 pgdn" % below, "dim", "")], width) if below else " " * width
         return [head] + shown + [foot], top, len(shown)
 
-    def picker_rows(self, width, height):
-        p = self.app.palette
-        items = self.app.picker_items()
-        per_row = max(1, (width - 1) // 4)
-        index = min(self.app.picker["index"], max(0, len(items) - 1))
-        self.app.picker["index"] = index
-        lines = max(1, -(-len(items) // per_row))
-        grid = max(1, min(4, lines, height - 2))
-        first = max(0, min(index // per_row - grid + 1, lines - grid))
-        rows = [p.row([(" emoji › ", "accent", "1"), (self.app.picker["query"], "text", ""),
-                       ("   arrows choose · enter inserts · esc closes", "dim", "")], width)]
-        for r in range(first, first + grid):
-            segs = [(" ", "dim", "")]
-            for k in range(r * per_row, min(len(items), (r + 1) * per_row)):
-                segs.append((" %s " % items[k][0], "accent" if k == index else "text", "1;7" if k == index else ""))
-            rows.append(p.row(segs, width))
-        rows.append(p.row([(" " + (items[index][1] if items else "no emoji found"), "dim", "")], width))
-        return rows[:max(1, height)]
-
     def command_hint(self, cols):
         p = self.app.palette
         pane = self.app.pane or self.app.scratch
@@ -158,27 +94,6 @@ class Screen:
             segs.append((label, "name" if k == chosen else "dim", "1;7" if k == chosen else ""))
             segs.append(("  ", "dim", ""))
         return p.row(segs, cols)
-
-    def help_rows(self, width, height):
-        p = self.app.palette
-        rows = [p.row([(" commands", "name", "1"), ("   ↑↓ select · enter run · esc close", "dim", "")], width)]
-        for k, (command, text, needs) in enumerate(COMMANDS):
-            chosen = k == self.app.help
-            label = command + needs
-            rows.append(p.row([(" ▸ " if chosen else "   ", "accent", "1"), (label.ljust(18), "text" if chosen else "name", "7" if chosen else ""),
-                               ("  " + text, "text" if chosen else "dim", "")], width))
-        rows.append(" " * width)
-        rows.append(p.row([(" receipts", "name", "1"), ("   ", "dim", ""), (RECEIPTS[0], "dim", ""), (" sending   ", "dim", ""),
-                           (RECEIPTS[1], "dim", ""), (" sent   ", "dim", ""), (RECEIPTS[2], "dim", ""),
-                           (" delivered   ", "dim", ""), (RECEIPTS[3], "online", "1"), (" read", "dim", "")], width))
-        rows.append(" " * width)
-        rows.append(p.row([(" keys", "name", "1")], width))
-        for key, text in KEYS:
-            rows.append(p.row([("   " + key.ljust(18), "text", ""), ("  " + text, "dim", "")], width))
-        rows, self.app.help_top, span = self.window(rows, width, height, self.app.help_top,
-                                                1 + self.app.help if self.app.help_follow else None)
-        self.app.help_seen = (self.app.help_top, span)
-        return rows
 
     def conn_label(self):
         return {"online": "Online", "locked": "Locked", "reconnecting": "Reconnecting…",
@@ -267,14 +182,14 @@ class Screen:
         area = max(1, rows - 5)
         drawer = []
         if self.app.picker is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
-            drawer = self.picker_rows(cols, area - 1)
+            drawer = self.app.picker.rows(self, cols, area - 1)
             area -= len(drawer)
         self.app.visible = set()
         if self.app.locked:
             out.append(p.row([(" Identity is locked", "unread", "")], cols))
             out.extend([" " * cols] * (area - 1))
         elif self.app.help is not None:
-            out.extend(self.help_rows(cols, area))
+            out.extend(self.app.help.rows(self, cols, area))
         elif self.app.overlay is not None:
             out.extend(self.overlay_rows(cols, area))
         elif not self.app.layout.columns:
@@ -338,7 +253,7 @@ class Screen:
             frame.append("\x1b[%d;1H%s\x1b[0m\x1b[K" % (i + 1, line))
         cursor_row = max(1, min(rows, len(out)) - 1)
         if drawer:
-            cursor_row, cursor_col = drawer_row, text_width(" emoji › " + self.app.picker["query"]) + 1
+            cursor_row, cursor_col = drawer_row, text_width(" emoji › " + self.app.picker.query) + 1
         frame.append("\x1b[%d;%dH\x1b[?25h\x1b[?2026l" % (cursor_row, max(1, cursor_col)))
         return "".join(frame)
 

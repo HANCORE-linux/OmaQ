@@ -145,7 +145,6 @@ class App:
         self.size = (0, 0)
         self.visible = set()
         self.help = None
-        self.help_top, self.help_follow, self.help_seen = 0, True, (0, 0)
         self.completion = None
         self.scratch = Pane("")
         self.exit_note = ""
@@ -677,11 +676,8 @@ class App:
             if self.focused and not is_command((self.pane or self.scratch).draft):
                 self.tip = (self.tip + 1) % len(TIPS)
                 self.dirty = True
-        if self.overlay and self.overlay.get("kind") == "invite":
-            minute = int(time.time() // 60)
-            if self.overlay.get("minute") != minute:
-                self.overlay["minute"] = minute
-                self.dirty = True
+        if self.overlay is not None and self.overlay.tick():
+            self.dirty = True
         if self.proc is not None and self.proc.poll() is not None:
             self.proc = None
         if not self.link and now >= self.next_connect:
@@ -792,18 +788,18 @@ class App:
         pane.cursor = len(pane.draft)
         self.dirty = True
 
-    def open_overlay(self, overlay):
-        self.overlay = overlay
+    def open_overlay(self, kind, **fields):
+        self.overlay = OVERLAYS[kind](**fields)
 
     def close_overlays(self, *kinds):
-        if self.overlay and self.overlay.get("kind") in kinds:
+        if self.overlay is not None and self.overlay.kind in kinds:
             self.overlay = None
 
     def show_invite(self, copy=False):
         url = self.invite.url
         if not url:
             return
-        self.overlay = {"kind": "invite", "url": url, "qr": qr_lines(url)}
+        self.overlay = InviteOverlay(url, qr_lines(url))
         if copy:
             import base64
             try:
@@ -821,36 +817,7 @@ class App:
         return self.screen.window(rows, width, height, top, keep)
 
     def picker_items(self):
-        query = self.picker["query"].strip().lower()
-        items = [(emoji, emoji_name(emoji)) for emoji in EMOJI]
-        if not query:
-            return items
-        hits = [item for item in items if query in item[1]]
-        return hits + [item for item in emoji_catalog() if query in item[1] and item[0] not in EMOJI]
-
-    def picker_key(self, kind, value):
-        picker = self.picker
-        items = self.picker_items()
-        per_row = max(1, (self.size[0] - 1) // 4)
-        if (kind == "key" and value == "esc") or (kind == "ctrl" and value in ("k", "c")):
-            self.picker = None
-        elif kind == "key" and value == "enter":
-            if items:
-                composer = self.pane or self.scratch
-                emoji = items[min(picker["index"], len(items) - 1)][0]
-                composer.draft = composer.draft[:composer.cursor] + emoji + composer.draft[composer.cursor:]
-                composer.cursor += len(emoji)
-                composer.hist, composer.hist_items, self.completion = None, None, None
-            self.picker = None
-        elif kind == "key" and value in ("left", "right", "up", "down"):
-            step = {"left": -1, "right": 1, "up": -per_row, "down": per_row}[value]
-            picker["index"] = max(0, min(len(items) - 1, picker["index"] + step))
-        elif kind == "key" and value == "backspace":
-            picker["query"], picker["index"] = picker["query"][:-1], 0
-        elif kind in ("text", "paste"):
-            typed = "".join(ch for ch in value if ch.isprintable())
-            picker["query"], picker["index"] = (picker["query"] + typed)[:40], 0
-        self.dirty = True
+        return self.picker.items()
 
     def complete(self, pane, step):
         if self.completion is None:
@@ -871,38 +838,6 @@ class App:
 
     def command_hint(self, cols):
         return self.screen.command_hint(cols)
-
-    def help_key(self, kind, value):
-        count = len(COMMANDS)
-        self.help_follow = True
-        if kind == "key" and value in ("up", "backtab"):
-            self.help = (self.help - 1) % count
-        elif kind == "key" and value in ("down", "tab"):
-            self.help = (self.help + 1) % count
-        elif kind == "key" and value in ("pgup", "pgdn"):
-            step = max(1, self.size[1] - 8)
-            self.help_top = max(0, self.help_top + (step if value == "pgdn" else -step))
-            self.help_follow = False
-            self.dirty = True
-            return
-        elif kind == "text" and value in ("k", "j"):
-            self.help = (self.help + (1 if value == "j" else -1)) % count
-        elif kind == "key" and value == "enter":
-            first, span = self.help_seen
-            if not first <= 1 + self.help < first + span:
-                self.help_follow = True
-                self.dirty = True
-                return
-            command, _, needs = COMMANDS[self.help]
-            self.help = None
-            if needs:
-                composer = self.pane or self.scratch
-                composer.draft, composer.cursor = command, len(command)
-            else:
-                self.command(command)
-        elif (kind == "key" and value == "esc") or (kind == "text" and value == "q") or kind == "ctrl":
-            self.help = None
-        self.dirty = True
 
     def close_pane(self, quiet=False):
         pane = self.pane
@@ -939,7 +874,7 @@ class App:
             self.dirty = True
             return
         if self.help is not None:
-            self.help_key(kind, value)
+            self.help.handle(self, kind, value)
             return
         if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
@@ -963,16 +898,9 @@ class App:
             self.dirty = True
             return
         if self.picker is not None:
-            self.picker_key(kind, value)
+            self.picker.handle(self, kind, value)
             return
-        if self.overlay is not None and kind == "key" and value in ("pgup", "pgdn"):
-            step = max(1, self.size[1] - 8)
-            self.overlay["top"] = max(0, self.overlay.get("top", 0) + (step if value == "pgdn" else -step))
-            self.dirty = True
-            return
-        if self.overlay is not None and kind == "key" and value == "esc":
-            self.overlay = None
-            self.dirty = True
+        if self.overlay is not None and self.overlay.handle(self, kind, value):
             return
         if kind == "ctrl" and value == "c":
             composer = self.pane or self.scratch
@@ -980,7 +908,7 @@ class App:
             self.say("Type :quit and press Enter to quit")
             return
         if kind == "key" and value == "f1":
-            self.help, self.help_top, self.help_follow = 0, 0, True
+            self.help = Help()
             self.dirty = True
             return
         layout_keys = {"alt-left": ("focus", "left"), "alt-right": ("focus", "right"), "alt-up": ("focus", "up"),
@@ -1015,7 +943,7 @@ class App:
             self.close_pane()
             return
         if kind == "ctrl" and value == "k":
-            self.picker = {"query": "", "index": 0}
+            self.picker = Picker()
             self.dirty = True
             return
         pane = self.pane or self.scratch
@@ -1489,7 +1417,7 @@ class App:
                                         self.instance)
 
     def _cmd_help(self, verb, arg):
-        self.help, self.help_top, self.help_follow = 0, 0, True
+        self.help = Help()
 
     def _cmd_named(self, verb, arg):
         pick = self.match(arg)

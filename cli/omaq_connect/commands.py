@@ -65,3 +65,4 @@ TIPS = [
     ("pgup / pgdn", "scroll the chat"),
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
+RECEIPTS = ["·", "→", "⇉", "⇉"]

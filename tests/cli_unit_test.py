@@ -471,7 +471,7 @@ class PackageA(Sandbox):
         app.edit("key", "esc")
         app.edit("text", ":he")
         app.edit("key", "enter")
-        self.assertEqual(app.help, 0)
+        self.assertEqual(app.help.index, 0)
         app.help = None
         app.edit("text", ":qa")
         app.edit("key", "enter")
@@ -570,10 +570,10 @@ class PackageA(Sandbox):
         link = "omaq://invite-" + "a" * 40
         app.on_event({"event": "invite", "url": link, "expires": int(time.time()) + 86400, "op": "create",
                       "request": op["request"]})
-        self.assertEqual(app.overlay["kind"], "invite")
+        self.assertEqual(app.overlay.kind, "invite")
         import base64
         self.assertIn("\x1b]52;c;%s\x07" % base64.b64encode(link.encode()).decode(), app.out.getvalue())
-        app.overlay["qr"] = ["\u2588\u2580\u2584 "]
+        app.overlay.qr = ["\u2588\u2580\u2584 "]
         app.size = (100, 40)
         frame = app.render()
         self.assertIn(link, frame)
@@ -611,7 +611,7 @@ class PackageA(Sandbox):
         app.edit("key", "enter")
         op = app.link.ops("invite.redeem")[-1]
         app.on_event({"event": "invite.redeemed", "kind": "direct", "key": B, "safety": safety, "request": op["id"]})
-        self.assertEqual((app.overlay["kind"], app.overlay["safety"]), ("redeemed", safety))
+        self.assertEqual((app.overlay.kind, app.overlay.safety), ("redeemed", safety))
 
     def test_requests_accept_and_decline(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
@@ -673,7 +673,7 @@ class PackageA(Sandbox):
         app.on_event({"event": "error", "code": "contact_limit"})
         self.assertEqual(app.status, "The direct-contact limit has been reached.")
         app.redeem_request = "cli-redeem-1"
-        app.overlay = {"kind": "redeemed", "group": False, "safety": ""}
+        app.overlay = cli.RedeemedOverlay(False, "")
         app.drop_link()
         self.assertEqual((app.request, app.overlay, app.redeem_request, app.invite.url), (None, None, "", ""))
         self.assertEqual(app.status, "Invite result unknown; try again")
@@ -897,7 +897,7 @@ class PackageA(Sandbox):
     def test_picker_finds_symbols_outside_the_old_ranges(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         for query, emoji in (("star", "\u2b50"), ("watch", "\u231a"), ("vs", "\U0001F19A")):
-            app.picker = {"query": query, "index": 0}
+            app.picker = cli.Picker(query)
             self.assertIn(emoji, [item[0] for item in app.picker_items()])
 
     def test_friends_bar_marks_hidden_friends(self):
@@ -940,10 +940,10 @@ class PackageA(Sandbox):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         app.out = __import__("io").StringIO()
         app.invite = cli.Invite("omaq://x", int(time.time()) + 86400)
-        app.overlay = {"kind": "invite", "url": "omaq://x", "qr": []}
+        app.overlay = cli.InviteOverlay("omaq://x", [])
         app.tick(time.monotonic())
         app.dirty = False
-        app.overlay["minute"] -= 1
+        app.overlay.minute -= 1
         app.tick(time.monotonic())
         self.assertTrue(app.dirty)
         app.invite.expires = int(time.time()) - 5
@@ -1468,7 +1468,7 @@ class Blockers(Sandbox):
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
         groups = safety.replace(" / ", " ").split()
         app.request = cli.PendingRequest("direct", C, safety, "")
-        app.overlay = {"kind": "request"}
+        app.overlay = cli.RequestOverlay()
         app.size = (40, 16)
         frame = self.plain(app.render())
         self.assertEqual([g for g in groups if g not in frame], [])
@@ -1478,10 +1478,10 @@ class Blockers(Sandbox):
         app.size = (40, 8)
         self.assertRegex(self.plain(app.render()), "\u2193 \\d+ more \u00b7 pgdn")
         app.edit("key", "pgdn")
-        self.assertGreater(app.overlay["top"], 0)
+        self.assertGreater(app.overlay.top, 0)
         self.assertRegex(self.plain(app.render()), "\u2191 \\d+ more \u00b7 pgup")
         app.edit("key", "pgup")
-        self.assertEqual(app.overlay["top"], 0)
+        self.assertEqual(app.overlay.top, 0)
         app.overlay = None
         app.size = (80, 24)
         app.edit("key", "f1")
@@ -1492,7 +1492,7 @@ class Blockers(Sandbox):
         self.assertIn("ctrl+n", self.plain(app.render()))
         app.edit("key", "esc")
         app.edit("key", "f1")
-        self.assertEqual(app.help_top, 0)
+        self.assertEqual(app.help.top, 0)
         app.size = (80, 12)
         for _ in range([command for command, _, _ in cli.COMMANDS].index(":close")):
             app.edit("key", "down")
@@ -1623,11 +1623,25 @@ class Blockers(Sandbox):
             self.assertEqual(len(rows), height)
         self.assertEqual(app.window(["a", "b"], 20, 5, 0)[2], 2)
 
+    def test_reopened_help_waits_for_a_frame_before_enter(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        app.size = (80, 24)
+        app.edit("key", "f1")
+        app.render()
+        app.edit("key", "esc")
+        app.edit("key", "f1")
+        app.edit("key", "down")
+        app.edit("key", "enter")
+        self.assertEqual((app.help is not None, (app.pane or app.scratch).draft), (True, ""))
+        app.render()
+        app.edit("key", "enter")
+        self.assertEqual((app.help, (app.pane or app.scratch).draft), (None, ":connect "))
+
     def test_r12_notes_wrap_texts_and_separate_halves(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}])
         safety = " / ".join(" ".join("%04x" % (k + h * 16) for k in range(16)) for h in range(2))
         app.request = cli.PendingRequest("direct", C, safety, B)
-        app.overlay = {"kind": "request"}
+        app.overlay = cli.RequestOverlay()
         app.size = (40, 24)
         rows = [re.sub(r"\x1b\[[0-9;]*m", "", r) for r in app.overlay_rows(40, 20)]
         self.assertIn(" Compare this code with your friend", [r.rstrip() for r in rows])
