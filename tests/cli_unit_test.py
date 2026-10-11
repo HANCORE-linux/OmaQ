@@ -438,6 +438,61 @@ class PackageA(Sandbox):
         self.assertEqual(roles["name"], "38;2;255;255;0")
         self.assertEqual(roles["accent"], "38;2;0;0;255")
 
+    def theme(self, **colors):
+        path = os.path.join(os.environ["HOME"], ".local/state/omarchy/current/theme")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "colors.toml"), "w") as f:
+            f.write("".join('%s = "%s"\n' % item for item in colors.items()))
+
+    def test_online_name_gradient_ends_follow_the_theme(self):
+        self.assertIsNone(cli.Palette().ends)
+        self.assertEqual(cli.Palette().gradient("bob", "1"), [("bob", "name", "1")])
+        base = dict(background="#101010", foreground="#f0f0f0", red="#ff5555", yellow="#e0af68", blue="#6080ff",
+                    magenta="#c070e0")
+        self.theme(accent="#7aa2f7", green="#9ece6a", cyan="#40c0c0", **base)
+        self.assertEqual(cli.Palette().ends, ((0x7A, 0xA2, 0xF7), (0x9E, 0xCE, 0x6A)))
+        # green as the accent: the next distinct, readable colour
+        self.theme(accent="#509475", green="#549e6a", cyan="#2dd5b7", **base)
+        self.assertEqual(cli.Palette().ends[1], (0x2D, 0xD5, 0xB7))
+        # cyan close to the offline name colour (yellow): the online name must not end in it
+        self.theme(accent="#82fb9c", background="#0b0c16", foreground="#ddf7ff", red="#50f872", green="#4fe88f",
+                   yellow="#50f7d4", blue="#829dd4", magenta="#86a7df", cyan="#7cf8f7")
+        self.assertEqual(cli.Palette().ends[1], (0x86, 0xA7, 0xDF))
+        # one grey for everything: a darker shade of the accent
+        grey = dict(accent="#d4d4d4", background="#000000", foreground="#d4d4d4", red="#d4d4d4", green="#d4d4d4",
+                    yellow="#d4d4d4", blue="#d4d4d4", magenta="#d4d4d4", cyan="#d4d4d4")
+        self.theme(**grey)
+        a, b = cli.Palette().ends
+        self.assertGreaterEqual(cli.distance(a, b), cli.GRADIENT_FROM_ACCENT)
+        self.assertGreaterEqual(cli.distance((0xD4, 0xD4, 0xD4), b), cli.GRADIENT_FROM_NAME)
+        self.assertGreaterEqual(cli.contrast(b, (0, 0, 0)), cli.GRADIENT_CONTRAST)
+        segs = cli.Palette().gradient("alexandra", "1")
+        self.assertEqual("".join(text for text, _, _ in segs), "alexandra")
+        self.assertEqual((segs[0][2], segs[-1][2]), ("38;2;%d;%d;%d;1" % a, "38;2;%d;%d;%d;1" % b))
+
+    def test_online_friend_name_is_a_gradient_in_the_chat_header(self):
+        self.theme(accent="#7aa2f7", background="#101010", foreground="#f0f0f0", red="#ff5555", green="#9ece6a",
+                   yellow="#e0af68", cyan="#40c0c0")
+        friends = [{"id": "0", "key": A, "name": "alexandra"}, {"id": "1", "key": B, "name": "bob"}]
+        app = self.app(friends)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
+        letters = lambda text: re.findall(r"\x1b\[0;39;38;2;(\d+;\d+;\d+)(?:;1)?m(.)", text)
+        header = app.header(app.pane, 60, True)
+        self.assertEqual(plain(header).rstrip(), "❯ alexandra  online")
+        self.assertEqual([ch for _, ch in letters(header)], list("alexandra"))
+        self.assertEqual((letters(header)[0][0], letters(header)[-1][0]), ("122;162;247", "158;206;106"))
+        app.apply_friends([dict(friends[0], online=False, status="offline"), dict(friends[1], online=True, status="online")])
+        self.assertEqual(letters(app.header(app.pane, 60, True)), [])
+        app.apply_friends([dict(f, online=True, status="online") for f in friends])
+        app.conn = "reconnecting"
+        self.assertEqual(letters(app.header(app.pane, 60, True)), [])
+        app.conn = "online"
+        app.apply_friends([dict(friends[0], online=False, status="offline"), dict(friends[1], online=True, status="online")])
+        app.open_pane("1")
+        strip = app.header(app.pane, 40, True, tabs=app.layout.panes())
+        self.assertEqual(plain(strip).split()[:2], ["alexandra", "[bob]"])
+        self.assertEqual("".join(ch for _, ch in letters(strip)), "bob")
+
     def test_command_hint_and_colon_suggestions(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
         plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text).strip()

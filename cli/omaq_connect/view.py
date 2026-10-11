@@ -136,6 +136,12 @@ class Screen:
             used += width
         return self.app.palette.row(bar, cols)
 
+    def name_segs(self, conversation, text, extra):
+        f = self.app.friend(conversation)
+        if self.app.conn == "online" and f and f["online"]:
+            return self.app.palette.gradient(text, extra)
+        return [(text, "name", extra)]
+
     def tab_label(self, pane):
         f = self.app.friend(pane.conv)
         return f["name"] if f else (pane.conv or "·")
@@ -155,14 +161,17 @@ class Screen:
                 if used + text_width(piece) > room and k != start:
                     segs.append(("› ", "dim", ""))
                     break
-                segs.append((piece, "name", "1" if tabs[k] is pane else ""))
+                bold = "1" if tabs[k] is pane else ""
+                name = self.name_segs(tabs[k].conv, self.tab_label(tabs[k]), bold)
+                segs.extend([("[", "name", bold)] + name + [("]  ", "name", bold)] if tabs[k] is pane else name + [("  ", "name", bold)])
                 used += text_width(piece)
             segs.append((label, role, ""))
             return self.app.palette.row(segs, width)
         f = self.app.friend(pane.conv)
         label, role = self.peer_status(pane.conv) if pane.conv else ("", "dim")
-        segs = [("❯ " if focused else "  ", "accent", "1"),
-                (f["name"] if f else (pane.conv or "no chat"), "name", "1" if focused else ""), ("  " + label, role, "")]
+        segs = ([("❯ " if focused else "  ", "accent", "1")]
+                + self.name_segs(pane.conv, f["name"] if f else (pane.conv or "no chat"), "1" if focused else "")
+                + [("  " + label, role, "")])
         return self.app.palette.row(segs, width)
 
     def pane_rows(self, pane, width, height, focused, tabs=None):
