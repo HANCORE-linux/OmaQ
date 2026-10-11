@@ -85,11 +85,11 @@ def is_direct(conversation):
 
 
 class Message:
-    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed", "local")
+    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed", "local", "kind")
 
-    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed="", local=False):
+    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed="", local=False, kind=""):
         self.id, self.request, self.dir, self.text = mid, request, direction, text
-        self.ts, self.sender, self.ack, self.failed, self.local = ts, sender, ack, failed, local
+        self.ts, self.sender, self.ack, self.failed, self.local, self.kind = ts, sender, ack, failed, local, kind
 
 
 def message_from(item):
@@ -108,4 +108,4 @@ def message_from(item):
     if ts > 1e12:
         ts /= 1000.0
     return Message(str(item.get("id") or ""), str(item.get("request") or ""), direction, text, ts,
-                   str(item.get("sender") or ""), ack)
+                   str(item.get("sender") or ""), ack, kind=kind if kind in ("file", "image") else "")

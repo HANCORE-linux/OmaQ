@@ -3890,7 +3890,8 @@ FocusScope {
             root.resendMessage(item.clientKey)
           } else if (item && event.key === Qt.Key_R) {
             root.beginReply(item.id, item.text)
-          } else if (item && event.key === Qt.Key_E && item.dir === "out" && !item.deleted) {
+          } else if (item && event.key === Qt.Key_E && item.dir === "out" && !item.deleted &&
+                     item.kind !== "file" && item.kind !== "image") {
             root.beginEdit(item.id, item.text)
           } else if (item && event.key === Qt.Key_Delete && item.dir === "out" && !item.deleted) {
             root.requestDelete(item.id)

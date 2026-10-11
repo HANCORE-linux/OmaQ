@@ -60,7 +60,7 @@ class Chat:
         texts = []
         c = self.convs.get(conversation)
         for m in reversed(c.items if c else []):
-            if m.dir == "out" and m.text and (not texts or texts[-1] != m.text):
+            if m.dir == "out" and m.text and not m.kind and (not texts or texts[-1] != m.text):
                 texts.append(m.text)
         return texts
 

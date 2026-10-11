@@ -462,6 +462,34 @@ ShellRoot {
           function() {
             check(page.testLines.count === 0 && fake.reacted === pass * 2 + 2,
               "delegate removal sent a stale reaction")
+            ;[["own-text", "Own text", ""], ["own-file", "/home/me/secret.pdf", "file"],
+              ["own-image", "/home/me/photo.png", "image"]].forEach(function(own, i) {
+              page.appendLine({ id: own[0], reply: "", dir: "out", text: own[1], kind: own[2],
+                ts: 1700000000 + i, deleted: false, edited: false, local: false,
+                pending: false, ack: 1 })
+            })
+            page.testList.forceActiveFocus()
+          },
+          function() {
+            page.testList.currentIndex = 1
+            key(Qt.Key_E)
+          },
+          function() {
+            check(page.editingId === "" && input.text === "", "E edited an own file item")
+            page.testList.currentIndex = 2
+            key(Qt.Key_E)
+          },
+          function() {
+            check(page.editingId === "" && input.text === "", "E edited an own image item")
+            page.testList.currentIndex = 0
+            key(Qt.Key_E)
+          },
+          function() {
+            check(page.editingId === "own-text" && input.text === "Own text",
+              "E no longer edits own text")
+            page.clearEdit()
+            input.text = ""
+            page.testLines.clear()
           }
         ])
       }
