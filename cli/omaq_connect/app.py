@@ -36,6 +36,7 @@ COMMAND = "omaq-connect"
 CONFIRM_SECONDS = 15
 TIP_SECONDS = 8
 ZOOM_SECONDS = 4
+THEME_RETRIES = 3
 EXIT_WAIT = 20.0
 SETTLE_SECONDS = 5.0
 UNCONFIRMED_EXIT = "could not confirm that OmaQ went offline; it may still be running"
@@ -106,7 +107,7 @@ class App:
     def __init__(self, target):
         self.home, self.state = omaq_paths()
         self.target = target
-        self.theme_stamp, self.theme_check = theme_stamp(), 0.0
+        self.theme_stamp, self.theme_check, self.theme_misses = theme_stamp(), 0.0, 0
         self.palette = Palette()
         self.presence = Presence(self.state)
         self.helper = HelperProcess(self.presence, self.say)
@@ -488,9 +489,15 @@ class App:
         if now >= self.theme_check:
             self.theme_check = now + 1.0
             stamp = theme_stamp()
-            if stamp is not None and stamp != self.theme_stamp:
-                self.theme_stamp, self.palette = stamp, Palette()
-                self.dirty = True
+            if stamp == self.theme_stamp:
+                self.theme_misses = 0
+            else:
+                palette = Palette()
+                if palette.ends is not None or self.theme_misses + 1 >= THEME_RETRIES:
+                    self.theme_stamp, self.palette, self.theme_misses = stamp, palette, 0
+                    self.dirty = True
+                else:
+                    self.theme_misses += 1
         if self.zoom_until and now >= self.zoom_until:
             self.zoom_until = 0.0
             self.dirty = True
@@ -649,6 +656,8 @@ class App:
             self.show_notice(notice)
             self.dirty = True
             return
+        if self.overlay is not None:
+            self.picker = self.file_picker = None
         if self.picker is not None:
             self.picker.handle(self, kind, value)
             return
@@ -690,7 +699,7 @@ class App:
         if kind == "ctrl" and value == "w":
             self.close_pane()
             return
-        if kind == "ctrl" and value == "k":
+        if kind == "ctrl" and value == "k" and self.overlay is None:
             self.picker = Picker()
             self.dirty = True
             return
@@ -723,7 +732,7 @@ class App:
             pane.scroll += max(1, self.size[1] // 2)
         elif kind == "key" and value == "pgdn":
             pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
-        elif kind == "key" and value == "tab" and sendfile_path(pane.draft) is not None:
+        elif kind == "key" and value == "tab" and self.overlay is None and sendfile_path(pane.draft) is not None:
             self.file_picker = FilePicker()
         elif kind == "key" and value in ("tab", "backtab") and is_command(pane.draft):
             self.complete(pane, 1 if value == "tab" else -1)

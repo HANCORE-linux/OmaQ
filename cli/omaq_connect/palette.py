@@ -7,7 +7,8 @@ from .text import cells, clip
 SEMANTIC = {"background": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "foreground": 7}
 THEME_COLORS = "~/.local/state/omarchy/current/theme/colors.toml"
 GRADIENT_SECOND = (2, 6, 5, 4, 3)
-GRADIENT_FROM_ACCENT, GRADIENT_FROM_NAME, GRADIENT_CONTRAST = 0.07, 0.1, 3
+GRADIENT_FROM_ACCENT, GRADIENT_FROM_NAME, GRADIENT_PASS, GRADIENT_CONTRAST = 0.07, 0.1, 0.02, 3
+HEX = set("0123456789abcdefABCDEF")
 
 
 def linear(c):
@@ -32,12 +33,20 @@ def distance(a, b):
     return sum((p - q) ** 2 for p, q in zip(oklab(a), oklab(b))) ** 0.5
 
 
+def mix(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def closest(a, b, c):
+    return min(distance(mix(a, b, k / 16), c) for k in range(17))
+
+
 def theme_stamp():
     try:
         st = os.stat(os.path.expanduser(THEME_COLORS))
     except OSError:
         return None
-    return st.st_mtime_ns, st.st_ino, st.st_size
+    return st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_size
 
 
 class Palette:
@@ -49,7 +58,7 @@ class Palette:
         try:
             with open(path, "rb") as f:
                 data = tomllib.load(f)
-        except (OSError, tomllib.TOMLDecodeError):
+        except (OSError, ValueError):
             return
         found = {}
         for name, index in SEMANTIC.items():
@@ -76,16 +85,19 @@ class Palette:
                 candidates.append(self.rgb(found[index]))
             except (KeyError, ValueError, TypeError):
                 continue
-        candidates += [fg] + [tuple(round(a + (t - a) * k) for a, t in zip(accent, target))
-                              for k in (0.35, 0.5) for target in (bg, (255, 255, 255))]
-        self.ends = (accent, next((color for color in candidates if distance(accent, color) >= GRADIENT_FROM_ACCENT
-                                   and distance(palette[3], color) >= GRADIENT_FROM_NAME
-                                   and contrast(color, bg) >= GRADIENT_CONTRAST), fg))
+        candidates += [fg] + [mix(accent, target, k) for k in (0.35, 0.5, 0.2) for target in (bg, (255, 255, 255))]
+        name = palette[3]
+        passing = min(GRADIENT_PASS, distance(accent, name))
+        usable = [color for color in candidates
+                  if distance(accent, color) >= GRADIENT_FROM_ACCENT and contrast(color, bg) >= GRADIENT_CONTRAST]
+        apart = [color for color in usable if distance(name, color) >= GRADIENT_FROM_NAME]
+        clear = [color for color in apart if closest(accent, color, name) >= passing]
+        self.ends = (accent, (clear or apart or [fg])[0])
 
     @staticmethod
     def rgb(value):
         value = str(value).strip().lstrip("#")
-        if len(value) != 6:
+        if len(value) != 6 or not set(value) <= HEX:
             raise ValueError(value)
         return tuple(int(value[k:k + 2], 16) for k in (0, 2, 4))
 
@@ -96,7 +108,7 @@ class Palette:
         out = []
         for k, (chunk, _) in enumerate(parts):
             t = k / (len(parts) - 1) if len(parts) > 1 else 0
-            color = tuple(round(a + (b - a) * t) for a, b in zip(*self.ends))
+            color = mix(*self.ends, t)
             out.append((chunk, "", "38;2;%d;%d;%d" % color + (";" + extra if extra else "")))
         return out
 
@@ -111,6 +123,6 @@ class Palette:
             if piece:
                 line.append(self.paint(piece, role, extra))
                 used += w
-            if used >= width:
+            if used >= width or len(piece) < len(text):
                 break
         return "".join(line) + " " * max(0, width - used)

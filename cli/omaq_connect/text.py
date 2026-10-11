@@ -58,6 +58,14 @@ def clean_line(text):
     return clean(text).replace("\n", " ")
 
 
+def utf8(text):
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def outgoing(text):
     text = str(text).replace("\r\n", "\n").replace("\r", "\n")
     return "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 0x20)

@@ -87,8 +87,16 @@ class Screen:
             kind, _, items = suggestions(pane.draft, [f["name"] for f in self.app.friends])
             chosen = 0
         if not items:
-            if sendfile_path(pane.draft) is not None:
-                text = " enter opens or takes · enter again sends" if self.app.file_picker is not None else " tab lists folders and files"
+            typed = sendfile_path(pane.draft)
+            if typed is not None:
+                if self.app.file_picker is None:
+                    text = " tab lists folders and files"
+                elif self.app.file_picker.room == 0:
+                    text = " enter sends the line as typed"
+                elif not self.app.file_picker.items(typed):
+                    text = " no match · enter sends the line as typed"
+                else:
+                    text = " enter opens or takes · enter again sends"
             else:
                 text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
             return p.paint(clip(text, cols)[0], "dim")
@@ -198,6 +206,8 @@ class Screen:
         if modal is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
             drawer = modal.rows(self, cols, area - 1)
             area -= len(drawer)
+        if self.app.file_picker is not None and (modal is not self.app.file_picker or not drawer):
+            self.app.file_picker.room = 0
         self.app.visible = set()
         if self.app.locked:
             out.append(p.row([(" Identity is locked", "unread", "")], cols))
@@ -337,7 +347,12 @@ class Screen:
         if fixed + tail_w + TRANSFER_NAME_MIN <= cols:
             lines = [head(shorten(name, cols - fixed - tail_w)) + tail]
         else:
-            lines = [head(shorten(name, max(1, cols - fixed)))]
+            if fixed + TRANSFER_NAME_MIN <= cols:
+                lines = [head(shorten(name, cols - fixed))]
+            else:
+                label = wrap((text % "").strip(), max(1, cols - text_width(icon[0])))
+                lines = [[icon, (label[0], "text", "")]] + [[("   ", "dim", ""), (part, "text", "")] for part in label[1:]]
+                lines.append([("   ", "dim", ""), (shorten(name, max(1, cols - 3)), "text", "")])
             if tail:
                 lines.append([("   ", "dim", ""), (tail[0][0].lstrip(), tail[0][1], tail[0][2])] + tail[1:])
         return lines + [[("   " + part, "dim", "")] for part in (wrap(hint, max(1, cols - 3)) if hint else [])]

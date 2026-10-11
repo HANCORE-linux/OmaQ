@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from .commands import COMMANDS, KEYS, RECEIPTS, sendfile_path
 from .protocol import REDEEMED_DIRECT, REDEEMED_GROUP
-from .text import EMOJI, clean_line, emoji_catalog, emoji_name, home_path, human_size, text_width
+from .text import EMOJI, clean_line, emoji_catalog, emoji_name, home_path, human_size, text_width, utf8
 
 
 @dataclass(eq=False, slots=True)
@@ -140,7 +140,7 @@ class Picker:
 def path_parts(typed):
     typed = typed.lstrip()
     if typed[:1] in ("'", '"'):
-        typed = typed[1:]
+        typed = typed[1:-1] if len(typed) > 1 and typed[-1] == typed[0] else typed[1:]
     if typed == "~":
         typed = "~/"
     head, sep, name = typed.rpartition("/")
@@ -148,15 +148,16 @@ def path_parts(typed):
 
 
 def path_folder(head):
-    return os.path.abspath(os.path.expanduser(head or "."))
+    try:
+        return os.path.abspath(os.path.expanduser(head or ".")), ""
+    except FileNotFoundError:
+        return None, "No such folder"
+    except (OSError, ValueError):
+        return None, "This folder cannot be read"
 
 
 def listable(name):
-    try:
-        name.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return clean_line(name) == name
+    return utf8(name) and clean_line(name) == name
 
 
 def shown_folder(folder):
@@ -167,20 +168,26 @@ def shown_folder(folder):
 @dataclass(eq=False, slots=True)
 class FilePicker:
     ROWS: ClassVar[int] = 8
-    LIMIT: ClassVar[int] = 10000
+    LIMIT: ClassVar[int] = 50000
     index: int = 0
-    listed: str = ""
+    listed: str | None = None
     entries: list = field(default_factory=list)
     error: str = ""
     full: bool = False
+    room: int | None = None
 
-    def scan(self, folder):
-        if folder == self.listed:
+    def scan(self, folder, error=""):
+        if folder is not None and folder == self.listed:
             return
-        self.listed, self.entries, self.error, self.full = folder, [], "", False
+        self.listed, self.entries, self.error, self.full = folder, [], error, False
+        if folder is None:
+            return
         try:
             with os.scandir(folder) as found:
-                for entry in found:
+                for seen, entry in enumerate(found):
+                    if seen >= self.LIMIT:
+                        self.full = True
+                        break
                     if not listable(entry.name):
                         continue
                     try:
@@ -190,20 +197,17 @@ class FilePicker:
                             self.entries.append((entry.name, False))
                     except OSError:
                         continue
-                    if len(self.entries) >= self.LIMIT:
-                        self.full = True
-                        break
         except (FileNotFoundError, NotADirectoryError):
             self.error = "No such folder"
         except PermissionError:
             self.error = "No access to this folder"
-        except OSError:
+        except (OSError, ValueError):
             self.error = "This folder cannot be read"
         self.entries.sort(key=lambda entry: (not entry[1], entry[0].casefold(), entry[0]))
 
     def items(self, typed):
         head, name = path_parts(typed or "")
-        self.scan(path_folder(head))
+        self.scan(*path_folder(head))
         want, hidden = name.casefold(), name.startswith(".")
         return [entry for entry in self.entries
                 if (hidden or not entry[0].startswith(".")) and entry[0].casefold().startswith(want)]
@@ -224,7 +228,9 @@ class FilePicker:
         if name:
             self.take(app, composer, head, True)
             return
-        folder = path_folder(head)
+        folder, _ = path_folder(head)
+        if folder is None:
+            return
         parent = os.path.dirname(folder)
         if parent == folder or not listable(shown_folder(parent)):
             return
@@ -239,11 +245,13 @@ class FilePicker:
         if typed is None:
             app.file_picker = None
             return False
-        items = self.items(typed)
-        self.index = min(self.index, max(0, len(items) - 1))
         if (kind == "key" and value == "esc") or (kind == "ctrl" and value == "c"):
             app.file_picker = None
-        elif kind == "key" and value in ("up", "down"):
+            app.dirty = True
+            return True
+        items = self.items(typed) if self.room != 0 else []
+        self.index = min(self.index, max(0, len(items) - 1))
+        if kind == "key" and value in ("up", "down"):
             if items:
                 self.index = (self.index + (1 if value == "down" else -1)) % len(items)
         elif kind == "key" and value in ("pgup", "pgdn"):
@@ -252,15 +260,17 @@ class FilePicker:
         elif kind == "key" and value in ("tab", "right", "enter"):
             if items:
                 name, is_dir = items[self.index]
-                self.take(app, composer, path_parts(typed)[0] + name + ("/" if is_dir else ""), is_dir)
+                self.take(app, composer, (path_parts(typed)[0] or "./") + name + ("/" if is_dir else ""), is_dir)
             elif value == "enter":
                 app.file_picker = None
                 return False
         elif kind == "key" and value in ("left", "backtab"):
             self.up(app, composer, typed)
         elif kind in ("text", "paste"):
-            composer.insert(value.replace("\r", "").replace("\n", ""))
+            composer.insert("".join(ch for ch in value if ch >= " " and ch != "\x7f"))
             self.index = 0
+            if sendfile_path(composer.draft) is None:
+                app.file_picker = None
         elif (kind == "key" and value in ("backspace", "delete", "home", "end")) or (kind == "ctrl" and value in ("a", "e", "u")):
             composer.edit(kind, value)
             self.index = 0
@@ -275,18 +285,23 @@ class FilePicker:
     def size(self, name):
         try:
             return human_size(os.stat(os.path.join(self.listed, name)).st_size)
-        except OSError:
+        except (OSError, ValueError):
             return ""
 
     def rows(self, screen, width, height):
         p = screen.app.palette
         composer = screen.app.pane or screen.app.scratch
-        items = self.items(sendfile_path(composer.draft) or "")
+        typed = sendfile_path(composer.draft)
+        if typed is None:
+            self.room = 0
+            return []
+        items = self.items(typed)
+        self.room = room = max(0, min(self.ROWS, height - 2))
         index = min(self.index, max(0, len(items) - 1))
         self.index = index
-        room = max(1, min(self.ROWS, height - 2))
         first = max(0, min(index - room + 1, len(items) - room))
-        shown = clean_line(shown_folder(self.listed).encode("utf-8", "replace").decode("utf-8"))
+        where = shown_folder(self.listed) if self.listed is not None else (path_parts(typed)[0] or "./")
+        shown = clean_line(where.encode("utf-8", "replace").decode("utf-8"))
         rows = [p.row([(" files › ", "accent", "1"), (shown, "text", ""),
                        ("   ↑↓ choose · tab opens · ← back · esc closes", "dim", "")], width)]
         for k in range(first, min(len(items), first + room)):
@@ -305,7 +320,7 @@ class FilePicker:
         elif not items:
             note = "no matching folder or file" if self.entries else "empty folder"
         else:
-            note = "%d of %d" % (index + 1, len(items)) + ("  ·  the first %d entries" % self.LIMIT if self.full else "")
+            note = "%d of %d" % (index + 1, len(items)) + ("  ·  over %d entries, not all listed" % self.LIMIT if self.full else "")
         rows.append(p.row([(" " + note, "dim", "")], width))
         return rows[:max(1, height)]
 
