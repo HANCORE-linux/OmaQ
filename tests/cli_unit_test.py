@@ -1011,6 +1011,36 @@ class PackageA(Sandbox):
         app.edit("key", "enter")
         self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "Pictures/night.jpg"))
 
+    def test_transfer_lines_wrap_instead_of_cutting_the_command(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text).rstrip()
+        kinds = {
+            "send": (lambda: app.files.sends.__setitem__("0", cli.OutgoingSend("r", "dotonbori-night.jpg", A, "f1", False,
+                                                                                    1500000, 3148331)),
+                     [":cancelfile", "47%"]),
+            "send-start": (lambda: app.files.sends.__setitem__("0", cli.OutgoingSend("r", "dotonbori-night.jpg", A)), [":cancelfile"]),
+            "offer": (lambda: app.files.offers.__setitem__("0", cli.FileOffer("f2", "holiday-photos.zip", 52000000, A)),
+                      [":acceptfile", ":declinefile", "(52.0 MB)"]),
+            "receive": (lambda: app.files.offers.__setitem__("0", cli.FileOffer("f2", "holiday-photos.zip", 52000000, A, True,
+                                                                                 False, 26000000)), ["50%"]),
+        }
+        for kind, (setup, words) in kinds.items():
+            app.files.sends.clear()
+            app.files.offers.clear()
+            setup()
+            for cols in (24, 30, 40, 64, 100):
+                rows = [plain(app.palette.row(segs, cols)) for segs in app.screen.transfer_lines("0", cols)]
+                self.assertTrue(all(cli.text_width(row) <= cols for row in rows), (kind, cols, rows))
+                text = " ".join(" ".join(row.split()) for row in rows)
+                for word in words:
+                    self.assertIn(word, text, (kind, cols, rows))
+        app.files.sends.clear()
+        app.files.offers.clear()
+        app.files.sends["0"] = cli.OutgoingSend("r", "notes.pdf", A, "f1", False, 700, 1000)
+        self.assertEqual([plain(app.palette.row(segs, 80)) for segs in app.screen.transfer_lines("0", 80)],
+                         [" \u21e1 Sending notes.pdf  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591 70%  :cancelfile"])
+
     def test_sendfile_picker_edges(self):
         home = self.sendfile_home()
         app = self.app([{"id": "0", "key": A, "name": "bob"}])

@@ -8,6 +8,7 @@ from .text import (cells, clean, clean_line, clip, clock, day_label, human_size,
 
 NARROW_BODY = 12
 NAME_MAX = 18
+TRANSFER_NAME_MIN = 8
 
 
 class Screen:
@@ -275,7 +276,7 @@ class Screen:
         if not c:
             return []
         if not c.loaded and not c.items:
-            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation)
+            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation, cols)
         f = self.app.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
@@ -325,32 +326,43 @@ class Screen:
                 lines.append(segs)
         if not c.items:
             lines.append([("   no messages yet", "dim", "")])
-        return lines + self.transfer_lines(conversation)
+        return lines + self.transfer_lines(conversation, cols)
 
-    def transfer_lines(self, conversation):
+    def transfer_line(self, cols, icon, text, name, tail=(), hint=""):
+        tail = list(tail)
+        head = lambda shown: [icon, (text % shown, "text", "")]
+        fixed, tail_w = text_width(icon[0]) + text_width(text % ""), sum(text_width(t) for t, _, _ in tail)
+        if fixed + text_width(name) + tail_w + (2 + text_width(hint) if hint else 0) <= cols:
+            return [head(name) + tail + ([("  " + hint, "dim", "")] if hint else [])]
+        if fixed + tail_w + TRANSFER_NAME_MIN <= cols:
+            lines = [head(shorten(name, cols - fixed - tail_w)) + tail]
+        else:
+            lines = [head(shorten(name, max(1, cols - fixed)))]
+            if tail:
+                lines.append([("   ", "dim", ""), (tail[0][0].lstrip(), tail[0][1], tail[0][2])] + tail[1:])
+        return lines + [[("   " + part, "dim", "")] for part in (wrap(hint, max(1, cols - 3)) if hint else [])]
+
+    def transfer_lines(self, conversation, cols):
         lines = []
         offer = self.app.files.offers.get(conversation)
         if offer and offer.accepted and offer.done is not None:
             full, empty, percent = progress_bar(offer.done, offer.size)
-            lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer.name), "text", ""),
-                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "Receiving %s  ", clean_line(offer.name),
+                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
         elif offer:
-            hint = ("  checking\u2026" if offer.unconfirmed else
-                    "  receiving\u2026" if offer.accepted else "  :acceptfile or :declinefile")
-            lines.append([(" \u21e3 ", "accent", "1"),
-                          ("File offer: %s (%s)" % (clean_line(offer.name), human_size(offer.size)), "text", ""),
-                          (hint, "dim", "")])
+            hint = ("checking\u2026" if offer.unconfirmed else
+                    "receiving\u2026" if offer.accepted else ":acceptfile or :declinefile")
+            lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "File offer: %s", clean_line(offer.name),
+                                        [(" (%s)" % human_size(offer.size), "text", "")], hint)
         send = self.app.files.sends.get(conversation)
         if send and send.done is not None:
             full, empty, percent = progress_bar(send.done, send.size)
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send.name), "text", ""),
-                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", ""),
-                          ("  :cancelfile", "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e1 ", "accent", "1"), "Sending %s  ", clean_line(send.name),
+                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")], ":cancelfile")
         elif send:
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send.name), "text", ""),
-                          ("  :cancelfile", "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e1 ", "accent", "1"), "Sending %s", clean_line(send.name), hint=":cancelfile")
         canceled = self.app.files.notice(conversation)
         if not lines and canceled is not None:
-            lines.append([(" \u2715 ", "unread", "1"), ("File transfer canceled: %s" % clean_line(canceled), "text", ""),
-                          ("  esc hides", "dim", "")])
+            lines += self.transfer_line(cols, (" \u2715 ", "unread", "1"), "File transfer canceled: %s", clean_line(canceled),
+                                        hint="esc hides")
         return lines
