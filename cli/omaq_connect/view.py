@@ -1,6 +1,6 @@
 import time
 
-from .commands import HINT, RECEIPTS, TIPS, suggestions
+from .commands import HINT, RECEIPTS, TIPS, sendfile_path, suggestions
 from .protocol import FAILURES
 from .text import (cells, clean, clean_line, clip, clock, day_label, human_size, is_command, progress_bar, shorten,
                    text_width, wrap)
@@ -86,7 +86,10 @@ class Screen:
             kind, _, items = suggestions(pane.draft, [f["name"] for f in self.app.friends])
             chosen = 0
         if not items:
-            text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
+            if sendfile_path(pane.draft) is not None:
+                text = " enter opens or takes · enter again sends" if self.app.file_picker is not None else " tab lists folders and files"
+            else:
+                text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
             return p.paint(clip(text, cols)[0], "dim")
         segs = [(" ", "dim", "")]
         for k, item in enumerate(items):
@@ -181,8 +184,9 @@ class Screen:
         out = ["", p.paint("─" * cols, "rule")]
         area = max(1, rows - 5)
         drawer = []
-        if self.app.picker is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
-            drawer = self.app.picker.rows(self, cols, area - 1)
+        modal = self.app.picker if self.app.picker is not None else self.app.file_picker
+        if modal is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
+            drawer = modal.rows(self, cols, area - 1)
             area -= len(drawer)
         self.app.visible = set()
         if self.app.locked:
@@ -252,7 +256,7 @@ class Screen:
         for i, line in enumerate(out[:rows]):
             frame.append("\x1b[%d;1H%s\x1b[0m\x1b[K" % (i + 1, line))
         cursor_row = max(1, min(rows, len(out)) - 1)
-        if drawer:
+        if drawer and self.app.picker is not None:
             cursor_row, cursor_col = drawer_row, text_width(" emoji › " + self.app.picker.query) + 1
         frame.append("\x1b[%d;%dH\x1b[?25h\x1b[?2026l" % (cursor_row, max(1, cursor_col)))
         return "".join(frame)

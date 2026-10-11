@@ -901,6 +901,146 @@ class PackageA(Sandbox):
             app.picker = cli.Picker(query)
             self.assertIn(emoji, [item[0] for item in app.picker_items()])
 
+    def sendfile_home(self):
+        home = os.environ["HOME"]
+        for folder in ("Pictures/Screenshots", "Documents", ".config", "locked", "my folder"):
+            os.makedirs(os.path.join(home, folder))
+        for name, size in (("Pictures/night.jpg", 3148331), ("Pictures/bad\x1bname.jpg", 1), ("notes.txt", 120),
+                           (".bashrc", 1), ("my folder/file x.txt", 1), ("trail ", 1)):
+            with open(os.path.join(home, name), "wb") as f:
+                f.write(b"x" * size)
+        with open(os.path.join(os.fsencode(home), b"Pictures/caf\xe9.jpg"), "wb") as f:
+            f.write(b"x")
+        return home
+
+    def typed(self, app, text):
+        app.file_picker, app.pane.draft, app.pane.cursor = None, "", 0
+        app.edit("text", text)
+
+    def test_sendfile_tab_lists_folders_and_files_and_sends_the_pick(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 20)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        self.typed(app, ":sendfile ~/")
+        self.assertEqual(plain(app.command_hint(80)).strip(), "tab lists folders and files")
+        app.edit("key", "tab")
+        self.assertEqual(app.file_picker.items("~/"), [("Documents", True), ("locked", True), ("my folder", True),
+                                                       ("Pictures", True), ("notes.txt", False), ("trail ", False)])
+        frame = app.render()
+        rows = [plain(row) for _, row in re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)]
+        head = next(k for k, row in enumerate(rows) if row.startswith(" files › ~/ "))
+        self.assertEqual(rows[head + 1].rstrip(), " ▸ Documents/")
+        self.assertTrue(rows[head + 5].startswith("   notes.txt ") and rows[head + 5].rstrip().endswith("120 B"))
+        self.assertEqual(rows[head + 7].strip(), "1 of 6")
+        self.assertTrue(all(cli.text_width(row) <= 80 for row in rows))
+        # the cursor stays in the input line, where the path is typed
+        line = next(k for k, row in enumerate(rows) if "❯ :sendfile ~/" in row)
+        self.assertEqual(int(re.findall(r"\x1b\[(\d+);\d+H\x1b\[\?25h", frame)[-1]), line + 1)
+        app.edit("text", "pic")
+        self.assertEqual(app.file_picker.items("~/pic"), [("Pictures", True)])
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":sendfile ~/Pictures/")
+        self.assertEqual(app.file_picker.items("~/Pictures/"), [("Screenshots", True), ("night.jpg", False)])
+        self.assertIn("3.1 MB", plain(app.render()))
+        app.render().encode("utf-8")
+        app.edit("key", "left")
+        self.assertEqual(app.pane.draft, ":sendfile ~/")
+        self.assertEqual(app.file_picker.items("~/")[app.file_picker.index], ("Pictures", True))
+        app.edit("key", "right")
+        app.edit("key", "down")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.draft, app.file_picker), (":sendfile ~/Pictures/night.jpg", None))
+        self.assertEqual(app.link.ops("file.send"), [])
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "Pictures/night.jpg"))
+
+    def test_sendfile_picker_edges(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 20)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        self.typed(app, ":sendfile ~/Pictures/")
+        app.edit("key", "tab")
+        app.edit("key", "esc")
+        self.assertEqual((app.file_picker, app.pane.draft), (None, ":sendfile ~/Pictures/"))
+        self.typed(app, ":sendfile ~/.")
+        app.edit("key", "tab")
+        self.assertEqual(app.file_picker.items("~/."), [(".config", True), (".bashrc", False)])
+        self.typed(app, ":sendfile ~/nope/")
+        app.edit("key", "tab")
+        self.assertIn("No such folder", plain(app.render()))
+        if os.geteuid() != 0:
+            os.chmod(os.path.join(home, "locked"), 0)
+            try:
+                self.typed(app, ":sendfile ~/locked/")
+                app.edit("key", "tab")
+                self.assertIn("No access to this folder", plain(app.render()))
+            finally:
+                os.chmod(os.path.join(home, "locked"), 0o700)
+        self.typed(app, ":sendfile /")
+        app.edit("key", "tab")
+        app.edit("key", "left")
+        self.assertEqual(app.pane.draft, ":sendfile /")
+        # names with spaces need no quotes; a name ending in a space gets them
+        self.typed(app, ":sendf ~/my")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":sendf ~/my folder/file x.txt")
+        self.typed(app, ":sendfile ~/tra")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ':sendfile "~/trail "')
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "trail "))
+        # no match: tab keeps the list, enter runs the line as typed
+        self.typed(app, ":sendfile ~/zzz")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertIsNotNone(app.file_picker)
+        app.edit("key", "enter")
+        self.assertIsNone(app.file_picker)
+        self.assertIn("No readable file at ~/zzz", app.status)
+        self.typed(app, ":sendfile ~/")
+        app.edit("key", "tab")
+        for _ in range(10):
+            app.edit("key", "backspace")
+        self.assertEqual((app.pane.draft, app.file_picker), (":s", None))
+        self.typed(app, ":sendfile ~/")
+        app.edit("key", "tab")
+        app.edit("ctrl", "k")
+        self.assertIsNone(app.file_picker)
+        self.assertIsNotNone(app.picker)
+        app.edit("key", "esc")
+        self.typed(app, ":con")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":connect")
+        odd = os.path.join(os.fsencode(home), b"caf\xe9")
+        os.makedirs(os.path.join(odd, b"inner"))
+        cwd = os.getcwd()
+        os.chdir(odd)
+        try:
+            self.typed(app, ":sendfile ")
+            app.edit("key", "tab")
+            app.render().encode("utf-8")
+            self.typed(app, ":sendfile inner/")
+            app.edit("key", "tab")
+            app.edit("key", "left")
+            self.assertEqual(app.pane.draft, ":sendfile inner/")
+            app.render().encode("utf-8")
+        finally:
+            os.chdir(cwd)
+        for cols, rows in ((24, 8), (30, 12)):
+            app.size = (cols, rows)
+            self.typed(app, ":sendfile ~/")
+            app.edit("key", "tab")
+            frame = app.render()
+            self.assertTrue(all(cli.text_width(plain(row)) <= cols for _, row in re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)))
+            self.assertIn(" files › ", plain(frame))
+
     def test_friends_bar_marks_hidden_friends(self):
         friends = [{"id": str(k), "key": ("%02d" % k) * 32, "name": "friend%02d" % k} for k in range(15)]
         friends[0]["name"] = "n" * 60

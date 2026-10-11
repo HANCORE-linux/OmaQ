@@ -1,10 +1,11 @@
+import os
 import time
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from .commands import COMMANDS, KEYS, RECEIPTS
+from .commands import COMMANDS, KEYS, RECEIPTS, sendfile_path
 from .protocol import REDEEMED_DIRECT, REDEEMED_GROUP
-from .text import EMOJI, clean_line, emoji_catalog, emoji_name, text_width
+from .text import EMOJI, clean_line, emoji_catalog, emoji_name, home_path, human_size, text_width
 
 
 @dataclass(eq=False, slots=True)
@@ -133,6 +134,179 @@ class Picker:
                 segs.append((" %s " % items[k][0], "accent" if k == index else "text", "1;7" if k == index else ""))
             rows.append(p.row(segs, width))
         rows.append(p.row([(" " + (items[index][1] if items else "no emoji found"), "dim", "")], width))
+        return rows[:max(1, height)]
+
+
+def path_parts(typed):
+    typed = typed.lstrip()
+    if typed[:1] in ("'", '"'):
+        typed = typed[1:]
+    if typed == "~":
+        typed = "~/"
+    head, sep, name = typed.rpartition("/")
+    return head + sep, name
+
+
+def path_folder(head):
+    return os.path.abspath(os.path.expanduser(head or "."))
+
+
+def listable(name):
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return clean_line(name) == name
+
+
+def shown_folder(folder):
+    text = "~" if folder == os.path.expanduser("~") else home_path(folder)
+    return text if text.endswith("/") else text + "/"
+
+
+@dataclass(eq=False, slots=True)
+class FilePicker:
+    ROWS: ClassVar[int] = 8
+    LIMIT: ClassVar[int] = 10000
+    index: int = 0
+    listed: str = ""
+    entries: list = field(default_factory=list)
+    error: str = ""
+    full: bool = False
+
+    def scan(self, folder):
+        if folder == self.listed:
+            return
+        self.listed, self.entries, self.error, self.full = folder, [], "", False
+        try:
+            with os.scandir(folder) as found:
+                for entry in found:
+                    if not listable(entry.name):
+                        continue
+                    try:
+                        if entry.is_dir():
+                            self.entries.append((entry.name, True))
+                        elif entry.is_file():
+                            self.entries.append((entry.name, False))
+                    except OSError:
+                        continue
+                    if len(self.entries) >= self.LIMIT:
+                        self.full = True
+                        break
+        except (FileNotFoundError, NotADirectoryError):
+            self.error = "No such folder"
+        except PermissionError:
+            self.error = "No access to this folder"
+        except OSError:
+            self.error = "This folder cannot be read"
+        self.entries.sort(key=lambda entry: (not entry[1], entry[0].casefold(), entry[0]))
+
+    def items(self, typed):
+        head, name = path_parts(typed or "")
+        self.scan(path_folder(head))
+        want, hidden = name.casefold(), name.startswith(".")
+        return [entry for entry in self.entries
+                if (hidden or not entry[0].startswith(".")) and entry[0].casefold().startswith(want)]
+
+    def take(self, app, composer, path, stay):
+        verb = composer.draft[1:].split(" ", 1)[0]
+        if not stay and path != path.strip():
+            path = '"%s"' % path
+        composer.draft = ":%s %s" % (verb, path)
+        composer.cursor = len(composer.draft)
+        composer.hist, composer.hist_items, app.completion = None, None, None
+        self.index = 0
+        if not stay:
+            app.file_picker = None
+
+    def up(self, app, composer, typed):
+        head, name = path_parts(typed)
+        if name:
+            self.take(app, composer, head, True)
+            return
+        folder = path_folder(head)
+        parent = os.path.dirname(folder)
+        if parent == folder or not listable(shown_folder(parent)):
+            return
+        self.take(app, composer, shown_folder(parent), True)
+        came = os.path.basename(folder)
+        items = self.items(sendfile_path(composer.draft))
+        self.index = next((k for k, (entry, is_dir) in enumerate(items) if is_dir and entry == came), 0)
+
+    def handle(self, app, kind, value):
+        composer = app.pane or app.scratch
+        typed = sendfile_path(composer.draft)
+        if typed is None:
+            app.file_picker = None
+            return False
+        items = self.items(typed)
+        self.index = min(self.index, max(0, len(items) - 1))
+        if (kind == "key" and value == "esc") or (kind == "ctrl" and value == "c"):
+            app.file_picker = None
+        elif kind == "key" and value in ("up", "down"):
+            if items:
+                self.index = (self.index + (1 if value == "down" else -1)) % len(items)
+        elif kind == "key" and value in ("pgup", "pgdn"):
+            step = self.ROWS if value == "pgdn" else -self.ROWS
+            self.index = max(0, min(len(items) - 1, self.index + step))
+        elif kind == "key" and value in ("tab", "right", "enter"):
+            if items:
+                name, is_dir = items[self.index]
+                self.take(app, composer, path_parts(typed)[0] + name + ("/" if is_dir else ""), is_dir)
+            elif value == "enter":
+                app.file_picker = None
+                return False
+        elif kind == "key" and value in ("left", "backtab"):
+            self.up(app, composer, typed)
+        elif kind in ("text", "paste"):
+            composer.insert(value.replace("\r", "").replace("\n", ""))
+            self.index = 0
+        elif (kind == "key" and value in ("backspace", "delete", "home", "end")) or (kind == "ctrl" and value in ("a", "e", "u")):
+            composer.edit(kind, value)
+            self.index = 0
+            if sendfile_path(composer.draft) is None:
+                app.file_picker = None
+        else:
+            app.file_picker = None
+            return False
+        app.dirty = True
+        return True
+
+    def size(self, name):
+        try:
+            return human_size(os.stat(os.path.join(self.listed, name)).st_size)
+        except OSError:
+            return ""
+
+    def rows(self, screen, width, height):
+        p = screen.app.palette
+        composer = screen.app.pane or screen.app.scratch
+        items = self.items(sendfile_path(composer.draft) or "")
+        index = min(self.index, max(0, len(items) - 1))
+        self.index = index
+        room = max(1, min(self.ROWS, height - 2))
+        first = max(0, min(index - room + 1, len(items) - room))
+        shown = clean_line(shown_folder(self.listed).encode("utf-8", "replace").decode("utf-8"))
+        rows = [p.row([(" files › ", "accent", "1"), (shown, "text", ""),
+                       ("   ↑↓ choose · tab opens · ← back · esc closes", "dim", "")], width)]
+        for k in range(first, min(len(items), first + room)):
+            name, is_dir = items[k]
+            chosen = k == index
+            label = name + ("/" if is_dir else "")
+            segs = [(" ▸ " if chosen else "   ", "accent", "1"),
+                    (label, "text" if chosen or not is_dir else "name", "7" if chosen else "")]
+            size = "" if is_dir else self.size(name)
+            gap = width - 3 - text_width(label) - text_width(size) - 1
+            if size and gap >= 2:
+                segs += [(" " * gap, "dim", ""), (size, "dim", "")]
+            rows.append(p.row(segs, width))
+        if self.error:
+            note = self.error
+        elif not items:
+            note = "no matching folder or file" if self.entries else "empty folder"
+        else:
+            note = "%d of %d" % (index + 1, len(items)) + ("  ·  the first %d entries" % self.LIMIT if self.full else "")
+        rows.append(p.row([(" " + note, "dim", "")], width))
         return rows[:max(1, height)]
 
 

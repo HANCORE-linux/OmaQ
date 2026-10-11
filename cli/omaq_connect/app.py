@@ -16,9 +16,9 @@ from .chat import Chat
 from .files import FileTransfers
 from .invites import Invites
 from .profile import Profile
-from .commands import TIPS, Completion, parse_command, suggestions
+from .commands import TIPS, Completion, parse_command, sendfile_path, suggestions
 from .view import Screen
-from .modals import OVERLAYS, Confirmation, Help, InviteOverlay, Picker
+from .modals import OVERLAYS, Confirmation, FilePicker, Help, InviteOverlay, Picker
 from .palette import Palette, theme_stamp
 from .keys import LAYOUT_KEYS, Keys
 from .link import Link
@@ -151,6 +151,7 @@ class App:
                                self.close_overlays)
         self.overlay = None
         self.picker = None
+        self.file_picker = None
         self.addr = ""
         self.cell_base, self.zoom, self.zoom_until = 0, None, 0.0
         self.screen = Screen(self)
@@ -651,6 +652,8 @@ class App:
         if self.picker is not None:
             self.picker.handle(self, kind, value)
             return
+        if self.file_picker is not None and self.file_picker.handle(self, kind, value):
+            return
         if self.overlay is not None and self.overlay.handle(self, kind, value):
             return
         if kind == "ctrl" and value == "c":
@@ -720,6 +723,8 @@ class App:
             pane.scroll += max(1, self.size[1] // 2)
         elif kind == "key" and value == "pgdn":
             pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
+        elif kind == "key" and value == "tab" and sendfile_path(pane.draft) is not None:
+            self.file_picker = FilePicker()
         elif kind == "key" and value in ("tab", "backtab") and is_command(pane.draft):
             self.complete(pane, 1 if value == "tab" else -1)
             return
