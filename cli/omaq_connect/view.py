@@ -193,12 +193,14 @@ class Screen:
         body = height - 1
         if body > 0 and pane.conv:
             self.app.visible.add(pane.conv)
+        pinned = self.transfer_lines(pane.conv, width)[:max(0, body)] if pane.conv else []
+        room = body - len(pinned)
         lines = self.message_lines(pane.conv, width)
-        pane.scroll = min(pane.scroll, max(0, len(lines) - body))
+        pane.scroll = min(pane.scroll, max(0, len(lines) - room))
         end = len(lines) - pane.scroll
-        visible = lines[max(0, end - body):end] if body > 0 else []
-        rows.extend([" " * width] * (body - len(visible)))
-        rows.extend(self.app.palette.row(segs, width) for segs in visible)
+        visible = lines[max(0, end - room):end] if room > 0 else []
+        rows.extend([" " * width] * (room - len(visible)))
+        rows.extend(self.app.palette.row(segs, width) for segs in visible + pinned)
         return rows
 
     def render(self):
@@ -291,7 +293,7 @@ class Screen:
         if not c:
             return []
         if not c.loaded and not c.items:
-            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation, cols)
+            return [[("   loading…", "dim", "")]]
         f = self.app.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
@@ -341,7 +343,7 @@ class Screen:
                 lines.append(segs)
         if not c.items:
             lines.append([("   no messages yet", "dim", "")])
-        return lines + self.transfer_lines(conversation, cols)
+        return lines
 
     def transfer_line(self, cols, icon, text, name, tail=(), hint=""):
         tail = list(tail)
@@ -368,10 +370,10 @@ class Screen:
         if offer and offer.accepted and offer.done is not None:
             full, empty, percent = progress_bar(offer.done, offer.size)
             lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "Receiving %s  ", clean_line(offer.name),
-                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
+                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")], ":cancelfile")
         elif offer:
             hint = ("checking\u2026" if offer.unconfirmed else
-                    "receiving\u2026" if offer.accepted else ":acceptfile or :declinefile")
+                    "receiving\u2026  :cancelfile" if offer.accepted else ":acceptfile or :declinefile")
             lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "File offer: %s", clean_line(offer.name),
                                         [(" (%s)" % human_size(offer.size), "text", "")], hint)
         send = self.app.files.sends.get(conversation)

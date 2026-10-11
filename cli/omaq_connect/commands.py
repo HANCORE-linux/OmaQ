@@ -21,7 +21,7 @@ COMMANDS = [
     (":sendfile ", "Send a file to this chat; tab lists files", "<path>"),
     (":acceptfile", "Save the offered file in ~/Downloads/omaq", ""),
     (":declinefile", "Decline the offered file", ""),
-    (":cancelfile", "Cancel your file transfer in this chat", ""),
+    (":cancelfile", "Cancel the file transfer in this chat, sending or receiving", ""),
     (":clear", "Clear this chat on this computer (asks first)", ""),
     (":close", "Close this pane (also ctrl+w)", ""),
     (":quit", "Quit OmaQ (also :q)", ""),

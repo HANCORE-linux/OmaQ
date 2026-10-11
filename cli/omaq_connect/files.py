@@ -3,7 +3,7 @@ import secrets
 import time
 from dataclasses import dataclass
 
-from .protocol import FAILURES, FILE_ERRORS, TEXT_MAX, is_direct
+from .protocol import FAILURES, FILE_ERRORS, FILE_MAX, TEXT_MAX, is_direct
 from .session import bound, friend_of, key_for
 from .text import clean_line, home_path, human_size, utf8
 
@@ -182,6 +182,8 @@ class FileTransfers:
             self.say("Usage: :sendfile <path>")
         elif path is None or not os.path.isfile(path) or not os.access(path, os.R_OK):
             self.say("No readable file at %s" % clean_line(given))
+        elif self.size_of(path) > FILE_MAX:
+            self.say("Files can be at most 8 MiB")
         elif not utf8(path):
             self.say("Path is not valid UTF-8")
         elif len(path.encode("utf-8")) > TEXT_MAX:
@@ -220,10 +222,27 @@ class FileTransfers:
         else:
             self.failed()
 
+    @staticmethod
+    def size_of(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+
     def cancel(self, conversation):
         send = self.sends.get(conversation) if conversation else None
-        if not send:
-            self.say("No file is sending in this chat")
+        offer = self.offers.get(conversation) if conversation and not send else None
+        if offer and offer.key != self.key_for(conversation):
+            offer = None
+        if offer and not offer.accepted:
+            self.answer("declinefile", conversation)
+        elif offer:
+            if self.send({"op": "file.cancel", "conversation": conversation, "id": offer.id, "key": offer.key}):
+                self.say("Canceling…")
+            else:
+                self.failed()
+        elif not send:
+            self.say("No file transfer in this chat")
         elif not send.id:
             send.cancel = True
             self.say("Canceling…")

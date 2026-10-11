@@ -1086,6 +1086,89 @@ class PackageA(Sandbox):
         self.assertEqual([plain(app.palette.row(segs, 80)) for segs in app.screen.transfer_lines("0", 80)],
                          [" \u21e1 Sending notes.pdf  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591 70%  :cancelfile"])
 
+    def test_cancelfile_also_cancels_an_incoming_transfer(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 16)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        offer = lambda fid: app.on_event({"event": "file.offer", "conversation": "0", "key": A, "id": fid, "name": "big.zip",
+                                          "size": 4000})
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        self.assertEqual(app.status, "No file transfer in this chat")
+        offer("f1")
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        self.assertEqual((app.link.ops("file.cancel")[-1]["id"], app.status), ("f1", "Declined file: big.zip"))
+        self.assertNotIn("0", app.files.offers)
+        offer("f2")
+        app.edit("text", ":acceptfile")
+        app.edit("key", "enter")
+        self.assertIn("receiving\u2026  :cancelfile", plain(app.render()))
+        app.on_event({"event": "file.progress", "conversation": "0", "key": A, "id": "f2", "dir": "in", "done": 1000, "size": 4000})
+        frame = plain(app.render())
+        self.assertIn("Receiving big.zip", frame)
+        self.assertIn("25%  :cancelfile", frame)
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        op = app.link.ops("file.cancel")[-1]
+        self.assertEqual((op["id"], op["key"], app.status), ("f2", A, "Canceling\u2026"))
+        self.assertIn("0", app.files.offers)
+        app.on_event({"event": "file.canceled", "conversation": "0", "key": A, "id": "f2", "dir": "in"})
+        self.assertNotIn("0", app.files.offers)
+        self.assertIn("File transfer canceled: big.zip", plain(app.render()))
+        # with a send and an offer in one chat, the send goes first
+        home = os.environ["HOME"]
+        os.makedirs(home, exist_ok=True)
+        path = os.path.join(home, "notes.txt")
+        with open(path, "w") as f:
+            f.write("x")
+        app.edit("text", ":sendfile " + path)
+        app.edit("key", "enter")
+        rid = app.link.ops("file.send")[-1]["id"]
+        app.on_event({"event": "file.sending", "id": "s1", "conversation": "0", "key": A, "dir": "out", "request": rid})
+        offer("f3")
+        app.edit("text", ":cancelfile")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.cancel")[-1]["id"], "s1")
+
+    def test_transfer_line_stays_at_the_bottom_while_scrolling(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        c = self.loaded(app, "0", *["line %d" % k for k in range(40)])
+        app.size = (80, 14)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        app.files.sends["0"] = cli.OutgoingSend("r", "photo.jpg", A, "f1", False, 470, 1000)
+        rows = lambda: [plain(row) for _, row in re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", app.render())]
+        def where():
+            current = rows()
+            return [k for k, row in enumerate(current) if "Sending photo.jpg" in row], current
+        bottom, before = where()
+        self.assertEqual(len(bottom), 1)
+        app.edit("key", "pgup")
+        moved, after = where()
+        self.assertEqual(moved, bottom)
+        self.assertNotEqual(before, after)
+        self.assertGreater(app.pane.scroll, 0)
+        self.assertTrue(any("line 39" in row for row in before) and not any("line 39" in row for row in after))
+
+    def test_sendfile_refuses_files_over_the_helper_limit(self):
+        with open(os.path.join(ROOT, "helper", "file.h"), encoding="utf-8") as f:
+            limit = re.search(r"#define OMAQ_FILE_MAX \((\d+)u \* (\d+)u \* (\d+)u\)", f.read())
+        self.assertEqual(cli.FILE_MAX, int(limit.group(1)) * int(limit.group(2)) * int(limit.group(3)))
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        home = os.environ["HOME"]
+        os.makedirs(home, exist_ok=True)
+        for name, size in (("big.bin", cli.FILE_MAX + 1), ("fits.bin", cli.FILE_MAX)):
+            with open(os.path.join(home, name), "wb") as f:
+                f.truncate(size)
+        app.edit("text", ":sendfile ~/big.bin")
+        app.edit("key", "enter")
+        self.assertEqual((app.status, app.link.ops("file.send")), ("Files can be at most 8 MiB", []))
+        app.edit("text", ":sendfile ~/fits.bin")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "fits.bin"))
+
     def test_sendfile_picker_odd_names_and_broken_paths(self):
         home = self.sendfile_home()
         app = self.app([{"id": "0", "key": A, "name": "bob"}])
