@@ -118,7 +118,10 @@ class Screen:
         if c and c.typing_until:
             return "typing…", "status"
         f = self.app.friend(conversation)
-        return ("online" if f and f["online"] else "offline"), "status"
+        return ("online", "status") if f and f["online"] else ("offline", "offline")
+
+    def presence(self, f):
+        return "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
 
     def friends_bar(self, cols):
         shown = {pane.conv for pane in self.app.layout.panes()}
@@ -131,7 +134,7 @@ class Screen:
         used = sum(text_width(text) for text, _, _ in bar)
         hot = lambda f: bool(self.app.chat.unread.get(f["id"]) or f["id"] in self.app.files.offers) and f["id"] not in self.app.visible
         for k, f in enumerate(self.app.friends):
-            role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
+            role = self.presence(f)
             name = shorten(f["name"], NAME_MAX)
             group = [(" %s " % name, "unread", "1;7") if hot(f) else (name, "name", "1" if f["id"] in shown else ""),
                      (" ●", role, ""), ("   ", "dim", "")]
@@ -147,9 +150,10 @@ class Screen:
 
     def name_segs(self, conversation, text, extra):
         f = self.app.friend(conversation)
-        if self.app.conn == "online" and f and f["online"]:
-            return self.app.palette.gradient(text, extra)
-        return [(text, "name", extra)]
+        if self.app.conn != "online" or not f:
+            return [(text, "name", extra)]
+        role = self.presence(f)
+        return [(text, "name" if role == "offline" else "text", extra), (" ●", role, "")]
 
     def tab_label(self, pane):
         f = self.app.friend(pane.conv)
@@ -159,7 +163,8 @@ class Screen:
         if tabs:
             label, role = self.peer_status(pane.conv) if pane.conv else ("", "dim")
             room = width - text_width(label) - 3
-            names = [("[%s]" % self.tab_label(t)) if t is pane else self.tab_label(t) for t in tabs]
+            names = [(("[%s]" % self.tab_label(t)) if t is pane else self.tab_label(t))
+                     + "".join(text for text, _, _ in self.name_segs(t.conv, "", "")) for t in tabs]
             start = tabs.index(pane) if pane in tabs else 0
             if sum(text_width(n) + 2 for n in names) <= room:
                 start = 0
@@ -171,8 +176,8 @@ class Screen:
                     segs.append(("› ", "dim", ""))
                     break
                 bold = "1" if tabs[k] is pane else ""
-                name = self.name_segs(tabs[k].conv, self.tab_label(tabs[k]), bold)
-                segs.extend([("[", "name", bold)] + name + [("]  ", "name", bold)] if tabs[k] is pane else name + [("  ", "name", bold)])
+                name, *dot = self.name_segs(tabs[k].conv, self.tab_label(tabs[k]), bold)
+                segs.extend(([("[", name[1], bold), name, ("]", name[1], bold)] if tabs[k] is pane else [name]) + dot + [("  ", "dim", "")])
                 used += text_width(piece)
             segs.append((label, role, ""))
             return self.app.palette.row(segs, width)

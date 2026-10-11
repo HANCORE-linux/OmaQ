@@ -493,7 +493,7 @@ class App:
                 self.theme_misses = 0
             else:
                 palette = Palette()
-                if palette.ends is not None or self.theme_misses + 1 >= THEME_RETRIES:
+                if palette.loaded or self.theme_misses + 1 >= THEME_RETRIES:
                     self.theme_stamp, self.palette, self.theme_misses = stamp, palette, 0
                     self.dirty = True
                 else:

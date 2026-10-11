@@ -432,11 +432,11 @@ class PackageA(Sandbox):
         os.makedirs(path)
         with open(os.path.join(path, "colors.toml"), "w") as f:
             f.write('background = "#101010"\nforeground = "#f0f0f0"\nred = "#ff0000"\ngreen = "#00ff00"\n'
-                    'yellow = "#ffff00"\naccent = "#0000ff"\n')
+                    'yellow = "#ffff00"\naccent = "#8080ff"\n')
         roles = cli.Palette().roles
         self.assertEqual(roles["unread"], "38;2;255;0;0")
         self.assertEqual(roles["name"], "38;2;255;255;0")
-        self.assertEqual(roles["accent"], "38;2;0;0;255")
+        self.assertEqual(roles["accent"], "38;2;128;128;255")
 
     def theme(self, **colors):
         path = os.path.join(os.environ["HOME"], ".local/state/omarchy/current/theme")
@@ -444,31 +444,28 @@ class PackageA(Sandbox):
         with open(os.path.join(path, "colors.toml"), "w") as f:
             f.write("".join('%s = "%s"\n' % item for item in colors.items()))
 
-    def test_online_name_gradient_ends_follow_the_theme(self):
-        self.assertIsNone(cli.Palette().ends)
-        self.assertEqual(cli.Palette().gradient("bob", "1"), [("bob", "name", "1")])
-        base = dict(background="#101010", foreground="#f0f0f0", red="#ff5555", yellow="#e0af68", blue="#6080ff",
-                    magenta="#c070e0")
-        self.theme(accent="#7aa2f7", green="#9ece6a", cyan="#40c0c0", **base)
-        self.assertEqual(cli.Palette().ends, ((0x7A, 0xA2, 0xF7), (0x9E, 0xCE, 0x6A)))
-        # green as the accent: the next distinct, readable colour
-        self.theme(accent="#509475", green="#549e6a", cyan="#2dd5b7", **base)
-        self.assertEqual(cli.Palette().ends[1], (0x2D, 0xD5, 0xB7))
-        # cyan close to the offline name colour (yellow): the online name must not end in it
-        self.theme(accent="#82fb9c", background="#0b0c16", foreground="#ddf7ff", red="#50f872", green="#4fe88f",
-                   yellow="#50f7d4", blue="#829dd4", magenta="#86a7df", cyan="#7cf8f7")
-        self.assertEqual(cli.Palette().ends[1], (0x86, 0xA7, 0xDF))
-        # one grey for everything: a darker shade of the accent
-        grey = dict(accent="#d4d4d4", background="#000000", foreground="#d4d4d4", red="#d4d4d4", green="#d4d4d4",
-                    yellow="#d4d4d4", blue="#d4d4d4", magenta="#d4d4d4", cyan="#d4d4d4")
-        self.theme(**grey)
-        a, b = cli.Palette().ends
-        self.assertGreaterEqual(cli.distance(a, b), cli.GRADIENT_FROM_ACCENT)
-        self.assertGreaterEqual(cli.distance((0xD4, 0xD4, 0xD4), b), cli.GRADIENT_FROM_NAME)
-        self.assertGreaterEqual(cli.contrast(b, (0, 0, 0)), cli.GRADIENT_CONTRAST)
-        segs = cli.Palette().gradient("alexandra", "1")
-        self.assertEqual("".join(text for text, _, _ in segs), "alexandra")
-        self.assertEqual((segs[0][2], segs[-1][2]), ("38;2;%d;%d;%d;1" % a, "38;2;%d;%d;%d;1" % b))
+    def test_theme_colors_are_raised_to_wcag_contrast(self):
+        self.assertFalse(cli.Palette().loaded)
+        rgb = lambda code: tuple(int(x) for x in code.split(";")[2:5])
+        light = dict(background="#ffffff", color0="#e6e9ef", foreground="#4c4f69", red="#d20f39", green="#40a02b",
+                     yellow="#df8e1d", accent="#1e66f5")
+        self.theme(**light)
+        p = cli.Palette()
+        self.assertTrue(p.loaded)
+        for role, code in p.roles.items():
+            if role not in ("rule", "qr"):
+                self.assertGreaterEqual(cli.contrast(rgb(code), (255, 255, 255)), 4.5, role)
+        name = rgb(p.roles["name"])
+        self.assertTrue(all(c <= o for c, o in zip(name, (0xDF, 0x8E, 0x1D))), name)
+        dark = dict(background="#0c0b0c", foreground="#cfd3cd", red="#c38b7b", green="#87a9b0", yellow="#6b5e73",
+                    accent="#b59790")
+        self.theme(**dark)
+        p = cli.Palette()
+        name = rgb(p.roles["name"])
+        self.assertGreaterEqual(cli.contrast(name, (0x0C, 0x0B, 0x0C)), 4.5)
+        self.assertTrue(all(c >= o for c, o in zip(name, (0x6B, 0x5E, 0x73))), name)
+        self.assertEqual(p.roles["rule"], "38;2;%d;%d;%d" % cli.mix((0x0C, 0x0B, 0x0C), (0xCF, 0xD3, 0xCD), 0.22))
+        self.assertEqual(p.roles["text"], "38;2;207;211;205")
 
     def test_bad_theme_files_never_crash_and_a_failed_reload_is_retried(self):
         for value in ("-10000", "1_2345", "12345g", "+12345"):
@@ -503,41 +500,39 @@ class PackageA(Sandbox):
             app.tick(now + 60 + 2 * k)
         self.assertEqual(app.palette.roles["accent"], "34")
 
-    def test_gradient_keeps_off_the_offline_color_and_stops_at_the_edge(self):
-        self.theme(accent="#8d8d8d", background="#000000", foreground="#ffffff", red="#ffffff", green="#b6b6b6",
-                   yellow="#cecece", blue="#8d8d8d", magenta="#9b9b9b", cyan="#b0b0b0")
-        a, b = cli.Palette().ends
-        name = (0xCE, 0xCE, 0xCE)
-        self.assertGreaterEqual(cli.closest(a, b, name), min(cli.GRADIENT_PASS, cli.distance(a, name)))
-        self.assertGreaterEqual(cli.distance(b, name), cli.GRADIENT_FROM_NAME)
-        self.theme(accent="#7aa2f7", background="#101010", foreground="#f0f0f0", red="#ff5555", green="#9ece6a",
-                   yellow="#e0af68", cyan="#40c0c0")
+    def test_a_row_stops_at_the_first_segment_it_cuts(self):
         app = self.app([{"id": "0", "key": A, "name": "abcdefghijklmnopqrstu\u754cZ"}])
         header = re.sub(r"\x1b\[[0-9;]*m", "", app.header(app.pane, 24, True))
         self.assertEqual(header, "❯ abcdefghijklmnopqrstu ")
+        self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", app.palette.row([("ab\u754c", "text", ""), ("Z", "text", "")], 3)), "ab ")
 
-    def test_online_friend_name_is_a_gradient_in_the_chat_header(self):
-        self.theme(accent="#7aa2f7", background="#101010", foreground="#f0f0f0", red="#ff5555", green="#9ece6a",
-                   yellow="#e0af68", cyan="#40c0c0")
+    def test_presence_dot_and_name_color_in_the_chat_header(self):
+        self.theme(accent="#7aa2f7", background="#1a1b26", foreground="#c0caf5", red="#f7768e", green="#9ece6a",
+                   yellow="#e0af68", cyan="#7dcfff")
         friends = [{"id": "0", "key": A, "name": "alexandra"}, {"id": "1", "key": B, "name": "bob"}]
         app = self.app(friends)
+        roles = app.palette.roles
         plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
-        letters = lambda text: re.findall(r"\x1b\[0;39;38;2;(\d+;\d+;\d+)(?:;1)?m(.)", text)
+        painted = lambda text, role, extra="": "\x1b[0;%s%sm%s\x1b[0m" % (roles[role], ";" + extra if extra else "", text)
         header = app.header(app.pane, 60, True)
-        self.assertEqual(plain(header).rstrip(), "❯ alexandra  online")
-        self.assertEqual([ch for _, ch in letters(header)], list("alexandra"))
-        self.assertEqual((letters(header)[0][0], letters(header)[-1][0]), ("122;162;247", "158;206;106"))
+        self.assertEqual(plain(header).rstrip(), "❯ alexandra ●  online")
+        for piece in (painted("alexandra", "text", "1"), painted(" ●", "online"), painted("  online", "status")):
+            self.assertIn(piece, header)
+        app.apply_friends([dict(friends[0], online=True, status="afk"), dict(friends[1], online=True, status="online")])
+        self.assertIn(painted(" ●", "away"), app.header(app.pane, 60, True))
         app.apply_friends([dict(friends[0], online=False, status="offline"), dict(friends[1], online=True, status="online")])
-        self.assertEqual(letters(app.header(app.pane, 60, True)), [])
-        app.apply_friends([dict(f, online=True, status="online") for f in friends])
+        header = app.header(app.pane, 60, True)
+        self.assertEqual(plain(header).rstrip(), "❯ alexandra ●  offline")
+        for piece in (painted("alexandra", "name", "1"), painted(" ●", "offline"), painted("  offline", "offline")):
+            self.assertIn(piece, header)
         app.conn = "reconnecting"
-        self.assertEqual(letters(app.header(app.pane, 60, True)), [])
+        self.assertEqual(plain(app.header(app.pane, 60, True)).rstrip(), "❯ alexandra  reconnecting…")
         app.conn = "online"
-        app.apply_friends([dict(friends[0], online=False, status="offline"), dict(friends[1], online=True, status="online")])
         app.open_pane("1")
         strip = app.header(app.pane, 40, True, tabs=app.layout.panes())
-        self.assertEqual(plain(strip).split()[:2], ["alexandra", "[bob]"])
-        self.assertEqual("".join(ch for _, ch in letters(strip)), "bob")
+        self.assertEqual(plain(strip).split()[:4], ["alexandra", "●", "[bob]", "●"])
+        self.assertIn(painted("bob", "text", "1"), strip)
+        self.assertIn(painted("alexandra", "name"), strip)
 
     def test_command_hint_and_colon_suggestions(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
@@ -786,7 +781,7 @@ class PackageA(Sandbox):
         app.size = (80, 12)
         frame = app.render()
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
-        self.assertIn("❯ bob  online", text)
+        self.assertIn("❯ bob ●  online", text)
         self.assertNotIn("chat ›", text)
         self.assertIn("\x1b[0;%s;1;7m bob \x1b[0m" % app.palette.roles["accent"], frame)
         self.assertIn("\x1b[0;%s;1m ❯ \x1b[0m" % app.palette.roles["accent"], frame)
@@ -872,7 +867,7 @@ class PackageA(Sandbox):
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
         self.assertIn("\U0001F600", text)
         self.assertIn("grinning face", text)
-        self.assertIn("❯ bob  online", text)
+        self.assertIn("❯ bob ●  online", text)
         app.edit("key", "right")
         app.edit("key", "enter")
         self.assertEqual((app.pane.draft, app.picker), ("hi\U0001F642 ", None))

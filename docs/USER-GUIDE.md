@@ -213,9 +213,9 @@ omaq-connect alice     # opens alice
 
 <a href="images/guide/38-terminal-overview.png"><img src="images/guide/38-terminal-overview.png" alt="Terminal client with two chats side by side" width="100%"></a>
 
-The top line lists your friends: a green dot means online, gray away, and dim offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
+The top line lists your friends: a green dot means online, amber away, and gray offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
 
-The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. While that friend is online, their name in the header, and in the tab strip of a small window, runs in a gradient of your Omarchy theme's colors; offline it stays plain. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
+The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The header, and the tab strip of a small window, show the same dot: online, the name is bright with a green dot; offline, it keeps its theme color with a gray dot and a gray `offline`. Every color keeps at least a 4.5:1 contrast to your terminal's background. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
 
 ### Commands
 
