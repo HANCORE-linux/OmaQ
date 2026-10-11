@@ -19,7 +19,7 @@ from .profile import Profile
 from .commands import TIPS, Completion, parse_command, suggestions
 from .view import Screen
 from .modals import OVERLAYS, Confirmation, Help, InviteOverlay, Picker
-from .palette import Palette
+from .palette import Palette, theme_stamp
 from .keys import LAYOUT_KEYS, Keys
 from .link import Link
 from .helper_process import HelperProcess, default_state, omaq_paths, read_protocol
@@ -106,6 +106,7 @@ class App:
     def __init__(self, target):
         self.home, self.state = omaq_paths()
         self.target = target
+        self.theme_stamp, self.theme_check = theme_stamp(), 0.0
         self.palette = Palette()
         self.presence = Presence(self.state)
         self.helper = HelperProcess(self.presence, self.say)
@@ -483,6 +484,12 @@ class App:
         if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
         self.profile.tick(now)
+        if now >= self.theme_check:
+            self.theme_check = now + 1.0
+            stamp = theme_stamp()
+            if stamp is not None and stamp != self.theme_stamp:
+                self.theme_stamp, self.palette = stamp, Palette()
+                self.dirty = True
         if self.zoom_until and now >= self.zoom_until:
             self.zoom_until = 0.0
             self.dirty = True

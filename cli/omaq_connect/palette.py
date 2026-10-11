@@ -5,11 +5,20 @@ from .text import clip
 
 
 SEMANTIC = {"background": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "foreground": 7}
+THEME_COLORS = "~/.local/state/omarchy/current/theme/colors.toml"
+
+
+def theme_stamp():
+    try:
+        st = os.stat(os.path.expanduser(THEME_COLORS))
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_ino, st.st_size
 
 
 class Palette:
     def __init__(self):
-        path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+        path = os.path.expanduser(THEME_COLORS)
         self.roles = {"name": "33", "status": "32", "online": "32", "unread": "31", "accent": "34",
                       "dim": "2", "offline": "2", "rule": "2", "text": "39", "away": "37", "qr": "97;40"}
         try:

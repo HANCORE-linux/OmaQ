@@ -1200,6 +1200,41 @@ class PackageA(Sandbox):
         app.command(":nickname Morpheus")
         self.assertEqual(app.status, "Not connected")
 
+    def test_theme_change_repaints_with_the_new_colors(self):
+        theme = os.path.join(os.environ["HOME"], ".local", "state", "omarchy", "current", "theme")
+        os.makedirs(theme)
+        path = os.path.join(theme, "colors.toml")
+
+        def write(accent):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('foreground = "#c0caf5"\nbackground = "#1a1b26"\naccent = "%s"\n'
+                        'color1 = "#f7768e"\ncolor2 = "#9ece6a"\ncolor3 = "#e0af68"\n' % accent)
+
+        write("#7aa2f7")
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.assertEqual(app.palette.roles["accent"], "38;2;122;162;247")
+        write("#549e6a")
+        stat = os.stat(path)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+        app.dirty = False
+        app.tick(time.monotonic() + 2)
+        self.assertEqual((app.palette.roles["accent"], app.dirty), ("38;2;84;158;106", True))
+        palette = app.palette
+        app.tick(time.monotonic() + 4)
+        self.assertIs(app.palette, palette)
+        os.remove(path)
+        app.tick(time.monotonic() + 6)
+        self.assertIs(app.palette, palette)
+        write("#7aa2f7")
+        app.tick(time.monotonic() + 8)
+        self.assertEqual(app.palette.roles["accent"], "38;2;122;162;247")
+        write("#549e6a")
+        stat = os.stat(path)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+        app.tick(time.monotonic() + 10)
+        app.size = (80, 20)
+        self.assertIn("38;2;84;158;106", app.render())
+
     def test_every_table_handler_exists(self):
         app = self.app([])
         for handler in list(cli.EVENT_HANDLERS.values()) + list(cli.COMMAND_HANDLERS.values()):
