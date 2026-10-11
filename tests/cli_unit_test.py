@@ -432,11 +432,107 @@ class PackageA(Sandbox):
         os.makedirs(path)
         with open(os.path.join(path, "colors.toml"), "w") as f:
             f.write('background = "#101010"\nforeground = "#f0f0f0"\nred = "#ff0000"\ngreen = "#00ff00"\n'
-                    'yellow = "#ffff00"\naccent = "#0000ff"\n')
+                    'yellow = "#ffff00"\naccent = "#8080ff"\n')
         roles = cli.Palette().roles
         self.assertEqual(roles["unread"], "38;2;255;0;0")
         self.assertEqual(roles["name"], "38;2;255;255;0")
-        self.assertEqual(roles["accent"], "38;2;0;0;255")
+        self.assertEqual(roles["accent"], "38;2;128;128;255")
+
+    def theme(self, **colors):
+        path = os.path.join(os.environ["HOME"], ".local/state/omarchy/current/theme")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "colors.toml"), "w") as f:
+            f.write("".join('%s = "%s"\n' % item for item in colors.items()))
+
+    def test_theme_colors_are_raised_to_wcag_contrast(self):
+        self.assertFalse(cli.Palette().loaded)
+        rgb = lambda code: tuple(int(x) for x in code.split(";")[2:5])
+        light = dict(background="#ffffff", color0="#e6e9ef", foreground="#4c4f69", red="#d20f39", green="#40a02b",
+                     yellow="#df8e1d", accent="#1e66f5")
+        self.theme(**light)
+        p = cli.Palette()
+        self.assertTrue(p.loaded)
+        for role, code in p.roles.items():
+            if role not in ("rule", "qr"):
+                self.assertGreaterEqual(cli.contrast(rgb(code), (255, 255, 255)), 4.5, role)
+        name = rgb(p.roles["name"])
+        self.assertTrue(all(c <= o for c, o in zip(name, (0xDF, 0x8E, 0x1D))), name)
+        dark = dict(background="#0c0b0c", foreground="#cfd3cd", red="#c38b7b", green="#87a9b0", yellow="#6b5e73",
+                    accent="#b59790")
+        self.theme(**dark)
+        p = cli.Palette()
+        name = rgb(p.roles["name"])
+        self.assertGreaterEqual(cli.contrast(name, (0x0C, 0x0B, 0x0C)), 4.5)
+        self.assertTrue(all(c >= o for c, o in zip(name, (0x6B, 0x5E, 0x73))), name)
+        self.assertEqual(p.roles["rule"], "38;2;%d;%d;%d" % cli.mix((0x0C, 0x0B, 0x0C), (0xCF, 0xD3, 0xCD), 0.22))
+        self.assertEqual(p.roles["text"], "38;2;207;211;205")
+
+    def test_bad_theme_files_never_crash_and_a_failed_reload_is_retried(self):
+        for value in ("-10000", "1_2345", "12345g", "+12345"):
+            with self.assertRaises(ValueError):
+                cli.Palette.rgb(value)
+        base = dict(background="#101010", foreground="#f0f0f0", red="#ff5555", green="#9ece6a", yellow="#e0af68", cyan="#40c0c0")
+        self.theme(accent="#-10000", **base)
+        self.assertEqual(cli.Palette().roles["accent"], "34")
+        path = os.path.join(os.environ["HOME"], ".local/state/omarchy/current/theme/colors.toml")
+        with open(path, "wb") as f:
+            f.write(b'accent = "#7aa2f7"\nname = "caf\xe9"\n')
+        self.assertEqual(cli.Palette().roles["accent"], "34")
+        self.theme(accent="#7aa2f7", **base)
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        good = app.palette
+        now = time.monotonic()
+        self.theme(accent="#ff0000", **base)
+        os.chmod(path, 0)
+        try:
+            if os.geteuid() != 0:
+                for k in range(cli.THEME_RETRIES - 1):
+                    app.tick(now + 2 + 2 * k)
+                    self.assertIs(app.palette, good)
+                app.tick(now + 20)
+                self.assertEqual(app.palette.roles["accent"], "34")
+        finally:
+            os.chmod(path, 0o644)
+        app.tick(now + 40)
+        self.assertEqual(app.palette.roles["accent"], "38;2;255;0;0")
+        os.remove(path)
+        for k in range(cli.THEME_RETRIES):
+            app.tick(now + 60 + 2 * k)
+        self.assertEqual(app.palette.roles["accent"], "34")
+
+    def test_a_row_stops_at_the_first_segment_it_cuts(self):
+        app = self.app([{"id": "0", "key": A, "name": "abcdefghijklmnopqrstu\u754cZ"}])
+        header = re.sub(r"\x1b\[[0-9;]*m", "", app.header(app.pane, 24, True))
+        self.assertEqual(header, "❯ abcdefghijklmnopqrstu ")
+        self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", app.palette.row([("ab\u754c", "text", ""), ("Z", "text", "")], 3)), "ab ")
+
+    def test_presence_dot_and_name_color_in_the_chat_header(self):
+        self.theme(accent="#7aa2f7", background="#1a1b26", foreground="#c0caf5", red="#f7768e", green="#9ece6a",
+                   yellow="#e0af68", cyan="#7dcfff")
+        friends = [{"id": "0", "key": A, "name": "alexandra"}, {"id": "1", "key": B, "name": "bob"}]
+        app = self.app(friends)
+        roles = app.palette.roles
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text)
+        painted = lambda text, role, extra="": "\x1b[0;%s%sm%s\x1b[0m" % (roles[role], ";" + extra if extra else "", text)
+        header = app.header(app.pane, 60, True)
+        self.assertEqual(plain(header).rstrip(), "❯ alexandra ●  online")
+        for piece in (painted("alexandra", "text", "1"), painted(" ●", "online"), painted("  online", "status")):
+            self.assertIn(piece, header)
+        app.apply_friends([dict(friends[0], online=True, status="afk"), dict(friends[1], online=True, status="online")])
+        self.assertIn(painted(" ●", "away"), app.header(app.pane, 60, True))
+        app.apply_friends([dict(friends[0], online=False, status="offline"), dict(friends[1], online=True, status="online")])
+        header = app.header(app.pane, 60, True)
+        self.assertEqual(plain(header).rstrip(), "❯ alexandra ●  offline")
+        for piece in (painted("alexandra", "name", "1"), painted(" ●", "offline"), painted("  offline", "offline")):
+            self.assertIn(piece, header)
+        app.conn = "reconnecting"
+        self.assertEqual(plain(app.header(app.pane, 60, True)).rstrip(), "❯ alexandra  reconnecting…")
+        app.conn = "online"
+        app.open_pane("1")
+        strip = app.header(app.pane, 40, True, tabs=app.layout.panes())
+        self.assertEqual(plain(strip).split()[:4], ["alexandra", "●", "[bob]", "●"])
+        self.assertIn(painted("bob", "text", "1"), strip)
+        self.assertIn(painted("alexandra", "name"), strip)
 
     def test_command_hint_and_colon_suggestions(self):
         app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
@@ -685,7 +781,7 @@ class PackageA(Sandbox):
         app.size = (80, 12)
         frame = app.render()
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
-        self.assertIn("❯ bob  online", text)
+        self.assertIn("❯ bob ●  online", text)
         self.assertNotIn("chat ›", text)
         self.assertIn("\x1b[0;%s;1;7m bob \x1b[0m" % app.palette.roles["accent"], frame)
         self.assertIn("\x1b[0;%s;1m ❯ \x1b[0m" % app.palette.roles["accent"], frame)
@@ -771,7 +867,7 @@ class PackageA(Sandbox):
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame)
         self.assertIn("\U0001F600", text)
         self.assertIn("grinning face", text)
-        self.assertIn("❯ bob  online", text)
+        self.assertIn("❯ bob ●  online", text)
         app.edit("key", "right")
         app.edit("key", "enter")
         self.assertEqual((app.pane.draft, app.picker), ("hi\U0001F642 ", None))
@@ -900,6 +996,285 @@ class PackageA(Sandbox):
         for query, emoji in (("star", "\u2b50"), ("watch", "\u231a"), ("vs", "\U0001F19A")):
             app.picker = cli.Picker(query)
             self.assertIn(emoji, [item[0] for item in app.picker_items()])
+
+    def sendfile_home(self):
+        home = os.environ["HOME"]
+        for folder in ("Pictures/Screenshots", "Documents", ".config", "locked", "my folder"):
+            os.makedirs(os.path.join(home, folder))
+        for name, size in (("Pictures/night.jpg", 3148331), ("Pictures/bad\x1bname.jpg", 1), ("notes.txt", 120),
+                           (".bashrc", 1), ("my folder/file x.txt", 1), ("trail ", 1)):
+            with open(os.path.join(home, name), "wb") as f:
+                f.write(b"x" * size)
+        with open(os.path.join(os.fsencode(home), b"Pictures/caf\xe9.jpg"), "wb") as f:
+            f.write(b"x")
+        return home
+
+    def typed(self, app, text):
+        app.file_picker, app.pane.draft, app.pane.cursor = None, "", 0
+        app.edit("text", text)
+
+    def test_sendfile_tab_lists_folders_and_files_and_sends_the_pick(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 20)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        self.typed(app, ":sendfile ~/")
+        self.assertEqual(plain(app.command_hint(80)).strip(), "tab lists folders and files")
+        app.edit("key", "tab")
+        self.assertEqual(app.file_picker.items("~/"), [("Documents", True), ("locked", True), ("my folder", True),
+                                                       ("Pictures", True), ("notes.txt", False), ("trail ", False)])
+        frame = app.render()
+        rows = [plain(row) for _, row in re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)]
+        head = next(k for k, row in enumerate(rows) if row.startswith(" files › ~/ "))
+        self.assertEqual(rows[head + 1].rstrip(), " ▸ Documents/")
+        self.assertTrue(rows[head + 5].startswith("   notes.txt ") and rows[head + 5].rstrip().endswith("120 B"))
+        self.assertEqual(rows[head + 7].strip(), "1 of 6")
+        self.assertTrue(all(cli.text_width(row) <= 80 for row in rows))
+        # the cursor stays in the input line, where the path is typed
+        line = next(k for k, row in enumerate(rows) if "❯ :sendfile ~/" in row)
+        self.assertEqual(int(re.findall(r"\x1b\[(\d+);\d+H\x1b\[\?25h", frame)[-1]), line + 1)
+        app.edit("text", "pic")
+        self.assertEqual(app.file_picker.items("~/pic"), [("Pictures", True)])
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":sendfile ~/Pictures/")
+        self.assertEqual(app.file_picker.items("~/Pictures/"), [("Screenshots", True), ("night.jpg", False)])
+        self.assertIn("3.1 MB", plain(app.render()))
+        app.render().encode("utf-8")
+        app.edit("key", "left")
+        self.assertEqual(app.pane.draft, ":sendfile ~/")
+        self.assertEqual(app.file_picker.items("~/")[app.file_picker.index], ("Pictures", True))
+        app.edit("key", "right")
+        app.edit("key", "down")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.draft, app.file_picker), (":sendfile ~/Pictures/night.jpg", None))
+        self.assertEqual(app.link.ops("file.send"), [])
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "Pictures/night.jpg"))
+
+    def test_transfer_lines_wrap_instead_of_cutting_the_command(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        plain = lambda text: re.sub(r"\x1b\[[0-9;]*m", "", text).rstrip()
+        kinds = {
+            "send": (lambda: app.files.sends.__setitem__("0", cli.OutgoingSend("r", "dotonbori-night.jpg", A, "f1", False,
+                                                                                    1500000, 3148331)),
+                     [":cancelfile", "47%"]),
+            "send-start": (lambda: app.files.sends.__setitem__("0", cli.OutgoingSend("r", "dotonbori-night.jpg", A)), [":cancelfile"]),
+            "offer": (lambda: app.files.offers.__setitem__("0", cli.FileOffer("f2", "holiday-photos.zip", 52000000, A)),
+                      [":acceptfile", ":declinefile", "(52.0 MB)"]),
+            "receive": (lambda: app.files.offers.__setitem__("0", cli.FileOffer("f2", "holiday-photos.zip", 52000000, A, True,
+                                                                                 False, 26000000)), ["50%"]),
+            "canceled": (lambda: app.files.notices.__setitem__("0", (A, "report.pdf")), ["report.pdf", "esc hides"]),
+        }
+        for kind, (setup, words) in kinds.items():
+            app.files.sends.clear()
+            app.files.offers.clear()
+            app.files.notices.clear()
+            setup()
+            for cols in (24, 30, 40, 64, 100):
+                lines = app.screen.transfer_lines("0", cols)
+                self.assertTrue(all(sum(cli.text_width(text) for text, _, _ in segs) <= cols for segs in lines), (kind, cols, lines))
+                rows = [plain(app.palette.row(segs, cols)) for segs in lines]
+                text = " ".join(" ".join(row.split()) for row in rows)
+                for word in words:
+                    self.assertIn(word, text, (kind, cols, rows))
+        app.files.sends.clear()
+        app.files.offers.clear()
+        app.files.notices.clear()
+        app.files.sends["0"] = cli.OutgoingSend("r", "notes.pdf", A, "f1", False, 700, 1000)
+        self.assertEqual([plain(app.palette.row(segs, 80)) for segs in app.screen.transfer_lines("0", 80)],
+                         [" \u21e1 Sending notes.pdf  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591 70%  :cancelfile"])
+
+    def test_sendfile_picker_odd_names_and_broken_paths(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 20)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        cwd = os.getcwd()
+        os.chdir(home)
+        try:
+            for name in ("'secret'", "secret", "~tilde"):
+                with open(os.path.join(home, name), "w") as f:
+                    f.write(name)
+            os.makedirs(os.path.join(home, " lead", "deep"))
+            for name, path in (("'secret'", "./'secret'"), ("~tilde", "./~tilde")):
+                self.typed(app, ":sendfile ")
+                app.edit("key", "tab")
+                app.file_picker.index = [n for n, _ in app.file_picker.items("")].index(name)
+                app.edit("key", "enter")
+                self.assertEqual(app.pane.draft, ":sendfile " + path)
+                app.edit("key", "enter")
+                self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, name))
+                app.files.sends.clear()
+            self.typed(app, ":sendfile ")
+            app.edit("key", "tab")
+            app.file_picker.index = [n for n, _ in app.file_picker.items("")].index(" lead")
+            app.edit("key", "tab")
+            self.assertEqual(app.file_picker.items(cli.sendfile_path(app.pane.draft)), [("deep", True)])
+            self.typed(app, ':sendfile "~/my folder/file x.txt"')
+            app.edit("key", "tab")
+            self.assertEqual(app.file_picker.items(cli.sendfile_path(app.pane.draft)), [("file x.txt", False)])
+            self.typed(app, ":sendfile ~/")
+            app.edit("key", "tab")
+            app.edit("key", "home")
+            app.edit("text", "x")
+            self.assertEqual((app.pane.draft, app.file_picker), ("x:sendfile ~/", None))
+            # a NUL byte, a deleted working directory and a working directory that is not UTF-8 never crash
+            self.typed(app, ":sendfile ")
+            app.edit("paste", "/a\x00b/")
+            app.edit("key", "tab")
+            self.assertIn("This folder cannot be read", plain(app.render()))
+            app.edit("paste", "c\x00d")
+            self.assertTrue(app.pane.draft.endswith("/a\x00b/cd"))
+            gone = os.path.join(home, "gone")
+            os.makedirs(gone)
+            os.chdir(gone)
+            os.rmdir(gone)
+            self.typed(app, ":sendfile ")
+            app.edit("key", "tab")
+            self.assertIn("No such folder", plain(app.render()))
+            app.edit("key", "esc")
+            self.typed(app, ":sendfile rel.txt")
+            app.edit("key", "enter")
+            self.assertEqual(app.status, "No readable file at rel.txt")
+            odd = os.path.join(os.fsencode(home), b"caf\xe9")
+            os.makedirs(odd)
+            with open(os.path.join(odd, b"ok.txt"), "w") as f:
+                f.write("x")
+            os.chdir(odd)
+            self.typed(app, ":sendfile ok.txt")
+            app.edit("key", "enter")
+            self.assertEqual(app.status, "Path is not valid UTF-8")
+        finally:
+            os.chdir(cwd)
+
+    def test_sendfile_picker_never_takes_what_is_not_shown(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        app.size = (80, 7)
+        self.typed(app, ":sendfile ~/Pictures/")
+        app.edit("key", "tab")
+        self.assertNotIn("night.jpg", plain(app.render()))
+        self.assertEqual(plain(app.command_hint(80)).strip(), "enter sends the line as typed")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.draft, app.link.ops("file.send")), ("", []))
+        app.size = (80, 20)
+        app.overlay = cli.InviteOverlay("omaq://invite/x", ["x"])
+        self.typed(app, ":sendfile ~/")
+        app.edit("key", "tab")
+        app.edit("ctrl", "k")
+        self.assertEqual((app.file_picker, app.picker), (None, None))
+        app.overlay = None
+        app.edit("key", "tab")
+        self.assertIsNotNone(app.file_picker)
+        app.overlay = cli.InviteOverlay("omaq://invite/x", ["x"])
+        app.edit("key", "esc")
+        self.assertEqual((app.file_picker, app.overlay), (None, None))
+        app.size = (80, 20)
+        self.typed(app, ":sendfile ~/zzz")
+        app.edit("key", "tab")
+        self.assertEqual(plain(app.command_hint(80)).strip(), "no match · enter sends the line as typed")
+        many = os.path.join(home, "many")
+        os.makedirs(many)
+        for k in range(30):
+            open(os.path.join(many, "bad\x01%02d" % k), "w").close()
+        picker, limit = cli.FilePicker(), cli.FilePicker.LIMIT
+        cli.FilePicker.LIMIT = 10
+        try:
+            picker.scan(many)
+        finally:
+            cli.FilePicker.LIMIT = limit
+        self.assertTrue(picker.full)
+        self.assertEqual(picker.entries, [])
+
+    def test_sendfile_picker_edges(self):
+        home = self.sendfile_home()
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        self.loaded(app, "0")
+        app.size = (80, 20)
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        self.typed(app, ":sendfile ~/Pictures/")
+        app.edit("key", "tab")
+        app.edit("key", "esc")
+        self.assertEqual((app.file_picker, app.pane.draft), (None, ":sendfile ~/Pictures/"))
+        self.typed(app, ":sendfile ~/.")
+        app.edit("key", "tab")
+        self.assertEqual(app.file_picker.items("~/."), [(".config", True), (".bashrc", False)])
+        self.typed(app, ":sendfile ~/nope/")
+        app.edit("key", "tab")
+        self.assertIn("No such folder", plain(app.render()))
+        if os.geteuid() != 0:
+            os.chmod(os.path.join(home, "locked"), 0)
+            try:
+                self.typed(app, ":sendfile ~/locked/")
+                app.edit("key", "tab")
+                self.assertIn("No access to this folder", plain(app.render()))
+            finally:
+                os.chmod(os.path.join(home, "locked"), 0o700)
+        self.typed(app, ":sendfile /")
+        app.edit("key", "tab")
+        app.edit("key", "left")
+        self.assertEqual(app.pane.draft, ":sendfile /")
+        # names with spaces need no quotes; a name ending in a space gets them
+        self.typed(app, ":sendf ~/my")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":sendf ~/my folder/file x.txt")
+        self.typed(app, ":sendfile ~/tra")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ':sendfile "~/trail "')
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("file.send")[-1]["path"], os.path.join(home, "trail "))
+        # no match: tab keeps the list, enter runs the line as typed
+        self.typed(app, ":sendfile ~/zzz")
+        app.edit("key", "tab")
+        app.edit("key", "tab")
+        self.assertIsNotNone(app.file_picker)
+        app.edit("key", "enter")
+        self.assertIsNone(app.file_picker)
+        self.assertIn("No readable file at ~/zzz", app.status)
+        self.typed(app, ":sendfile ~/")
+        app.edit("key", "tab")
+        for _ in range(10):
+            app.edit("key", "backspace")
+        self.assertEqual((app.pane.draft, app.file_picker), (":s", None))
+        self.typed(app, ":sendfile ~/")
+        app.edit("key", "tab")
+        app.edit("ctrl", "k")
+        self.assertIsNone(app.file_picker)
+        self.assertIsNotNone(app.picker)
+        app.edit("key", "esc")
+        self.typed(app, ":con")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":connect")
+        odd = os.path.join(os.fsencode(home), b"caf\xe9")
+        os.makedirs(os.path.join(odd, b"inner"))
+        cwd = os.getcwd()
+        os.chdir(odd)
+        try:
+            self.typed(app, ":sendfile ")
+            app.edit("key", "tab")
+            app.render().encode("utf-8")
+            self.typed(app, ":sendfile inner/")
+            app.edit("key", "tab")
+            app.edit("key", "left")
+            self.assertEqual(app.pane.draft, ":sendfile inner/")
+            app.render().encode("utf-8")
+        finally:
+            os.chdir(cwd)
+        for cols, rows in ((24, 8), (30, 12)):
+            app.size = (cols, rows)
+            self.typed(app, ":sendfile ~/")
+            app.edit("key", "tab")
+            frame = app.render()
+            self.assertTrue(all(cli.text_width(plain(row)) <= cols for _, row in re.findall(r"\x1b\[(\d+);1H(.*?)\x1b\[K", frame)))
+            self.assertIn(" files › ", plain(frame))
 
     def test_friends_bar_marks_hidden_friends(self):
         friends = [{"id": str(k), "key": ("%02d" % k) * 32, "name": "friend%02d" % k} for k in range(15)]
@@ -1199,6 +1574,41 @@ class PackageA(Sandbox):
         self.assertIn("Nickname result unknown; try again", app.status)
         app.command(":nickname Morpheus")
         self.assertEqual(app.status, "Not connected")
+
+    def test_theme_change_repaints_with_the_new_colors(self):
+        theme = os.path.join(os.environ["HOME"], ".local", "state", "omarchy", "current", "theme")
+        os.makedirs(theme)
+        path = os.path.join(theme, "colors.toml")
+
+        def write(accent):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('foreground = "#c0caf5"\nbackground = "#1a1b26"\naccent = "%s"\n'
+                        'color1 = "#f7768e"\ncolor2 = "#9ece6a"\ncolor3 = "#e0af68"\n' % accent)
+
+        write("#7aa2f7")
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.assertEqual(app.palette.roles["accent"], "38;2;122;162;247")
+        write("#549e6a")
+        stat = os.stat(path)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+        app.dirty = False
+        app.tick(time.monotonic() + 2)
+        self.assertEqual((app.palette.roles["accent"], app.dirty), ("38;2;84;158;106", True))
+        palette = app.palette
+        app.tick(time.monotonic() + 4)
+        self.assertIs(app.palette, palette)
+        os.remove(path)
+        app.tick(time.monotonic() + 6)
+        self.assertIs(app.palette, palette)
+        write("#7aa2f7")
+        app.tick(time.monotonic() + 8)
+        self.assertEqual(app.palette.roles["accent"], "38;2;122;162;247")
+        write("#549e6a")
+        stat = os.stat(path)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10 ** 9))
+        app.tick(time.monotonic() + 10)
+        app.size = (80, 20)
+        self.assertIn("38;2;84;158;106", app.render())
 
     def test_every_table_handler_exists(self):
         app = self.app([])

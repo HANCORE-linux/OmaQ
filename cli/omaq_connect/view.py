@@ -1,6 +1,6 @@
 import time
 
-from .commands import HINT, RECEIPTS, TIPS, suggestions
+from .commands import HINT, RECEIPTS, TIPS, sendfile_path, suggestions
 from .protocol import FAILURES
 from .text import (cells, clean, clean_line, clip, clock, day_label, human_size, is_command, progress_bar, shorten,
                    text_width, wrap)
@@ -8,6 +8,7 @@ from .text import (cells, clean, clean_line, clip, clock, day_label, human_size,
 
 NARROW_BODY = 12
 NAME_MAX = 18
+TRANSFER_NAME_MIN = 8
 
 
 class Screen:
@@ -86,7 +87,18 @@ class Screen:
             kind, _, items = suggestions(pane.draft, [f["name"] for f in self.app.friends])
             chosen = 0
         if not items:
-            text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
+            typed = sendfile_path(pane.draft)
+            if typed is not None:
+                if self.app.file_picker is None:
+                    text = " tab lists folders and files"
+                elif self.app.file_picker.room == 0:
+                    text = " enter sends the line as typed"
+                elif not self.app.file_picker.items(typed):
+                    text = " no match · enter sends the line as typed"
+                else:
+                    text = " enter opens or takes · enter again sends"
+            else:
+                text = " no matching friend" if kind == "name" else (" no matching command" if kind == "verb" else HINT)
             return p.paint(clip(text, cols)[0], "dim")
         segs = [(" ", "dim", "")]
         for k, item in enumerate(items):
@@ -106,7 +118,10 @@ class Screen:
         if c and c.typing_until:
             return "typing…", "status"
         f = self.app.friend(conversation)
-        return ("online" if f and f["online"] else "offline"), "status"
+        return ("online", "status") if f and f["online"] else ("offline", "offline")
+
+    def presence(self, f):
+        return "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
 
     def friends_bar(self, cols):
         shown = {pane.conv for pane in self.app.layout.panes()}
@@ -119,7 +134,7 @@ class Screen:
         used = sum(text_width(text) for text, _, _ in bar)
         hot = lambda f: bool(self.app.chat.unread.get(f["id"]) or f["id"] in self.app.files.offers) and f["id"] not in self.app.visible
         for k, f in enumerate(self.app.friends):
-            role = "online" if f["online"] and f["status"] != "afk" else ("away" if f["online"] else "offline")
+            role = self.presence(f)
             name = shorten(f["name"], NAME_MAX)
             group = [(" %s " % name, "unread", "1;7") if hot(f) else (name, "name", "1" if f["id"] in shown else ""),
                      (" ●", role, ""), ("   ", "dim", "")]
@@ -133,6 +148,13 @@ class Screen:
             used += width
         return self.app.palette.row(bar, cols)
 
+    def name_segs(self, conversation, text, extra):
+        f = self.app.friend(conversation)
+        if self.app.conn != "online" or not f:
+            return [(text, "name", extra)]
+        role = self.presence(f)
+        return [(text, "name" if role == "offline" else "text", extra), (" ●", role, "")]
+
     def tab_label(self, pane):
         f = self.app.friend(pane.conv)
         return f["name"] if f else (pane.conv or "·")
@@ -141,7 +163,8 @@ class Screen:
         if tabs:
             label, role = self.peer_status(pane.conv) if pane.conv else ("", "dim")
             room = width - text_width(label) - 3
-            names = [("[%s]" % self.tab_label(t)) if t is pane else self.tab_label(t) for t in tabs]
+            names = [(("[%s]" % self.tab_label(t)) if t is pane else self.tab_label(t))
+                     + "".join(text for text, _, _ in self.name_segs(t.conv, "", "")) for t in tabs]
             start = tabs.index(pane) if pane in tabs else 0
             if sum(text_width(n) + 2 for n in names) <= room:
                 start = 0
@@ -152,14 +175,17 @@ class Screen:
                 if used + text_width(piece) > room and k != start:
                     segs.append(("› ", "dim", ""))
                     break
-                segs.append((piece, "name", "1" if tabs[k] is pane else ""))
+                bold = "1" if tabs[k] is pane else ""
+                name, *dot = self.name_segs(tabs[k].conv, self.tab_label(tabs[k]), bold)
+                segs.extend(([("[", name[1], bold), name, ("]", name[1], bold)] if tabs[k] is pane else [name]) + dot + [("  ", "dim", "")])
                 used += text_width(piece)
             segs.append((label, role, ""))
             return self.app.palette.row(segs, width)
         f = self.app.friend(pane.conv)
         label, role = self.peer_status(pane.conv) if pane.conv else ("", "dim")
-        segs = [("❯ " if focused else "  ", "accent", "1"),
-                (f["name"] if f else (pane.conv or "no chat"), "name", "1" if focused else ""), ("  " + label, role, "")]
+        segs = ([("❯ " if focused else "  ", "accent", "1")]
+                + self.name_segs(pane.conv, f["name"] if f else (pane.conv or "no chat"), "1" if focused else "")
+                + [("  " + label, role, "")])
         return self.app.palette.row(segs, width)
 
     def pane_rows(self, pane, width, height, focused, tabs=None):
@@ -181,9 +207,12 @@ class Screen:
         out = ["", p.paint("─" * cols, "rule")]
         area = max(1, rows - 5)
         drawer = []
-        if self.app.picker is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
-            drawer = self.app.picker.rows(self, cols, area - 1)
+        modal = self.app.picker if self.app.picker is not None else self.app.file_picker
+        if modal is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
+            drawer = modal.rows(self, cols, area - 1)
             area -= len(drawer)
+        if self.app.file_picker is not None and (modal is not self.app.file_picker or not drawer):
+            self.app.file_picker.room = 0
         self.app.visible = set()
         if self.app.locked:
             out.append(p.row([(" Identity is locked", "unread", "")], cols))
@@ -252,7 +281,7 @@ class Screen:
         for i, line in enumerate(out[:rows]):
             frame.append("\x1b[%d;1H%s\x1b[0m\x1b[K" % (i + 1, line))
         cursor_row = max(1, min(rows, len(out)) - 1)
-        if drawer:
+        if drawer and self.app.picker is not None:
             cursor_row, cursor_col = drawer_row, text_width(" emoji › " + self.app.picker.query) + 1
         frame.append("\x1b[%d;%dH\x1b[?25h\x1b[?2026l" % (cursor_row, max(1, cursor_col)))
         return "".join(frame)
@@ -262,7 +291,7 @@ class Screen:
         if not c:
             return []
         if not c.loaded and not c.items:
-            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation)
+            return [[("   loading…", "dim", "")]] + self.transfer_lines(conversation, cols)
         f = self.app.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
@@ -312,32 +341,48 @@ class Screen:
                 lines.append(segs)
         if not c.items:
             lines.append([("   no messages yet", "dim", "")])
-        return lines + self.transfer_lines(conversation)
+        return lines + self.transfer_lines(conversation, cols)
 
-    def transfer_lines(self, conversation):
+    def transfer_line(self, cols, icon, text, name, tail=(), hint=""):
+        tail = list(tail)
+        head = lambda shown: [icon, (text % shown, "text", "")]
+        fixed, tail_w = text_width(icon[0]) + text_width(text % ""), sum(text_width(t) for t, _, _ in tail)
+        if fixed + text_width(name) + tail_w + (2 + text_width(hint) if hint else 0) <= cols:
+            return [head(name) + tail + ([("  " + hint, "dim", "")] if hint else [])]
+        if fixed + tail_w + TRANSFER_NAME_MIN <= cols:
+            lines = [head(shorten(name, cols - fixed - tail_w)) + tail]
+        else:
+            if fixed + TRANSFER_NAME_MIN <= cols:
+                lines = [head(shorten(name, cols - fixed))]
+            else:
+                label = wrap((text % "").strip(), max(1, cols - text_width(icon[0])))
+                lines = [[icon, (label[0], "text", "")]] + [[("   ", "dim", ""), (part, "text", "")] for part in label[1:]]
+                lines.append([("   ", "dim", ""), (shorten(name, max(1, cols - 3)), "text", "")])
+            if tail:
+                lines.append([("   ", "dim", ""), (tail[0][0].lstrip(), tail[0][1], tail[0][2])] + tail[1:])
+        return lines + [[("   " + part, "dim", "")] for part in (wrap(hint, max(1, cols - 3)) if hint else [])]
+
+    def transfer_lines(self, conversation, cols):
         lines = []
         offer = self.app.files.offers.get(conversation)
         if offer and offer.accepted and offer.done is not None:
             full, empty, percent = progress_bar(offer.done, offer.size)
-            lines.append([(" \u21e3 ", "accent", "1"), ("Receiving %s  " % clean_line(offer.name), "text", ""),
-                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "Receiving %s  ", clean_line(offer.name),
+                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")])
         elif offer:
-            hint = ("  checking\u2026" if offer.unconfirmed else
-                    "  receiving\u2026" if offer.accepted else "  :acceptfile or :declinefile")
-            lines.append([(" \u21e3 ", "accent", "1"),
-                          ("File offer: %s (%s)" % (clean_line(offer.name), human_size(offer.size)), "text", ""),
-                          (hint, "dim", "")])
+            hint = ("checking\u2026" if offer.unconfirmed else
+                    "receiving\u2026" if offer.accepted else ":acceptfile or :declinefile")
+            lines += self.transfer_line(cols, (" \u21e3 ", "accent", "1"), "File offer: %s", clean_line(offer.name),
+                                        [(" (%s)" % human_size(offer.size), "text", "")], hint)
         send = self.app.files.sends.get(conversation)
         if send and send.done is not None:
             full, empty, percent = progress_bar(send.done, send.size)
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s  " % clean_line(send.name), "text", ""),
-                          (full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", ""),
-                          ("  :cancelfile", "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e1 ", "accent", "1"), "Sending %s  ", clean_line(send.name),
+                                        [(full, "accent", ""), (empty, "rule", ""), (" %d%%" % percent, "dim", "")], ":cancelfile")
         elif send:
-            lines.append([(" \u21e1 ", "accent", "1"), ("Sending %s" % clean_line(send.name), "text", ""),
-                          ("  :cancelfile", "dim", "")])
+            lines += self.transfer_line(cols, (" \u21e1 ", "accent", "1"), "Sending %s", clean_line(send.name), hint=":cancelfile")
         canceled = self.app.files.notice(conversation)
         if not lines and canceled is not None:
-            lines.append([(" \u2715 ", "unread", "1"), ("File transfer canceled: %s" % clean_line(canceled), "text", ""),
-                          ("  esc hides", "dim", "")])
+            lines += self.transfer_line(cols, (" \u2715 ", "unread", "1"), "File transfer canceled: %s", clean_line(canceled),
+                                        hint="esc hides")
         return lines

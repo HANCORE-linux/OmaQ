@@ -18,7 +18,7 @@ COMMANDS = [
     (":accept", "Accept the pending request", ""),
     (":decline", "Decline the pending request", ""),
     (":nickname ", "Change the name your friends see", "<name>"),
-    (":sendfile ", "Send a file to this chat", "<path>"),
+    (":sendfile ", "Send a file to this chat; tab lists files", "<path>"),
     (":acceptfile", "Save the offered file in ~/Downloads/omaq", ""),
     (":declinefile", "Decline the offered file", ""),
     (":cancelfile", "Cancel your file transfer in this chat", ""),
@@ -34,7 +34,7 @@ KEYS = [
     ("alt+arrows", "Move the focus between panes"),
     ("alt+shift+arrows", "Move this pane"),
     ("alt+= / alt+-", "Make this column wider or narrower"),
-    ("tab", "Next chat in this pane; after : it completes commands and names"),
+    ("tab", "Next chat in this pane; after : completes commands, names and file paths"),
     ("up / down", "Earlier messages of this chat; after : earlier commands"),
     ("pgup / pgdn", "Scroll"),
     ("shift+enter", "New line in a message"),
@@ -65,6 +65,7 @@ TIPS = [
     (":close / ctrl+w", "closes this pane"),
     (ZOOM_KEYS, "change the text size"),
     ("pgup / pgdn", "scroll the chat"),
+    (":sendfile + tab", "lists your folders and files"),
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
 KNOWN = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
@@ -94,6 +95,13 @@ def suggestions(draft, names):
         return "none", rest, []
     want = rest.casefold()
     return "name", rest, [name for name in names if name.casefold().startswith(want)]
+
+
+def sendfile_path(draft):
+    if not draft.startswith(":") or " " not in draft:
+        return None
+    verb, rest = draft[1:].split(" ", 1)
+    return rest if parse_command(":" + verb)[0] == "sendfile" else None
 
 
 @dataclass(eq=False, slots=True)

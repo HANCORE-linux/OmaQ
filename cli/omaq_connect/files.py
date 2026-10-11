@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from .protocol import FAILURES, FILE_ERRORS, TEXT_MAX, is_direct
 from .session import bound, friend_of, key_for
-from .text import clean_line, home_path, human_size
+from .text import clean_line, home_path, human_size, utf8
 
 DONE_SECONDS = 7.5
 
@@ -172,13 +172,18 @@ class FileTransfers:
         given = arg.strip()
         if len(given) > 1 and given[0] == given[-1] and given[0] in "'\"":
             given = given[1:-1]
-        path = os.path.abspath(os.path.expanduser(given)) if given else ""
+        try:
+            path = os.path.abspath(os.path.expanduser(given)) if given else ""
+        except (OSError, ValueError):
+            path = None
         if not conversation:
             self.say("No chat is open")
-        elif not path:
+        elif path == "":
             self.say("Usage: :sendfile <path>")
-        elif not os.path.isfile(path) or not os.access(path, os.R_OK):
+        elif path is None or not os.path.isfile(path) or not os.access(path, os.R_OK):
             self.say("No readable file at %s" % clean_line(given))
+        elif not utf8(path):
+            self.say("Path is not valid UTF-8")
         elif len(path.encode("utf-8")) > TEXT_MAX:
             self.say("Path is too long")
         elif conversation in self.sends:

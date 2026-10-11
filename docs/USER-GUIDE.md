@@ -213,9 +213,9 @@ omaq-connect alice     # opens alice
 
 <a href="images/guide/38-terminal-overview.png"><img src="images/guide/38-terminal-overview.png" alt="Terminal client with two chats side by side" width="100%"></a>
 
-The top line lists your friends: a green dot means online, gray away, and dim offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
+The top line lists your friends: a green dot means online, amber away, and gray offline. A friend whose new messages are not on screen is highlighted until you open the chat, and the first line of the newest message appears in the status line for a few seconds. `+N` counts friends that no longer fit.
 
-The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
+The focused pane starts its header with `❯`, and the input line shows the friend you are writing to in front of `❯`. The header, and the tab strip of a small window, show the same dot: online, the name is bright with a green dot; offline, it keeps its theme color with a gray dot and a gray `offline`. Every color keeps at least a 4.5:1 contrast to your terminal's background. The bottom line keeps `:help` and `:quit` and shows a new tip every few seconds. When the terminal client started the helper, quitting takes you offline unless you belong to a private group; if it cannot confirm that, it says so after closing. While the bar runs, quitting changes nothing.
 
 ### Commands
 
@@ -240,7 +240,7 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:requests` | Show a pending request, with the safety code for a friend request |
 | `:accept` / `:decline` | Answer the pending request |
 | `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
-| `:sendfile <path>` | Send a file to this chat |
+| `:sendfile <path>` | Send a file to this chat; `Tab` lists your folders and files |
 | `:acceptfile` / `:declinefile` | Save the offered file in `~/Downloads/omaq`, or decline it |
 | `:cancelfile` | Cancel your file transfer in this chat |
 | `:quit` or `:q` | Quit |
@@ -255,7 +255,7 @@ Confirmations expire after 15 seconds.
 | `Alt+Arrows` | Move the focus between panes |
 | `Alt+Shift+Arrows` | Move this pane |
 | `Alt+=` / `Alt+-` | Make this column wider or narrower |
-| `Tab` | Switch the chat in this pane |
+| `Tab` | Switch the chat in this pane; after `:` complete commands and names, after `:sendfile` list folders and files |
 | `Up` / `Down` | Recall your earlier messages in this chat |
 | `PgUp` / `PgDn` | Scroll |
 | `Shift+Enter` | Start a new line |
@@ -280,7 +280,9 @@ Confirmations expire after 15 seconds.
 
 ### Send and receive files
 
-Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it. While it travels, the chat shows its progress, such as `Sending notes.pdf  ███████░░░ 70%`.
+Run `:sendfile ~/notes.pdf` to send a file to the open chat. A path relative to the current folder works too. One file per chat travels at a time, and `:cancelfile` stops it.
+
+To pick the file instead of typing its whole path, type `:sendfile ~/` and press `Tab`. A list above the input line shows the folders and files in that folder, folders first and files with their size. Typing filters it, `Up`/`Down` choose, `Tab` or `Enter` opens a folder or takes a file into the line, `Left` goes back, and `Esc` closes the list. The next `Enter` sends the file. Hidden files appear once the name you type starts with `.`. While it travels, the chat shows its progress, such as `Sending notes.pdf  ███████░░░ 70%`.
 
 An incoming file waits until you decide: the chat shows `File offer: notes.pdf (2.3 MB)`. `:acceptfile` saves it in `~/Downloads/omaq`, shows `Receiving notes.pdf` with the same bar while it arrives, and then shows the full path. `:declinefile` rejects it.
 
