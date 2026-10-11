@@ -117,7 +117,7 @@ Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+En
 
 ### Use message actions
 
-Hover or keyboard-focus a message to react, use inline Reply, edit your own message, copy it, or request confirmed deletion. The selection Copy action appears only for selected text and copies exactly that text. A failed pre-delivery message offers Resend, while an unknown result does not resend automatically.
+Hover or keyboard-focus a message to react, use inline Reply, edit your own text message, copy it, or request confirmed deletion. The selection Copy action appears only for selected text and copies exactly that text. A failed pre-delivery message offers Resend, while an unknown result does not resend automatically.
 
 ### Search a conversation
 
@@ -256,7 +256,7 @@ Confirmations expire after 15 seconds.
 | `Alt+Shift+Arrows` | Move this pane |
 | `Alt+=` / `Alt+-` | Make this column wider or narrower |
 | `Tab` | Switch the chat in this pane; after `:` complete commands and names, after `:sendfile` list folders and files |
-| `Up` / `Down` | Recall your earlier messages in this chat |
+| `Up` / `Down` | Recall your earlier text messages in this chat |
 | `PgUp` / `PgDn` | Scroll |
 | `Shift+Enter` | Start a new line |
 | `Esc` | Clear the message, then hide a file notice |

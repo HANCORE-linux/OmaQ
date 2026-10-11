@@ -1086,6 +1086,23 @@ class PackageA(Sandbox):
         self.assertEqual([plain(app.palette.row(segs, 80)) for segs in app.screen.transfer_lines("0", 80)],
                          [" \u21e1 Sending notes.pdf  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591 70%  :cancelfile"])
 
+    def test_recall_never_offers_file_or_image_items(self):
+        app = self.app([{"id": "0", "key": A, "name": "bob"}])
+        c = self.loaded(app, "0")
+        c.items.append(cli.message_from({"id": "t1", "ts": 1700000000, "from": "me", "text": "hello", "dir": "out"}))
+        c.items.append(cli.message_from({"id": "f1", "ts": 1700000010, "from": "me", "text": "/home/me/secret.pdf",
+                                         "dir": "out", "kind": "file"}))
+        app.on_event({"event": "message", "conversation": "0", "key": A, "id": "i1", "text": "/home/me/photo.png", "dir": "out",
+                      "kind": "image", "ts": 1700000020})
+        self.assertEqual([m.kind for m in c.items], ["", "file", "image"])
+        self.assertEqual(c.items[1].text, "[file] /home/me/secret.pdf")
+        self.assertEqual(app.chat.sent_texts("0"), ["hello"])
+        app.edit("key", "up")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.draft, "hello")
+        app.edit("key", "enter")
+        self.assertEqual([o["text"] for o in app.link.ops("msg.send")], ["hello"])
+
     def test_cancelfile_also_cancels_an_incoming_transfer(self):
         app = self.app([{"id": "0", "key": A, "name": "bob"}])
         self.loaded(app, "0")
