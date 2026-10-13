@@ -1,6 +1,6 @@
 import time
 
-from .commands import HINT, RECEIPTS, TIPS, sendfile_path, suggestions
+from .commands import HINT, RECEIPTS, TIPS, suggestions, typed_path
 from .protocol import EDITED, FAILURES, shown_text
 from .text import (cells, clean, clean_line, clip, clock, compact_preview, day_label, human_size, is_command,
                    progress_bar, shorten, text_width, wrap)
@@ -107,7 +107,7 @@ class Screen:
             kind, _, items = suggestions(pane.draft, [f["name"] for f in self.app.friends])
             chosen = 0
         if not items:
-            typed = sendfile_path(pane.draft)
+            typed = typed_path(pane.draft)
             if typed is not None:
                 if self.app.file_picker is None:
                     text = " tab lists folders and files"
@@ -234,7 +234,7 @@ class Screen:
         p = self.app.palette
         out = ["", p.paint("─" * cols, "rule")]
         composer = self.app.pane or self.app.scratch
-        replying = bool(composer.reply) and not self.app.locked
+        replying = bool(composer.reply) and not self.app.locked and self.app.secret_prompt is None
         area = max(1, rows - (6 if replying else 5))
         drawer = []
         modal = self.app.picker if self.app.picker is not None else self.app.file_picker
@@ -289,6 +289,11 @@ class Screen:
             shown = "•" * len(self.app.secret)
             out.append(p.paint(prompt, "accent") + p.paint(clip(shown, max(0, cols - len(prompt) - 1))[0], "text"))
             cursor_col = min(cols, len(prompt) + len(shown) + 1)
+        elif self.app.secret_prompt is not None:
+            prompt = " %s › " % self.app.secret_prompt.label
+            shown = "•" * len(self.app.secret_prompt.value)
+            out.append(p.paint(prompt, "accent") + p.paint(clip(shown, max(0, cols - text_width(prompt) - 1))[0], "text"))
+            cursor_col = min(cols, text_width(prompt) + len(shown) + 1)
         else:
             pane = self.app.pane or self.app.scratch
             f = self.app.friend(pane.conv)
@@ -307,6 +312,8 @@ class Screen:
             cursor_col = used + text_width(shown[start:pane.cursor]) + 1
         if self.app.locked:
             out.append(self.zoom_line(clip(" enter unlock · esc clear · ctrl+c quit", cols)[0], cols))
+        elif self.app.secret_prompt is not None:
+            out.append(self.zoom_line(clip(" enter continues · esc cancels", cols)[0], cols))
         else:
             out.append(self.command_hint(cols))
         frame = ["\x1b[?2026h\x1b[?25l"]

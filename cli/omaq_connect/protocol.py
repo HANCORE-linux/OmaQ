@@ -71,6 +71,34 @@ INVITE_ERRORS = {
 }
 
 
+PASSPHRASE_BYTES = 128
+NEW_PASSPHRASE_CHARACTERS = 8
+ONE_LINE = "Enter the passphrase as one line"
+
+
+def passphrase_ok(value, new=False):
+    if not value or len(value.encode("utf-8", "surrogatepass")) > PASSPHRASE_BYTES:
+        return False
+    if any((ord(ch) < 0x20 and ch != "\t") or ord(ch) == 0x7F or 0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        return False
+    return not new or len(value) >= NEW_PASSPHRASE_CHARACTERS
+
+
+def secret_edit(value, kind, typed):
+    if kind == "key" and typed == "backspace":
+        return value[:-1], ""
+    if kind == "key" and typed == "tab":
+        typed, kind = "\t", "text"
+    if kind not in ("text", "paste"):
+        return value, ""
+    if any(ch in "\r\n" or (ord(ch) < 0x20 and ch != "\t") or ord(ch) == 0x7F for ch in typed):
+        return value, ONE_LINE
+    joined = value + typed
+    if len(joined.encode("utf-8", "surrogatepass")) > PASSPHRASE_BYTES:
+        return value, "A passphrase has at most 128 bytes"
+    return joined, ""
+
+
 def safety_ok(value):
     halves = str(value or "").split(" / ")
     if len(halves) != 2:

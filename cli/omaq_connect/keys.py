@@ -23,8 +23,15 @@ class Keys:
         self.pending = b""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.paste = None
+        self.skip = False
+
+    def drop_current(self, esc_is_key=False):
+        if esc_is_key and self.paste is None and self.pending == b"\x1b":
+            self.pending = b""
+        self.skip = self.paste is not None or bool(self.pending)
 
     def feed(self, data, final=False):
+        final = final and not self.skip
         self.pending += data
         keys = []
         buf, i = self.pending, 0
@@ -42,11 +49,15 @@ class Keys:
                         i = keep
                     break
                 self.paste += self.decoder.decode(buf[i:end], final=True)
-                keys.append(("paste", self.paste.replace("\r\n", "\n").replace("\r", "\n")))
+                if self.skip:
+                    self.skip = False
+                else:
+                    keys.append(("paste", self.paste.replace("\r\n", "\n").replace("\r", "\n")))
                 self.paste = None
                 i = end + 6
                 continue
             if b == 0x1B:
+                before = len(keys)
                 if i + 1 >= len(buf):
                     if final:
                         keys.append(("key", "esc"))
@@ -55,8 +66,11 @@ class Keys:
                 nxt = buf[i + 1]
                 if nxt in (0x5B, 0x4F):
                     j = i + 2
-                    while j < len(buf) and not (0x40 <= buf[j] <= 0x7E):
+                    while j < len(buf) and 0x20 <= buf[j] <= 0x3F:
                         j += 1
+                    if j < len(buf) and not 0x40 <= buf[j] <= 0x7E:
+                        i, self.skip = j, False
+                        continue
                     if j >= len(buf):
                         if final:
                             i = len(buf)
@@ -76,10 +90,17 @@ class Keys:
                             keys.append(("key", (mod or "shift-") + "enter"))
                     elif last in self.SPECIAL:
                         keys.append(("key", mod + self.SPECIAL[last]))
+                    if self.skip and self.paste is None:
+                        if keys[before:] not in ([("key", "focus-in")], [("key", "focus-out")]):
+                            del keys[before:]
+                        self.skip = False
                     continue
                 if nxt == 0x1B:
                     keys.append(("key", "esc"))
                     i += 1
+                    if self.skip:
+                        del keys[before:]
+                        self.skip = False
                     continue
                 if nxt in (0x0D, 0x0A):
                     keys.append(("key", "alt-enter"))
@@ -88,6 +109,9 @@ class Keys:
                     if ch:
                         keys.append(("alt", ch))
                 i += 2
+                if self.skip:
+                    del keys[before:]
+                    self.skip = False
                 continue
             if b in (0x0D, 0x0A):
                 keys.append(("key", "enter"))

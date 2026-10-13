@@ -3,8 +3,8 @@ import time
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from .commands import COMMANDS, KEYS, RECEIPTS, sendfile_path
-from .protocol import REDEEMED_DIRECT, REDEEMED_GROUP
+from .commands import COMMANDS, KEYS, RECEIPTS, path_command, typed_path
+from .protocol import ONE_LINE, REDEEMED_DIRECT, REDEEMED_GROUP, secret_edit
 from .text import EMOJI, clean_line, emoji_catalog, emoji_name, home_path, human_size, text_width, utf8
 
 
@@ -17,13 +17,49 @@ class Confirmation:
     conv: str = ""
     key: str = ""
     instance: str = ""
+    path: str = ""
+    secret: str = field(default="", repr=False)
 
     @property
     def kept(self):
-        return "Invite kept" if self.action == "revoke" else "Chat kept"
+        return {"revoke": "Invite kept", "protect": "No passphrase set", "unprotect": "Passphrase kept",
+                "export": "Identity not exported", "import": "Identity kept"}.get(self.action, "Chat kept")
 
     def expired(self, now):
         return now > self.until
+
+
+@dataclass(eq=False, slots=True)
+class SecretPrompt:
+    label: str
+    purpose: str
+    value: str = field(default="", repr=False)
+
+    def handle(self, app, kind, typed):
+        closing = (kind == "key" and typed in ("enter", "esc")) or (kind == "ctrl" and typed in ("c", "d"))
+        if closing and app.more_input:
+            self.value = ""
+            app.hush = True
+            app.say(ONE_LINE)
+        elif closing and typed != "enter":
+            self.value = ""
+            app.secret_prompt = None
+            app.hush = True
+            app.identity.cancel_secret()
+        elif closing:
+            value, self.value = self.value, ""
+            app.secret_prompt = None
+            app.hush = True
+            if value:
+                app.identity.on_secret(self.purpose, value)
+            else:
+                app.identity.cancel_secret()
+        else:
+            self.value, problem = secret_edit(self.value, kind, typed)
+            if problem:
+                app.say(problem)
+        app.dirty = True
+        return True
 
 
 @dataclass(eq=False, slots=True)
@@ -213,10 +249,10 @@ class FilePicker:
                 if (hidden or not entry[0].startswith(".")) and entry[0].casefold().startswith(want)]
 
     def take(self, app, composer, path, stay):
-        verb = composer.draft[1:].split(" ", 1)[0]
+        prefix = path_command(composer.draft)[0]
         if not stay and path != path.strip():
             path = '"%s"' % path
-        composer.draft = ":%s %s" % (verb, path)
+        composer.draft = prefix + path
         composer.cursor = len(composer.draft)
         composer.hist, composer.hist_items, app.completion = None, None, None
         self.index = 0
@@ -236,12 +272,12 @@ class FilePicker:
             return
         self.take(app, composer, shown_folder(parent), True)
         came = os.path.basename(folder)
-        items = self.items(sendfile_path(composer.draft))
+        items = self.items(typed_path(composer.draft))
         self.index = next((k for k, (entry, is_dir) in enumerate(items) if is_dir and entry == came), 0)
 
     def handle(self, app, kind, value):
         composer = app.pane or app.scratch
-        typed = sendfile_path(composer.draft)
+        typed = typed_path(composer.draft)
         if typed is None:
             app.file_picker = None
             return False
@@ -269,12 +305,12 @@ class FilePicker:
         elif kind in ("text", "paste"):
             composer.insert("".join(ch for ch in value if ch >= " " and ch != "\x7f"))
             self.index = 0
-            if sendfile_path(composer.draft) is None:
+            if typed_path(composer.draft) is None:
                 app.file_picker = None
         elif (kind == "key" and value in ("backspace", "delete", "home", "end")) or (kind == "ctrl" and value in ("a", "e", "u")):
             composer.edit(kind, value)
             self.index = 0
-            if sendfile_path(composer.draft) is None:
+            if typed_path(composer.draft) is None:
                 app.file_picker = None
         else:
             app.file_picker = None
@@ -291,7 +327,7 @@ class FilePicker:
     def rows(self, screen, width, height):
         p = screen.app.palette
         composer = screen.app.pane or screen.app.scratch
-        typed = sendfile_path(composer.draft)
+        typed = typed_path(composer.draft)
         if typed is None:
             self.room = 0
             return []

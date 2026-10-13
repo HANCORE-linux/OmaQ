@@ -66,6 +66,19 @@ grep -a '"op":"protect"' "$out" | tail -1 |
 	exit 1
 }
 
+before=$(wc -l <"$out")
+echo '{"op":"identity.protect","passphrase":"test-pass-2","id":"identity-protect-again"}' >&3
+sleep 0.2
+tail -n +"$((before + 1))" "$out" | grep -a '"code":"forbidden"' |
+	grep -a -q '"request":"identity-protect-again"' || {
+	echo "encryptsave: protect did not refuse an identity that has a passphrase" >&2
+	exit 1
+}
+if tail -n +"$((before + 1))" "$out" | grep -a -q '"op":"protect"'; then
+	echo "encryptsave: protect replaced an existing passphrase" >&2
+	exit 1
+fi
+
 kill "$pid" 2>/dev/null || true
 pid=""
 exec 3>&-

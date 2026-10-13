@@ -14,7 +14,7 @@
 - Calls remain Direct-only. Protocol 12 later extends `file.*`, but not `call.*`, to stable `g:<chat-id>` conversations through a helper-owned custom NGC transport.
 - Chat page: file path, accept/decline, 56×56 image previews, call/answer/hang up; group chats expose the same non-call composer and attachment controls when Protocol 12 is active.
 - `make verify-6`; `.phase` is 6
-- Optional `toxencryptsave` on `tox.save` (`identity.protect` / `unlock` / `unprotect`). Default stays plaintext. Does not change the chat handshake.
+- Optional `toxencryptsave` on `tox.save` (`identity.protect` / `unlock` / `unprotect`). Default stays plaintext. Does not change the chat handshake. `identity.protect` is refused with `forbidden` while a passphrase is set, so no client can replace it without the current one; remove the lock first (`identity.unprotect` checks the current passphrase).
 
 ## How to check
 

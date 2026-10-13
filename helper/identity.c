@@ -72,7 +72,7 @@ struct omaq_tox *omaq_identity_load(const char *home, const char *pass, int *err
 
 int omaq_identity_protect(struct omaq_tox *t, const char *pass)
 {
-	if (!omaq_identity_new_pass_ok(pass))
+	if (!omaq_identity_new_pass_ok(pass) || omaq_tox_protected(t))
 		return -1;
 	return omaq_tox_protect(t, pass);
 }

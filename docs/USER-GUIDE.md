@@ -241,6 +241,10 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:redeem <link>` | Send a request with a friend's invite link |
 | `:requests` | Show a pending request, with the safety code for a friend request |
 | `:reply` or `Ctrl+R` | Choose a message to answer |
+| `:identity` | Show whether your identity has a passphrase |
+| `:identity protect` or `unprotect` | Set or remove the identity passphrase |
+| `:identity export [path]` | Save your identity bundle, by default in `~/Downloads` |
+| `:identity validate <path>` or `import <path>` | Check a bundle, or make it your identity |
 | `:accept` / `:decline` | Answer the pending request |
 | `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
 | `:sendfile <path>` | Send a file to this chat; `Tab` lists your folders and files |
@@ -304,6 +308,8 @@ Standalone `:)` `:D` `;)` `:(` `:'(` `:P` `;P` `:O` `:*` `:/` `:|` `xD` `^^` `<3
 Receipts use arrows: `·` sending, `→` sent, `⇉` delivered, `⇉` in green read, and `✕` failed.
 
 To answer a message, press `Ctrl+R`: the newest message gets a `▌` mark. Choose another with `↑` and `↓` and press `Enter`. `↩ Reply:` above the input line shows what you answer, and `Esc` drops it. Your friend sees the quote as in the bar, and an answer to one of your messages starts with `↩` and the quoted text. Edits and deletes appear right away.
+
+A locked identity asks for its passphrase when the terminal client starts. `:identity protect` asks for a new passphrase twice; the typed characters show as dots. It, `:identity unprotect`, `export`, and `import` ask `y/n` right before they act, and a protected bundle asks for its own passphrase. Transfer an exported bundle securely and delete extra copies.
 
 Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` resets (kitty: `Ctrl+Shift+=`, `Ctrl+Shift+-`, and `Ctrl+Shift+Backspace`). After a zoom, the bottom line briefly shows the new size, such as `Text 112%`. 100% is the size when the session started.
 

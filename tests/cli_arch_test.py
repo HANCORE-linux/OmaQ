@@ -27,11 +27,12 @@ ALLOWED = {
     "view": {"commands", "protocol", "text"},
     "modals": {"commands", "protocol", "text"},
     "profile": set(),
+    "identity": {"commands", "protocol", "text"},
     "app": {"text", "protocol", "session", "chat", "files", "invites", "commands", "view", "modals", "palette", "keys",
-            "link", "helper_process", "presence", "terminal", "system", "layout", "profile"},
+            "link", "helper_process", "presence", "terminal", "system", "layout", "profile", "identity"},
 }
 PURE = {"text", "protocol", "layout", "keys", "palette", "session", "chat", "files", "invites", "commands", "view",
-        "modals", "profile"}
+        "modals", "profile", "identity"}
 failures = []
 
 
