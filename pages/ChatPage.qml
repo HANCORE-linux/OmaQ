@@ -1922,6 +1922,8 @@ FocusScope {
       return "Contact is offline"
     if (failure === "ratchet_pending")
       return "Secure session is being established"
+    if (failure === "ratchet_timeout")
+      return "No secure session yet; message not sent"
     if (failure === "no_ratchet")
       return "Secure session unavailable; pair this contact again"
     if (failure === "history_failed")

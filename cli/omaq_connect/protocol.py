@@ -14,6 +14,7 @@ HISTORY_LIMIT = 50
 FAILURES = {
     "offline": "Contact is offline",
     "ratchet_pending": "Secure session is being established",
+    "ratchet_timeout": "No secure session yet; message not sent",
     "no_ratchet": "Secure session unavailable; pair this contact again",
     "history_failed": "Message could not be saved or sent",
     "busy": "Helper is busy",

@@ -115,6 +115,8 @@ New DirectChat and GroupChat windows use the compositor's standard opening anima
 
 Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` for a line break. Text paste remains available while the helper reconnects or lacks image capability.
 
+A message you write right after adding a contact, before the encrypted session exists, waits and goes out once the session is ready. If no session forms within 5 minutes, the message shows `No secure session yet; message not sent`.
+
 ### Use message actions
 
 Hover or keyboard-focus a message to react, use inline Reply, edit your own text message, copy it, or request confirmed deletion. The selection Copy action appears only for selected text and copies exactly that text. A failed pre-delivery message offers Resend, while an unknown result does not resend automatically.

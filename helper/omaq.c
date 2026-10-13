@@ -25,6 +25,7 @@
 #include "ratchet_pin.h"
 #include "rate.h"
 #include "safety.h"
+#include "send_queue.h"
 #include "sound.h"
 #include "store.h"
 #include "stdout_spool.h"
@@ -212,6 +213,11 @@ static struct {
 	char peer[OMAQ_RATCHET_PEER_MAX];
 	int64_t retry_after;
 } g_ratchet_recovery[OMAQ_DIRECT_STATE_FRIEND_MAX];
+#endif
+#if defined(HAVE_TOX) && defined(HAVE_SIGNAL)
+static omaq_send_queue g_send_queue;
+static int g_send_queue_wake;
+static int64_t g_send_queue_check_ms;
 #endif
 static omaq_pending_invite g_pending_invite;
 static omaq_invite_conflicts g_invite_conflicts;
@@ -6054,6 +6060,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 		accepted = omaq_ratchet_accept_bundle(g_ratchet, state_conv, bundle, expected);
 		if (accepted < 0)
 			return;
+		g_send_queue_wake = 1;
 		if (modern_request) {
 			/* Requests are idempotent: replay the exact durable response even
 			 * after its private one-time prekey has been consumed. */
@@ -6079,6 +6086,7 @@ static void hook_msg(void *ud, uint32_t friend, const char *text)
 				(void)request_ratchet_session(friend);
 			return;
 		}
+		g_send_queue_wake = 1;
 	}
 	if (!omaq_message_text_bytes_ok((const uint8_t *)plain, plain_length))
 		return;
@@ -10554,6 +10562,165 @@ static void begin_helper_shutdown(int owner_fd, const char *escaped_request)
 #endif
 }
 
+#if defined(HAVE_TOX) && defined(HAVE_SIGNAL)
+static int send_direct_text_now(uint32_t friend, const char *conversation,
+				const char *state_conversation, const char *request,
+				const char *reply, const char *text)
+{
+	char packed[3200], wire[3600], mid[64];
+	int64_t timestamp;
+	int send_rc;
+
+	if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
+	    omaq_message_wire_pack(packed, sizeof(packed), mid, reply, text) != 0 ||
+	    ratchet_encrypt_friend(friend, packed, wire, sizeof(wire)) != 0) {
+		emit_message_failed(conversation, request, "forbidden", 0);
+		return -1;
+	}
+	send_rc = omaq_tox_send(g_tox, friend, wire);
+	if (send_rc != 0) {
+		emit_message_failed(conversation, request,
+				    send_rc == -2 ? "offline" : "forbidden", 0);
+		return -1;
+	}
+	timestamp = (int64_t)time(NULL);
+	if (timestamp <= 0 ||
+	    omaq_message_append_id_reply_at(home_dir(), state_conversation, "me", text,
+					    "out", mid, reply, timestamp) != 0) {
+		emit_message_event_request(conversation, mid, reply, text, request, 0);
+		emit_message_failed(conversation, request, "history_failed", 1);
+		return 0;
+	}
+	emit_message_event_request(conversation, mid, reply, text, request, timestamp);
+	emit("{\"event\":\"snapshot\",\"unread\":0}");
+	return 0;
+}
+
+static void queue_direct_message(const omaq_op *op, int owner_fd, uint32_t friend,
+				 const char *conversation)
+{
+	char self_key[65], peer_key[65];
+	int64_t now = monotonic_millis();
+	int rc;
+
+	if (now < 0 || omaq_tox_self_pk_hex(g_tox, self_key) != 0 ||
+	    omaq_tox_friend_pk_hex(g_tox, friend, peer_key) != 0) {
+		emit_message_failed(conversation, op->id, "forbidden", 0);
+		return;
+	}
+	if (omaq_send_queue_peer_count(&g_send_queue, friend) == 0 &&
+	    request_ratchet_session(friend) < 0) {
+		emit_message_failed(conversation, op->id,
+				    !omaq_tox_friend_online(g_tox, friend) ? "offline" : "no_ratchet",
+				    0);
+		return;
+	}
+	rc = omaq_send_queue_add(&g_send_queue, owner_fd, friend, conversation, self_key,
+				 peer_key, op->id, op->reply, op->text, now);
+	if (rc != 0) {
+		emit_message_failed(conversation, op->id,
+				    rc == -2 ? "ratchet_pending" : "forbidden", 0);
+		return;
+	}
+	g_send_queue_wake = 1;
+}
+
+static const char *queued_direct_blocker(const omaq_send_queue_entry *entry,
+					 int64_t now, int *ready)
+{
+	char key[65];
+
+	*ready = 0;
+	if (g_identity_primary_uncertain)
+		return "identity_primary_uncertain";
+	if (g_identity_recovery_required)
+		return "identity_changed";
+	if (!g_tox)
+		return g_locked ? "locked" : "offline";
+	if (!g_ratchet)
+		return "no_ratchet";
+	if (omaq_tox_self_pk_hex(g_tox, key) != 0 || strcmp(key, entry->self_key) != 0)
+		return "identity_changed";
+	if (omaq_tox_friend_pk_hex(g_tox, entry->friend_number, key) != 0)
+		return "forbidden";
+	if (strcmp(key, entry->peer_key) != 0)
+		return "identity_changed";
+	if (!omaq_tox_friend_online(g_tox, entry->friend_number))
+		return "offline";
+	if (ratchet_has_session_friend(entry->friend_number)) {
+		*ready = 1;
+		return NULL;
+	}
+	return now >= entry->deadline_ms ? "ratchet_timeout" : NULL;
+}
+
+static void fail_send_queue(const char *code)
+{
+	int index;
+
+	while ((index = omaq_send_queue_oldest(&g_send_queue, NULL, 0)) >= 0) {
+		emit_message_failed(g_send_queue.entries[index].conversation,
+				    g_send_queue.entries[index].request, code, 0);
+		omaq_send_queue_remove(&g_send_queue, index);
+	}
+}
+
+static void send_queue_owner_disconnect(int owner_fd)
+{
+	int index;
+
+	while ((index = omaq_send_queue_owned(&g_send_queue, owner_fd)) >= 0)
+		omaq_send_queue_remove(&g_send_queue, index);
+}
+
+static void service_send_queue(void)
+{
+	uint32_t waiting[OMAQ_SEND_QUEUE_MAX];
+	size_t waiting_count = 0;
+	int64_t now;
+
+	if (g_send_queue.count == 0)
+		return;
+	if (shutdown_requested()) {
+		fail_send_queue("helper_unavailable");
+		return;
+	}
+	now = monotonic_millis();
+	if (now < 0)
+		return;
+	if (!g_send_queue_wake && now < g_send_queue_check_ms)
+		return;
+	g_send_queue_wake = 0;
+	g_send_queue_check_ms = now + 250;
+	for (;;) {
+		int index = omaq_send_queue_oldest(&g_send_queue, waiting, waiting_count);
+		const omaq_send_queue_entry *entry;
+		const char *blocker;
+		char state_conversation[OMAQ_DIRECT_STATE_ID_MAX];
+		int ready;
+
+		if (index < 0)
+			break;
+		entry = &g_send_queue.entries[index];
+		blocker = queued_direct_blocker(entry, now, &ready);
+		if (!blocker && !ready) {
+			waiting[waiting_count++] = entry->friend_number;
+			continue;
+		}
+		if (blocker)
+			emit_message_failed(entry->conversation, entry->request, blocker, 0);
+		else if (direct_state_for_friend(entry->friend_number, state_conversation,
+						 sizeof(state_conversation)) != 0)
+			emit_message_failed(entry->conversation, entry->request, "forbidden", 0);
+		else
+			(void)send_direct_text_now(entry->friend_number, entry->conversation,
+						   state_conversation, entry->request,
+						   entry->reply, entry->text);
+		omaq_send_queue_remove(&g_send_queue, index);
+	}
+}
+#endif
+
 static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 {
 	if (shutdown_requested()) {
@@ -12914,50 +13081,14 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 					emit_message_failed(cid, op->id, "no_ratchet", 0);
 					return 0;
 				}
-				{
-					char packed[3200], wire[3600], mid[64];
-					if (!ratchet_has_session_friend(fn)) {
-						int request_rc = request_ratchet_session(fn);
-						if (request_rc < 0) {
-							emit_message_failed(cid, op->id,
-								!omaq_tox_friend_online(g_tox, fn)
-									? "offline" : "no_ratchet", 0);
-							return 0;
-						}
-						emit_message_failed(cid, op->id, "ratchet_pending", 0);
-						return 0;
-					}
-					if (omaq_message_id_new(mid, sizeof(mid)) != 0 ||
-					    omaq_message_wire_pack(packed, sizeof(packed), mid, op->reply, op->text) != 0 ||
-					    ratchet_encrypt_friend(fn, packed, wire, sizeof(wire)) != 0) {
-						emit_message_failed(cid, op->id, "forbidden", 0);
-						return 0;
-					}
-					{
-						int send_rc = omaq_tox_send(g_tox, fn, wire);
-						if (send_rc != 0) {
-							emit_message_failed(cid, op->id,
-								send_rc == -2 ? "offline" : "forbidden", 0);
-							return 0;
-						}
-					}
-					{
-						int64_t timestamp = (int64_t)time(NULL);
-						if (timestamp <= 0 ||
-						    omaq_message_append_id_reply_at(home_dir(), state_cid, "me",
-									    op->text, "out", mid, op->reply,
-									    timestamp) != 0) {
-							emit_message_event_request(cid, mid, op->reply, op->text,
-										   op->id, 0);
-							emit_message_failed(cid, op->id, "history_failed", 1);
-							return 0;
-						}
-						emit_message_event_request(cid, mid, op->reply, op->text, op->id,
-									   timestamp);
-					}
-					emit("{\"event\":\"snapshot\",\"unread\":0}");
+				if (omaq_send_queue_peer_count(&g_send_queue, fn) > 0 ||
+				    !ratchet_has_session_friend(fn)) {
+					queue_direct_message(op, owner_fd, fn, cid);
 					return 0;
 				}
+				(void)send_direct_text_now(fn, cid, state_cid, op->id, op->reply,
+							   op->text);
+				return 0;
 #endif
 #ifndef HAVE_SIGNAL
 				emit_message_failed(cid, op->id, "no_ratchet", 0);
@@ -14113,6 +14244,9 @@ static void drop_client(size_t i)
 #ifdef HAVE_TOX
 	call_control_owner_disconnected(g_clients[i], g_ncli == 1);
 #endif
+#if defined(HAVE_TOX) && defined(HAVE_SIGNAL)
+	send_queue_owner_disconnect(g_clients[i]);
+#endif
 	attachment_stage_owner_disconnect(g_clients[i]);
 	close(g_clients[i]);
 	if (i + 1 < g_ncli) {
@@ -14402,6 +14536,9 @@ int main(int argc, char **argv)
 		int ms = 250;
 		int pr;
 
+#if defined(HAVE_TOX) && defined(HAVE_SIGNAL)
+		service_send_queue();
+#endif
 		if (shutdown_requested()) {
 			int ack_status = g_shutdown_signal ? 1 : shutdown_ack_status();
 
@@ -14461,8 +14598,12 @@ int main(int argc, char **argv)
 		}
 		if (pr > 0 && stdin_idx >= 0 &&
 		    (pf[stdin_idx].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) {
-			if (read_stdin_lines() != 0)
+			if (read_stdin_lines() != 0) {
 				g_stdin_closed = 1;
+#if defined(HAVE_TOX) && defined(HAVE_SIGNAL)
+				send_queue_owner_disconnect(-1);
+#endif
+			}
 		}
 		if (stdout_idx >= 0 && (pf[stdout_idx].revents & (POLLOUT | POLLERR | POLLHUP | POLLNVAL))) {
 			if (pf[stdout_idx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
