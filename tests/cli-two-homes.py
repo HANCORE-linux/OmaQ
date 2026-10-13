@@ -164,6 +164,22 @@ def main():
             fail("up did not recall the last sent message:\n" + "\n".join(term.screen()[-3:]))
         term.send(b"\x1b")
         term.pump(0.4)
+        confirmed = b.wait(lambda e: e.get("event") == "message" and e.get("request") == "nasty-1", 15)
+        quoted = str(confirmed.get("id") or "") if confirmed else ""
+        if not quoted:
+            fail("bob's helper did not confirm the message to reply to")
+        term.send(b"\x12")
+        if not term.wait_screen(r"enter reply · esc cancel", 10):
+            fail("ctrl+r did not start choosing a message:\n" + "\n".join(term.screen()[-4:]))
+        term.send("\r")
+        if not term.wait_screen(r"↩ Reply: evil", 10):
+            fail("the reply line did not appear:\n" + "\n".join(term.screen()[-4:]))
+        term.send("antwort\r")
+        answer = b.wait(lambda e: e.get("event") == "message" and e.get("text") == "antwort", 30)
+        if not answer or answer.get("reply") != quoted:
+            fail("bob did not receive the reply with its quote: %r, want %s" % (answer, quoted))
+        if not term.wait_screen(r"↩ evil", 10) or any("Reply:" in row for row in term.screen()):
+            fail("the CLI did not quote the message above its reply:\n" + "\n".join(term.screen()[-8:]))
         mark_clear = len(a.events)
         term.send(":clear\r")
         if not term.wait_for("Clear this chat? y/n", 5):

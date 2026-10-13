@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 VERBS = [("help", False), ("connect", True), ("split", True), ("invite", False), ("redeem", True),
          ("requests", False), ("accept", False), ("decline", False), ("nickname", True), ("sendfile", True), ("acceptfile", False),
-         ("declinefile", False), ("cancelfile", False), ("clear", False), ("close", False), ("quit", False)]
+         ("declinefile", False), ("cancelfile", False), ("reply", False), ("clear", False), ("close", False),
+         ("quit", False)]
 HINT = " " + "   ".join(":" + verb for verb in ("help", "connect", "split", "invite", "requests", "clear",
                                                    "close", "quit"))
 COMMANDS = [
@@ -22,6 +23,7 @@ COMMANDS = [
     (":acceptfile", "Save the offered file in ~/Downloads/omaq", ""),
     (":declinefile", "Decline the offered file", ""),
     (":cancelfile", "Cancel the file transfer in this chat, sending or receiving", ""),
+    (":reply", "Choose a message to reply to (also ctrl+r)", ""),
     (":clear", "Clear this chat on this computer (asks first)", ""),
     (":close", "Close this pane (also ctrl+w)", ""),
     (":quit", "Quit OmaQ (also :q)", ""),
@@ -39,7 +41,8 @@ KEYS = [
     ("pgup / pgdn", "Scroll"),
     ("shift+enter", "New line in a message"),
     ("ctrl+k", "Choose an emoji"),
-    ("esc", "Clear the message, then hide a file notice"),
+    ("ctrl+r", "Reply to a message: up / down choose, enter picks, esc cancels"),
+    ("esc", "Leave the reply, clear the message, then hide a file notice"),
     (ZOOM_KEYS, "Text size: your terminal's zoom (%s resets); 100%% is the size at start"
      % ("ctrl+shift+backspace" if KITTY else "ctrl+0")),
 ]
@@ -66,10 +69,11 @@ TIPS = [
     (ZOOM_KEYS, "change the text size"),
     ("pgup / pgdn", "scroll the chat"),
     (":sendfile + tab", "lists your folders and files"),
+    ("ctrl+r", "replies to a message in this chat"),
 ]
 NAMED = ("connect", "c", "vsplit", "vs", "split", "sp")
 KNOWN = ("q", "q!", "quit", "quit!", "close", "clo", "help", "h", "clear", "invite", "redeem", "requests",
-         "accept", "decline", "nickname", "sendfile", "acceptfile", "declinefile", "cancelfile") + NAMED
+         "accept", "decline", "nickname", "sendfile", "acceptfile", "declinefile", "cancelfile", "reply") + NAMED
 RECEIPTS = ["·", "→", "⇉", "⇉"]
 
 

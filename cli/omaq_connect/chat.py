@@ -1,7 +1,7 @@
 import secrets
 import time
 
-from .protocol import HISTORY_LIMIT, Message, is_direct, message_from
+from .protocol import HISTORY_LIMIT, Message, is_direct, message_from, replyable
 from .session import Conversation, bound, find_sent, mark_unsaved, merge_history
 from .text import clean_line
 
@@ -46,15 +46,19 @@ class Chat:
         for c in self.convs.values():
             c.loaded, c.request = False, ""
 
-    def send_message(self, conversation, text):
+    def send_message(self, conversation, text, reply=""):
         request = "cli-" + secrets.token_hex(10)
-        m = Message("", request, "out", text, time.time(), ack=0)
+        m = Message("", request, "out", text, time.time(), ack=0, reply=reply)
         self.conv(conversation).items.append(m)
         self.pending[request] = (conversation, m)
-        if not self.send_bound({"op": "msg.send", "conversation": conversation, "text": text, "reply": "",
+        if not self.send_bound({"op": "msg.send", "conversation": conversation, "text": text, "reply": reply,
                                 "id": request}):
             self.pending.pop(request, None)
             m.failed = "error"
+
+    def targets(self, conversation):
+        c = self.convs.get(conversation)
+        return [m for m in (c.items if c else []) if replyable(m)]
 
     def sent_texts(self, conversation):
         texts = []
@@ -136,6 +140,19 @@ class Chat:
         c.items.append(m)
         return m
 
+    def on_message_updated(self, ev):
+        c = self.convs.get(str(ev.get("conversation") or ""))
+        mid = str(ev.get("id") or "")
+        if not (c and mid and self.bound(ev)):
+            return None
+        for m in c.items:
+            if m.id == mid:
+                m.deleted = ev.get("deleted") is True
+                m.edited = ev.get("edited") is True
+                m.text = "" if m.deleted else str(ev.get("text") or "")
+                return m
+        return None
+
     def on_message_failed(self, ev):
         request = str(ev.get("request") or "")
         entry = self.pending.pop(request, None)
@@ -179,8 +196,9 @@ class Chat:
                 self.unread.pop(conversation, None)
                 self.load(conversation)
                 self.say("Chat cleared on this computer")
-            else:
-                self.say("Chat could not be cleared (%s)" % clean_line(ev.get("code") or "error"))
+                return True
+            self.say("Chat could not be cleared (%s)" % clean_line(ev.get("code") or "error"))
+        return False
 
     def forget(self, fid):
         self.convs.pop(fid, None)

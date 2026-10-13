@@ -55,6 +55,7 @@ EVENT_HANDLERS = {
     "history.failed": "chat.on_history_failed",
     "message": "_ev_message",
     "message.failed": "chat.on_message_failed",
+    "message.updated": "_ev_message_updated",
     "receipt": "chat.on_receipt",
     "typing": "chat.on_typing",
     "invite": "invites.on_invite",
@@ -92,6 +93,7 @@ COMMAND_HANDLERS = {
     "declinefile": "_cmd_offer",
     "cancelfile": "_cmd_cancelfile",
     "clear": "_cmd_clear",
+    "reply": "_cmd_reply",
     "help": "_cmd_help",
     "h": "_cmd_help",
     "connect": "_cmd_named",
@@ -282,6 +284,7 @@ class App:
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
             pane.forget_recall()
+            pane.forget_reply()
         self.handshake_request()
 
     def drop_confirm(self):
@@ -374,6 +377,9 @@ class App:
             self.drop_confirm()
         self.chat.forget(fid)
         self.files.forget(fid)
+        for pane in self.layout.panes() + [self.scratch]:
+            if pane.conv == fid:
+                pane.forget_reply()
 
     def apply_friends(self, friends):
         moved = {}
@@ -423,6 +429,7 @@ class App:
             self.stop_typing()
             self.stash_draft(pane)
             pane.conv = conversation
+            pane.forget_reply()
             self.restore_draft(pane)
         pane.scroll = 0
         self.chat.load(conversation)
@@ -469,9 +476,43 @@ class App:
         if self.locked or not self.handshake:
             self.say(FAILURES["locked"] if self.locked else "Not connected")
             return
-        self.chat.send_message(pane.conv, text)
-        pane.draft, pane.cursor, pane.scroll = "", 0, 0
+        self.chat.send_message(pane.conv, text, pane.reply)
+        pane.draft, pane.cursor, pane.scroll, pane.reply = "", 0, 0, ""
         self.stop_typing()
+
+    def begin_select(self):
+        pane = self.pane
+        if not pane or not pane.conv:
+            self.say("No chat is open")
+            return
+        targets = self.chat.targets(pane.conv)
+        if not targets:
+            self.say("No message to reply to")
+            return
+        pane.select = targets[-1].id
+        self.dirty = True
+
+    def select_key(self, kind, value):
+        pane = self.pane
+        ids = [m.id for m in self.chat.targets(pane.conv)]
+        at = ids.index(pane.select) if pane.select in ids else len(ids) - 1
+        steps = {"up": -1, "down": 1, "pgup": -5, "pgdn": 5, "home": -len(ids), "end": len(ids)}
+        step = steps.get(value) if kind == "key" else (-1 if kind == "ctrl" and value == "r" else None)
+        self.dirty = True
+        if not ids:
+            pane.select = None
+            self.say("No message to reply to")
+            return kind == "key" and value == "esc"
+        if step is not None:
+            pane.select = ids[max(0, min(len(ids) - 1, at + step))]
+        elif (kind == "key" and value == "enter") or (kind == "text" and value == "r"):
+            pane.reply, pane.select = ids[at], None
+        elif kind == "key" and value == "esc":
+            pane.select = None
+        else:
+            pane.select = None
+            return False
+        return True
 
     def stop_typing(self):
         if self.typing_on:
@@ -665,6 +706,11 @@ class App:
             return
         if self.overlay is not None and self.overlay.handle(self, kind, value):
             return
+        if self.pane is not None and self.pane.select is not None and self.select_key(kind, value):
+            return
+        if kind == "ctrl" and value == "r":
+            self.begin_select()
+            return
         if kind == "ctrl" and value == "c":
             composer = self.pane or self.scratch
             composer.draft, composer.cursor = "", 0
@@ -739,6 +785,8 @@ class App:
             return
         elif kind == "key" and value in ("tab", "backtab") and self.friends:
             self.show(self.next_free(pane.conv, 1 if value == "tab" else -1))
+        elif kind == "key" and value == "esc" and pane.reply:
+            pane.reply = ""
         elif kind == "key" and value == "esc" and not pane.draft:
             self.files.dismiss(pane.conv)
         else:
@@ -999,14 +1047,33 @@ class App:
             return
         conversation = str(ev.get("conversation") or "")
         for pane in self.layout.panes():
-            if pane.conv == conversation and m.dir == "in":
+            if pane.conv == conversation and m.dir == "in" and pane.select is None:
                 pane.scroll = 0
         f = self.friend(conversation)
         if m.dir == "in" and f and conversation not in self.visible:
             self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
+    def _ev_message_updated(self, ev):
+        m = self.chat.on_message_updated(ev)
+        if m is None or not m.deleted:
+            return
+        conversation = str(ev.get("conversation") or "")
+        for pane in self.layout.panes():
+            if pane.conv != conversation:
+                continue
+            if pane.select == m.id:
+                targets = self.chat.targets(conversation)
+                pane.select = targets[-1].id if targets else None
+            if pane.reply == m.id:
+                pane.reply = ""
+                self.say("Reply canceled: the message was deleted")
+
     def _ev_history_clear_result(self, ev):
-        self.chat.on_clear_result(ev, self.instance)
+        if self.chat.on_clear_result(ev, self.instance):
+            conversation = str(ev.get("conversation") or "")
+            for pane in self.layout.panes():
+                if pane.conv == conversation:
+                    pane.forget_reply()
 
     def _cmd_quit(self, verb, arg):
         self.running = False
@@ -1059,6 +1126,9 @@ class App:
             self.confirm = Confirmation("clear", "Clear this chat? y/n", time.monotonic(),
                                         time.monotonic() + CONFIRM_SECONDS, pane.conv, self.key_for(pane.conv),
                                         self.instance)
+
+    def _cmd_reply(self, verb, arg):
+        self.begin_select()
 
     def _cmd_help(self, verb, arg):
         self.help = Help()

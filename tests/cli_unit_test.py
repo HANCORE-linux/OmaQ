@@ -543,7 +543,7 @@ class PackageA(Sandbox):
         self.assertEqual(plain(app.command_hint(300)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
                                                                 ":requests", ":accept", ":decline", ":nickname",
                                                                 ":sendfile", ":acceptfile", ":declinefile", ":cancelfile",
-                                                                ":clear", ":close", ":quit"])
+                                                                ":reply", ":clear", ":close", ":quit"])
         self.assertIn("1;7m:help", app.command_hint(80))
         app.edit("text", "c")
         self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":cancelfile", ":clear", ":close"])
@@ -2325,6 +2325,201 @@ class Blockers(Sandbox):
         self.assertFalse(one.others_alive())
         for presence in (one, two):
             presence.release()
+
+
+class Replies(Sandbox):
+    def plain(self, text):
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+    def rows(self, app, width=80):
+        return [self.plain(app.palette.row(segs, width)) for segs in app.message_lines("0", width)]
+
+    def chat(self, app):
+        c = app.chat.conv("0")
+        c.loaded, c.request = True, ""
+        message = cli.Message
+        c.items = [message("m1", "", "in", "first from alice", 1700000000.0),
+                   message("f1", "", "in", "[file] notes.txt", 1700000001.0, kind="file"),
+                   message("", "", "sys", "a note", 1700000002.0, local=True),
+                   message("m2", "r2", "out", "my answer", 1700000003.0, ack=2),
+                   message("x1", "", "in", "", 1700000004.0, deleted=True),
+                   message("m3", "", "in", "latest from alice", 1700000005.0),
+                   message("", "r9", "out", "still sending", 1700000006.0),
+                   message("", "r8", "out", "did not go", 1700000007.0, failed="offline")]
+        return c
+
+    def test_ctrl_r_walks_only_messages_that_can_be_answered(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        self.assertEqual([m.id for m in app.chat.targets("0")], ["m1", "m2", "m3"])
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m2")
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "end")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "pgup")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "pgdn")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "home")
+        self.assertEqual(app.pane.select, "m1")
+
+    def test_enter_picks_and_the_reply_goes_with_the_next_message(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.size = (80, 16)
+        app.edit("ctrl", "r")
+        self.assertIn("↑/↓ choose · enter reply · esc cancel", self.plain(app.render()))
+        app.edit("key", "up")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.select, app.pane.reply), (None, "m2"))
+        frame = self.plain(app.render())
+        self.assertIn("↩ Reply: my answer", frame)
+        self.assertNotIn("enter reply", frame)
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        sent = app.link.ops("msg.send")[-1]
+        self.assertEqual((sent["text"], sent["reply"], sent["key"]), ("yes", "m2", A))
+        self.assertEqual((app.pane.reply, app.chat.conv("0").items[-1].reply), ("", "m2"))
+        self.assertNotIn("Reply:", self.plain(app.render()))
+        app.edit("ctrl", "r")
+        app.edit("text", "r")
+        self.assertEqual(app.pane.reply, "m3")
+        app.edit("key", "esc")
+        app.edit("text", "plain")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], "")
+
+    def test_esc_order_and_paste_never_picks(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.edit("text", "draft")
+        app.edit("ctrl", "r")
+        app.edit("paste", "r")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftr"))
+        app.edit("ctrl", "r")
+        app.edit("text", "rx")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftrrx"))
+        app.edit("ctrl", "r")
+        app.edit("key", "esc")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftrrx"))
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send"), [])
+        app.edit("key", "esc")
+        self.assertEqual((app.pane.reply, app.pane.draft), ("", "draftrrx"))
+        app.edit("key", "esc")
+        self.assertEqual(app.pane.draft, "")
+
+    def test_without_messages_or_chat_it_says_why(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.edit("ctrl", "r")
+        self.assertEqual((app.pane.select, app.status), (None, "No message to reply to"))
+        self.chat(app)
+        app.edit("text", ":reply")
+        app.edit("key", "enter")
+        self.assertEqual(app.pane.select, "m3")
+        empty = cli.App("")
+        empty.edit("ctrl", "r")
+        self.assertEqual(empty.status, "No chat is open")
+        self.assertTrue(any(key == "ctrl+r" for key, _ in cli.KEYS))
+        self.assertTrue(any(command == ":reply" for command, _, _ in cli.COMMANDS))
+
+    def test_the_selection_stays_in_view_and_incoming_messages_do_not_move_it(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0", *["line %d" % k for k in range(30)])
+        app.edit("ctrl", "r")
+        for _ in range(20):
+            app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m9")
+        rows = [self.plain(r) for r in app.screen.pane_rows(app.pane, 60, 10, True)]
+        marked = [r for r in rows if r.startswith("▌")]
+        self.assertEqual(len(marked), 1, rows)
+        self.assertIn("line 9", marked[0])
+        scroll = app.pane.scroll
+        app.on_event({"event": "message", "conversation": "0", "key": A, "dir": "in", "id": "late",
+                      "text": "late", "ts": 1700000100})
+        self.assertEqual(app.pane.scroll, scroll)
+        rows = [self.plain(r) for r in app.screen.pane_rows(app.pane, 60, 10, True)]
+        self.assertTrue(any(r.startswith("▌") and "line 9" in r for r in rows), rows)
+
+    def test_replies_quote_the_loaded_message_like_the_bar(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = self.loaded(app, "0")
+        message = cli.Message
+        quoted = "word   \n\tnext " + "x" * 130
+        c.items = [message("q1", "", "in", quoted, 1700000000.0),
+                   message("a1", "", "out", "answer", 1700000001.0, ack=1, reply="q1"),
+                   message("a2", "", "in", "orphan", 1700000002.0, reply="not-loaded"),
+                   message("a3", "", "in", "to a deleted one", 1700000003.0, reply="d1"),
+                   message("d1", "", "in", "", 1700000004.0, deleted=True)]
+        rows = self.rows(app, 300)
+        quotes = [k for k, r in enumerate(rows) if "↩" in r]
+        self.assertEqual(len(quotes), 2, rows)
+        self.assertIn("↩ " + cli.compact_preview(quoted), rows[quotes[0]])
+        self.assertIn("answer", rows[quotes[0] + 1])
+        self.assertIn("↩ Message deleted", rows[quotes[1]])
+        self.assertTrue(all(cli.text_width(r) <= 40 for r in self.rows(app, 40)))
+
+    def test_reply_preview_follows_the_bar_rules(self):
+        self.assertEqual(cli.compact_preview("  a \n\t b  "), "a b")
+        self.assertEqual(cli.compact_preview("a\u00a0\ufeffb"), "a b")
+        self.assertEqual(cli.compact_preview("x" * 120), "x" * 120)
+        self.assertEqual(cli.compact_preview("x" * 121), "x" * 120 + "…")
+        for unit in ("\U0001F1E9\U0001F1EA", "\U0001F468\u200d\U0001F469\u200d\U0001F467", "e\u0301",
+                     "\U0001F44D\U0001F3FD"):
+            self.assertEqual(cli.compact_preview(unit * 121), unit * 120 + "…", repr(unit))
+
+    def test_edits_and_deletes_arrive_live_and_end_a_reply_to_them(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.on_event({"event": "message.updated", "conversation": "0", "key": A, "id": "m1",
+                      "text": "first, fixed", "deleted": False, "edited": True})
+        self.assertTrue(any("first, fixed" in r and "(edited)" in r for r in self.rows(app)), self.rows(app))
+        app.on_event({"event": "message.updated", "conversation": "0", "key": B, "id": "m3", "text": "",
+                      "deleted": True, "edited": False})
+        self.assertEqual(app.pane.reply, "m3")
+        app.on_event({"event": "message.updated", "conversation": "0", "key": A, "id": "m3", "text": "",
+                      "deleted": True, "edited": False})
+        self.assertEqual((app.pane.reply, app.status), ("", "Reply canceled: the message was deleted"))
+        self.assertEqual([m.id for m in app.chat.targets("0")], ["m1", "m2"])
+        self.assertEqual(sum("Message deleted" in r for r in self.rows(app)), 2)
+        self.assertFalse(any("latest from alice" in r for r in self.rows(app)))
+
+    def test_history_items_keep_reply_edit_and_delete(self):
+        m = cli.message_from({"id": "a", "dir": "in", "text": "hi", "reply": "b", "edited": True})
+        self.assertEqual((m.reply, m.edited, m.deleted, m.text), ("b", True, False, "hi"))
+        gone = cli.message_from({"id": "c", "dir": "in", "text": "secret", "deleted": True})
+        self.assertEqual((gone.text, gone.deleted, cli.replyable(gone), cli.shown_text(gone)),
+                         ("", True, False, cli.DELETED))
+
+    def test_reply_state_follows_the_chat(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.chat(app)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.edit("key", "tab")
+        self.assertEqual((app.pane.conv, app.pane.reply, app.pane.select), ("1", "", None))
+        app.edit("key", "tab")
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"},
+                           {"id": "5", "key": A, "name": "alice", "online": True, "status": "online"},
+                           {"id": "1", "key": B, "name": "bob", "online": True, "status": "online"}])
+        self.assertEqual((app.pane.conv, app.pane.reply), ("5", ""))
+        self.chat(app)
+        app.show("0")
+        app.edit("ctrl", "r")
+        app.reset_identity()
+        self.assertEqual((app.pane.reply, app.pane.select), ("", None))
 
 
 class Input(unittest.TestCase):

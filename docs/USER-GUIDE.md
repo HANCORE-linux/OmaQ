@@ -240,6 +240,7 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:invite revoke` | Revoke the active invite after a confirmation |
 | `:redeem <link>` | Send a request with a friend's invite link |
 | `:requests` | Show a pending request, with the safety code for a friend request |
+| `:reply` or `Ctrl+R` | Choose a message to answer |
 | `:accept` / `:decline` | Answer the pending request |
 | `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
 | `:sendfile <path>` | Send a file to this chat; `Tab` lists your folders and files |
@@ -302,11 +303,13 @@ Standalone `:)` `:D` `;)` `:(` `:'(` `:P` `;P` `:O` `:*` `:/` `:|` `xD` `^^` `<3
 
 Receipts use arrows: `·` sending, `→` sent, `⇉` delivered, `⇉` in green read, and `✕` failed.
 
+To answer a message, press `Ctrl+R`: the newest message gets a `▌` mark. Choose another with `↑` and `↓` and press `Enter`. `↩ Reply:` above the input line shows what you answer, and `Esc` drops it. Your friend sees the quote as in the bar, and an answer to one of your messages starts with `↩` and the quoted text. Edits and deletes appear right away.
+
 Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` resets (kitty: `Ctrl+Shift+=`, `Ctrl+Shift+-`, and `Ctrl+Shift+Backspace`). After a zoom, the bottom line briefly shows the new size, such as `Text 112%`. 100% is the size when the session started.
 
 ### Terminals and limits
 
-The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, edits, and search stay in the bar.
+The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, editing and deleting messages, and search stay in the bar.
 
 ## Protect and move your identity
 

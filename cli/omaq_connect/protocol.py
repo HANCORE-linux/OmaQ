@@ -41,6 +41,12 @@ HISTORY_ITEM_FAILED = "An item could not be added to chat history"
 UNSAVED_SENT = "Message sent, but could not be saved locally."
 
 
+DELETED = "Message deleted"
+
+
+EDITED = "(edited)"
+
+
 FILE_ERRORS = {
     "busy": "A file is already sending",
     "forbidden": "The file could not be sent",
@@ -86,11 +92,23 @@ def is_direct(conversation):
 
 
 class Message:
-    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed", "local", "kind")
+    __slots__ = ("id", "request", "dir", "text", "ts", "sender", "ack", "failed", "local", "kind", "reply", "edited",
+                 "deleted")
 
-    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed="", local=False, kind=""):
+    def __init__(self, mid, request, direction, text, ts, sender="", ack=0, failed="", local=False, kind="", reply="",
+                 edited=False, deleted=False):
         self.id, self.request, self.dir, self.text = mid, request, direction, text
         self.ts, self.sender, self.ack, self.failed, self.local, self.kind = ts, sender, ack, failed, local, kind
+        self.reply, self.edited, self.deleted = reply, edited, deleted
+
+
+def shown_text(m):
+    return DELETED if m.deleted else m.text
+
+
+def replyable(m):
+    return (bool(m.id) and m.dir in ("in", "out") and not (m.failed or m.local or m.kind or m.deleted)
+            and bool(m.text.strip()))
 
 
 def message_from(item):
@@ -108,5 +126,7 @@ def message_from(item):
         ts = 0.0
     if ts > 1e12:
         ts /= 1000.0
-    return Message(str(item.get("id") or ""), str(item.get("request") or ""), direction, text, ts,
-                   str(item.get("sender") or ""), ack, kind=kind if kind in ("file", "image") else "")
+    deleted = item.get("deleted") is True
+    return Message(str(item.get("id") or ""), str(item.get("request") or ""), direction, "" if deleted else text, ts,
+                   str(item.get("sender") or ""), ack, kind=kind if kind in ("file", "image") else "",
+                   reply=str(item.get("reply") or ""), edited=item.get("edited") is True, deleted=deleted)

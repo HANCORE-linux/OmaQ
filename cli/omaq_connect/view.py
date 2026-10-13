@@ -1,9 +1,9 @@
 import time
 
 from .commands import HINT, RECEIPTS, TIPS, sendfile_path, suggestions
-from .protocol import FAILURES
-from .text import (cells, clean, clean_line, clip, clock, day_label, human_size, is_command, progress_bar, shorten,
-                   text_width, wrap)
+from .protocol import EDITED, FAILURES, shown_text
+from .text import (cells, clean, clean_line, clip, clock, compact_preview, day_label, human_size, is_command,
+                   progress_bar, shorten, text_width, wrap)
 
 
 NARROW_BODY = 12
@@ -76,9 +76,29 @@ class Screen:
         foot = self.app.palette.row([("   \u2193 %d more \u00b7 pgdn" % below, "dim", "")], width) if below else " " * width
         return [head] + shown + [foot], top, len(shown)
 
+    def select_hint(self, cols):
+        segs = [(" \u2191/\u2193", "text", "1"), (" choose \u00b7 ", "dim", ""), ("enter", "text", "1"),
+                (" reply \u00b7 ", "dim", ""), ("esc", "text", "1"), (" cancel", "dim", "")]
+        return self.app.palette.row(segs, cols)
+
+    def reply_preview(self, conversation, mid):
+        c = self.app.chat.convs.get(conversation)
+        for m in (c.items if c and mid else []):
+            if m.id == mid:
+                return clean_line(compact_preview(shown_text(m)))
+        return ""
+
+    def reply_row(self, pane, cols):
+        label = " \u21a9 Reply: "
+        preview = self.reply_preview(pane.conv, pane.reply)
+        return self.app.palette.row([(label, "accent", "1"),
+                                     (shorten(preview, max(1, cols - text_width(label) - 1)), "text", "")], cols)
+
     def command_hint(self, cols):
         p = self.app.palette
         pane = self.app.pane or self.app.scratch
+        if pane.select is not None:
+            return self.select_hint(cols)
         if not is_command(pane.draft):
             return self.hint_line(cols)
         if self.app.completion is not None:
@@ -195,8 +215,14 @@ class Screen:
             self.app.visible.add(pane.conv)
         pinned = self.transfer_lines(pane.conv, width)[:max(0, body)] if pane.conv else []
         room = body - len(pinned)
-        lines = self.message_lines(pane.conv, width)
-        pane.scroll = min(pane.scroll, max(0, len(lines) - room))
+        lines, span = self.message_block(pane.conv, width, pane.select)
+        if span is not None and room > 0:
+            first, last = span
+            if last >= len(lines) - pane.scroll:
+                pane.scroll = len(lines) - 1 - last
+            elif first < len(lines) - pane.scroll - room:
+                pane.scroll = len(lines) - first - room
+        pane.scroll = min(max(0, pane.scroll), max(0, len(lines) - room))
         end = len(lines) - pane.scroll
         visible = lines[max(0, end - room):end] if room > 0 else []
         rows.extend([" " * width] * (room - len(visible)))
@@ -207,7 +233,9 @@ class Screen:
         cols, rows = self.app.size
         p = self.app.palette
         out = ["", p.paint("─" * cols, "rule")]
-        area = max(1, rows - 5)
+        composer = self.app.pane or self.app.scratch
+        replying = bool(composer.reply) and not self.app.locked
+        area = max(1, rows - (6 if replying else 5))
         drawer = []
         modal = self.app.picker if self.app.picker is not None else self.app.file_picker
         if modal is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
@@ -254,6 +282,8 @@ class Screen:
         hint = self.app.confirm.prompt if self.app.confirm is not None and not self.app.locked else (self.app.status or "")
         rule = cols - text_width(hint) - 3 if hint else cols
         out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + clip(hint, cols - 2)[0] + " ", "unread") if hint else ""))
+        if replying:
+            out.append(self.reply_row(composer, cols))
         if self.app.locked:
             prompt = " passphrase › "
             shown = "•" * len(self.app.secret)
@@ -289,16 +319,21 @@ class Screen:
         return "".join(frame)
 
     def message_lines(self, conversation, cols):
+        return self.message_block(conversation, cols)[0]
+
+    def message_block(self, conversation, cols, selected=None):
         c = self.app.chat.convs.get(conversation)
         if not c:
-            return []
+            return [], None
         if not c.loaded and not c.items:
-            return [[("   loading…", "dim", "")]]
+            return [[("   loading…", "dim", "")]], None
         f = self.app.friend(conversation)
         peer = f["name"] if f else "peer"
         now = time.time()
         lines = []
+        span = None
         shown_day = None
+        by_id = {m.id: m for m in c.items if m.id}
         for m in c.items:
             if m.ts:
                 local = time.localtime(m.ts)
@@ -313,18 +348,23 @@ class Screen:
             pw = text_width(" %s  %s › " % (when, who))
             narrow = cols - pw - 1 < NARROW_BODY
             pad = 3 if narrow else pw
-            body = wrap(clean(m.text), max(1, cols - pad - 1))
-            extra = ""
+            chosen = bool(selected) and m.id == selected
+            body_role = "dim" if m.dir == "sys" or m.deleted else "text"
+            parts = [(part, body_role, "1" if chosen else "")
+                     for part in wrap(clean(shown_text(m)), max(1, cols - pad - 1))]
+            target = by_id.get(m.reply) if m.reply else None
+            quote = clean_line(compact_preview(shown_text(target))) if target is not None and target is not m else ""
+            if quote:
+                parts.insert(0, (shorten("\u21a9 " + quote, max(1, cols - pad - 1)), "accent", "1"))
+            tail = [(EDITED, "dim", "")] if m.edited and not m.deleted else []
             if m.dir == "out" and m.failed:
-                label, role = "✕ " + FAILURES.get(m.failed, "Message was not sent"), "unread"
+                tail.append(("✕ " + FAILURES.get(m.failed, "Message was not sent"), "unread", ""))
             elif m.dir == "out":
-                label = RECEIPTS[min(m.ack, 3)]
-                role, extra = ("online", "1") if m.ack >= 3 else ("dim", "")
-            else:
-                label, role = "", "dim"
+                tail.append((RECEIPTS[min(m.ack, 3)],) + (("online", "1") if m.ack >= 3 else ("dim", "")))
+            start = len(lines)
             if narrow:
                 lines.append([(" %s  " % when, "dim", ""), (who, who_role, ""), (" ›", "dim", "")])
-            for k, part in enumerate(body):
+            for k, part in enumerate(parts):
                 segs = []
                 if k == 0 and not narrow:
                     segs.append((" %s  " % when, "dim", ""))
@@ -332,18 +372,23 @@ class Screen:
                     segs.append((" › ", "dim", ""))
                 else:
                     segs.append((" " * pad, "dim", ""))
-                segs.append((part, "dim" if m.dir == "sys" else "text", ""))
-                if label and k == len(body) - 1:
-                    if pad + text_width(part) + 2 + text_width(label) <= cols:
-                        segs.append(("  ", "dim", ""))
-                        segs.append((label, role, extra))
+                segs.append(part)
+                if tail and k == len(parts) - 1:
+                    trailer = [seg for label in tail for seg in (("  ", "dim", ""), label)]
+                    if pad + text_width(part[0]) + sum(text_width(text) for text, _, _ in trailer) <= cols:
+                        segs.extend(trailer)
                     else:
                         lines.append(segs)
-                        segs = [(" " * pad, "dim", ""), (label, role, extra)]
+                        segs = [(" " * pad, "dim", "")] + trailer[1:]
                 lines.append(segs)
+            if chosen:
+                span = (start, len(lines) - 1)
+                for k in range(start, len(lines)):
+                    text, role, extra = lines[k][0]
+                    lines[k] = [("\u258c", "accent", "1"), (text[1:], role, extra)] + lines[k][1:]
         if not c.items:
             lines.append([("   no messages yet", "dim", "")])
-        return lines
+        return lines, span
 
     def transfer_line(self, cols, icon, text, name, tail=(), hint=""):
         tail = list(tail)
