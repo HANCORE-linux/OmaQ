@@ -121,7 +121,7 @@ def main():
         env = dict(os.environ, OMAQ_HOME=dirs["ha"], OMAQ_STATE=dirs["sa"], XDG_RUNTIME_DIR=dirs["run"],
                    TERM="xterm-256color")
         term = harness.Term(env, args=["bob"], cols=110, rows=30)
-        if not term.wait_screen(r"❯ bob  ", 20):
+        if not term.wait_screen(r"❯ bob(?: ●)?  ", 20):
             fail("CLI did not open the chat with bob:\n" + term.text()[-1500:])
         term.send("hallo von der cli\r")
         got = b.wait(lambda e: e.get("event") == "message" and e.get("text") == "hallo von der cli", 30)
