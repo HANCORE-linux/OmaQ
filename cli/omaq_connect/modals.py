@@ -23,7 +23,8 @@ class Confirmation:
     @property
     def kept(self):
         return {"revoke": "Invite kept", "protect": "No passphrase set", "unprotect": "Passphrase kept",
-                "export": "Identity not exported", "import": "Identity kept"}.get(self.action, "Chat kept")
+                "export": "Identity not exported", "overwrite": "Identity not exported",
+                "import": "Identity kept"}.get(self.action, "Chat kept")
 
     def expired(self, now):
         return now > self.until
@@ -103,6 +104,9 @@ class Help:
         for k, (command, text, needs) in enumerate(COMMANDS):
             chosen = k == self.index
             label = command + needs
+            parent, _, sub = command.strip().partition(" ")
+            if sub and any(other == parent for other, _, _ in COMMANDS):
+                label = "  " + sub + (" " if needs else "") + needs
             rows.append(p.row([(" ▸ " if chosen else "   ", "accent", "1"), (label.ljust(18), "text" if chosen else "name", "7" if chosen else ""),
                                ("  " + text, "text" if chosen else "dim", "")], width))
         rows.append(" " * width)

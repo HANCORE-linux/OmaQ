@@ -9,6 +9,8 @@ from .text import (cells, clean, clean_line, clip, clock, compact_preview, day_l
 NARROW_BODY = 12
 NAME_MAX = 18
 TRANSFER_NAME_MIN = 8
+GATE_LINE = " press esc to type again"
+GATE_HINT = " this terminal does not mark pastes · esc continues"
 
 
 class Screen:
@@ -234,8 +236,12 @@ class Screen:
         p = self.app.palette
         out = ["", p.paint("─" * cols, "rule")]
         composer = self.app.pane or self.app.scratch
-        replying = bool(composer.reply) and not self.app.locked and self.app.secret_prompt is None
-        area = max(1, rows - (6 if replying else 5))
+        replying = (bool(composer.reply) and not self.app.locked and self.app.secret_prompt is None
+                    and not self.app.gated())
+        hint = self.app.confirm.prompt if self.app.confirm is not None and not self.app.locked else (self.app.status or "")
+        lines = wrap(hint, cols - 2) if hint and text_width(hint) > cols - 3 else []
+        extra = min(len(lines) - 1, 2, max(0, rows - (7 if replying else 6))) if lines else 0
+        area = max(1, rows - (6 if replying else 5) - extra)
         drawer = []
         modal = self.app.picker if self.app.picker is not None else self.app.file_picker
         if modal is not None and not self.app.locked and self.app.help is None and self.app.overlay is None and area > 1:
@@ -279,9 +285,11 @@ class Screen:
         drawer_row = len(out) + 1
         out.extend(drawer)
         out[0] = self.friends_bar(cols)
-        hint = self.app.confirm.prompt if self.app.confirm is not None and not self.app.locked else (self.app.status or "")
-        rule = cols - text_width(hint) - 3 if hint else cols
-        out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + clip(hint, cols - 2)[0] + " ", "unread") if hint else ""))
+        if lines:
+            out.extend(p.paint(" " + clip(line, cols - 2)[0] + " ", "unread") for line in lines[:extra + 1])
+        else:
+            rule = cols - text_width(hint) - 3 if hint else cols
+            out.append(p.paint("─" * max(0, rule), "rule") + (p.paint(" " + hint + " ", "unread") if hint else ""))
         if replying:
             out.append(self.reply_row(composer, cols))
         if self.app.locked:
@@ -294,6 +302,10 @@ class Screen:
             shown = "•" * len(self.app.secret_prompt.value)
             out.append(p.paint(prompt, "accent") + p.paint(clip(shown, max(0, cols - text_width(prompt) - 1))[0], "text"))
             cursor_col = min(cols, text_width(prompt) + len(shown) + 1)
+        elif self.app.gated():
+            shown, _ = clip(GATE_LINE, cols)
+            out.append(p.paint(shown, "accent"))
+            cursor_col = min(cols, text_width(shown) + 1)
         else:
             pane = self.app.pane or self.app.scratch
             f = self.app.friend(pane.conv)
@@ -314,6 +326,8 @@ class Screen:
             out.append(self.zoom_line(clip(" enter unlock · esc clear · ctrl+c quit", cols)[0], cols))
         elif self.app.secret_prompt is not None:
             out.append(self.zoom_line(clip(" enter continues · esc cancels", cols)[0], cols))
+        elif self.app.gated():
+            out.append(self.zoom_line(clip(GATE_HINT, cols)[0], cols))
         else:
             out.append(self.command_hint(cols))
         frame = ["\x1b[?2026h\x1b[?25l"]

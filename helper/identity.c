@@ -356,6 +356,34 @@ done:
 	return rc;
 }
 
+static int create_private_file(const char *path, const uint8_t *data, size_t len)
+{
+	size_t used = 0;
+	int fd, rc = -1;
+
+	if (!path_ok(path) || (!data && len))
+		return -1;
+	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NONBLOCK |
+		  O_NOFOLLOW, 0600);
+	if (fd < 0)
+		return -1;
+	while (used < len) {
+		ssize_t written = write(fd, data + used, len - used);
+		if (written <= 0)
+			goto done;
+		used += (size_t)written;
+	}
+	if (fsync(fd) != 0)
+		goto done;
+	rc = 0;
+done:
+	if (close(fd) != 0)
+		rc = -1;
+	if (rc != 0)
+		unlink(path);
+	return rc;
+}
+
 static int destination_aliases_source(const char *destination, const char *source)
 {
 	struct stat destination_stat, source_stat;
@@ -368,7 +396,7 @@ static int destination_aliases_source(const char *destination, const char *sourc
 	       destination_stat.st_ino == source_stat.st_ino;
 }
 
-int omaq_identity_bundle_export(const char *home, const char *path)
+int omaq_identity_bundle_export(const char *home, const char *path, int replace)
 {
 	char tox_path[576], registry_path[576], bindings_path[576];
 	uint8_t *tox_data = NULL, *registry_data = NULL, *bindings_data = NULL;
@@ -411,7 +439,8 @@ int omaq_identity_bundle_export(const char *home, const char *path)
 	if (bindings_len)
 		memcpy(bundle + OMAQ_IDENTITY_BUNDLE_V2_HEADER + tox_len + registry_len,
 		       bindings_data, bindings_len);
-	rc = write_private_file(path, bundle, bundle_len);
+	rc = replace ? write_private_file(path, bundle, bundle_len)
+		     : create_private_file(path, bundle, bundle_len);
 done:
 	free(bundle);
 	free(bindings_data);

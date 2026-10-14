@@ -247,6 +247,10 @@ restored_instance=$(grep -a '"event":"snapshot"' "$base/missing.out" |
 	grep -a '"request":"identity-after-guard-test"' | tail -1 |
 	sed -n 's/.*"instance":"\([^"]*\)".*/\1/p')
 [ -n "$restored_instance" ] || { echo "reinvite-recovery: restored instance missing" >&2; exit 1; }
+grep -q "\"instance\":\"$restored_instance\"" "$state/omaq.protocol" || {
+	echo "reinvite-recovery: omaq.protocol still names the instance from before the guarded import" >&2
+	exit 1
+}
 printf '{"op":"identity.ready","id":"%s"}\n' "$restored_instance" >&3
 printf '%s\n' '{"op":"identity.protect","passphrase":"guard-test-pass","id":"identity-before-uncertain-protect"}' >&3
 i=0

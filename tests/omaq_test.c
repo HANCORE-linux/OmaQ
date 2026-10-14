@@ -1154,7 +1154,7 @@ static void test_identity_files(void)
 	char registry[256], bindings[256], bundle[256], v1_bundle[256], fresh[256];
 	char fresh_tox[300], fresh_registry[300], fresh_bindings[300], fresh_v1[300];
 	char fresh_v1_tox[320], fresh_v1_registry[320], fresh_v1_bindings[320];
-	char tox_alias[300];
+	char tox_alias[300], kept_bundle[256], new_bundle[256], dangling[256], missing[256];
 	FILE *f;
 
 	if (!mkdtemp(dir)) {
@@ -1169,6 +1169,10 @@ static void test_identity_files(void)
 	    snprintf(bindings, sizeof(bindings), "%s/group-friends.tsv", dir) >=
 		    (int)sizeof(bindings) ||
 	    snprintf(bundle, sizeof(bundle), "%s/bundle.save", dir) >= (int)sizeof(bundle) ||
+	    snprintf(kept_bundle, sizeof(kept_bundle), "%s/kept.save", dir) >= (int)sizeof(kept_bundle) ||
+	    snprintf(new_bundle, sizeof(new_bundle), "%s/new.save", dir) >= (int)sizeof(new_bundle) ||
+	    snprintf(dangling, sizeof(dangling), "%s/dangling.save", dir) >= (int)sizeof(dangling) ||
+	    snprintf(missing, sizeof(missing), "%s/missing.save", dir) >= (int)sizeof(missing) ||
 	    snprintf(v1_bundle, sizeof(v1_bundle), "%s/bundle-v1.save", dir) >=
 		    (int)sizeof(v1_bundle) ||
 	    snprintf(fresh, sizeof(fresh), "%s/fresh", dir) >= (int)sizeof(fresh) ||
@@ -1218,13 +1222,14 @@ static void test_identity_files(void)
 	      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t"
 	      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", f);
 	fclose(f);
-	if (omaq_identity_bundle_export(dir, src) == 0 ||
-	    omaq_identity_bundle_export(dir, tox_alias) == 0 ||
-	    omaq_identity_bundle_export(dir, registry) == 0 ||
-	    omaq_identity_bundle_export(dir, bindings) == 0)
+	if (omaq_identity_bundle_export(dir, src, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, tox_alias, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, registry, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, bindings, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, src, 0) == 0)
 		fail("identity bundle source alias");
 	if (mkdir(fresh, 0700) != 0 ||
-	    omaq_identity_bundle_export(dir, bundle) != 0 ||
+	    omaq_identity_bundle_export(dir, bundle, 1) != 0 ||
 	    omaq_identity_bundle_import(fresh, bundle, 0) != 0)
 		fail("identity bundle roundtrip");
 	else {
@@ -1236,6 +1241,39 @@ static void test_identity_files(void)
 		    read_file(fresh_bindings, copied, sizeof(copied)) != 0 ||
 		    !strstr(copied, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
 			fail("identity bundle group registry");
+	}
+	{
+		char copied[16] = "";
+		struct stat st;
+		f = fopen(kept_bundle, "w");
+		if (!f) {
+			fail("id kept bundle write");
+			return;
+		}
+		fputs("KEEP", f);
+		fclose(f);
+		if (omaq_identity_bundle_export(dir, kept_bundle, 0) == 0 ||
+		    read_file(kept_bundle, copied, sizeof(copied)) != 0 || strcmp(copied, "KEEP") != 0)
+			fail("identity bundle export replaced a file without replace");
+		f = NULL;
+		if (omaq_identity_bundle_export(dir, kept_bundle, 1) != 0 ||
+		    !(f = fopen(kept_bundle, "rb")) || fread(copied, 1, 8, f) != 8 ||
+		    memcmp(copied, "OMAQID2\n", 8) != 0)
+			fail("identity bundle export did not replace with replace");
+		if (f)
+			fclose(f);
+		f = NULL;
+		if (omaq_identity_bundle_export(dir, new_bundle, 0) != 0 ||
+		    stat(new_bundle, &st) != 0 || (st.st_mode & 0777) != 0600 ||
+		    !(f = fopen(new_bundle, "rb")) || fread(copied, 1, 8, f) != 8 ||
+		    memcmp(copied, "OMAQID2\n", 8) != 0)
+			fail("identity bundle export without replace did not create the file");
+		if (f)
+			fclose(f);
+		if (symlink(missing, dangling) != 0 ||
+		    omaq_identity_bundle_export(dir, dangling, 0) == 0 ||
+		    lstat(missing, &st) == 0)
+			fail("identity bundle export without replace followed a link");
 	}
 	{
 		static const char v1_registry[] =

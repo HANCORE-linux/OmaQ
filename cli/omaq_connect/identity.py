@@ -19,6 +19,8 @@ OLD_RULE = "A passphrase has 1 to 128 bytes."
 PROTECT_PROMPT = "Protect your identity? This passphrase cannot be recovered if lost. y/n"
 UNPROTECT_PROMPT = "Remove the identity passphrase? The identity is then stored unencrypted. y/n"
 IMPORT_PROMPT = "Import %s as the active identity? Existing direct contacts will require a fresh invite. y/n"
+EXPORT_PROMPT = "Export your identity to %s? y/n"
+REPLACE_PROMPT = "Replace %s with your identity? y/n"
 DONE = {
     "protect": "Identity protection enabled.",
     "unprotect": "Identity protection removed.",
@@ -48,6 +50,7 @@ ERRORS = {
     "identity_changed": "Identity changed. Pending actions were discarded.",
     "identity_backup_failed": "Could not create a safe identity backup.",
     "identity_backup_cleanup_failed": "An old identity recovery backup could not be removed.",
+    "runtime_marker_failed": "Your identity change is saved, but OmaQ could not update its runtime file. Free some disk space, then restart OmaQ; until then, quitting may leave it running.",
     "identity_state_archive_failed": "Could not archive the previous identity's local data.",
     "identity_rollback_failed": "Identity restore failed. The backup was kept in the OmaQ data folder.",
     "identity_missing": "Your existing OmaQ identity is unavailable. No replacement identity was created. Restore or import the original identity.",
@@ -94,6 +97,8 @@ class Identity:
         self.send, self.say, self.ask, self.confirm, self.failed = send, say, ask, confirm, failed
         self.protected = None
         self.action, self.request, self.until, self.path = "", "", 0.0, ""
+        self.replace = False
+        self.export_version = 0
         self.first = ""
 
     def busy(self):
@@ -147,10 +152,12 @@ class Identity:
             self.say("Usage: :identity %s <path>" % action)
         elif path is None or not path_ok(path):
             self.say("This path cannot be used: %s" % clean_line(rest.strip() or path))
+        elif action == "export" and os.path.lexists(path):
+            self.confirm("overwrite", REPLACE_PROMPT % clean_line(path), path)
+        elif action == "export" and self.export_version < 2:
+            self.say("Helper update required")
         elif action == "export":
-            exists = os.path.lexists(path)
-            prompt = ("Replace %s with your identity? y/n" if exists else "Export your identity to %s? y/n")
-            self.confirm("export", prompt % clean_line(path), path)
+            self.confirm("export", EXPORT_PROMPT % clean_line(path), path)
         elif not os.path.isfile(path):
             self.say("No identity bundle at %s" % clean_line(path))
         elif action == "validate":
@@ -169,8 +176,8 @@ class Identity:
                 self.start("protect", {"op": "identity.protect", "passphrase": secret}, "")
         elif action == "unprotect":
             self.start("unprotect", {"op": "identity.unprotect", "passphrase": secret}, "")
-        elif action == "export":
-            self.start("export", {"op": "identity.export", "path": path}, path)
+        elif action in ("export", "overwrite"):
+            self.start("export", {"op": "identity.export", "path": path, "replace": action == "overwrite"}, path)
         elif action == "import":
             op = {"op": "identity.import", "path": path, "replace": True}
             if secret:
@@ -216,6 +223,7 @@ class Identity:
             self.failed()
             return
         self.action, self.request, self.path = action, request, path
+        self.replace = op.get("replace") is True
         self.until = time.monotonic() + IDENTITY_SECONDS
         self.say(WORKING[action], IDENTITY_SECONDS)
 
@@ -244,16 +252,24 @@ class Identity:
         else:
             self.say(DONE[action], 20)
 
+    def on_global_error(self, code):
+        if code != "runtime_marker_failed":
+            return False
+        self.say(ERRORS[code], 30)
+        return True
+
     def on_correlated_error(self, code, request):
         if not (self.request and request == self.request):
             return False
-        action = self.action
+        action, path = self.action, self.path
         self.finish()
         if code == "identity_passphrase_required" and action in ("validate", "import"):
             self.ask("bundle passphrase", action)
             return True
         self.path = ""
-        if code == "forbidden" and action == "protect" and self.protected:
+        if code == "forbidden" and action == "export" and not self.replace and os.path.lexists(path):
+            self.say("%s already exists. Export again to replace it." % clean_line(path), 15)
+        elif code == "forbidden" and action == "protect" and self.protected:
             self.say(self.protect_blocker(), 15)
         elif code == "forbidden":
             self.say(FORBIDDEN[action], 15)

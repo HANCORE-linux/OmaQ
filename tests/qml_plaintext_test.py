@@ -20,7 +20,7 @@ QML_POLICY_SHA256 = {
     "CallTone.qml": "12d873ec1b774ed038fb526b0b2b7fd2a1a71e97d9987aa27fef06f6f4d93ddc",
     "ChatSurface.qml": "5db1eec01d51f767172f43b48e976c153719874daca247c48a373d07fa929e36",
     "MaterialSymbols.qml": "e4f62d5c50be23a97149725d74e87f3427666ccd72ca6e12e088b3dd0b82b70e",
-    "Panel.qml": "6ad89ccce5072a932f3ed968c18e795f0307cd5c3640905406e3c5b19124d268",
+    "Panel.qml": "392aa09c59453b2023c7091cc190d7cdd144ed420433f67e291452bec24e2c6b",
     "PlacementController.qml": "82f72fcee9a6aceeb6d1015095fea4961eb2cddbdc11943ef410e160060df76a",
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "ffd4171eb4506e6722fcb0747cf99bbf3c4fc341a9877fb20a5c3c1ab7ddf5ec",
@@ -147,7 +147,7 @@ REVIEWED_COMPUTED_IDS = set().union(*COMPUTED_WRITE_ALLOWLIST.values())
 COMPUTED_WRITE_SOURCE_SHA256 = {
     "CallTone.qml": "8d9a0af95e58b888dfd09e37c198684843aa10d306f815abc868b88c61496c86",
     "ChatSurface.qml": "f2454a007e434f61efb711b881261c722405e625dbfd7769ee3c8230949444a5",
-    "Panel.qml": "90c6615c72a4d35b2da57930e9ae759d6c2a69e30627ba3a7d71b8005194d961",
+    "Panel.qml": "2fc1a84d3c8a9842215b990236b56e7e30252b48551d9717d86fa0b920933edb",
     "Service.qml": "2395f4a77de4bc06a4cd21ad77bdd19fe98c9d41b2bd48de7bfb69eb1d383809",
     "pages/ChatPage.qml": "1eef27f59165b114dfce943780132009f5491ed96eaccafde3486a7c5e6a28f8",
 }

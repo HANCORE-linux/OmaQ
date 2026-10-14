@@ -26,12 +26,13 @@ def fail(message):
 
 
 class Term:
-    def __init__(self, env, args=(), cols=100, rows=30):
+    def __init__(self, env, args=(), cols=100, rows=30, marks_pastes=False):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.execve(sys.executable, [sys.executable, "-I", CLI, *args], env)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         self.out = bytearray()
+        self.marks_pastes = marks_pastes
 
     def pump(self, seconds):
         end = time.monotonic() + seconds
@@ -45,6 +46,9 @@ class Term:
                 if not chunk:
                     return
                 self.out.extend(chunk)
+                if self.marks_pastes and b"\x1b[?2004$p" in self.out:
+                    self.marks_pastes = False
+                    os.write(self.fd, b"\x1b[?2004;1$y")
 
     def wait_for(self, needle, seconds):
         end = time.monotonic() + seconds
@@ -233,6 +237,22 @@ def main():
             fail("the picker did not insert the emoji:\n" + "\n".join(term.screen()[-3:]))
         term.send("\x15")
         term.pump(0.3)
+        own_dir = os.path.join(base, "own-export")
+        os.makedirs(own_dir, mode=0o700)
+        own = os.path.join(own_dir, "omaq-identity.save")
+        term.send(":identity export %s\r" % own_dir)
+        if not term.wait_for("Export your identity to %s? y/n" % own, 10):
+            fail(":identity export did not ask first:\n" + "\n".join(term.screen()[-4:]))
+        term.send("y")
+        if not term.wait_for("Identity exported to %s." % own, 30):
+            fail("the CLI-started helper did not export the identity")
+        term.send(":identity import %s\r" % own)
+        if not term.wait_for("Import %s as the active identity?" % own, 10):
+            fail(":identity import did not ask first:\n" + "\n".join(term.screen()[-4:]))
+        term.send("y")
+        if not term.wait_for("Identity imported.", 60):
+            fail("the CLI-started helper did not import the identity")
+        term.pump(2.0)
         term.send(":quit\r")
         code = term.finish()
         if code != 0:
@@ -249,7 +269,7 @@ def main():
         while helper_pid(state) and time.monotonic() < end:
             time.sleep(0.2)
         if helper_pid(state):
-            fail("CLI-only exit left the helper running")
+            fail("CLI-only exit after an identity import left the helper running")
         presence = os.path.join(runtime, "omaq-cli")
         scopes = os.listdir(presence)
         if len(scopes) != 1 or not re.fullmatch(r"[0-9a-f]{16}", scopes[0]):
@@ -303,13 +323,22 @@ def main():
             fail("unlock did not reach the friend list:\n" + term.text()[-1500:])
         if "correct horse 42" in term.text():
             fail("passphrase was echoed")
+        if not term.wait_screen("press esc to type again", 10):
+            fail("a terminal without marked pastes did not hold input after the passphrase")
+        term.send(":q\r")
+        term.pump(1.0)
+        if os.waitpid(term.pid, os.WNOHANG)[0]:
+            fail("input before esc reached the command line")
+        term.send("\x1b")
+        if not term.wait_screen("❯", 10):
+            fail("esc did not release the input")
         term.send(":q\r")
         if term.finish() != 0:
             fail("exit after unlock failed")
         restored(term)
         if proc.poll() is not None:
             fail("CLI stopped a helper it did not start")
-        term = Term(env)
+        term = Term(env, marks_pastes=True)
         if not term.wait_for("no friends yet", 20):
             fail("attach to the unlocked foreign helper failed")
         proc.terminate()
@@ -329,6 +358,9 @@ def main():
             term.pump(0.2)
         if "no friends yet" not in term.out[mark:].decode("utf-8", "replace"):
             fail("reattached CLI did not unlock again")
+        term.pump(0.5)
+        if any("press esc to type again" in row for row in term.screen()):
+            fail("a terminal with marked pastes still held input after the passphrase")
 
         def after(start, needle, seconds):
             end = time.monotonic() + seconds

@@ -134,6 +134,7 @@ class App:
         self.secret = ""
         self.unlock_request = ""
         self.more_input = self.hush = False
+        self.pastes_marked = self.gate = False
         self.status = ""
         self.status_until = 0.0
         self.status_set, self.status_seconds = 0.0, STATUS_SECONDS
@@ -498,7 +499,12 @@ class App:
             flags.append(later)
             later = later or not (kind == "key" and value in ("enter", "focus-in", "focus-out"))
         for (kind, value), more in zip(events, reversed(flags)):
-            if self.hush and not (kind == "key" and value in ("focus-in", "focus-out")):
+            focus = kind == "key" and value in ("focus-in", "focus-out")
+            if self.hush and not focus:
+                continue
+            if self.gated() and not focus:
+                if kind == "key" and value == "esc":
+                    self.gate, self.dirty = False, True
                 continue
             self.more_input = more
             self.edit(kind, value)
@@ -506,17 +512,23 @@ class App:
 
     def discard_burst(self, fd):
         self.hush = False
+        keys = self.keys
         if self.secret_prompt is not None or self.locked:
-            self.keys.drop_current(self.keys.pending == b"\x1b" and not select.select([fd], [], [], 0.03)[0])
+            bound = keys.skip
+            quiet = keys.paste is None and bool(keys.pending) and not select.select([fd], [], [], 0.03)[0]
+            keys.drop_current(quiet and keys.pending == b"\x1b")
+            if quiet and not bound:
+                keys.hold()
             return True
         while select.select([fd], [], [], HUSH_SECONDS)[0]:
             data = os.read(fd, 4096)
             if not data:
                 return False
-            for kind, value in self.keys.feed(data):
+            for kind, value in keys.feed(data):
                 if kind == "key" and value in ("focus-in", "focus-out"):
                     self.edit(kind, value)
-        self.keys.drop_current(True)
+        keys.drop_current(True)
+        self.gate = self.gate or not (self.pastes_marked or keys.marked)
         return True
 
     def take_read(self, fd):
@@ -524,13 +536,16 @@ class App:
         if not data:
             return False
         self.take_input(self.keys.feed(data))
-        pending = self.keys.pending
-        marker = (self.secret_prompt is not None or self.locked) and len(pending) > 1 and b"\x1b[200~".startswith(pending)
-        if pending and self.keys.paste is None and not self.hush and not self.keys.skip and not marker:
+        if self.keys.pending and self.keys.paste is None and not self.hush and not self.keys.skip:
             more, _, _ = select.select([fd], [], [], 0.03)
-            if not more:
+            if not more and (self.secret_prompt is not None or self.locked):
+                self.keys.hold()
+            if not more and not self.keys.held:
                 self.take_input(self.keys.feed(b"", final=True))
         return True
+
+    def gated(self):
+        return self.gate and self.secret_prompt is None and not self.locked
 
     def hush_secret(self):
         if self.secret_prompt is not None:
@@ -549,6 +564,8 @@ class App:
         self.dirty = True
 
     def close_secret(self):
+        if self.secret_prompt is not None:
+            self.keys.drop_current()
         self.secret_prompt = None
         self.identity.forget_secret()
 
@@ -981,7 +998,7 @@ class App:
         out.flush()
         try:
             tty.setraw(fd)
-            typed = measure_widths(fd, out)
+            typed, self.pastes_marked = measure_widths(fd, out)
             size = os.get_terminal_size(fd)
             self.size = (size.columns, size.lines)
             self.track_zoom(pixel_size(fd))
@@ -1051,6 +1068,10 @@ class App:
                 self.history_clear = int(ev.get("historyClear") or 0)
             except (TypeError, ValueError):
                 self.history_clear = 0
+            try:
+                self.identity.export_version = int(ev.get("identityExport") or 0)
+            except (TypeError, ValueError):
+                self.identity.export_version = 0
             self.helper.adopt(self.state, self.instance)
             self.send({"op": "identity.ready", "id": self.instance})
             self.resume_transfers(restarted)
@@ -1120,6 +1141,8 @@ class App:
         elif self.invites.on_correlated_error(code, request):
             pass
         elif self.profile.on_correlated_error(code, request):
+            pass
+        elif not request and self.identity.on_global_error(code):
             pass
         elif code == "history_failed" and conversation:
             last_conv, last_text, last_at = self.files.result

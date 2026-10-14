@@ -309,7 +309,7 @@ Receipts use arrows: `·` sending, `→` sent, `⇉` delivered, `⇉` in green r
 
 To answer a message, press `Ctrl+R`: the newest message gets a `▌` mark. Choose another with `↑` and `↓` and press `Enter`. `↩ Reply:` above the input line shows what you answer, and `Esc` drops it. Your friend sees the quote as in the bar, and an answer to one of your messages starts with `↩` and the quoted text. Edits and deletes appear right away.
 
-A locked identity asks for its passphrase when the terminal client starts. `:identity protect` asks for a new passphrase twice; the typed characters show as dots. It, `:identity unprotect`, `export`, and `import` ask `y/n` right before they act, and a protected bundle asks for its own passphrase. Transfer an exported bundle securely and delete extra copies.
+A locked identity asks for its passphrase when the terminal client starts. If your terminal does not mark pasted text, the client then asks you to press `esc` before you can type again, so a pasted second line can never reach a chat. `:identity protect` asks for a new passphrase twice; the typed characters show as dots. It, `:identity unprotect`, `export`, and `import` ask `y/n` right before they act, and a protected bundle asks for its own passphrase. Transfer an exported bundle securely and delete extra copies.
 
 Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` resets (kitty: `Ctrl+Shift+=`, `Ctrl+Shift+-`, and `Ctrl+Shift+Backspace`). After a zoom, the bottom line briefly shows the new size, such as `Text 112%`. 100% is the size when the session started.
 

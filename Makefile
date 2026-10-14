@@ -84,8 +84,10 @@ BIN_HELP := helper/omaq
 ifeq ($(TOX_OK)$(SIG_OK)$(PULSE_OK)$(IMAGE_OK),yesyesyesyes)
   REINVITE_TEST_TARGET := $(BIN_HELP)
   REINVITE_TEST_COMMAND := sh tests/reinvite-recovery.sh
+  RUNTIME_MARKER_TEST_COMMAND := sh tests/runtime-marker.sh
 else
   REINVITE_TEST_COMMAND := @echo "reinvite-recovery: skipped (full helper dependencies unavailable)"
+  RUNTIME_MARKER_TEST_COMMAND := @echo "runtime-marker: skipped (full helper dependencies unavailable)"
 endif
 
 .PHONY: all test test-ci helper check-tox check-signal check-audio check-images check-node check-qml arch verify verify-0 verify-1 verify-1-offline verify-1-tox \
@@ -216,6 +218,7 @@ test-ci: check-tox check-signal check-audio check-images check-node check-qml $(
 	sh tests/custom-sound.sh ./$(BIN_IPC_TEST_HELPER)
 	sh tests/group-chat-parity.sh
 	sh tests/redeem-feedback.sh
+	sh tests/identity-feedback.sh
 	sh tests/asset-provenance.sh
 	python3 tests/extract-emoji.py
 	sh tests/paste-image.sh
@@ -263,6 +266,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/group-chat-parity.sh
 	sh tests/panel-request-focus.sh
 	sh tests/redeem-feedback.sh
+	sh tests/identity-feedback.sh
 	sh tests/emoji-parity.sh
 	sh tests/asset-provenance.sh
 	python3 tests/extract-emoji.py
@@ -272,6 +276,7 @@ test: $(BIN_TEST) $(BIN_SPOOL_TEST) $(BIN_FILE_TRANSFER_TEST) $(BIN_AV_STATE_TES
 	sh tests/paste-image.sh
 	sh tests/protocol-compat.sh
 	$(REINVITE_TEST_COMMAND)
+	$(RUNTIME_MARKER_TEST_COMMAND)
 	sh tests/uninstall.sh
 	sh tests/helper-update.sh ./$(BIN_IPC_TEST_HELPER)
 	python3 tests/source-update.py

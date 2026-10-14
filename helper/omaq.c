@@ -67,6 +67,7 @@
 #else
 #define OMAQ_HISTORY_CLEAR_VERSION 1
 #endif
+#define OMAQ_IDENTITY_EXPORT_VERSION 2
 #ifdef OMAQ_IPC_TEST
 #define OMAQ_IPC_TEST_EVENT_SIZE 65500u
 #endif
@@ -416,6 +417,8 @@ static int64_t g_shutdown_ack_deadline_ms;
 static int g_identity_recovered;
 static int g_unread_load_failed;
 static int g_identity_backup_cleanup_failed;
+static int g_runtime_marker_failed;
+static int g_runtime_marker_report;
 static char g_unread_error_code[32];
 static int g_identity_recovery_required;
 static int g_replay_mode;
@@ -1753,6 +1756,21 @@ static int write_protocol_marker(void)
 	return 0;
 }
 
+static void renew_runtime_marker(int report)
+{
+	g_runtime_marker_failed = write_protocol_marker() != 0;
+	g_runtime_marker_report = g_runtime_marker_failed && report;
+	if (g_runtime_marker_report)
+		emit_error("runtime_marker_failed");
+}
+
+static void report_runtime_marker(void)
+{
+	g_runtime_marker_report = g_runtime_marker_failed;
+	if (g_runtime_marker_report)
+		emit_error("runtime_marker_failed");
+}
+
 static int queue_output(char *buf, size_t *len, size_t *off, size_t cap,
 			const char *s)
 {
@@ -2090,6 +2108,10 @@ static void emit_all_unread(void)
 		emit_unread_failed("", g_unread_error_code);
 	if (g_identity_backup_cleanup_failed)
 		emit_error("identity_backup_cleanup_failed");
+	if (g_runtime_marker_failed && write_protocol_marker() == 0)
+		g_runtime_marker_failed = g_runtime_marker_report = 0;
+	if (g_runtime_marker_report)
+		emit_error("runtime_marker_failed");
 #ifdef HAVE_TOX
 	if (g_group_registry_pruned) {
 		emit_error("group_orphaned");
@@ -2112,8 +2134,8 @@ static void emit_locked_status(void)
 	char ev[320];
 
 	snprintf(ev, sizeof(ev),
-		 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null}",
-		 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+		 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"identityExport\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null}",
+		 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION, OMAQ_IDENTITY_EXPORT_VERSION,
 		 omaq_unread_total(&g_unread), g_instance_id);
 	emit(ev);
 	emit_invite_state("", 0, "status", NULL);
@@ -10365,6 +10387,7 @@ static int restore_guarded_identity(const char *stage_save, const char *pass,
 		goto rollback;
 	if (init_instance_id() != 0)
 		goto rollback;
+	renew_runtime_marker(0);
 	load_rc = omaq_tox_enable_recovery(g_tox, state_dir(), 0);
 	if (load_rc == -2) {
 		g_identity_recovery_required = 1;
@@ -10374,6 +10397,7 @@ static int restore_guarded_identity(const char *stage_save, const char *pass,
 	if (load_rc < 0 || remove_identity_guard_restore_marker() != 0)
 		goto rollback;
 	marker = 0;
+	report_runtime_marker();
 	g_identity_primary_uncertain = 0;
 	emit_identity_primary_state(NULL);
 	if (recover_group_registry_transaction() != 0 || rebuild_group_cache() != 0 ||
@@ -11008,8 +11032,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 #endif
 		if (g_locked && !g_tox) {
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
-				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"identityExport\":%d,\"unread\":%u,\"locked\":true,\"instance\":\"%s\",\"call\":null%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION, OMAQ_IDENTITY_EXPORT_VERSION,
 				 omaq_unread_total(&g_unread), g_instance_id, request_field);
 			emit(ev);
 			emit_invite_state("", 0, "status", NULL);
@@ -11030,8 +11054,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			    omaq_json_escape(nickname, escaped_nickname, sizeof(escaped_nickname)) != 0)
 				escaped_nickname[0] = '\0';
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s%s}",
-				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"identityExport\":%d,\"unread\":%u,\"online\":%s,\"addr\":\"%s\",\"nickname\":\"%s\",\"protected\":%s,\"instance\":\"%s\"%s%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION, OMAQ_IDENTITY_EXPORT_VERSION,
 				 omaq_unread_total(&g_unread),
 				 omaq_tox_online(g_tox) ? "true" : "false", addr,
 				 escaped_nickname, omaq_identity_protected(g_tox) ? "true" : "false",
@@ -11078,8 +11102,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 		{
 			char ev[768];
 			snprintf(ev, sizeof(ev),
-				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"unread\":%u,\"conversations\":[],\"instance\":\"%s\",\"call\":null%s}",
-				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION,
+				 "{\"event\":\"snapshot\",\"protocol\":%d,\"historyClear\":%d,\"identityExport\":%d,\"unread\":%u,\"conversations\":[],\"instance\":\"%s\",\"call\":null%s}",
+				 OMAQ_PROTOCOL_VERSION, OMAQ_HISTORY_CLEAR_VERSION, OMAQ_IDENTITY_EXPORT_VERSION,
 				 omaq_unread_total(&g_unread), g_instance_id, request_field);
 			emit(ev);
 			emit_all_unread();
@@ -13290,7 +13314,8 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			return 0;
 		}
 #endif
-		if (omaq_identity_bundle_export(home_dir(), path) != 0) {
+		if (omaq_identity_bundle_export(home_dir(), path,
+						!op->has_replace || op->replace) != 0) {
 			emit_identity_error("forbidden", op->id);
 			return 0;
 		}
@@ -14091,6 +14116,7 @@ static int handle_op(const omaq_op *op, int *identity_ready, int owner_fd)
 			clear_group_invite_results();
 #endif
 			init_instance_id();
+			renew_runtime_marker(1);
 			g_identity_requires_ready = 1;
 			g_stdin_identity_ready = 0;
 			for (size_t client_index = 0; client_index < g_ncli; client_index++)

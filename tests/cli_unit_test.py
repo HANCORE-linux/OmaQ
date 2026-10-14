@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 spec = importlib.util.spec_from_file_location("omaq_cli", os.path.join(ROOT, "cli", "omaq.py"))
@@ -1428,6 +1429,23 @@ class PackageA(Sandbox):
         app.size = (100, 20)
         self.assertIn("expired; :invite creates a new link", app.render())
 
+    def test_the_startup_query_reads_marked_pastes(self):
+        saved = dict(cli.WIDTHS)
+        try:
+            for reply, marked in ((b"\x1b[?2004;1$y", True), (b"\x1b[?2004;3$y", True), (b"\x1b[?2004;2$y", False),
+                                  (b"\x1b[?2004;0$y", False), (b"", False)):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, reply + b"\x1b[5;2R\x1b[5;3Rab")
+                out = __import__("io").StringIO()
+                typed = cli.measure_widths(read_fd, out, timeout=1.0)
+                os.close(read_fd)
+                os.close(write_fd)
+                self.assertEqual(typed, (b"ab", marked), reply)
+                self.assertTrue(out.getvalue().startswith("\x1b[?2004$p"))
+        finally:
+            cli.WIDTHS.clear()
+            cli.WIDTHS.update(saved)
+
     def test_widths_follow_the_terminal(self):
         saved = dict(cli.WIDTHS)
         try:
@@ -1436,7 +1454,7 @@ class PackageA(Sandbox):
             typed = cli.measure_widths(read_fd, __import__("io").StringIO(), timeout=1.0)
             os.close(read_fd)
             os.close(write_fd)
-            self.assertEqual((typed, cli.WIDTHS), (b"ab", {"vs16": 1, "cluster": True}))
+            self.assertEqual((typed, cli.WIDTHS), ((b"ab", False), {"vs16": 1, "cluster": True}))
             self.assertEqual(cli.text_width("\u2764\ufe0f"), 1)
             self.assertEqual(cli.text_width("\U0001F469\u200d\U0001F4BB"), 2)
             self.assertEqual(cli.text_width("\U0001F44D\U0001F3FD"), 2)
@@ -2528,6 +2546,13 @@ class IdentityActions(Sandbox):
     def plain(self, text):
         return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
 
+    def screen(self, app):
+        frame = app.render()
+        rows = {}
+        for m in re.finditer(r"\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K", frame, re.S):
+            rows[int(m.group(1))] = self.plain(m.group(2))
+        return [rows[k] for k in sorted(rows)]
+
     def typed(self, app, line):
         app.edit("text", line)
         app.edit("key", "enter")
@@ -2537,6 +2562,8 @@ class IdentityActions(Sandbox):
         self.loaded(app, "0")
         app.identity.protected = protected
         app.size = (100, 16)
+        app.pastes_marked = True
+        app.identity.export_version = 2
         return app
 
     def bundle(self, name="id.save"):
@@ -2690,6 +2717,58 @@ class IdentityActions(Sandbox):
             app.on_event({"event": "identity", "op": "export", "request": sent["id"], "path": path})
             self.assertEqual(app.status, "Identity exported to %s. Transfer a bundle securely and delete extra copies."
                              % path)
+
+    def test_export_to_a_new_path_needs_a_helper_that_keeps_files(self):
+        app = self.ready()
+        app.handshake, app.nonce = False, "n1"
+        app.on_event({"event": "snapshot", "request": "n1", "instance": "i" * 32, "protocol": 16, "historyClear": 2})
+        self.assertEqual(app.identity.export_version, 0)
+        fresh = os.path.join(self.base, "fresh.save")
+        self.typed(app, ":identity export %s" % fresh)
+        self.assertEqual((app.status, app.confirm, app.link.ops("identity.export")), ("Helper update required", None, []))
+        existing = self.bundle("existing.save")
+        self.typed(app, ":identity export %s" % existing)
+        self.assertEqual(app.confirm.prompt, "Replace %s with your identity? y/n" % existing)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], True)
+        app.on_event({"event": "identity", "op": "export", "request": sent["id"], "path": existing})
+        app.handshake, app.nonce = False, "n2"
+        app.on_event({"event": "snapshot", "request": "n2", "instance": "i" * 32, "protocol": 16, "historyClear": 2,
+                      "identityExport": 2})
+        self.assertEqual(app.identity.export_version, 2)
+        self.typed(app, ":identity export %s" % fresh)
+        self.assertEqual(app.confirm.prompt, "Export your identity to %s? y/n" % fresh)
+
+    def test_export_never_replaces_a_file_it_did_not_ask_about(self):
+        app = self.ready()
+        path = os.path.join(self.base, "race.save")
+        self.typed(app, ":identity export %s" % path)
+        self.assertEqual((app.confirm.action, app.confirm.prompt), ("export", "Export your identity to %s? y/n" % path))
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], False)
+        open(path, "w").close()
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual((app.status, app.confirm), ("%s already exists. Export again to replace it." % path, None))
+        self.typed(app, ":identity export %s" % path)
+        self.assertEqual((app.confirm.action, app.confirm.prompt),
+                         ("overwrite", "Replace %s with your identity? y/n" % path))
+        app.edit("text", "n")
+        self.assertEqual((app.status, len(app.link.ops("identity.export"))), ("Identity not exported", 1))
+        self.typed(app, ":identity export %s" % path)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], True)
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "The identity could not be exported to that path.")
+        os.unlink(path)
+        self.typed(app, ":identity export %s" % path)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], False)
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "The identity could not be exported to that path.")
 
     def test_validate_asks_for_the_bundle_passphrase_when_needed(self):
         app = self.ready()
@@ -3093,6 +3172,263 @@ class IdentityActions(Sandbox):
             os.close(r)
             os.close(w)
         self.assertEqual((app.pane.draft, app.keys.paste), ("abc", None))
+
+    def test_a_held_marker_piece_gives_way_to_the_next_key(self):
+        for piece in (b"\x1b[", b"\x1b[2", b"\x1b[20", b"\x1b[200"):
+            app = self.ready()
+            app.on_event({"event": "error", "code": "locked"})
+            r, w = os.pipe()
+            try:
+                os.write(w, piece)
+                self.assertTrue(app.take_read(r))
+                self.assertEqual((app.keys.pending, app.keys.held), (piece, True), piece)
+                os.write(w, b"hunter22\r")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], piece[2:].decode() + "hunter22", piece)
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x1b[20")
+            self.assertTrue(app.take_read(r))
+            os.write(w, b"0~pasted\x1b[201~")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.secret_prompt.value, "pasted")
+            os.write(w, b"\x1b[")
+            with unittest.mock.patch.object(select, "select", return_value=([r], [], [])):
+                self.assertTrue(app.take_read(r))
+            self.assertEqual((app.keys.pending, app.keys.held), (b"\x1b[", False))
+            os.write(w, b"A")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt.value, app.keys.pending), ("pasted", b""))
+            app.secret_prompt.value = ""
+            for burst, rest, value in ((b"pass\rmore\x1b[", [b"hunter22"], "hunter22"),
+                                       (b"pass\rmore\x1b[", [b"2", b"horse42"], "2horse42"),
+                                       (b"pass\rmore\x1b[", [b"1", b"horse42"], "1horse42"),
+                                       (b"pass\rmore\x1b[", [b"1;2R", b"abc"], "abc"),
+                                       (b"pass\rmore\x1b[20", [b"0~late\x1b[201~abc"], "abc")):
+                os.write(w, burst)
+                self.assertTrue(app.take_read(r))
+                self.assertEqual((app.status, app.secret_prompt.value), (cli.ONE_LINE, ""), burst)
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.keys.skip, app.keys.held), (True, True), burst)
+                for chunk in rest:
+                    os.write(w, chunk)
+                    self.assertTrue(app.take_read(r))
+                self.assertEqual((app.secret_prompt.value, app.keys.skip), (value, False), burst)
+                app.secret_prompt.value = ""
+            for chunks, value, focused in (([b"\x1b[", b"O"], "", False), ([b"\x1b[", b"I"], "", True),
+                                           ([b"\x1b[", b"2", b"horse42"], "2horse42", True),
+                                           ([b"\x1b[", b"1", b"horse42"], "1horse42", True),
+                                           ([b"\x1b[", b"2", b"3", b"horse42"], "23horse42", True),
+                                           ([b"\x1b[", b"1", "é".encode()], "1é", True),
+                                           ([b"\x1b[", b"1;2R"], "", True), ([b"\x1b[", b"?2004;1$y"], "", True),
+                                           ([b"\x1b[", b"?62;22c"], "", True), ([b"\x1b[1", b"2;40R"], "", True),
+                                           ([b"\x1b[2", b"0x"], "20x", True), ([b"\x1b[", b"A"], "", True)):
+                app.focused = True
+                for chunk in chunks:
+                    os.write(w, chunk)
+                    self.assertTrue(app.take_read(r))
+                self.assertEqual((app.secret_prompt.value, app.focused, app.keys.pending), (value, focused, b""), chunks)
+                app.secret_prompt.value = ""
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_a_held_piece_at_an_outside_close_is_dropped_whole(self):
+        for pieces in ([b"\x1b["], [b"\x1b[", b"2"]):
+            app = self.ready()
+            self.bundle_prompt(app)
+            r, w = os.pipe()
+            try:
+                for piece in pieces:
+                    os.write(w, piece)
+                    self.assertTrue(app.take_read(r))
+                self.assertTrue(app.keys.held or app.keys.loose, pieces)
+                app.drop_link()
+                app.link, app.handshake = FakeLink(), True
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.keys.skip, app.keys.held, app.keys.loose), (True, False, False), pieces)
+                os.write(w, b"1;2R")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.keys.pending, app.keys.skip), ("", b"", False), pieces)
+
+    def test_a_lock_from_outside_drops_a_started_paste(self):
+        for lock in ({"event": "snapshot", "locked": True}, {"event": "error", "code": "locked"}):
+            for start, rest in ((b"\x1b[20", b"0~late-secret\x1b[201~hunter22\r"),
+                                (b"\x1b[200~late", b"-secret\x1b[201~hunter22\r")):
+                app = self.ready()
+                self.bundle_prompt(app)
+                r, w = os.pipe()
+                try:
+                    os.write(w, start)
+                    self.assertTrue(app.take_read(r))
+                    app.on_event(dict(lock))
+                    self.assertEqual((app.locked, app.secret_prompt), (True, None))
+                    os.write(w, rest)
+                    self.assertTrue(app.take_read(r))
+                finally:
+                    os.close(r)
+                    os.close(w)
+                self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "hunter22", (lock, start))
+
+    def test_a_piece_bound_by_an_outside_lock_stays_out_of_the_unlock_prompt(self):
+        for lock in ({"event": "error", "code": "locked"}, {"event": "snapshot", "locked": True}):
+            app = self.ready()
+            self.bundle_prompt(app)
+            r, w = os.pipe()
+            try:
+                os.write(w, b"pass\rmore\x1b[1")
+                self.assertTrue(app.take_read(r))
+                self.assertTrue(app.hush)
+                app.on_event(dict(lock))
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.locked, app.keys.skip, app.keys.held), (True, True, False), lock)
+                os.write(w, b"horse42\r")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "orse42", lock)
+
+    def test_a_failed_runtime_marker_is_reported(self):
+        app = self.ready()
+        app.on_event({"event": "error", "code": "runtime_marker_failed"})
+        self.assertEqual(app.status, "Your identity change is saved, but OmaQ could not update its runtime file. Free some disk space, then restart OmaQ; until then, quitting may leave it running.")
+        app.say("")
+        app.handshake, app.nonce = False, "n1"
+        app.on_event({"event": "snapshot", "request": "n1", "instance": "i" * 32, "protocol": 16, "historyClear": 2,
+                      "identityExport": 2})
+        app.on_event({"event": "error", "code": "runtime_marker_failed"})
+        self.assertEqual(app.status, cli.ERRORS["runtime_marker_failed"])
+
+    def test_a_running_paste_never_waits_at_an_early_return(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.take_input(app.keys.feed(b"\x1b[200~"))
+        app.take_input(app.keys.feed(b"\x1b"))
+        self.assertEqual((app.keys.paste, app.keys.pending), ("", b"\x1b"))
+        app.hush = True
+        r, w = os.pipe()
+        try:
+            with unittest.mock.patch.object(select, "select", side_effect=AssertionError("waited")):
+                self.assertTrue(app.discard_burst(r))
+            self.assertEqual((app.keys.skip, app.keys.pending), (True, b"\x1b"))
+            os.write(w, b"[201~abc")
+            self.assertTrue(app.take_read(r))
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual((app.keys.paste, app.secret_prompt.value), (None, "abc"))
+
+    def test_input_waits_for_esc_after_a_passphrase_when_pastes_are_unmarked(self):
+        app = self.ready()
+        app.pastes_marked = False
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"bundle pass\r")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.gated())
+            rows = self.screen(app)
+            self.assertEqual((rows[-2].rstrip(), rows[-1].strip()), (cli.GATE_LINE, cli.GATE_HINT.strip()))
+            os.write(w, b"leak\r:nickname Gated\r\x1b[O")
+            self.assertTrue(app.take_read(r))
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.link.ops("msg.send"), app.link.ops("nickname.set"), app.focused),
+                             ("", [], [], False))
+            app.on_event({"event": "error", "code": "locked"})
+            self.assertEqual((app.gate, app.gated()), (True, False))
+            os.write(w, b"pw\r")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "pw")
+            app.on_event({"event": "identity", "op": "unlock", "request": app.unlock_request, "protected": True})
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.gated())
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertFalse(app.gated())
+            os.write(w, b"hi")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(composer.draft, "hi")
+        finally:
+            os.close(r)
+            os.close(w)
+        for marked in ("startup", "paste"):
+            app = self.ready()
+            app.pastes_marked = marked == "startup"
+            if marked == "paste":
+                app.take_input(app.keys.feed(b"\x1b[200~x\x1b[201~"))
+                self.assertEqual(app.pane.draft, "x")
+                app.pane.draft, app.pane.cursor = "", 0
+            self.bundle_prompt(app)
+            self.passphrase(app, "bundle pass")
+            self.assertTrue(self.quiet(app))
+            self.assertFalse(app.gated(), marked)
+
+    def test_a_question_after_the_passphrase_also_waits_for_esc(self):
+        app = self.ready(protected=True)
+        app.pastes_marked = False
+        self.typed(app, ":identity unprotect")
+        r, w = os.pipe()
+        try:
+            os.write(w, b"correct horse 42\r")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            self.assertEqual((app.confirm.prompt, app.gated()), (cli.UNPROTECT_PROMPT, True))
+            os.write(w, b"y")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.link.ops("identity.unprotect"), app.confirm is not None), ([], True))
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            os.write(w, b"y")
+            self.assertTrue(app.take_read(r))
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual(app.link.ops("identity.unprotect")[-1]["passphrase"], "correct horse 42")
+
+    def test_a_long_question_wraps_above_the_input(self):
+        app = self.ready()
+        bundle = self.bundle("a-rather-long-bundle-name-to-wrap.save")
+        self.typed(app, ":identity import %s" % bundle)
+        prompt = app.confirm.prompt
+        self.assertEqual(" ".join(cli.wrap(prompt, 98)), prompt)
+        for cols, height in ((100, 16), (80, 16), (60, 16), (100, 7), (100, 6)):
+            app.size = (cols, height)
+            want = cli.wrap(prompt, cols - 2)
+            lines = min(len(want), 3, max(1, height - 5))
+            rows = self.screen(app)
+            self.assertEqual(len(rows), height, (cols, height))
+            self.assertIn("❯", rows[-2], (cols, height))
+            shown = [row.strip() for row in rows[-2 - lines:-2]]
+            self.assertEqual(shown, want[:lines], (cols, height))
+            self.assertGreater(len(want), 1, cols)
+        app.edit("text", "n")
+        app.size = (100, 16)
+        rows = self.screen(app)
+        self.assertTrue(rows[-3].startswith("──") and rows[-3].rstrip().endswith(" Identity kept"), rows[-3])
+
+    def test_help_indents_subcommands_under_their_command(self):
+        app = self.ready()
+        app.size = (100, 40)
+        self.typed(app, ":help")
+        rows = self.screen(app)
+        starts = {next(row for row in rows if text in row).index(text) for _, text, _ in cli.COMMANDS}
+        self.assertEqual(len(starts), 1, starts)
+        for label in ("revoke", "protect", "unprotect", "export [path]", "validate <path>", "import <path>"):
+            self.assertTrue(any(row.startswith("     %s " % label) for row in rows), label)
+        app.help.index = [command for command, _, _ in cli.COMMANDS].index(":identity export ")
+        app.edit("key", "enter")
+        self.assertEqual((app.help, app.pane.draft), (None, ":identity export "))
 
     def test_an_esc_at_the_quiet_end_does_not_eat_a_later_paste(self):
         app = self.ready()
