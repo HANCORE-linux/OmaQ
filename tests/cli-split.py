@@ -29,7 +29,7 @@ def fail(message):
 
 
 def head(name):
-    return r"(?:❯ |  )%s  (?:online|offline|typing…)" % name
+    return r"(?:❯ |  )%s(?: ●)?  (?:online|offline|typing…)" % name
 
 
 def befriend(a, peer, nick):
@@ -85,7 +85,7 @@ def main():
         env = dict(os.environ, OMAQ_HOME=dirs["ha"], OMAQ_STATE=dirs["sa"], XDG_RUNTIME_DIR=dirs["run"],
                    TERM="xterm-256color")
         term = harness.Term(env, args=["bob"], cols=120, rows=30)
-        if not term.wait_screen(r"❯ bob  ", 20):
+        if not term.wait_screen(r"❯ bob(?: ●)?  ", 20):
             fail("CLI did not open bob")
         term.send(":connect car")
         term.send("\t")

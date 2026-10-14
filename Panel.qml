@@ -858,6 +858,8 @@ BarWidget {
       return "Identity changed. Pending actions were discarded."
     if (code === "identity_backup_failed")
       return "Could not create a safe identity backup."
+    if (code === "runtime_marker_failed")
+      return "Your identity change is saved, but OmaQ could not update its runtime file. Free some disk space, then restart OmaQ; until then, quitting may leave it running."
     if (code === "identity_backup_cleanup_failed")
       return "An old identity recovery backup could not be removed."
     if (code === "identity_passphrase_required")
@@ -1302,7 +1304,8 @@ BarWidget {
       return "This identity action is not supported by the running helper."
     if (code === "forbidden") {
       if (root.identityAction === "protect")
-        return "Use at least 8 characters and at most 128 bytes."
+        return omaq.saveProtected ? "Your identity already has a passphrase."
+          : "Use at least 8 characters and at most 128 bytes."
       if (root.identityAction === "unprotect")
         return "The current identity passphrase is incorrect."
       if (root.identityAction === "export")

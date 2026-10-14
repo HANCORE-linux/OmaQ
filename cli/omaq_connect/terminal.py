@@ -17,7 +17,7 @@ def pixel_size(fd):
 
 
 def measure_widths(fd, out, timeout=0.3):
-    out.write("\r\x1b[2K\u2764\ufe0f\x1b[6n\r\x1b[2K\U0001F469\u200d\U0001F4BB\x1b[6n\r\x1b[2K")
+    out.write("\x1b[?2004$p\r\x1b[2K\u2764\ufe0f\x1b[6n\r\x1b[2K\U0001F469\u200d\U0001F4BB\x1b[6n\r\x1b[2K")
     out.flush()
     buf, cols, end = b"", [], time.monotonic() + timeout
     while len(cols) < 2:
@@ -35,4 +35,5 @@ def measure_widths(fd, out, timeout=0.3):
     if len(cols) >= 2:
         WIDTHS["vs16"] = 1 if cols[0] - 1 < 2 else 2
         WIDTHS["cluster"] = cols[1] - 1 == 2
-    return re.sub(rb"\x1b\[\d+;\d+R", b"", buf)
+    marked = re.search(rb"\x1b\[\?2004;([0-4])\$y", buf)
+    return re.sub(rb"\x1b\[\d+;\d+R|\x1b\[\?\d+;\d\$y", b"", buf), bool(marked) and marked.group(1) in (b"1", b"3")

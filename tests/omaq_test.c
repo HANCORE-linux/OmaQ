@@ -21,6 +21,7 @@
 #include "../helper/rate.h"
 #include "../helper/roles.h"
 #include "../helper/safety.h"
+#include "../helper/send_queue.h"
 #include "../helper/sound.h"
 #include "../helper/store.h"
 #include "../helper/surface.h"
@@ -1153,7 +1154,7 @@ static void test_identity_files(void)
 	char registry[256], bindings[256], bundle[256], v1_bundle[256], fresh[256];
 	char fresh_tox[300], fresh_registry[300], fresh_bindings[300], fresh_v1[300];
 	char fresh_v1_tox[320], fresh_v1_registry[320], fresh_v1_bindings[320];
-	char tox_alias[300];
+	char tox_alias[300], kept_bundle[256], new_bundle[256], dangling[256], missing[256];
 	FILE *f;
 
 	if (!mkdtemp(dir)) {
@@ -1168,6 +1169,10 @@ static void test_identity_files(void)
 	    snprintf(bindings, sizeof(bindings), "%s/group-friends.tsv", dir) >=
 		    (int)sizeof(bindings) ||
 	    snprintf(bundle, sizeof(bundle), "%s/bundle.save", dir) >= (int)sizeof(bundle) ||
+	    snprintf(kept_bundle, sizeof(kept_bundle), "%s/kept.save", dir) >= (int)sizeof(kept_bundle) ||
+	    snprintf(new_bundle, sizeof(new_bundle), "%s/new.save", dir) >= (int)sizeof(new_bundle) ||
+	    snprintf(dangling, sizeof(dangling), "%s/dangling.save", dir) >= (int)sizeof(dangling) ||
+	    snprintf(missing, sizeof(missing), "%s/missing.save", dir) >= (int)sizeof(missing) ||
 	    snprintf(v1_bundle, sizeof(v1_bundle), "%s/bundle-v1.save", dir) >=
 		    (int)sizeof(v1_bundle) ||
 	    snprintf(fresh, sizeof(fresh), "%s/fresh", dir) >= (int)sizeof(fresh) ||
@@ -1217,13 +1222,14 @@ static void test_identity_files(void)
 	      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t"
 	      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n", f);
 	fclose(f);
-	if (omaq_identity_bundle_export(dir, src) == 0 ||
-	    omaq_identity_bundle_export(dir, tox_alias) == 0 ||
-	    omaq_identity_bundle_export(dir, registry) == 0 ||
-	    omaq_identity_bundle_export(dir, bindings) == 0)
+	if (omaq_identity_bundle_export(dir, src, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, tox_alias, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, registry, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, bindings, 1) == 0 ||
+	    omaq_identity_bundle_export(dir, src, 0) == 0)
 		fail("identity bundle source alias");
 	if (mkdir(fresh, 0700) != 0 ||
-	    omaq_identity_bundle_export(dir, bundle) != 0 ||
+	    omaq_identity_bundle_export(dir, bundle, 1) != 0 ||
 	    omaq_identity_bundle_import(fresh, bundle, 0) != 0)
 		fail("identity bundle roundtrip");
 	else {
@@ -1235,6 +1241,39 @@ static void test_identity_files(void)
 		    read_file(fresh_bindings, copied, sizeof(copied)) != 0 ||
 		    !strstr(copied, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
 			fail("identity bundle group registry");
+	}
+	{
+		char copied[16] = "";
+		struct stat st;
+		f = fopen(kept_bundle, "w");
+		if (!f) {
+			fail("id kept bundle write");
+			return;
+		}
+		fputs("KEEP", f);
+		fclose(f);
+		if (omaq_identity_bundle_export(dir, kept_bundle, 0) == 0 ||
+		    read_file(kept_bundle, copied, sizeof(copied)) != 0 || strcmp(copied, "KEEP") != 0)
+			fail("identity bundle export replaced a file without replace");
+		f = NULL;
+		if (omaq_identity_bundle_export(dir, kept_bundle, 1) != 0 ||
+		    !(f = fopen(kept_bundle, "rb")) || fread(copied, 1, 8, f) != 8 ||
+		    memcmp(copied, "OMAQID2\n", 8) != 0)
+			fail("identity bundle export did not replace with replace");
+		if (f)
+			fclose(f);
+		f = NULL;
+		if (omaq_identity_bundle_export(dir, new_bundle, 0) != 0 ||
+		    stat(new_bundle, &st) != 0 || (st.st_mode & 0777) != 0600 ||
+		    !(f = fopen(new_bundle, "rb")) || fread(copied, 1, 8, f) != 8 ||
+		    memcmp(copied, "OMAQID2\n", 8) != 0)
+			fail("identity bundle export without replace did not create the file");
+		if (f)
+			fclose(f);
+		if (symlink(missing, dangling) != 0 ||
+		    omaq_identity_bundle_export(dir, dangling, 0) == 0 ||
+		    lstat(missing, &st) == 0)
+			fail("identity bundle export without replace followed a link");
 	}
 	{
 		static const char v1_registry[] =
@@ -3342,6 +3381,86 @@ static void test_avatar(void)
 	}
 }
 
+static void test_send_queue(void)
+{
+	static omaq_send_queue queue;
+	char self[65], peer_a[65], peer_b[65], text[OMAQ_SEND_QUEUE_TEXT_MAX + 1];
+	uint32_t skip[1] = { 1 };
+	int first, index, newest;
+
+	memset(self, 'a', 64);
+	memset(peer_a, '1', 64);
+	memset(peer_b, '2', 64);
+	self[64] = peer_a[64] = peer_b[64] = '\0';
+	omaq_send_queue_init(&queue);
+	if (omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r1", "", "one", 1000) != 0 ||
+	    omaq_send_queue_add(&queue, 8, 2, "2", self, peer_b, "r2", "m1", "two", 1001) != 0 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r3", NULL, "three", 1002) != 0 ||
+	    queue.count != 3 || omaq_send_queue_peer_count(&queue, 1) != 2)
+		fail("send queue add");
+	first = omaq_send_queue_oldest(&queue, NULL, 0);
+	if (first < 0 || strcmp(queue.entries[first].request, "r1") != 0 ||
+	    queue.entries[first].deadline_ms != 1000 + OMAQ_SEND_QUEUE_WAIT_MS ||
+	    strcmp(queue.entries[first].reply, "") != 0 ||
+	    strcmp(queue.entries[first].text, "one") != 0)
+		fail("send queue oldest entry");
+	index = omaq_send_queue_oldest(&queue, skip, 1);
+	if (index < 0 || strcmp(queue.entries[index].request, "r2") != 0 ||
+	    strcmp(queue.entries[index].reply, "m1") != 0)
+		fail("send queue skips a waiting peer");
+	omaq_send_queue_remove(&queue, first);
+	if (queue.entries[first].used || queue.entries[first].text[0] ||
+	    queue.entries[first].request[0] || queue.count != 2)
+		fail("send queue clears a removed entry");
+	omaq_send_queue_remove(&queue, first);
+	if (queue.count != 2)
+		fail("send queue removes an entry once");
+	index = omaq_send_queue_oldest(&queue, NULL, 0);
+	if (index < 0 || strcmp(queue.entries[index].request, "r2") != 0)
+		fail("send queue keeps order after a removal");
+	if (omaq_send_queue_add(&queue, 9, 1, "1", self, peer_a, "r4", "", "four", 1003) != 0)
+		fail("send queue reuses a slot");
+	newest = omaq_send_queue_owned(&queue, 9);
+	index = omaq_send_queue_oldest(&queue, NULL, 0);
+	if (newest < 0 || index == newest || strcmp(queue.entries[index].request, "r2") != 0)
+		fail("send queue orders a reused slot last");
+	if (omaq_send_queue_owned(&queue, 7) < 0 || omaq_send_queue_owned(&queue, 5) >= 0)
+		fail("send queue owner lookup");
+	while ((index = omaq_send_queue_owned(&queue, 7)) >= 0)
+		omaq_send_queue_remove(&queue, index);
+	if (queue.count != 2 || omaq_send_queue_owned(&queue, 8) < 0 ||
+	    omaq_send_queue_owned(&queue, 9) < 0)
+		fail("send queue drops only one owner");
+	memset(text, 'x', OMAQ_SEND_QUEUE_TEXT_MAX);
+	text[OMAQ_SEND_QUEUE_TEXT_MAX] = '\0';
+	if (omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r5", "", text, 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "", "", "x", 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r5", "", "", 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "", self, peer_a, "r5", "", "x", 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", self, "ABC", "r5", "", "x", 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", peer_b, "AB", "r5", "", "x", 1000) != -1 ||
+	    omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r5", "", "x", -1) != -1 ||
+	    queue.count != 2)
+		fail("send queue rejects invalid entries");
+	text[OMAQ_SEND_QUEUE_TEXT_MAX - 1] = '\0';
+	if (omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r6", "", text, 1000) != 0)
+		fail("send queue accepts the longest text");
+	omaq_send_queue_init(&queue);
+	for (int i = 0; i < OMAQ_SEND_QUEUE_PEER_MAX; i++)
+		if (omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r", "", "x", 1000) != 0)
+			fail("send queue fills one peer");
+	if (omaq_send_queue_add(&queue, 7, 1, "1", self, peer_a, "r", "", "x", 1000) != -2)
+		fail("send queue caps one peer");
+	for (uint32_t peer = 2; queue.count < OMAQ_SEND_QUEUE_MAX; peer++)
+		for (int i = 0; i < OMAQ_SEND_QUEUE_PEER_MAX && queue.count < OMAQ_SEND_QUEUE_MAX; i++)
+			if (omaq_send_queue_add(&queue, 7, peer, "2", self, peer_b, "r", "", "x",
+						1000) != 0)
+				fail("send queue fills all slots");
+	if (omaq_send_queue_add(&queue, 7, 99, "99", self, peer_b, "r", "", "x", 1000) != -2)
+		fail("send queue caps all peers");
+	omaq_send_queue_init(&queue);
+}
+
 int main(void)
 {
 	test_invites();
@@ -3380,6 +3499,7 @@ int main(void)
 	test_file();
 	test_receipts();
 	test_presence();
+	test_send_queue();
 	test_avatar();
 	if (fails) {
 		fprintf(stderr, "omaq_test: %d failure(s)\n", fails);

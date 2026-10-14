@@ -4,9 +4,12 @@ import json
 import operator
 import os
 import re
+import select
 import sys
+import threading
 import time
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 spec = importlib.util.spec_from_file_location("omaq_cli", os.path.join(ROOT, "cli", "omaq.py"))
@@ -542,8 +545,8 @@ class PackageA(Sandbox):
         app.edit("text", ":")
         self.assertEqual(plain(app.command_hint(300)).split(), [":help", ":connect", ":split", ":invite", ":redeem",
                                                                 ":requests", ":accept", ":decline", ":nickname",
-                                                                ":sendfile", ":acceptfile", ":declinefile", ":cancelfile",
-                                                                ":clear", ":close", ":quit"])
+                                                                ":identity", ":sendfile", ":acceptfile", ":declinefile", ":cancelfile",
+                                                                ":reply", ":clear", ":close", ":quit"])
         self.assertIn("1;7m:help", app.command_hint(80))
         app.edit("text", "c")
         self.assertEqual(plain(app.command_hint(80)).split(), [":connect", ":cancelfile", ":clear", ":close"])
@@ -1212,10 +1215,10 @@ class PackageA(Sandbox):
             app.edit("key", "tab")
             app.file_picker.index = [n for n, _ in app.file_picker.items("")].index(" lead")
             app.edit("key", "tab")
-            self.assertEqual(app.file_picker.items(cli.sendfile_path(app.pane.draft)), [("deep", True)])
+            self.assertEqual(app.file_picker.items(cli.typed_path(app.pane.draft)), [("deep", True)])
             self.typed(app, ':sendfile "~/my folder/file x.txt"')
             app.edit("key", "tab")
-            self.assertEqual(app.file_picker.items(cli.sendfile_path(app.pane.draft)), [("file x.txt", False)])
+            self.assertEqual(app.file_picker.items(cli.typed_path(app.pane.draft)), [("file x.txt", False)])
             self.typed(app, ":sendfile ~/")
             app.edit("key", "tab")
             app.edit("key", "home")
@@ -1426,6 +1429,23 @@ class PackageA(Sandbox):
         app.size = (100, 20)
         self.assertIn("expired; :invite creates a new link", app.render())
 
+    def test_the_startup_query_reads_marked_pastes(self):
+        saved = dict(cli.WIDTHS)
+        try:
+            for reply, marked in ((b"\x1b[?2004;1$y", True), (b"\x1b[?2004;3$y", True), (b"\x1b[?2004;2$y", False),
+                                  (b"\x1b[?2004;0$y", False), (b"", False)):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, reply + b"\x1b[5;2R\x1b[5;3Rab")
+                out = __import__("io").StringIO()
+                typed = cli.measure_widths(read_fd, out, timeout=1.0)
+                os.close(read_fd)
+                os.close(write_fd)
+                self.assertEqual(typed, (b"ab", marked), reply)
+                self.assertTrue(out.getvalue().startswith("\x1b[?2004$p"))
+        finally:
+            cli.WIDTHS.clear()
+            cli.WIDTHS.update(saved)
+
     def test_widths_follow_the_terminal(self):
         saved = dict(cli.WIDTHS)
         try:
@@ -1434,7 +1454,7 @@ class PackageA(Sandbox):
             typed = cli.measure_widths(read_fd, __import__("io").StringIO(), timeout=1.0)
             os.close(read_fd)
             os.close(write_fd)
-            self.assertEqual((typed, cli.WIDTHS), (b"ab", {"vs16": 1, "cluster": True}))
+            self.assertEqual((typed, cli.WIDTHS), ((b"ab", False), {"vs16": 1, "cluster": True}))
             self.assertEqual(cli.text_width("\u2764\ufe0f"), 1)
             self.assertEqual(cli.text_width("\U0001F469\u200d\U0001F4BB"), 2)
             self.assertEqual(cli.text_width("\U0001F44D\U0001F3FD"), 2)
@@ -2325,6 +2345,1272 @@ class Blockers(Sandbox):
         self.assertFalse(one.others_alive())
         for presence in (one, two):
             presence.release()
+
+
+class Replies(Sandbox):
+    def plain(self, text):
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+    def rows(self, app, width=80):
+        return [self.plain(app.palette.row(segs, width)) for segs in app.message_lines("0", width)]
+
+    def chat(self, app):
+        c = app.chat.conv("0")
+        c.loaded, c.request = True, ""
+        message = cli.Message
+        c.items = [message("m1", "", "in", "first from alice", 1700000000.0),
+                   message("f1", "", "in", "[file] notes.txt", 1700000001.0, kind="file"),
+                   message("", "", "sys", "a note", 1700000002.0, local=True),
+                   message("m2", "r2", "out", "my answer", 1700000003.0, ack=2),
+                   message("x1", "", "in", "", 1700000004.0, deleted=True),
+                   message("m3", "", "in", "latest from alice", 1700000005.0),
+                   message("", "r9", "out", "still sending", 1700000006.0),
+                   message("", "r8", "out", "did not go", 1700000007.0, failed="offline")]
+        return c
+
+    def test_ctrl_r_walks_only_messages_that_can_be_answered(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        self.assertEqual([m.id for m in app.chat.targets("0")], ["m1", "m2", "m3"])
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m2")
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "end")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "pgup")
+        self.assertEqual(app.pane.select, "m1")
+        app.edit("key", "pgdn")
+        self.assertEqual(app.pane.select, "m3")
+        app.edit("key", "home")
+        self.assertEqual(app.pane.select, "m1")
+
+    def test_enter_picks_and_the_reply_goes_with_the_next_message(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.size = (80, 16)
+        app.edit("ctrl", "r")
+        self.assertIn("↑/↓ choose · enter reply · esc cancel", self.plain(app.render()))
+        app.edit("key", "up")
+        app.edit("key", "enter")
+        self.assertEqual((app.pane.select, app.pane.reply), (None, "m2"))
+        frame = self.plain(app.render())
+        self.assertIn("↩ Reply: my answer", frame)
+        self.assertNotIn("enter reply", frame)
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        sent = app.link.ops("msg.send")[-1]
+        self.assertEqual((sent["text"], sent["reply"], sent["key"]), ("yes", "m2", A))
+        self.assertEqual((app.pane.reply, app.chat.conv("0").items[-1].reply), ("", "m2"))
+        self.assertNotIn("Reply:", self.plain(app.render()))
+        app.edit("ctrl", "r")
+        app.edit("text", "r")
+        self.assertEqual(app.pane.reply, "m3")
+        app.edit("key", "esc")
+        app.edit("text", "plain")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], "")
+
+    def test_esc_order_and_paste_never_picks(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.edit("text", "draft")
+        app.edit("ctrl", "r")
+        app.edit("paste", "r")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftr"))
+        app.edit("ctrl", "r")
+        app.edit("text", "rx")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftrrx"))
+        app.edit("ctrl", "r")
+        app.edit("key", "esc")
+        self.assertEqual((app.pane.select, app.pane.reply, app.pane.draft), (None, "", "draftrrx"))
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send"), [])
+        app.edit("key", "esc")
+        self.assertEqual((app.pane.reply, app.pane.draft), ("", "draftrrx"))
+        app.edit("key", "esc")
+        self.assertEqual(app.pane.draft, "")
+
+    def test_without_messages_or_chat_it_says_why(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.edit("ctrl", "r")
+        self.assertEqual((app.pane.select, app.status), (None, "No message to reply to"))
+        self.chat(app)
+        app.edit("text", ":reply")
+        app.edit("key", "enter")
+        self.assertEqual(app.pane.select, "m3")
+        empty = cli.App("")
+        empty.edit("ctrl", "r")
+        self.assertEqual(empty.status, "No chat is open")
+        self.assertTrue(any(key == "ctrl+r" for key, _ in cli.KEYS))
+        self.assertTrue(any(command == ":reply" for command, _, _ in cli.COMMANDS))
+
+    def test_the_selection_stays_in_view_and_incoming_messages_do_not_move_it(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0", *["line %d" % k for k in range(30)])
+        app.edit("ctrl", "r")
+        for _ in range(20):
+            app.edit("key", "up")
+        self.assertEqual(app.pane.select, "m9")
+        rows = [self.plain(r) for r in app.screen.pane_rows(app.pane, 60, 10, True)]
+        marked = [r for r in rows if r.startswith("▌")]
+        self.assertEqual(len(marked), 1, rows)
+        self.assertIn("line 9", marked[0])
+        scroll = app.pane.scroll
+        app.on_event({"event": "message", "conversation": "0", "key": A, "dir": "in", "id": "late",
+                      "text": "late", "ts": 1700000100})
+        self.assertEqual(app.pane.scroll, scroll)
+        rows = [self.plain(r) for r in app.screen.pane_rows(app.pane, 60, 10, True)]
+        self.assertTrue(any(r.startswith("▌") and "line 9" in r for r in rows), rows)
+
+    def test_replies_quote_the_loaded_message_like_the_bar(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = self.loaded(app, "0")
+        message = cli.Message
+        quoted = "word   \n\tnext " + "x" * 130
+        c.items = [message("q1", "", "in", quoted, 1700000000.0),
+                   message("a1", "", "out", "answer", 1700000001.0, ack=1, reply="q1"),
+                   message("a2", "", "in", "orphan", 1700000002.0, reply="not-loaded"),
+                   message("a3", "", "in", "to a deleted one", 1700000003.0, reply="d1"),
+                   message("d1", "", "in", "", 1700000004.0, deleted=True)]
+        rows = self.rows(app, 300)
+        quotes = [k for k, r in enumerate(rows) if "↩" in r]
+        self.assertEqual(len(quotes), 2, rows)
+        self.assertIn("↩ " + cli.compact_preview(quoted), rows[quotes[0]])
+        self.assertIn("answer", rows[quotes[0] + 1])
+        self.assertIn("↩ Message deleted", rows[quotes[1]])
+        self.assertTrue(all(cli.text_width(r) <= 40 for r in self.rows(app, 40)))
+
+    def test_reply_preview_follows_the_bar_rules(self):
+        self.assertEqual(cli.compact_preview("  a \n\t b  "), "a b")
+        self.assertEqual(cli.compact_preview("a\u00a0\ufeffb"), "a b")
+        self.assertEqual(cli.compact_preview("x" * 120), "x" * 120)
+        self.assertEqual(cli.compact_preview("x" * 121), "x" * 120 + "…")
+        for unit in ("\U0001F1E9\U0001F1EA", "\U0001F468\u200d\U0001F469\u200d\U0001F467", "e\u0301",
+                     "\U0001F44D\U0001F3FD"):
+            self.assertEqual(cli.compact_preview(unit * 121), unit * 120 + "…", repr(unit))
+
+    def test_edits_and_deletes_arrive_live_and_end_a_reply_to_them(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.on_event({"event": "message.updated", "conversation": "0", "key": A, "id": "m1",
+                      "text": "first, fixed", "deleted": False, "edited": True})
+        self.assertTrue(any("first, fixed" in r and "(edited)" in r for r in self.rows(app)), self.rows(app))
+        app.on_event({"event": "message.updated", "conversation": "0", "key": B, "id": "m3", "text": "",
+                      "deleted": True, "edited": False})
+        self.assertEqual(app.pane.reply, "m3")
+        app.on_event({"event": "message.updated", "conversation": "0", "key": A, "id": "m3", "text": "",
+                      "deleted": True, "edited": False})
+        self.assertEqual((app.pane.reply, app.status), ("", "Reply canceled: the message was deleted"))
+        self.assertEqual([m.id for m in app.chat.targets("0")], ["m1", "m2"])
+        self.assertEqual(sum("Message deleted" in r for r in self.rows(app)), 2)
+        self.assertFalse(any("latest from alice" in r for r in self.rows(app)))
+
+    def test_history_items_keep_reply_edit_and_delete(self):
+        m = cli.message_from({"id": "a", "dir": "in", "text": "hi", "reply": "b", "edited": True})
+        self.assertEqual((m.reply, m.edited, m.deleted, m.text), ("b", True, False, "hi"))
+        gone = cli.message_from({"id": "c", "dir": "in", "text": "secret", "deleted": True})
+        self.assertEqual((gone.text, gone.deleted, cli.replyable(gone), cli.shown_text(gone)),
+                         ("", True, False, cli.DELETED))
+
+    def test_reply_state_follows_the_chat(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}, {"id": "1", "key": B, "name": "bob"}])
+        self.chat(app)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.edit("key", "tab")
+        self.assertEqual((app.pane.conv, app.pane.reply, app.pane.select), ("1", "", None))
+        app.edit("key", "tab")
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.apply_friends([{"id": "0", "key": C, "name": "carol", "online": True, "status": "online"},
+                           {"id": "5", "key": A, "name": "alice", "online": True, "status": "online"},
+                           {"id": "1", "key": B, "name": "bob", "online": True, "status": "online"}])
+        self.assertEqual((app.pane.conv, app.pane.reply), ("5", ""))
+        self.chat(app)
+        app.show("0")
+        app.edit("ctrl", "r")
+        app.reset_identity()
+        self.assertEqual((app.pane.reply, app.pane.select), ("", None))
+
+    def test_an_id_longer_than_the_request_field_cannot_be_answered(self):
+        with open(os.path.join(ROOT, "helper", "json_io.h"), encoding="utf-8") as f:
+            field = int(re.search(r"char reply\[(\d+)\];", f.read()).group(1))
+        self.assertEqual(cli.REPLY_ID_MAX, field - 1)
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = app.chat.conv("0")
+        c.loaded, c.request = True, ""
+        fits, too_long = "a" * cli.REPLY_ID_MAX, "b" * (cli.REPLY_ID_MAX + 1)
+        c.items = [cli.Message(fits, "", "in", "fits", 1700000000.0),
+                   cli.Message(too_long, "", "in", "too long", 1700000001.0)]
+        self.assertEqual([m.id for m in app.chat.targets("0")], [fits])
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], fits)
+
+    def test_a_reload_that_shows_the_chosen_message_deleted_drops_the_choice(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.size = (80, 16)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        self.assertEqual(app.pane.reply, "m3")
+        app.chat.load("0")
+        app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
+                      "items": [{"id": "m1", "dir": "in", "text": "first from alice", "ts": 1700000000},
+                                {"id": "m3", "dir": "in", "text": "latest from alice", "ts": 1700000005,
+                                 "deleted": True}]})
+        self.assertEqual(app.pane.reply, "")
+        self.assertIn("Reply canceled: the message was deleted", self.plain(app.render()))
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], "")
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m1")
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        app.chat.load("0")
+        app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
+                      "items": [{"id": "m0", "dir": "in", "text": "older from alice", "ts": 1699999999},
+                                {"id": "m1", "dir": "in", "text": "", "ts": 1700000000, "deleted": True}]})
+        self.assertEqual(app.pane.select, "m0")
+
+
+class IdentityActions(Sandbox):
+    def plain(self, text):
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+    def screen(self, app):
+        frame = app.render()
+        rows = {}
+        for m in re.finditer(r"\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K", frame, re.S):
+            rows[int(m.group(1))] = self.plain(m.group(2))
+        return [rows[k] for k in sorted(rows)]
+
+    def typed(self, app, line):
+        app.edit("text", line)
+        app.edit("key", "enter")
+
+    def ready(self, protected=False):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.loaded(app, "0")
+        app.identity.protected = protected
+        app.size = (100, 16)
+        app.pastes_marked = True
+        app.identity.export_version = 2
+        return app
+
+    def bundle(self, name="id.save"):
+        path = os.path.join(self.base, name)
+        with open(path, "w") as f:
+            f.write("bundle")
+        return path
+
+    def passphrase(self, app, *parts):
+        for part in parts:
+            if part == "\t":
+                app.edit("key", "tab")
+            else:
+                app.edit("text", part)
+        app.edit("key", "enter")
+
+    def test_protect_asks_twice_masks_and_keeps_the_passphrase_out_of_history(self):
+        app = self.ready()
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "short")
+        self.assertEqual((app.status, app.secret_prompt), (cli.NEW_RULE, None))
+        self.typed(app, ":identity protect")
+        app.edit("text", "correct horse")
+        app.edit("key", "tab")
+        app.edit("text", "42")
+        frame = self.plain(app.render())
+        self.assertNotIn("horse", frame + repr(app.secret_prompt))
+        self.assertIn("new passphrase › " + "•" * 16, frame)
+        self.assertIn("enter continues · esc cancels", frame)
+        app.edit("key", "enter")
+        self.assertEqual(app.secret_prompt.label, "repeat passphrase")
+        self.passphrase(app, "correct horse 42")
+        self.assertEqual((app.status, app.confirm, app.link.ops("identity.protect")), (cli.MISMATCH, None, []))
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "correct horse", "\t", "42")
+        self.passphrase(app, "correct horse", "\t", "42")
+        self.assertEqual(app.confirm.prompt, cli.PROTECT_PROMPT)
+        self.assertNotIn("horse", repr(app.confirm) + self.plain(app.render()))
+        app.edit("text", "n")
+        self.assertEqual((app.status, app.confirm, app.link.ops("identity.protect")), ("No passphrase set", None, []))
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "correct horse", "\t", "42")
+        self.passphrase(app, "correct horse", "\t", "42")
+        app.edit("text", "y")
+        sent = app.link.ops("identity.protect")[-1]
+        self.assertEqual(sent["passphrase"], "correct horse\t42")
+        self.assertEqual(app.status, "Protecting identity…")
+        app.on_event({"event": "identity", "op": "protect", "request": sent["id"], "protected": True})
+        self.assertEqual((app.status, app.identity.protected), ("Identity protection enabled.", True))
+        self.assertFalse(any("horse" in line for line in app.commands))
+        self.assertEqual((app.pane.draft, app.chat.sent_texts("0")), ("", []))
+
+    def test_protect_stops_when_a_passphrase_was_set_meanwhile(self):
+        app = self.ready()
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "correct horse 42")
+        app.on_event({"event": "identity", "op": "protect", "request": "bar-protect", "protected": True})
+        self.passphrase(app, "correct horse 42")
+        self.assertEqual((app.confirm, app.link.ops("identity.protect")), (None, []))
+        self.assertEqual(app.status, "Your identity already has a passphrase; :identity unprotect removes it first")
+        app.on_event({"event": "identity", "op": "unprotect", "request": "bar-unprotect", "protected": False})
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "correct horse 42")
+        self.passphrase(app, "correct horse 42")
+        app.on_event({"event": "identity", "op": "protect", "request": "bar-protect-2", "protected": True})
+        app.edit("text", "y")
+        self.assertEqual(app.link.ops("identity.protect"), [])
+        self.assertIn("already has a passphrase", app.status)
+        app.on_event({"event": "identity", "op": "unprotect", "request": "bar-unprotect-2", "protected": False})
+        self.typed(app, ":identity protect")
+        self.passphrase(app, "correct horse 42")
+        self.passphrase(app, "correct horse 42")
+        app.edit("text", "y")
+        sent = app.link.ops("identity.protect")[-1]
+        app.on_event({"event": "identity", "op": "protect", "request": "bar-protect-3", "protected": True})
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "Your identity already has a passphrase; :identity unprotect removes it first")
+        app.identity.protected = None
+        self.typed(app, ":identity protect")
+        self.assertEqual((app.status, app.secret_prompt), (cli.NOT_KNOWN, None))
+
+    def test_unprotect_asks_right_before_sending_and_reports_a_wrong_passphrase(self):
+        app = self.ready(protected=True)
+        self.typed(app, ":identity protect")
+        self.assertIn("already has a passphrase", app.status)
+        self.assertIsNone(app.secret_prompt)
+        self.typed(app, ":identity unprotect")
+        self.assertEqual((app.secret_prompt.label, app.confirm), ("current passphrase", None))
+        self.passphrase(app, "right one")
+        self.assertEqual(app.confirm.prompt, cli.UNPROTECT_PROMPT)
+        self.assertNotIn("right one", repr(app.confirm))
+        app.edit("text", "n")
+        self.assertEqual((app.status, app.secret_prompt, app.link.ops("identity.unprotect")), ("Passphrase kept", None, []))
+        self.typed(app, ":identity unprotect")
+        self.passphrase(app, "right one")
+        app.confirm.until = 0.0
+        app.tick(time.monotonic())
+        self.assertEqual((app.status, app.confirm, app.link.ops("identity.unprotect")), ("Passphrase kept", None, []))
+        self.typed(app, ":identity unprotect")
+        self.passphrase(app, "wrong")
+        app.edit("text", "y")
+        sent = app.link.ops("identity.unprotect")[-1]
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "The current identity passphrase is incorrect.")
+        self.typed(app, ":identity unprotect")
+        self.passphrase(app, "right one")
+        app.edit("text", "y")
+        sent = app.link.ops("identity.unprotect")[-1]
+        self.assertEqual(sent["passphrase"], "right one")
+        app.on_event({"event": "identity", "op": "unprotect", "request": sent["id"], "protected": False})
+        self.assertEqual((app.status, app.identity.protected), ("Identity protection removed.", False))
+
+    def test_export_asks_first_and_names_the_bundle(self):
+        import unittest.mock
+        app = self.ready()
+        with unittest.mock.patch.dict(os.environ, {"XDG_DOWNLOAD_DIR": ""}):
+            self.typed(app, ":identity export")
+        default = os.path.join(os.environ["HOME"], "Downloads", "omaq-identity.save")
+        self.assertEqual(app.confirm.prompt, "Export your identity to %s? y/n" % default)
+        app.edit("text", "n")
+        self.assertEqual((app.status, app.link.ops("identity.export")), ("Identity not exported", []))
+        with unittest.mock.patch.dict(os.environ, {"XDG_DOWNLOAD_DIR": os.path.join(self.base, "dl")}):
+            self.typed(app, ":identity export")
+        self.assertEqual(app.confirm.path, os.path.join(self.base, "dl", "omaq-identity.save"))
+        app.edit("text", "n")
+        target = os.path.join(self.base, "backup")
+        os.makedirs(target)
+        self.typed(app, ":identity export %s" % target)
+        path = os.path.join(target, "omaq-identity.save")
+        self.assertEqual(app.confirm.path, path)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertEqual(sent["path"], path)
+        app.on_event({"event": "identity", "op": "export", "request": sent["id"], "path": path})
+        self.assertIn("Identity exported to %s. It has no passphrase" % path, app.status)
+        open(path, "w").close()
+        self.typed(app, ":identity export %s" % path)
+        self.assertEqual(app.confirm.prompt, "Replace %s with your identity? y/n" % path)
+        app.edit("text", "n")
+        self.typed(app, ":identity export ~/my..bundle")
+        self.assertTrue(app.status.startswith("This path cannot be used"), app.status)
+        self.assertIsNone(app.confirm)
+        with unittest.mock.patch.dict(os.environ, {"XDG_DOWNLOAD_DIR": "/srv/../dl"}):
+            self.typed(app, ":identity export")
+        self.assertEqual((app.status, app.confirm), ("This path cannot be used: /srv/../dl/omaq-identity.save", None))
+        for protected in (True, None):
+            app.identity.protected = protected
+            self.typed(app, ":identity export %s" % path)
+            app.edit("text", "y")
+            sent = app.link.ops("identity.export")[-1]
+            app.on_event({"event": "identity", "op": "export", "request": sent["id"], "path": path})
+            self.assertEqual(app.status, "Identity exported to %s. Transfer a bundle securely and delete extra copies."
+                             % path)
+
+    def test_export_to_a_new_path_needs_a_helper_that_keeps_files(self):
+        app = self.ready()
+        app.handshake, app.nonce = False, "n1"
+        app.on_event({"event": "snapshot", "request": "n1", "instance": "i" * 32, "protocol": 16, "historyClear": 2})
+        self.assertEqual(app.identity.export_version, 0)
+        fresh = os.path.join(self.base, "fresh.save")
+        self.typed(app, ":identity export %s" % fresh)
+        self.assertEqual((app.status, app.confirm, app.link.ops("identity.export")), ("Helper update required", None, []))
+        existing = self.bundle("existing.save")
+        self.typed(app, ":identity export %s" % existing)
+        self.assertEqual(app.confirm.prompt, "Replace %s with your identity? y/n" % existing)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], True)
+        app.on_event({"event": "identity", "op": "export", "request": sent["id"], "path": existing})
+        app.handshake, app.nonce = False, "n2"
+        app.on_event({"event": "snapshot", "request": "n2", "instance": "i" * 32, "protocol": 16, "historyClear": 2,
+                      "identityExport": 2})
+        self.assertEqual(app.identity.export_version, 2)
+        self.typed(app, ":identity export %s" % fresh)
+        self.assertEqual(app.confirm.prompt, "Export your identity to %s? y/n" % fresh)
+
+    def test_export_never_replaces_a_file_it_did_not_ask_about(self):
+        app = self.ready()
+        path = os.path.join(self.base, "race.save")
+        self.typed(app, ":identity export %s" % path)
+        self.assertEqual((app.confirm.action, app.confirm.prompt), ("export", "Export your identity to %s? y/n" % path))
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], False)
+        open(path, "w").close()
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual((app.status, app.confirm), ("%s already exists. Export again to replace it." % path, None))
+        self.typed(app, ":identity export %s" % path)
+        self.assertEqual((app.confirm.action, app.confirm.prompt),
+                         ("overwrite", "Replace %s with your identity? y/n" % path))
+        app.edit("text", "n")
+        self.assertEqual((app.status, len(app.link.ops("identity.export"))), ("Identity not exported", 1))
+        self.typed(app, ":identity export %s" % path)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], True)
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "The identity could not be exported to that path.")
+        os.unlink(path)
+        self.typed(app, ":identity export %s" % path)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.export")[-1]
+        self.assertIs(sent["replace"], False)
+        app.on_event({"event": "error", "code": "forbidden", "request": sent["id"]})
+        self.assertEqual(app.status, "The identity could not be exported to that path.")
+
+    def test_validate_asks_for_the_bundle_passphrase_when_needed(self):
+        app = self.ready()
+        bundle = self.bundle()
+        self.typed(app, ":identity validate")
+        self.assertEqual(app.status, "Usage: :identity validate <path>")
+        self.typed(app, ":identity validate %s" % bundle)
+        first = app.link.ops("identity.inspect")[-1]
+        self.assertEqual((first["path"], "passphrase" in first), (bundle, False))
+        app.on_event({"event": "error", "code": "identity_passphrase_required", "request": first["id"]})
+        self.assertEqual(app.secret_prompt.label, "bundle passphrase")
+        self.passphrase(app, "bundle pass")
+        second = app.link.ops("identity.inspect")[-1]
+        self.assertEqual((second["path"], second["passphrase"]), (bundle, "bundle pass"))
+        app.on_event({"event": "identity", "op": "inspect", "request": second["id"], "path": bundle})
+        self.assertEqual(app.status, "Identity bundle validated. Use :identity import to activate it.")
+        self.typed(app, ":identity validate %s" % os.path.join(self.base, "missing.save"))
+        self.assertTrue(app.status.startswith("No identity bundle at"), app.status)
+
+    def test_import_asks_first_then_replaces_the_identity(self):
+        app = self.ready()
+        bundle = self.bundle()
+        prompt = ("Import %s as the active identity? Existing direct contacts will require a fresh invite. y/n"
+                  % bundle)
+        self.typed(app, ":identity import %s" % bundle)
+        self.assertEqual(app.confirm.prompt, prompt)
+        app.edit("text", "x")
+        self.assertEqual((app.status, app.link.ops("identity.import")), ("Identity kept", []))
+        self.typed(app, ":identity import %s" % bundle)
+        app.edit("text", "y")
+        first = app.link.ops("identity.import")[-1]
+        self.assertEqual((first["path"], first["replace"], "passphrase" in first), (bundle, True, False))
+        app.on_event({"event": "error", "code": "identity_passphrase_required", "request": first["id"]})
+        self.passphrase(app, "old identity pass")
+        self.assertEqual((app.confirm.prompt, len(app.link.ops("identity.import"))), (prompt, 1))
+        self.assertNotIn("old identity pass", repr(app.confirm))
+        app.edit("text", "y")
+        second = app.link.ops("identity.import")[-1]
+        self.assertEqual((second["passphrase"], second["replace"], second["path"]), ("old identity pass", True, bundle))
+        app.on_event({"event": "error", "code": "identity_import_failed", "request": second["id"]})
+        self.assertEqual((app.status, app.secret_prompt), ("Identity file or passphrase is invalid.", None))
+        self.typed(app, ":identity import %s" % bundle)
+        app.edit("text", "y")
+        third = app.link.ops("identity.import")[-1]
+        app.on_event({"event": "identity", "op": "import", "request": third["id"]})
+        self.assertEqual(app.status, "Identity imported. Existing direct contacts must be removed on both sides "
+                                     "and re-invited before messaging.")
+        self.assertEqual((app.friends, app.identity.protected), ([], None))
+        self.assertEqual(app.link.ops("status")[-1]["op"], "status")
+
+    def test_a_failed_import_that_locks_keeps_its_error(self):
+        app = self.ready()
+        bundle = self.bundle()
+        self.typed(app, ":identity import %s" % bundle)
+        app.edit("text", "y")
+        sent = app.link.ops("identity.import")[-1]
+        app.on_event({"event": "error", "code": "identity_rollback_failed", "request": sent["id"]})
+        app.on_event({"event": "snapshot", "protocol": cli.PROTOCOL_MIN, "locked": True, "instance": app.instance})
+        frame = self.plain(app.render())
+        self.assertTrue(app.locked)
+        self.assertEqual(app.status, cli.ERRORS["identity_rollback_failed"])
+        self.assertIn("Identity is locked", frame)
+        self.assertIn("passphrase › ", frame)
+
+    def test_a_lock_closes_the_passphrase_line_and_forgets_it(self):
+        app = self.ready()
+        for lock in ({"event": "error", "code": "locked"},
+                     {"event": "snapshot", "protocol": cli.PROTOCOL_MIN, "locked": True, "instance": app.instance}):
+            self.typed(app, ":identity protect")
+            self.passphrase(app, "correct horse 42")
+            app.edit("text", "half")
+            app.on_event(lock)
+            self.assertEqual((app.locked, app.secret_prompt, app.identity.first), (True, None, ""))
+            app.on_event({"event": "identity", "op": "unlock", "request": "bar-unlock", "protected": False})
+            app.on_event({"event": "snapshot", "protocol": cli.PROTOCOL_MIN, "request": app.nonce,
+                          "instance": app.instance, "online": True, "protected": False})
+            self.assertEqual((app.locked, app.handshake), (False, True))
+            self.assertNotIn("repeat passphrase", self.plain(app.render()))
+
+    def test_a_passphrase_line_drops_a_waiting_question(self):
+        app = self.ready()
+        bundle = self.bundle()
+        app.history_clear = 2
+        self.typed(app, ":identity validate %s" % bundle)
+        sent = app.link.ops("identity.inspect")[-1]
+        self.typed(app, ":clear")
+        self.assertEqual(app.confirm.action, "clear")
+        app.on_event({"event": "error", "code": "identity_passphrase_required", "request": sent["id"]})
+        self.assertEqual((app.confirm, app.secret_prompt.label, app.status), (None, "bundle passphrase", "Chat kept"))
+        self.passphrase(app, "bundle pass")
+        app.edit("text", "y")
+        self.assertEqual(app.link.ops("history.clear"), [])
+
+    def bundle_prompt(self, app):
+        bundle = self.bundle()
+        self.typed(app, ":identity validate %s" % bundle)
+        first = app.link.ops("identity.inspect")[-1]
+        app.on_event({"event": "error", "code": "identity_passphrase_required", "request": first["id"]})
+        self.assertEqual(app.secret_prompt.label, "bundle passphrase")
+
+    def quiet(self, app):
+        r, w = os.pipe()
+        try:
+            return app.discard_burst(r)
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_raw_lines_in_one_burst_never_reach_the_chat(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        for burst in (b"first-secret\rsecond-secret\r", b"first-secret\rsecond-secret", b"first-secret\x03second-secret\r",
+                      b"first-secret\x04second-secret\r", b"first-secret\x1b\x1bsecond-secret\r"):
+            app.take_input(app.keys.feed(burst))
+            self.assertEqual((app.secret_prompt.label, app.secret_prompt.value, app.status, app.hush),
+                             ("bundle passphrase", "", cli.ONE_LINE, True), burst)
+            started = time.monotonic()
+            self.assertTrue(self.quiet(app))
+            self.assertLess(time.monotonic() - started, cli.HUSH_SECONDS / 2)
+            self.assertFalse(app.hush)
+        self.assertEqual((len(app.link.ops("identity.inspect")), app.link.ops("msg.send"), app.pane.draft), (1, [], ""))
+        app.take_input(app.keys.feed(b"bundle pass\r\n\x1b[O"))
+        self.assertEqual((app.link.ops("identity.inspect")[-1]["passphrase"], app.hush), ("bundle pass", True))
+        app.hush = False
+        app.on_event({"event": "error", "code": "locked"})
+        for burst in (b"first-secret\rsecond-secret\r", b"first-secret\x03second-secret\r"):
+            app.take_input(app.keys.feed(burst))
+            self.assertEqual((app.link.ops("identity.unlock"), app.secret, app.status, app.running),
+                             ([], "", cli.ONE_LINE, True), burst)
+            app.hush = False
+        app.take_input(app.keys.feed(b"pass\tword\r"))
+        self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "pass\tword")
+        self.assertEqual(app.link.ops("msg.send"), [])
+
+    def test_input_until_quiet_is_dropped_after_a_passphrase_line(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.take_input(app.keys.feed(b"first-secret\r"))
+        self.assertTrue(app.hush)
+        r, w = os.pipe()
+        try:
+            timer = threading.Timer(0.06, os.write, (w, b"second-secret\r"))
+            started = time.monotonic()
+            timer.start()
+            self.assertTrue(app.discard_burst(r))
+            waited = time.monotonic() - started
+            timer.join()
+            self.assertGreaterEqual(waited, 0.06 + cli.HUSH_SECONDS - 0.02)
+            self.assertEqual((select.select([r], [], [], 0)[0], app.hush, app.keys.skip), ([], False, False))
+            os.close(w)
+            w = -1
+            self.assertFalse(app.discard_burst(r))
+        finally:
+            os.close(r)
+            if w >= 0:
+                os.close(w)
+        self.assertEqual((app.link.ops("msg.send"), app.pane.draft), ([], ""))
+
+    def test_a_paste_still_running_when_the_line_closes_is_dropped(self):
+        for close in ("disconnect", "import", "unlock", "snapshot"):
+            app = self.ready()
+            if close in ("unlock", "snapshot"):
+                app.on_event({"event": "error", "code": "locked"})
+            else:
+                self.bundle_prompt(app)
+            app.take_input(app.keys.feed(b"\x1b[200~first-secret"))
+            if close == "disconnect":
+                app.drop_link()
+                app.link, app.handshake = FakeLink(), True
+            elif close == "import":
+                app.on_event({"event": "identity", "op": "import", "request": "bar-import"})
+            elif close == "unlock":
+                app.on_event({"event": "identity", "op": "unlock", "request": "bar-unlock", "protected": True})
+            else:
+                app.on_event({"event": "snapshot", "protocol": cli.PROTOCOL_MIN, "online": True, "protected": True})
+            self.assertTrue(app.hush, close)
+            self.assertTrue(self.quiet(app))
+            self.assertTrue(app.keys.skip, close)
+            app.take_input(app.keys.feed(b"\x1b[201~"))
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.secret, app.keys.skip), ("", "", False), close)
+            self.assertNotIn("first-secret", self.plain(app.render()), close)
+            app.take_input(app.keys.feed(b"\x1b[200~later\x1b[201~"))
+            self.assertEqual(composer.draft, "later", close)
+
+    def piped(self, app, data):
+        r, w = os.pipe()
+        try:
+            os.write(w, data)
+            started = time.monotonic()
+            result = app.discard_burst(r)
+            self.assertGreaterEqual(time.monotonic() - started, cli.HUSH_SECONDS - 0.02)
+            self.assertEqual(select.select([r], [], [], 0)[0], [])
+            return result
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_an_open_sequence_at_the_quiet_end_is_dropped_whole(self):
+        for start, rest in ((b"\x1b[200", b"~late-secret\x1b[201~"), (b"\x1b[", b"A"), (b"\x1b[", b"1;2R"),
+                            (b"\x1bO", b"h"), (b"\x1b[200~late-sec", b"ret\x1b[201~"), (b"\x1b[200~", b"late-secret\x1b[201~")):
+            app = self.ready()
+            self.bundle_prompt(app)
+            app.drop_link()
+            app.link, app.handshake = FakeLink(), True
+            self.assertTrue(self.piped(app, start))
+            self.assertTrue(app.keys.skip, start)
+            app.take_input(app.keys.feed(rest + b"x"))
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.keys.skip), ("x", False), start + rest)
+            self.assertNotIn("late-secret", self.plain(app.render()))
+            app.take_input(app.keys.feed(b"\x1b[200~ later\x1b[201~"))
+            self.assertEqual(composer.draft, "x later", start + rest)
+
+    def test_a_marker_split_after_enter_survives_the_flush(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"first-secret\r\x1b[200")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.hush, app.keys.pending), (True, b"\x1b[200"))
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.keys.skip)
+            os.write(w, b"~late-secret\x1b[201~\r")
+            self.assertTrue(app.take_read(r))
+            os.close(w)
+            w = -1
+            self.assertFalse(app.take_read(r))
+        finally:
+            os.close(r)
+            if w >= 0:
+                os.close(w)
+        self.assertEqual(app.link.ops("identity.inspect")[-1]["passphrase"], "first-secret")
+        self.assertEqual((app.link.ops("msg.send"), app.pane.draft, app.keys.skip), ([], "", False))
+        self.assertNotIn("late-secret", self.plain(app.render()))
+
+    def test_the_parser_drops_exactly_the_open_sequence(self):
+        keys = cli.Keys()
+        keys.drop_current()
+        self.assertFalse(keys.skip)
+        self.assertEqual(keys.feed(b"\x1b"), [])
+        keys.drop_current()
+        self.assertEqual((keys.feed(b"", final=True), keys.skip), ([], True))
+        self.assertEqual((keys.feed(b"x"), keys.skip), ([], False))
+        self.assertEqual(keys.feed(b"\x1b"), [])
+        keys.drop_current(True)
+        self.assertEqual((keys.pending, keys.skip, keys.feed(b"x")), (b"", False, [("text", "x")]))
+        self.assertEqual(cli.Keys().feed(b"\x1b[\x1b[A\x1bO\x1b[200~ok\x1b[201~"), [("key", "up"), ("paste", "ok")])
+        self.assertEqual(cli.Keys().feed(b"\x1b[\x03\x1b[\r\x1bO\x7f" + "\x1b[é".encode()),
+                         [("ctrl", "c"), ("key", "enter"), ("key", "backspace"), ("text", "é")])
+        keys = cli.Keys()
+        keys.feed(b"\x1b[")
+        keys.drop_current()
+        self.assertEqual((keys.feed(b"\x03"), keys.skip), ([("ctrl", "c")], False))
+        keys = cli.Keys()
+        self.assertEqual(keys.feed(b"\x1b[200~\x1b"), [])
+        keys.drop_current(True)
+        self.assertEqual((keys.pending, keys.skip), (b"\x1b", True))
+        self.assertEqual((keys.feed(b"[201~hello"), keys.paste, keys.skip), ([("text", "hello")], None, False))
+        for start, rest, after in ((b"\x1bO", b"\x1b[200~ok\x1b[201~", [("paste", "ok")]),
+                                   (b"\x1b[", b"O", [("key", "focus-out")]), (b"\x1b[", b"Ix", [("key", "focus-in"), ("text", "x")])):
+            keys = cli.Keys()
+            keys.feed(start)
+            keys.drop_current()
+            self.assertEqual((keys.feed(rest), keys.skip), (after, False), start + rest)
+        for start, rest, after in ((b"\x1b[200", b"~secret\x1b[201~x", [("text", "x")]),
+                                   (b"\x1b[", b"Ax", [("text", "x")]), (b"\x1b[", b"1;2Rx", [("text", "x")]),
+                                   (b"\x1b", b"Ohx", [("text", "x")]), (b"\x1b", b"qx", [("text", "x")]),
+                                   (b"\x1b", b"\x1bx", [("alt", "x")]),
+                                   (b"\x1b[200~sec", b"ret\x1b[201~x", [("text", "x")]),
+                                   (b"\x1b[200~", b"secret\x1b[201~x", [("text", "x")])):
+            keys = cli.Keys()
+            self.assertEqual(keys.feed(start), [], start)
+            keys.drop_current()
+            self.assertTrue(keys.skip, start)
+            self.assertEqual(keys.feed(rest), after, start + rest)
+            self.assertEqual(keys.feed(b"\x1b[200~ok\x1b[201~\x1b[A"), [("paste", "ok"), ("key", "up")], start + rest)
+
+    def test_a_marker_split_on_an_open_line_survives_an_outside_close(self):
+        for close in ("unlock", "disconnect"):
+            app = self.ready()
+            if close == "unlock":
+                app.on_event({"event": "error", "code": "locked"})
+            else:
+                self.bundle_prompt(app)
+            r, w = os.pipe()
+            try:
+                os.write(w, b"\x1b[200")
+                self.assertTrue(app.take_read(r))
+                self.assertEqual(app.keys.pending, b"\x1b[200", close)
+                if close == "unlock":
+                    app.on_event({"event": "identity", "op": "unlock", "request": "bar-unlock", "protected": True})
+                else:
+                    app.drop_link()
+                    app.link, app.handshake = FakeLink(), True
+                self.assertTrue(app.discard_burst(r))
+                self.assertTrue(app.keys.skip, close)
+                os.write(w, b"~late-secret\x1b[201~\r")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            composer = app.pane or app.scratch
+            self.assertEqual((app.link.ops("msg.send"), composer.draft, app.secret), ([], "", ""), close)
+            self.assertNotIn("late-secret", self.plain(app.render()))
+
+    def test_a_lone_esc_still_works_on_an_open_line(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt, app.status, app.hush), (None, "Canceled", True))
+            self.assertTrue(app.discard_burst(r))
+            app.on_event({"event": "error", "code": "locked"})
+            os.write(w, b"abc")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.secret, "abc")
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.secret, "")
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_a_lone_esc_at_the_end_of_a_closing_read_is_a_key(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"first-secret\rsecond-secret\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            self.assertEqual((app.keys.pending, app.keys.skip), (b"", False))
+            os.write(w, b"\x1b[O")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt.label, app.focused, app.status), ("bundle passphrase", False, cli.ONE_LINE))
+            os.write(w, b"first-secret\rsecond-secret\x1b")
+            self.assertTrue(app.take_read(r))
+            os.write(w, b"[200~third-secret\x1b[201~")
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.keys.skip)
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt.value, app.keys.skip, app.link.ops("msg.send")), ("", False, []))
+        finally:
+            os.close(r)
+            os.close(w)
+        app = self.ready()
+        self.typed(app, ":identity protect")
+        r, w = os.pipe()
+        try:
+            os.write(w, b"correct horse 42\r\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            os.write(w, b"c")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt.label, app.secret_prompt.value), ("repeat passphrase", "c"))
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_a_paste_end_split_at_the_quiet_end_still_ends_the_paste(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        self.assertTrue(self.piped(app, b"\x1b[200~secret\x1b"))
+        self.assertEqual((app.keys.paste is not None, app.keys.pending[-1:], app.keys.skip), (True, b"\x1b", True))
+        app.take_input(app.keys.feed(b"[201~hello"))
+        app.take_input(app.keys.feed(b"\x1b[200~ later\x1b[201~"))
+        composer = app.pane or app.scratch
+        self.assertEqual((composer.draft, app.keys.paste, app.keys.skip), ("hello later", None, False))
+        self.assertNotIn("secret", self.plain(app.render()))
+
+    def test_input_stays_live_around_kept_and_broken_sequences(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x1bO")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.keys.pending, b"")
+            os.write(w, b"hunter22")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.secret_prompt.value, "hunter22")
+            os.write(w, b"\x1b[")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.keys.pending, b"\x1b[")
+            os.write(w, b"\x03")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt, app.status, app.keys.pending), (None, "Canceled", b""))
+            self.assertTrue(app.discard_burst(r))
+            os.write(w, b"\x1b[200~abc\x1b[20")
+            self.assertTrue(app.take_read(r))
+            self.assertIsNotNone(app.keys.paste)
+            os.write(w, b"1~")
+            self.assertTrue(app.take_read(r))
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual((app.pane.draft, app.keys.paste), ("abc", None))
+
+    def test_a_held_marker_piece_gives_way_to_the_next_key(self):
+        for piece in (b"\x1b[", b"\x1b[2", b"\x1b[20", b"\x1b[200"):
+            app = self.ready()
+            app.on_event({"event": "error", "code": "locked"})
+            r, w = os.pipe()
+            try:
+                os.write(w, piece)
+                self.assertTrue(app.take_read(r))
+                self.assertEqual((app.keys.pending, app.keys.held), (piece, True), piece)
+                os.write(w, b"hunter22\r")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], piece[2:].decode() + "hunter22", piece)
+        app = self.ready()
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x1b[20")
+            self.assertTrue(app.take_read(r))
+            os.write(w, b"0~pasted\x1b[201~")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.secret_prompt.value, "pasted")
+            os.write(w, b"\x1b[")
+            with unittest.mock.patch.object(select, "select", return_value=([r], [], [])):
+                self.assertTrue(app.take_read(r))
+            self.assertEqual((app.keys.pending, app.keys.held), (b"\x1b[", False))
+            os.write(w, b"A")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.secret_prompt.value, app.keys.pending), ("pasted", b""))
+            app.secret_prompt.value = ""
+            for burst, rest, value in ((b"pass\rmore\x1b[", [b"hunter22"], "hunter22"),
+                                       (b"pass\rmore\x1b[", [b"2", b"horse42"], "2horse42"),
+                                       (b"pass\rmore\x1b[", [b"1", b"horse42"], "1horse42"),
+                                       (b"pass\rmore\x1b[", [b"1;2R", b"abc"], "abc"),
+                                       (b"pass\rmore\x1b[20", [b"0~late\x1b[201~abc"], "abc")):
+                os.write(w, burst)
+                self.assertTrue(app.take_read(r))
+                self.assertEqual((app.status, app.secret_prompt.value), (cli.ONE_LINE, ""), burst)
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.keys.skip, app.keys.held), (True, True), burst)
+                for chunk in rest:
+                    os.write(w, chunk)
+                    self.assertTrue(app.take_read(r))
+                self.assertEqual((app.secret_prompt.value, app.keys.skip), (value, False), burst)
+                app.secret_prompt.value = ""
+            for chunks, value, focused in (([b"\x1b[", b"O"], "", False), ([b"\x1b[", b"I"], "", True),
+                                           ([b"\x1b[", b"2", b"horse42"], "2horse42", True),
+                                           ([b"\x1b[", b"1", b"horse42"], "1horse42", True),
+                                           ([b"\x1b[", b"2", b"3", b"horse42"], "23horse42", True),
+                                           ([b"\x1b[", b"1", "é".encode()], "1é", True),
+                                           ([b"\x1b[", b"1;2R"], "", True), ([b"\x1b[", b"?2004;1$y"], "", True),
+                                           ([b"\x1b[", b"?62;22c"], "", True), ([b"\x1b[1", b"2;40R"], "", True),
+                                           ([b"\x1b[2", b"0x"], "20x", True), ([b"\x1b[", b"A"], "", True)):
+                app.focused = True
+                for chunk in chunks:
+                    os.write(w, chunk)
+                    self.assertTrue(app.take_read(r))
+                self.assertEqual((app.secret_prompt.value, app.focused, app.keys.pending), (value, focused, b""), chunks)
+                app.secret_prompt.value = ""
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_a_held_piece_at_an_outside_close_is_dropped_whole(self):
+        for pieces in ([b"\x1b["], [b"\x1b[", b"2"]):
+            app = self.ready()
+            self.bundle_prompt(app)
+            r, w = os.pipe()
+            try:
+                for piece in pieces:
+                    os.write(w, piece)
+                    self.assertTrue(app.take_read(r))
+                self.assertTrue(app.keys.held or app.keys.loose, pieces)
+                app.drop_link()
+                app.link, app.handshake = FakeLink(), True
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.keys.skip, app.keys.held, app.keys.loose), (True, False, False), pieces)
+                os.write(w, b"1;2R")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.keys.pending, app.keys.skip), ("", b"", False), pieces)
+
+    def test_a_lock_from_outside_drops_a_started_paste(self):
+        for lock in ({"event": "snapshot", "locked": True}, {"event": "error", "code": "locked"}):
+            for start, rest in ((b"\x1b[20", b"0~late-secret\x1b[201~hunter22\r"),
+                                (b"\x1b[200~late", b"-secret\x1b[201~hunter22\r")):
+                app = self.ready()
+                self.bundle_prompt(app)
+                r, w = os.pipe()
+                try:
+                    os.write(w, start)
+                    self.assertTrue(app.take_read(r))
+                    app.on_event(dict(lock))
+                    self.assertEqual((app.locked, app.secret_prompt), (True, None))
+                    os.write(w, rest)
+                    self.assertTrue(app.take_read(r))
+                finally:
+                    os.close(r)
+                    os.close(w)
+                self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "hunter22", (lock, start))
+
+    def test_a_piece_bound_by_an_outside_lock_stays_out_of_the_unlock_prompt(self):
+        for lock in ({"event": "error", "code": "locked"}, {"event": "snapshot", "locked": True}):
+            app = self.ready()
+            self.bundle_prompt(app)
+            r, w = os.pipe()
+            try:
+                os.write(w, b"pass\rmore\x1b[1")
+                self.assertTrue(app.take_read(r))
+                self.assertTrue(app.hush)
+                app.on_event(dict(lock))
+                self.assertTrue(app.discard_burst(r))
+                self.assertEqual((app.locked, app.keys.skip, app.keys.held), (True, True, False), lock)
+                os.write(w, b"horse42\r")
+                self.assertTrue(app.take_read(r))
+            finally:
+                os.close(r)
+                os.close(w)
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "orse42", lock)
+
+    def test_a_failed_runtime_marker_is_reported(self):
+        app = self.ready()
+        app.on_event({"event": "error", "code": "runtime_marker_failed"})
+        self.assertEqual(app.status, "Your identity change is saved, but OmaQ could not update its runtime file. Free some disk space, then restart OmaQ; until then, quitting may leave it running.")
+        app.say("")
+        app.handshake, app.nonce = False, "n1"
+        app.on_event({"event": "snapshot", "request": "n1", "instance": "i" * 32, "protocol": 16, "historyClear": 2,
+                      "identityExport": 2})
+        app.on_event({"event": "error", "code": "runtime_marker_failed"})
+        self.assertEqual(app.status, cli.ERRORS["runtime_marker_failed"])
+
+    def test_a_running_paste_never_waits_at_an_early_return(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.take_input(app.keys.feed(b"\x1b[200~"))
+        app.take_input(app.keys.feed(b"\x1b"))
+        self.assertEqual((app.keys.paste, app.keys.pending), ("", b"\x1b"))
+        app.hush = True
+        r, w = os.pipe()
+        try:
+            with unittest.mock.patch.object(select, "select", side_effect=AssertionError("waited")):
+                self.assertTrue(app.discard_burst(r))
+            self.assertEqual((app.keys.skip, app.keys.pending), (True, b"\x1b"))
+            os.write(w, b"[201~abc")
+            self.assertTrue(app.take_read(r))
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual((app.keys.paste, app.secret_prompt.value), (None, "abc"))
+
+    def test_input_waits_for_esc_after_a_passphrase_when_pastes_are_unmarked(self):
+        app = self.ready()
+        app.pastes_marked = False
+        self.bundle_prompt(app)
+        r, w = os.pipe()
+        try:
+            os.write(w, b"bundle pass\r")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.gated())
+            rows = self.screen(app)
+            self.assertEqual((rows[-2].rstrip(), rows[-1].strip()), (cli.GATE_LINE, cli.GATE_HINT.strip()))
+            os.write(w, b"leak\r:nickname Gated\r\x1b[O")
+            self.assertTrue(app.take_read(r))
+            composer = app.pane or app.scratch
+            self.assertEqual((composer.draft, app.link.ops("msg.send"), app.link.ops("nickname.set"), app.focused),
+                             ("", [], [], False))
+            app.on_event({"event": "error", "code": "locked"})
+            self.assertEqual((app.gate, app.gated()), (True, False))
+            os.write(w, b"pw\r")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(app.link.ops("identity.unlock")[-1]["passphrase"], "pw")
+            app.on_event({"event": "identity", "op": "unlock", "request": app.unlock_request, "protected": True})
+            self.assertTrue(app.discard_burst(r))
+            self.assertTrue(app.gated())
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            self.assertFalse(app.gated())
+            os.write(w, b"hi")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual(composer.draft, "hi")
+        finally:
+            os.close(r)
+            os.close(w)
+        for marked in ("startup", "paste"):
+            app = self.ready()
+            app.pastes_marked = marked == "startup"
+            if marked == "paste":
+                app.take_input(app.keys.feed(b"\x1b[200~x\x1b[201~"))
+                self.assertEqual(app.pane.draft, "x")
+                app.pane.draft, app.pane.cursor = "", 0
+            self.bundle_prompt(app)
+            self.passphrase(app, "bundle pass")
+            self.assertTrue(self.quiet(app))
+            self.assertFalse(app.gated(), marked)
+
+    def test_a_question_after_the_passphrase_also_waits_for_esc(self):
+        app = self.ready(protected=True)
+        app.pastes_marked = False
+        self.typed(app, ":identity unprotect")
+        r, w = os.pipe()
+        try:
+            os.write(w, b"correct horse 42\r")
+            self.assertTrue(app.take_read(r))
+            self.assertTrue(app.discard_burst(r))
+            self.assertEqual((app.confirm.prompt, app.gated()), (cli.UNPROTECT_PROMPT, True))
+            os.write(w, b"y")
+            self.assertTrue(app.take_read(r))
+            self.assertEqual((app.link.ops("identity.unprotect"), app.confirm is not None), ([], True))
+            os.write(w, b"\x1b")
+            self.assertTrue(app.take_read(r))
+            os.write(w, b"y")
+            self.assertTrue(app.take_read(r))
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertEqual(app.link.ops("identity.unprotect")[-1]["passphrase"], "correct horse 42")
+
+    def test_a_long_question_wraps_above_the_input(self):
+        app = self.ready()
+        bundle = self.bundle("a-rather-long-bundle-name-to-wrap.save")
+        self.typed(app, ":identity import %s" % bundle)
+        prompt = app.confirm.prompt
+        self.assertEqual(" ".join(cli.wrap(prompt, 98)), prompt)
+        for cols, height in ((100, 16), (80, 16), (60, 16), (100, 7), (100, 6)):
+            app.size = (cols, height)
+            want = cli.wrap(prompt, cols - 2)
+            lines = min(len(want), 3, max(1, height - 5))
+            rows = self.screen(app)
+            self.assertEqual(len(rows), height, (cols, height))
+            self.assertIn("❯", rows[-2], (cols, height))
+            shown = [row.strip() for row in rows[-2 - lines:-2]]
+            self.assertEqual(shown, want[:lines], (cols, height))
+            self.assertGreater(len(want), 1, cols)
+        app.edit("text", "n")
+        app.size = (100, 16)
+        rows = self.screen(app)
+        self.assertTrue(rows[-3].startswith("──") and rows[-3].rstrip().endswith(" Identity kept"), rows[-3])
+
+    def test_help_indents_subcommands_under_their_command(self):
+        app = self.ready()
+        app.size = (100, 40)
+        self.typed(app, ":help")
+        rows = self.screen(app)
+        starts = {next(row for row in rows if text in row).index(text) for _, text, _ in cli.COMMANDS}
+        self.assertEqual(len(starts), 1, starts)
+        for label in ("revoke", "protect", "unprotect", "export [path]", "validate <path>", "import <path>"):
+            self.assertTrue(any(row.startswith("     %s " % label) for row in rows), label)
+        app.help.index = [command for command, _, _ in cli.COMMANDS].index(":identity export ")
+        app.edit("key", "enter")
+        self.assertEqual((app.help, app.pane.draft), (None, ":identity export "))
+
+    def test_an_esc_at_the_quiet_end_does_not_eat_a_later_paste(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        self.assertTrue(self.piped(app, b"\x1b"))
+        self.assertEqual((app.keys.pending, app.keys.skip), (b"", False))
+        app.take_input(app.keys.feed(b"O"))
+        app.take_input(app.keys.feed(b"\x1b[200~line1\nline2\x1b[201~"))
+        composer = app.pane or app.scratch
+        self.assertEqual((composer.draft, app.link.ops("msg.send")), ("Oline1\nline2", []))
+
+    def test_focus_reports_count_while_input_is_discarded(self):
+        app = self.ready()
+        self.bundle_prompt(app)
+        app.take_input(app.keys.feed(b"bundle pass\r\x1b[O"))
+        self.assertEqual((app.link.ops("identity.inspect")[-1]["passphrase"], app.hush, app.focused),
+                         ("bundle pass", True, False))
+        self.assertTrue(self.piped(app, b"typed\x1b[I"))
+        self.assertEqual((app.focused, app.pane.draft, app.hush), (True, "", False))
+
+    def test_input_until_quiet_is_dropped_after_the_own_unlock(self):
+        for unlocked in ("event", "snapshot"):
+            app = self.ready()
+            app.on_event({"event": "error", "code": "locked"})
+            app.take_input(app.keys.feed(b"first-secret\r"))
+            sent = app.link.ops("identity.unlock")[-1]
+            self.assertTrue(self.quiet(app))
+            self.assertFalse(app.hush)
+            if unlocked == "event":
+                app.on_event({"event": "identity", "op": "unlock", "request": sent["id"], "protected": True})
+            else:
+                app.on_event({"event": "snapshot", "protocol": cli.PROTOCOL_MIN, "online": True, "protected": True})
+            self.assertEqual((app.locked, app.hush), (False, True), unlocked)
+            self.assertTrue(self.piped(app, b"second-secret\r"))
+            self.assertEqual((app.link.ops("msg.send"), app.pane.draft, app.secret), ([], "", ""), unlocked)
+
+    def test_status_texts_failed_sends_and_foreign_events(self):
+        app = self.ready()
+        for protected, text in ((None, cli.NOT_KNOWN),
+                                (True, "Your identity has a passphrase; :identity unprotect removes it"),
+                                (False, "Your identity has no passphrase; :identity protect sets one")):
+            app.identity.protected = protected
+            self.typed(app, ":identity")
+            self.assertEqual(app.status, text)
+        app.identity.protected = None
+        self.typed(app, ":identity unprotect")
+        self.assertEqual((app.status, app.secret_prompt), (cli.NOT_KNOWN, None))
+        app.identity.protected = False
+        bundle = self.bundle()
+        self.typed(app, ":identity validate %s" % bundle)
+        app.on_event({"event": "error", "code": "forbidden", "request": "someone-else"})
+        self.assertEqual((app.identity.action, app.status), ("validate", "Checking identity bundle…"))
+        app.on_event({"event": "identity", "op": "import", "request": "bar-import"})
+        self.assertEqual((app.identity.action, app.status), ("", cli.UNKNOWN))
+        app.link = None
+        self.typed(app, ":identity validate %s" % bundle)
+        self.assertEqual((app.identity.action, app.status), ("", "Not connected"))
+
+    def test_timeouts_foreign_events_and_disconnects(self):
+        app = self.ready()
+        bundle = self.bundle()
+        self.typed(app, ":identity validate %s" % bundle)
+        self.typed(app, ":identity export")
+        self.assertEqual(app.status, "Another identity action is running")
+        sent = app.link.ops("identity.inspect")[-1]
+        app.identity.until = 0.0
+        app.tick(time.monotonic())
+        self.assertEqual(app.status, cli.TIMED_OUT)
+        app.on_event({"event": "identity", "op": "inspect", "request": sent["id"], "path": bundle})
+        self.assertEqual(app.status, cli.TIMED_OUT)
+        app.on_event({"event": "identity", "op": "protect", "protected": True})
+        self.assertEqual((app.identity.protected, app.status), (True, cli.TIMED_OUT))
+        app.on_event({"event": "snapshot", "protected": False, "online": True})
+        self.assertIs(app.identity.protected, False)
+        self.typed(app, ":identity validate %s" % bundle)
+        app.drop_link()
+        self.assertEqual((app.status, app.identity.busy()), (cli.UNKNOWN, False))
+        app.link, app.handshake = FakeLink(), True
+        self.typed(app, ":identity protect")
+        app.edit("text", "half typed")
+        app.drop_link()
+        self.assertIsNone(app.secret_prompt)
+
+    def test_secret_prompt_refuses_lines_and_cancels_cleanly(self):
+        app = self.ready()
+        self.typed(app, ":identity protect")
+        app.edit("paste", "line one\nline two")
+        self.assertEqual((app.secret_prompt.value, app.status), ("", cli.ONE_LINE))
+        app.edit("paste", "pasted pass")
+        app.edit("text", "x" * 130)
+        self.assertEqual(app.secret_prompt.value, "pasted pass")
+        app.edit("key", "esc")
+        self.assertEqual((app.secret_prompt, app.status, app.pane.draft), (None, "Canceled", ""))
+
+    def test_locked_prompt_refuses_multi_line_paste_and_keeps_tabs(self):
+        app = self.ready()
+        app.on_event({"event": "error", "code": "locked"})
+        self.assertTrue(app.locked)
+        app.edit("paste", "pass\nword")
+        self.assertEqual((app.secret, app.status), ("", cli.ONE_LINE))
+        self.passphrase(app, "pass", "\t", "word")
+        sent = app.link.ops("identity.unlock")[-1]
+        self.assertEqual((sent["passphrase"], app.secret), ("pass\tword", ""))
+        app.link = None
+        self.passphrase(app, "again")
+        self.assertEqual(app.status, "Not connected")
+        app.edit("text", "typed")
+        app.drop_link()
+        self.assertEqual((app.secret, app.unlock_request), ("", ""))
+
+    def test_identity_needs_the_full_word_and_completes_actions(self):
+        self.assertEqual(cli.parse_command(":iden")[0], "iden")
+        self.assertEqual(cli.parse_command(":i")[0], "invite")
+        self.assertEqual(cli.suggestions(":identity ex", []), ("action", "ex", ["export"]))
+        self.assertEqual(cli.typed_path(":identity export ~/x"), "~/x")
+        self.assertIsNone(cli.typed_path(":identity protect ~/x"))
+        app = self.ready()
+        app.edit("text", ":identity ex")
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":identity export")
+        os.makedirs(os.path.join(os.environ["HOME"], "keep"))
+        app.edit("text", " ~/")
+        app.edit("key", "tab")
+        self.assertIsNotNone(app.file_picker)
+        app.edit("key", "tab")
+        self.assertEqual(app.pane.draft, ":identity export ~/keep/")
+        app.edit("key", "esc")
+        app.edit("key", "esc")
+        self.assertEqual((app.file_picker, app.pane.draft), (None, ""))
+        self.typed(app, ":identity bogus")
+        self.assertEqual(app.status, cli.USAGE)
+        app.edit("text", ":identity ")
+        app.edit("key", "backtab")
+        self.assertEqual(app.pane.draft, ":identity import")
 
 
 class Input(unittest.TestCase):

@@ -16,4 +16,5 @@ from .terminal import *
 from .system import *
 from .layout import *
 from .profile import *
+from .identity import *
 from .app import *

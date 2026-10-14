@@ -10,15 +10,16 @@ import tty
 from operator import attrgetter
 
 from .text import clean_line, emojify, is_command, outgoing, shorten
-from .protocol import FAILURES, HISTORY_ITEM_FAILED, PROTOCOL_MIN, TEXT_MAX, is_direct
+from .protocol import FAILURES, HISTORY_ITEM_FAILED, ONE_LINE, PROTOCOL_MIN, TEXT_MAX, is_direct, secret_edit
 from .session import bound, friend_of, key_for, rebound
 from .chat import Chat
 from .files import FileTransfers
 from .invites import Invites
 from .profile import Profile
-from .commands import TIPS, Completion, parse_command, sendfile_path, suggestions
+from .identity import Identity
+from .commands import TIPS, Completion, parse_command, suggestions, typed_path
 from .view import Screen
-from .modals import OVERLAYS, Confirmation, FilePicker, Help, InviteOverlay, Picker
+from .modals import OVERLAYS, Confirmation, FilePicker, Help, InviteOverlay, Picker, SecretPrompt
 from .palette import Palette, theme_stamp
 from .keys import LAYOUT_KEYS, Keys
 from .link import Link
@@ -34,6 +35,7 @@ TYPING_IDLE = 3.0
 STATUS_SECONDS = 6.0
 COMMAND = "omaq-connect"
 CONFIRM_SECONDS = 15
+HUSH_SECONDS = 0.3
 TIP_SECONDS = 8
 ZOOM_SECONDS = 4
 THEME_RETRIES = 3
@@ -51,10 +53,11 @@ EVENT_HANDLERS = {
     "identity": "_ev_identity",
     "error": "_ev_error",
     "unread": "chat.on_unread",
-    "history": "chat.on_history",
+    "history": "_ev_history",
     "history.failed": "chat.on_history_failed",
     "message": "_ev_message",
     "message.failed": "chat.on_message_failed",
+    "message.updated": "_ev_message_updated",
     "receipt": "chat.on_receipt",
     "typing": "chat.on_typing",
     "invite": "invites.on_invite",
@@ -92,6 +95,8 @@ COMMAND_HANDLERS = {
     "declinefile": "_cmd_offer",
     "cancelfile": "_cmd_cancelfile",
     "clear": "_cmd_clear",
+    "reply": "_cmd_reply",
+    "identity": "_cmd_identity",
     "help": "_cmd_help",
     "h": "_cmd_help",
     "connect": "_cmd_named",
@@ -128,6 +133,8 @@ class App:
         self.layout = Layout()
         self.secret = ""
         self.unlock_request = ""
+        self.more_input = self.hush = False
+        self.pastes_marked = self.gate = False
         self.status = ""
         self.status_until = 0.0
         self.status_set, self.status_seconds = 0.0, STATUS_SECONDS
@@ -158,6 +165,8 @@ class App:
         self.screen = Screen(self)
         self.chat = Chat(self.send, self.send_bound, self.say, lambda: self.friends, lambda: self.handshake)
         self.profile = Profile(self.send, self.say, self.send_failed)
+        self.secret_prompt = None
+        self.identity = Identity(self.identity_send, self.say, self.ask_secret, self.ask_identity, self.send_failed)
         self.files = FileTransfers(self.send, self.say, self.send_failed, lambda: self.friends, self.chat.reload)
         self.tip, self.tip_at = secrets.randbelow(len(TIPS)), time.monotonic() + TIP_SECONDS
         self.confirm = None
@@ -265,6 +274,9 @@ class App:
         self.overlay = None
         self.invites.drop()
         self.profile.drop()
+        self.hush_secret()
+        self.secret, self.unlock_request, self.secret_prompt = "", "", None
+        self.identity.drop()
         self.dirty = True
 
     def reset_identity(self):
@@ -277,11 +289,15 @@ class App:
         self.invites.reset()
         self.files.reset()
         self.profile.reset()
+        self.hush_secret()
+        self.secret, self.unlock_request, self.secret_prompt = "", "", None
+        self.identity.reset()
         self.typing_on = ""
         self.commands = []
         for pane in self.layout.panes() + [self.scratch]:
             pane.conv, pane.draft, pane.cursor, pane.scroll = "", "", 0, 0
             pane.forget_recall()
+            pane.forget_reply()
         self.handshake_request()
 
     def drop_confirm(self):
@@ -374,6 +390,9 @@ class App:
             self.drop_confirm()
         self.chat.forget(fid)
         self.files.forget(fid)
+        for pane in self.layout.panes() + [self.scratch]:
+            if pane.conv == fid:
+                pane.forget_reply()
 
     def apply_friends(self, friends):
         moved = {}
@@ -423,6 +442,7 @@ class App:
             self.stop_typing()
             self.stash_draft(pane)
             pane.conv = conversation
+            pane.forget_reply()
             self.restore_draft(pane)
         pane.scroll = 0
         self.chat.load(conversation)
@@ -469,9 +489,125 @@ class App:
         if self.locked or not self.handshake:
             self.say(FAILURES["locked"] if self.locked else "Not connected")
             return
-        self.chat.send_message(pane.conv, text)
-        pane.draft, pane.cursor, pane.scroll = "", 0, 0
+        self.chat.send_message(pane.conv, text, pane.reply)
+        pane.draft, pane.cursor, pane.scroll, pane.reply = "", 0, 0, ""
         self.stop_typing()
+
+    def take_input(self, events):
+        later, flags = False, []
+        for kind, value in reversed(events):
+            flags.append(later)
+            later = later or not (kind == "key" and value in ("enter", "focus-in", "focus-out"))
+        for (kind, value), more in zip(events, reversed(flags)):
+            focus = kind == "key" and value in ("focus-in", "focus-out")
+            if self.hush and not focus:
+                continue
+            if self.gated() and not focus:
+                if kind == "key" and value == "esc":
+                    self.gate, self.dirty = False, True
+                continue
+            self.more_input = more
+            self.edit(kind, value)
+        self.more_input = False
+
+    def discard_burst(self, fd):
+        self.hush = False
+        keys = self.keys
+        if self.secret_prompt is not None or self.locked:
+            bound = keys.skip
+            quiet = keys.paste is None and bool(keys.pending) and not select.select([fd], [], [], 0.03)[0]
+            keys.drop_current(quiet and keys.pending == b"\x1b")
+            if quiet and not bound:
+                keys.hold()
+            return True
+        while select.select([fd], [], [], HUSH_SECONDS)[0]:
+            data = os.read(fd, 4096)
+            if not data:
+                return False
+            for kind, value in keys.feed(data):
+                if kind == "key" and value in ("focus-in", "focus-out"):
+                    self.edit(kind, value)
+        keys.drop_current(True)
+        self.gate = self.gate or not (self.pastes_marked or keys.marked)
+        return True
+
+    def take_read(self, fd):
+        data = os.read(fd, 4096)
+        if not data:
+            return False
+        self.take_input(self.keys.feed(data))
+        if self.keys.pending and self.keys.paste is None and not self.hush and not self.keys.skip:
+            more, _, _ = select.select([fd], [], [], 0.03)
+            if not more and (self.secret_prompt is not None or self.locked):
+                self.keys.hold()
+            if not more and not self.keys.held:
+                self.take_input(self.keys.feed(b"", final=True))
+        return True
+
+    def gated(self):
+        return self.gate and self.secret_prompt is None and not self.locked
+
+    def hush_secret(self):
+        if self.secret_prompt is not None:
+            self.hush = True
+
+    def identity_send(self, obj):
+        return self.handshake and not self.locked and self.send(obj)
+
+    def ask_secret(self, label, purpose):
+        if self.confirm is not None:
+            self.drop_confirm()
+        self.secret_prompt = SecretPrompt(label, purpose)
+        self.picker = self.file_picker = self.help = self.overlay = None
+        if self.pane is not None:
+            self.pane.select = None
+        self.dirty = True
+
+    def close_secret(self):
+        if self.secret_prompt is not None:
+            self.keys.drop_current()
+        self.secret_prompt = None
+        self.identity.forget_secret()
+
+    def ask_identity(self, action, prompt, path, secret=""):
+        now = time.monotonic()
+        self.confirm = Confirmation(action, prompt, now, now + CONFIRM_SECONDS, instance=self.instance, path=path,
+                                    secret=secret)
+        self.dirty = True
+
+    def begin_select(self):
+        pane = self.pane
+        if not pane or not pane.conv:
+            self.say("No chat is open")
+            return
+        targets = self.chat.targets(pane.conv)
+        if not targets:
+            self.say("No message to reply to")
+            return
+        pane.select = targets[-1].id
+        self.dirty = True
+
+    def select_key(self, kind, value):
+        pane = self.pane
+        ids = [m.id for m in self.chat.targets(pane.conv)]
+        at = ids.index(pane.select) if pane.select in ids else len(ids) - 1
+        steps = {"up": -1, "down": 1, "pgup": -5, "pgdn": 5, "home": -len(ids), "end": len(ids)}
+        step = steps.get(value) if kind == "key" else (-1 if kind == "ctrl" and value == "r" else None)
+        self.dirty = True
+        if not ids:
+            pane.select = None
+            self.say("No message to reply to")
+            return kind == "key" and value == "esc"
+        if step is not None:
+            pane.select = ids[max(0, min(len(ids) - 1, at + step))]
+        elif (kind == "key" and value == "enter") or (kind == "text" and value == "r"):
+            pane.reply, pane.select = ids[at], None
+        elif kind == "key" and value == "esc":
+            pane.select = None
+        else:
+            pane.select = None
+            return False
+        return True
 
     def stop_typing(self):
         if self.typing_on:
@@ -486,6 +622,7 @@ class App:
         if self.confirm is not None and self.confirm.expired(now):
             self.drop_confirm()
         self.profile.tick(now)
+        self.identity.tick(now)
         if now >= self.theme_check:
             self.theme_check = now + 1.0
             stamp = theme_stamp()
@@ -617,20 +754,30 @@ class App:
             self.dirty = True
             return
         if self.locked:
-            if kind in ("text", "paste"):
-                self.secret += value.replace("\n", "")
-            elif kind == "key" and value == "backspace":
-                self.secret = self.secret[:-1]
+            closing = (kind == "key" and value in ("enter", "esc")) or (kind == "ctrl" and value in ("c", "d"))
+            if closing and self.more_input:
+                self.secret, self.hush = "", True
+                self.say(ONE_LINE)
             elif kind == "key" and value == "enter" and self.secret:
-                self.unlock_request = "cli-unlock-" + secrets.token_hex(6)
-                self.send({"op": "identity.unlock", "passphrase": self.secret, "id": self.unlock_request})
-                self.secret = ""
-                self.say("Unlocking identity…", 15)
+                request = "cli-unlock-" + secrets.token_hex(6)
+                if self.send({"op": "identity.unlock", "passphrase": self.secret, "id": request}):
+                    self.unlock_request = request
+                    self.say("Unlocking identity…", 15)
+                else:
+                    self.say("Not connected")
+                self.secret, self.hush = "", True
             elif kind == "ctrl" and value in ("c", "d"):
                 self.running = False
             elif kind == "key" and value == "esc":
                 self.secret = ""
+            else:
+                self.secret, problem = secret_edit(self.secret, kind, value)
+                if problem:
+                    self.say(problem)
             self.dirty = True
+            return
+        if self.secret_prompt is not None:
+            self.secret_prompt.handle(self, kind, value)
             return
         if self.help is not None:
             self.help.handle(self, kind, value)
@@ -653,6 +800,12 @@ class App:
                     self.invites.revoke()
                 else:
                     self.say("Invite kept")
+            else:
+                bound = self.handshake and confirm.instance == self.instance
+                if yes and bound:
+                    self.identity.confirmed(confirm.action, confirm.path, confirm.secret)
+                else:
+                    self.say(confirm.kept)
             self.show_notice(notice)
             self.dirty = True
             return
@@ -664,6 +817,11 @@ class App:
         if self.file_picker is not None and self.file_picker.handle(self, kind, value):
             return
         if self.overlay is not None and self.overlay.handle(self, kind, value):
+            return
+        if self.pane is not None and self.pane.select is not None and self.select_key(kind, value):
+            return
+        if kind == "ctrl" and value == "r":
+            self.begin_select()
             return
         if kind == "ctrl" and value == "c":
             composer = self.pane or self.scratch
@@ -732,13 +890,15 @@ class App:
             pane.scroll += max(1, self.size[1] // 2)
         elif kind == "key" and value == "pgdn":
             pane.scroll = max(0, pane.scroll - max(1, self.size[1] // 2))
-        elif kind == "key" and value == "tab" and self.overlay is None and sendfile_path(pane.draft) is not None:
+        elif kind == "key" and value == "tab" and self.overlay is None and typed_path(pane.draft) is not None:
             self.file_picker = FilePicker()
         elif kind == "key" and value in ("tab", "backtab") and is_command(pane.draft):
             self.complete(pane, 1 if value == "tab" else -1)
             return
         elif kind == "key" and value in ("tab", "backtab") and self.friends:
             self.show(self.next_free(pane.conv, 1 if value == "tab" else -1))
+        elif kind == "key" and value == "esc" and pane.reply:
+            pane.reply = ""
         elif kind == "key" and value == "esc" and not pane.draft:
             self.files.dismiss(pane.conv)
         else:
@@ -838,12 +998,11 @@ class App:
         out.flush()
         try:
             tty.setraw(fd)
-            typed = measure_widths(fd, out)
+            typed, self.pastes_marked = measure_widths(fd, out)
             size = os.get_terminal_size(fd)
             self.size = (size.columns, size.lines)
             self.track_zoom(pixel_size(fd))
-            for kind, value in self.keys.feed(typed):
-                self.edit(kind, value)
+            self.take_input(self.keys.feed(typed))
             if not self.running:
                 return
             out.write(self.render())
@@ -867,17 +1026,8 @@ class App:
                     ready, _, _ = select.select(watch, [], [], 0.25)
                 except InterruptedError:
                     continue
-                if fd in ready:
-                    data = os.read(fd, 4096)
-                    if not data:
-                        break
-                    for kind, value in self.keys.feed(data):
-                        self.edit(kind, value)
-                    if self.keys.pending:
-                        more, _, _ = select.select([fd], [], [], 0.03)
-                        if not more:
-                            for kind, value in self.keys.feed(b"", final=True):
-                                self.edit(kind, value)
+                if fd in ready and not self.take_read(fd):
+                    break
                 if self.link and self.link in ready:
                     try:
                         events = self.link.read()
@@ -886,6 +1036,8 @@ class App:
                         events = []
                     for ev in events:
                         self.on_event(ev)
+                if self.hush and not self.discard_burst(fd):
+                    break
         finally:
             self.cleanup(fd, saved, out)
 
@@ -916,13 +1068,22 @@ class App:
                 self.history_clear = int(ev.get("historyClear") or 0)
             except (TypeError, ValueError):
                 self.history_clear = 0
+            try:
+                self.identity.export_version = int(ev.get("identityExport") or 0)
+            except (TypeError, ValueError):
+                self.identity.export_version = 0
             self.helper.adopt(self.state, self.instance)
             self.send({"op": "identity.ready", "id": self.instance})
             self.resume_transfers(restarted)
         self.profile.on_snapshot(ev)
-        self.locked = ev.get("locked") is True
+        self.identity.on_snapshot(ev)
+        locked = ev.get("locked") is True
+        if self.locked and not locked:
+            self.secret, self.hush = "", True
+        self.locked = locked
         if self.locked:
             self.conn = "locked"
+            self.close_secret()
             if self.confirm is not None:
                 self.drop_confirm()
         elif "online" in ev:
@@ -952,7 +1113,9 @@ class App:
         self.friend_build = None
 
     def _ev_identity(self, ev):
+        self.identity.on_identity(ev)
         if ev.get("op") == "unlock":
+            self.hush = self.hush or self.locked
             self.locked = False
             self.unlock_request = ""
             self.status = ""
@@ -967,14 +1130,19 @@ class App:
         if code == "locked":
             self.locked = True
             self.conn = "locked"
+            self.close_secret()
             if self.confirm is not None:
                 self.drop_confirm()
         if self.unlock_request and request == self.unlock_request:
             self.unlock_request = ""
             self.say("The identity passphrase is incorrect.")
+        elif self.identity.on_correlated_error(code, request):
+            pass
         elif self.invites.on_correlated_error(code, request):
             pass
         elif self.profile.on_correlated_error(code, request):
+            pass
+        elif not request and self.identity.on_global_error(code):
             pass
         elif code == "history_failed" and conversation:
             last_conv, last_text, last_at = self.files.result
@@ -999,14 +1167,40 @@ class App:
             return
         conversation = str(ev.get("conversation") or "")
         for pane in self.layout.panes():
-            if pane.conv == conversation and m.dir == "in":
+            if pane.conv == conversation and m.dir == "in" and pane.select is None:
                 pane.scroll = 0
         f = self.friend(conversation)
         if m.dir == "in" and f and conversation not in self.visible:
             self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
+    def _ev_history(self, ev):
+        self.chat.on_history(ev)
+        self.drop_deleted_choices(str(ev.get("conversation") or ""))
+
+    def _ev_message_updated(self, ev):
+        m = self.chat.on_message_updated(ev)
+        if m is not None and m.deleted:
+            self.drop_deleted_choices(str(ev.get("conversation") or ""))
+
+    def drop_deleted_choices(self, conversation):
+        c = self.chat.convs.get(conversation)
+        deleted = {m.id for m in (c.items if c else []) if m.deleted and m.id}
+        for pane in self.layout.panes():
+            if pane.conv != conversation:
+                continue
+            if pane.select in deleted:
+                targets = self.chat.targets(conversation)
+                pane.select = targets[-1].id if targets else None
+            if pane.reply in deleted:
+                pane.reply = ""
+                self.say("Reply canceled: the message was deleted")
+
     def _ev_history_clear_result(self, ev):
-        self.chat.on_clear_result(ev, self.instance)
+        if self.chat.on_clear_result(ev, self.instance):
+            conversation = str(ev.get("conversation") or "")
+            for pane in self.layout.panes():
+                if pane.conv == conversation:
+                    pane.forget_reply()
 
     def _cmd_quit(self, verb, arg):
         self.running = False
@@ -1059,6 +1253,12 @@ class App:
             self.confirm = Confirmation("clear", "Clear this chat? y/n", time.monotonic(),
                                         time.monotonic() + CONFIRM_SECONDS, pane.conv, self.key_for(pane.conv),
                                         self.instance)
+
+    def _cmd_reply(self, verb, arg):
+        self.begin_select()
+
+    def _cmd_identity(self, verb, arg):
+        self.identity.command(arg)
 
     def _cmd_help(self, verb, arg):
         self.help = Help()

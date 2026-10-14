@@ -7,7 +7,7 @@ PANE_MIN_HEIGHT = 4
 
 
 class Pane:
-    __slots__ = ("conv", "scroll", "draft", "cursor", "hist", "hist_items", "stash")
+    __slots__ = ("conv", "scroll", "draft", "cursor", "hist", "hist_items", "stash", "select", "reply")
 
     def __init__(self, conversation):
         self.conv = conversation
@@ -17,6 +17,11 @@ class Pane:
         self.hist = None
         self.hist_items = None
         self.stash = ("", 0)
+        self.select = None
+        self.reply = ""
+
+    def forget_reply(self):
+        self.select, self.reply = None, ""
 
     def insert(self, text):
         self.draft = self.draft[:self.cursor] + text + self.draft[self.cursor:]

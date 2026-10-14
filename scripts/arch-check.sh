@@ -57,7 +57,7 @@ fi
 if printf '%s\n' 'void my_fopen (void);' | grep -Eq "$policy_io_pattern"; then
 	die "pure-policy IO matcher rejected an identifier suffix"
 fi
-for f in helper/roles.c helper/invite.c helper/conversation.c helper/rate.c helper/safety.c; do
+for f in helper/roles.c helper/invite.c helper/conversation.c helper/rate.c helper/safety.c helper/send_queue.c; do
 	[ -f "$f" ] || continue
 	if grep -En "$policy_io_pattern" "$f" >/dev/null; then
 		die "$f contains direct IO"

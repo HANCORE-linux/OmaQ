@@ -26,12 +26,13 @@ def fail(message):
 
 
 class Term:
-    def __init__(self, env, args=(), cols=100, rows=30):
+    def __init__(self, env, args=(), cols=100, rows=30, marks_pastes=False):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.execve(sys.executable, [sys.executable, "-I", CLI, *args], env)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         self.out = bytearray()
+        self.marks_pastes = marks_pastes
 
     def pump(self, seconds):
         end = time.monotonic() + seconds
@@ -45,6 +46,9 @@ class Term:
                 if not chunk:
                     return
                 self.out.extend(chunk)
+                if self.marks_pastes and b"\x1b[?2004$p" in self.out:
+                    self.marks_pastes = False
+                    os.write(self.fd, b"\x1b[?2004;1$y")
 
     def wait_for(self, needle, seconds):
         end = time.monotonic() + seconds
@@ -209,7 +213,14 @@ def main():
         if os.waitpid(term.pid, os.WNOHANG)[0]:
             fail("ctrl+c quit the CLI")
         term.send(":help\r")
-        if not term.wait_for(":connect <name>", 5) or "Quit OmaQ" not in term.text() or ":qa" in term.screen()[-1]:
+        if not term.wait_for(":connect <name>", 5):
+            fail(":help did not list the commands")
+        for _ in range(4):
+            if "Quit OmaQ" in term.text():
+                break
+            term.send(b"\x1b[6~")
+            term.pump(0.4)
+        if "Quit OmaQ" not in term.text() or ":qa" in term.screen()[-1]:
             fail(":help did not list the commands")
         term.send("\x1b")
         term.pump(0.3)
@@ -226,6 +237,22 @@ def main():
             fail("the picker did not insert the emoji:\n" + "\n".join(term.screen()[-3:]))
         term.send("\x15")
         term.pump(0.3)
+        own_dir = os.path.join(base, "own-export")
+        os.makedirs(own_dir, mode=0o700)
+        own = os.path.join(own_dir, "omaq-identity.save")
+        term.send(":identity export %s\r" % own_dir)
+        if not term.wait_for("Export your identity to %s? y/n" % own, 10):
+            fail(":identity export did not ask first:\n" + "\n".join(term.screen()[-4:]))
+        term.send("y")
+        if not term.wait_for("Identity exported to %s." % own, 30):
+            fail("the CLI-started helper did not export the identity")
+        term.send(":identity import %s\r" % own)
+        if not term.wait_for("Import %s as the active identity?" % own, 10):
+            fail(":identity import did not ask first:\n" + "\n".join(term.screen()[-4:]))
+        term.send("y")
+        if not term.wait_for("Identity imported.", 60):
+            fail("the CLI-started helper did not import the identity")
+        term.pump(2.0)
         term.send(":quit\r")
         code = term.finish()
         if code != 0:
@@ -242,7 +269,7 @@ def main():
         while helper_pid(state) and time.monotonic() < end:
             time.sleep(0.2)
         if helper_pid(state):
-            fail("CLI-only exit left the helper running")
+            fail("CLI-only exit after an identity import left the helper running")
         presence = os.path.join(runtime, "omaq-cli")
         scopes = os.listdir(presence)
         if len(scopes) != 1 or not re.fullmatch(r"[0-9a-f]{16}", scopes[0]):
@@ -296,13 +323,22 @@ def main():
             fail("unlock did not reach the friend list:\n" + term.text()[-1500:])
         if "correct horse 42" in term.text():
             fail("passphrase was echoed")
+        if not term.wait_screen("press esc to type again", 10):
+            fail("a terminal without marked pastes did not hold input after the passphrase")
+        term.send(":q\r")
+        term.pump(1.0)
+        if os.waitpid(term.pid, os.WNOHANG)[0]:
+            fail("input before esc reached the command line")
+        term.send("\x1b")
+        if not term.wait_screen("❯", 10):
+            fail("esc did not release the input")
         term.send(":q\r")
         if term.finish() != 0:
             fail("exit after unlock failed")
         restored(term)
         if proc.poll() is not None:
             fail("CLI stopped a helper it did not start")
-        term = Term(env)
+        term = Term(env, marks_pastes=True)
         if not term.wait_for("no friends yet", 20):
             fail("attach to the unlocked foreign helper failed")
         proc.terminate()
@@ -317,8 +353,72 @@ def main():
             fail("CLI did not reattach to the restarted helper")
         mark = len(term.out)
         term.send("correct horse 42\r")
-        if not term.wait_for("no friends yet", 30) or "no friends yet" not in term.out[mark:].decode("utf-8", "replace"):
+        end = time.monotonic() + 30
+        while time.monotonic() < end and "no friends yet" not in term.out[mark:].decode("utf-8", "replace"):
+            term.pump(0.2)
+        if "no friends yet" not in term.out[mark:].decode("utf-8", "replace"):
             fail("reattached CLI did not unlock again")
+        term.pump(0.5)
+        if any("press esc to type again" in row for row in term.screen()):
+            fail("a terminal with marked pastes still held input after the passphrase")
+
+        def after(start, needle, seconds):
+            end = time.monotonic() + seconds
+            while time.monotonic() < end and needle not in term.out[start:].decode("utf-8", "replace"):
+                term.pump(0.2)
+            return needle in term.out[start:].decode("utf-8", "replace")
+
+        def step(command, needle, seconds, problem):
+            start = len(term.out)
+            term.send(command)
+            if not after(start, needle, seconds):
+                fail(problem + ":\n" + "\n".join(term.screen()[-4:]))
+            return start
+
+        export_dir = os.path.join(base, "export")
+        os.makedirs(export_dir, mode=0o700)
+        bundle = os.path.join(export_dir, "omaq-identity.save")
+        step(":identity export %s\r" % export_dir, "Export your identity to %s? y/n" % bundle, 10,
+             ":identity export did not ask first")
+        step("y", "Identity exported to %s." % bundle, 30, "the identity was not exported")
+        if os.stat(bundle).st_mode & 0o777 != 0o600:
+            fail("the exported bundle is not private")
+        with open(bundle, "rb") as f:
+            if f.read(8) != b"OMAQID2\n":
+                fail("the exported file is not an identity bundle")
+        step(":identity validate %s\r" % bundle, "bundle passphrase ›", 15,
+             "validating a protected bundle did not ask for its passphrase")
+        step("leak-one\rleak-two\r", "Enter the passphrase as one line", 10, "two raw lines were not refused")
+        step("leak-three\x03leak-four\r", "Enter the passphrase as one line", 10, "a raw burst with ctrl+c was not refused")
+        step("correct horse 42\r", "Identity bundle validated.", 30, "the bundle was not validated")
+        step(":identity unprotect\r", "current passphrase ›", 10, ":identity unprotect did not ask for the passphrase")
+        step("correct horse 42\r", "Remove the identity passphrase?", 10, "unprotect did not ask before sending")
+        step("y", "Identity protection removed.", 30, "the passphrase was not removed")
+        step(":identity protect\r", "new passphrase ›", 10, ":identity protect did not ask for a passphrase")
+        step("new pass 12345\r", "repeat passphrase ›", 10, "protect did not ask to repeat the passphrase")
+        step("new pass 12345\r", "Protect your identity?", 10, "protect did not ask before sending")
+        step("y", "Identity protection enabled.", 30, "the identity was not protected")
+        step(":identity import %s\r" % bundle, "Import %s as the active identity?" % bundle, 10,
+             ":identity import did not ask first")
+        step("y", "bundle passphrase ›", 30, "importing a protected bundle did not ask for its passphrase")
+        step("correct horse 42\r", "Import %s as the active identity?" % bundle, 10,
+             "the import did not ask again before sending the passphrase")
+        imported = step("y", "Identity imported.", 60, "the identity was not imported")
+        if not after(imported, "no friends yet", 30):
+            fail("the CLI did not reload after the import")
+        for secret in ("correct horse 42", "new pass 12345", "leak-one", "leak-two", "leak-three", "leak-four"):
+            if secret in term.text():
+                fail("a passphrase was echoed")
+        for folder, _, names in os.walk(base):
+            for name in names:
+                try:
+                    with open(os.path.join(folder, name), "rb") as f:
+                        data = f.read()
+                except OSError:
+                    continue
+                if any(secret in data for secret in (b"correct horse 42", b"new pass 12345", b"leak-one", b"leak-two",
+                                                     b"leak-three", b"leak-four")):
+                    fail("a passphrase reached %s" % os.path.join(folder, name))
         os.kill(term.pid, signal.SIGHUP)
         if term.finish() != 0:
             fail("SIGHUP exit failed")

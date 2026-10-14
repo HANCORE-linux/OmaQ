@@ -109,6 +109,44 @@ while [ "$i" -lt 30 ]; do
 done
 [ "$i" -lt 30 ] || { echo "phase8: mismatched transfer binding was accepted" >&2; exit 1; }
 
+i=0
+while [ "$i" -lt 600 ]; do
+	if grep -a '"event":"friend.info"' "$fa" | grep -a '"id":"0"' | grep -a -q '"online":true'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.2
+done
+[ "$i" -lt 600 ] || { echo "phase8: friend never came online" >&2; exit 1; }
+printf '%s\n' \
+	"{\"op\":\"msg.send\",\"conversation\":\"0\",\"key\":\"$friend_key_a\",\"text\":\"queued-before-session-1\",\"id\":\"phase8-queued-1\"}" \
+	"{\"op\":\"msg.send\",\"conversation\":\"0\",\"key\":\"$friend_key_a\",\"text\":\"queued-before-session-2\",\"id\":\"phase8-queued-2\"}" >&3
+i=0
+while [ "$i" -lt 60 ]; do
+	grep -a -q 'queued-before-session-2' "$fb" && break
+	if grep -a '"event":"message.failed"' "$fa" | grep -a -q '"request":"phase8-queued-'; then
+		echo "phase8: a message sent before the session existed failed" >&2
+		grep -a '"event":"message.failed"' "$fa" | grep -a '"request":"phase8-queued-' >&2
+		exit 1
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+[ "$i" -lt 60 ] || { echo "phase8: queued messages were not delivered" >&2; tail -30 "$fa" >&2; exit 1; }
+first_line=$(grep -a -n 'queued-before-session-1' "$fb" | head -1 | cut -d: -f1)
+second_line=$(grep -a -n 'queued-before-session-2' "$fb" | head -1 | cut -d: -f1)
+[ -n "$first_line" ] && [ "$first_line" -lt "$second_line" ] ||
+	{ echo "phase8: queued messages arrived out of order" >&2; exit 1; }
+for request in phase8-queued-1 phase8-queued-2; do
+	grep -a '"event":"message"' "$fa" | grep -a -q "\"request\":\"$request\"" ||
+		{ echo "phase8: $request was not confirmed to the sender" >&2; exit 1; }
+done
+if grep -a '"event":"message.failed"' "$fa" | grep -a -q '"request":"phase8-queued-'; then
+	echo "phase8: a delivered queued message was also reported as failed" >&2
+	grep -a '"event":"message.failed"' "$fa" | grep -a '"request":"phase8-queued-' >&2
+	exit 1
+fi
+
 sent=0
 i=0
 while [ "$i" -lt 60 ]; do

@@ -40,7 +40,7 @@ cleanup() {
 	stop_helper "${pid:-}"
 	stop_helper "${loader_pid:-}"
 	rm -rf "$ha" "$sa" "$hb" "$sb" "$loader_home" "$loader_state" \
-		"$loader_out" "$loader_hold" "$loader_out.err" "$exp" "$bad" "$malformed" \
+		"$loader_out" "$loader_hold" "$loader_out.err" "$exp" "$exp.keep" "$exp.fresh" "$bad" "$malformed" \
 		"$binding_at" "$binding_over" "$binding_version" "$binding_unknown" \
 		"$binding_duplicate" "$out" "$hold" "$out.err"
 }
@@ -111,6 +111,10 @@ echo '{"op":"status"}' >&3
 sleep 0.2
 addr=$(grep -a '"addr"' "$out" | tail -1 | sed -n 's/.*"addr":"\([^"]*\)".*/\1/p')
 [ -n "$addr" ] || { echo "phase5: no addr" >&2; exit 1; }
+grep -a '"addr"' "$out" | tail -1 | grep -a -q '"identityExport":2' || {
+	echo "phase5: the snapshot does not announce exports that keep existing files" >&2
+	exit 1
+}
 stage_sentinel="$sa/stage-sentinel"
 mkdir "$stage_sentinel"
 printf 'keep-save' >"$stage_sentinel/tox.save"
@@ -153,6 +157,43 @@ grep -a '"op":"export"' "$out" | tail -1 |
 	echo "phase5: export request correlation missing" >&2
 	exit 1
 }
+printf 'keep-me' >"$exp.keep"
+printf '{"op":"identity.export","path":"%s","replace":false,"id":"phase5-export-keep"}\n' "$exp.keep" >&3
+i=0
+while [ "$i" -lt 40 ]; do
+	if grep -a '"code":"forbidden"' "$out" | grep -a -q '"request":"phase5-export-keep"'; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 0.05
+done
+[ "$i" -lt 40 ] && [ "$(cat "$exp.keep")" = keep-me ] || {
+	echo "phase5: export without replace changed an existing file" >&2
+	exit 1
+}
+for request in phase5-export-fresh phase5-export-replace; do
+	if [ "$request" = phase5-export-fresh ]; then
+		target="$exp.fresh"
+		replace=false
+	else
+		target="$exp.keep"
+		replace=true
+	fi
+	printf '{"op":"identity.export","path":"%s","replace":%s,"id":"%s"}\n' "$target" "$replace" "$request" >&3
+	i=0
+	while [ "$i" -lt 40 ]; do
+		if grep -a '"op":"export"' "$out" | grep -a -q "\"request\":\"$request\""; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.05
+	done
+	[ "$i" -lt 40 ] && [ "$(head -c 7 "$target")" = OMAQID2 ] &&
+	[ "$(stat -c %a "$target")" = 600 ] || {
+		echo "phase5: export $request failed" >&2
+		exit 1
+	}
+done
 printf '{"op":"identity.inspect","path":"%s","id":"phase5-inspect-a"}\n' "$exp" >&3
 i=0
 ok=0
@@ -418,6 +459,10 @@ while [ "$i" -lt 40 ]; do
 	sleep 0.05
 done
 [ -n "$instance" ] || { echo "phase5: identity handshake missing" >&2; exit 1; }
+grep -q "\"instance\":\"$instance\"" "$sa/omaq.protocol" || {
+	echo "phase5: omaq.protocol still names the instance from before the import" >&2
+	exit 1
+}
 printf '{"op":"identity.ready","id":"%s"}\n' "$instance" >&3
 i=0
 while [ "$i" -lt 40 ]; do

@@ -1,6 +1,8 @@
 import codecs
+import re
 
 
+REPORT = re.compile(r"\d+;\d+R|\??\d+;\d\$y|[?>][\d;]+c|\?\d+u")
 LAYOUT_KEYS = {
     ("key", "alt-left"): ("focus", "left"), ("key", "alt-right"): ("focus", "right"),
     ("key", "alt-up"): ("focus", "up"), ("key", "alt-down"): ("focus", "down"),
@@ -23,8 +25,22 @@ class Keys:
         self.pending = b""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.paste = None
+        self.skip = False
+        self.held = self.loose = self.marked = False
+
+    def drop_current(self, esc_is_key=False):
+        if esc_is_key and self.paste is None and self.pending == b"\x1b":
+            self.pending = b""
+        self.skip = self.paste is not None or bool(self.pending)
+        self.held = self.loose = False
+
+    def hold(self):
+        self.held = self.paste is None and self.pending.startswith(b"\x1b[")
 
     def feed(self, data, final=False):
+        self.loose = self.loose or (self.held and bool(data))
+        self.held = False
+        final = final and not self.skip
         self.pending += data
         keys = []
         buf, i = self.pending, 0
@@ -42,11 +58,15 @@ class Keys:
                         i = keep
                     break
                 self.paste += self.decoder.decode(buf[i:end], final=True)
-                keys.append(("paste", self.paste.replace("\r\n", "\n").replace("\r", "\n")))
+                if self.skip:
+                    self.skip = False
+                else:
+                    keys.append(("paste", self.paste.replace("\r\n", "\n").replace("\r", "\n")))
                 self.paste = None
                 i = end + 6
                 continue
             if b == 0x1B:
+                before = len(keys)
                 if i + 1 >= len(buf):
                     if final:
                         keys.append(("key", "esc"))
@@ -54,32 +74,53 @@ class Keys:
                     break
                 nxt = buf[i + 1]
                 if nxt in (0x5B, 0x4F):
+                    loose, self.loose = self.loose, False
                     j = i + 2
-                    while j < len(buf) and not (0x40 <= buf[j] <= 0x7E):
+                    while j < len(buf) and 0x20 <= buf[j] <= 0x3F:
                         j += 1
+                    if j < len(buf) and not 0x40 <= buf[j] <= 0x7E:
+                        if loose and j > i + 2:
+                            keys.append(("text", buf[i + 2:j].decode("ascii", "replace")))
+                        i, self.skip = j, False
+                        continue
                     if j >= len(buf):
                         if final:
                             i = len(buf)
+                        else:
+                            self.loose = loose
                         break
                     params, last = buf[i + 2:j].decode("ascii", "replace"), chr(buf[j])
                     i = j + 1
                     fields = params.split(";")
                     mod = self.MODS.get(fields[1] if len(fields) > 1 else "", "")
-                    if last == "~":
-                        name = self.TILDE.get(fields[0])
+                    known = True
+                    if last == "~" and fields[0] in self.TILDE:
+                        name = self.TILDE[fields[0]]
                         if name == "paste-start":
-                            self.paste = ""
-                        elif name:
+                            self.paste, self.marked = "", True
+                        else:
                             keys.append(("key", mod + name))
-                    elif last == "u":
-                        if fields[0] == "13":
-                            keys.append(("key", (mod or "shift-") + "enter"))
+                    elif last == "u" and fields[0] == "13":
+                        keys.append(("key", (mod or "shift-") + "enter"))
                     elif last in self.SPECIAL:
                         keys.append(("key", mod + self.SPECIAL[last]))
+                    else:
+                        known = False
+                    if loose and not known:
+                        if not REPORT.fullmatch(params + last):
+                            keys.append(("text", params + last))
+                        self.skip = False
+                    elif self.skip and self.paste is None:
+                        if keys[before:] not in ([("key", "focus-in")], [("key", "focus-out")]):
+                            del keys[before:]
+                        self.skip = False
                     continue
                 if nxt == 0x1B:
                     keys.append(("key", "esc"))
                     i += 1
+                    if self.skip:
+                        del keys[before:]
+                        self.skip = False
                     continue
                 if nxt in (0x0D, 0x0A):
                     keys.append(("key", "alt-enter"))
@@ -88,6 +129,9 @@ class Keys:
                     if ch:
                         keys.append(("alt", ch))
                 i += 2
+                if self.skip:
+                    del keys[before:]
+                    self.skip = False
                 continue
             if b in (0x0D, 0x0A):
                 keys.append(("key", "enter"))

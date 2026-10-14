@@ -5,7 +5,7 @@
 
 ## Landed
 
-- `identity.export` writes a versioned 0600 identity bundle containing `tox.save` and the private group registry (tmp+rename)
+- `identity.export` writes a versioned 0600 identity bundle containing `tox.save` and the private group registry (tmp+rename); with `replace:false` it creates the file exclusively and answers `forbidden` when the path already exists; the snapshot announces this as `identityExport: 2`
 - `identity.import` refuses if `tox.save` exists (`identity_exists`) unless `replace:true`
 - `search` scans the open conversation's JSONL (case-insensitive, last 20 hits)
 - ChatPage: conversation search field; Panel: export button and direct-contact safety code

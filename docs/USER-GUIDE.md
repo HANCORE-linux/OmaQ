@@ -115,6 +115,8 @@ New DirectChat and GroupChat windows use the compositor's standard opening anima
 
 Press unmodified `Enter` or the Send action to send. Use `Shift+Enter`, `Ctrl+Enter`, `Alt+Enter`, or `Meta+Enter` for a line break. Text paste remains available while the helper reconnects or lacks image capability.
 
+A message you write right after adding a contact, before the encrypted session exists, waits and goes out once the session is ready. If no session forms within 5 minutes, the message shows `No secure session yet; message not sent`.
+
 ### Use message actions
 
 Hover or keyboard-focus a message to react, use inline Reply, edit your own text message, copy it, or request confirmed deletion. The selection Copy action appears only for selected text and copies exactly that text. A failed pre-delivery message offers Resend, while an unknown result does not resend automatically.
@@ -238,6 +240,11 @@ The focused pane starts its header with `❯`, and the input line shows the frie
 | `:invite revoke` | Revoke the active invite after a confirmation |
 | `:redeem <link>` | Send a request with a friend's invite link |
 | `:requests` | Show a pending request, with the safety code for a friend request |
+| `:reply` or `Ctrl+R` | Choose a message to answer |
+| `:identity` | Show whether your identity has a passphrase |
+| `:identity protect` or `unprotect` | Set or remove the identity passphrase |
+| `:identity export [path]` | Save your identity bundle, by default in `~/Downloads` |
+| `:identity validate <path>` or `import <path>` | Check a bundle, or make it your identity |
 | `:accept` / `:decline` | Answer the pending request |
 | `:nickname <name>` | Change the name your friends see; `:nickname` alone shows it |
 | `:sendfile <path>` | Send a file to this chat; `Tab` lists your folders and files |
@@ -300,11 +307,15 @@ Standalone `:)` `:D` `;)` `:(` `:'(` `:P` `;P` `:O` `:*` `:/` `:|` `xD` `^^` `<3
 
 Receipts use arrows: `·` sending, `→` sent, `⇉` delivered, `⇉` in green read, and `✕` failed.
 
+To answer a message, press `Ctrl+R`: the newest message gets a `▌` mark. Choose another with `↑` and `↓` and press `Enter`. `↩ Reply:` above the input line shows what you answer, and `Esc` drops it. Your friend sees the quote as in the bar, and an answer to one of your messages starts with `↩` and the quoted text. Edits and deletes appear right away.
+
+A locked identity asks for its passphrase when the terminal client starts. If your terminal does not mark pasted text, the client then asks you to press `esc` before you can type again, so a pasted second line can never reach a chat. `:identity protect` asks for a new passphrase twice; the typed characters show as dots. It, `:identity unprotect`, `export`, and `import` ask `y/n` right before they act, and a protected bundle asks for its own passphrase. Transfer an exported bundle securely and delete extra copies.
+
 Your terminal sets the font size: `Ctrl+=` and `Ctrl+-` zoom, and `Ctrl+0` resets (kitty: `Ctrl+Shift+=`, `Ctrl+Shift+-`, and `Ctrl+Shift+Backspace`). After a zoom, the bottom line briefly shows the new size, such as `Text 112%`. 100% is the size when the session started.
 
 ### Terminals and limits
 
-The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, edits, and search stay in the bar.
+The terminal client is tested with Alacritty, Ghostty, foot, and kitty. Alacritty and kitty may stop blinking the cursor after a few idle seconds. Groups, calls, reactions, editing and deleting messages, and search stay in the bar.
 
 ## Protect and move your identity
 
