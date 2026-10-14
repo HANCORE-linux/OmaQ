@@ -1,6 +1,6 @@
 # Terminal client: omaq-connect
 
-**Status:** done; ships with 1.0.0; extended in 1.1.0; transfer fixes in 1.1.1; recall fix in 1.1.2.
+**Status:** done; ships with 1.0.0; extended in 1.1.0; transfer fixes in 1.1.1; recall fix in 1.1.2; replies and identity actions in 1.2.0.
 **Date:** 2026-10-10
 
 `omaq-connect` is a text-only OmaQ client for any terminal. It is one more client of the helper socket beside the bar, so the bar and its behavior stay unchanged.
