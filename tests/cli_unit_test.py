@@ -2541,6 +2541,52 @@ class Replies(Sandbox):
         app.reset_identity()
         self.assertEqual((app.pane.reply, app.pane.select), ("", None))
 
+    def test_an_id_longer_than_the_request_field_cannot_be_answered(self):
+        with open(os.path.join(ROOT, "helper", "json_io.h"), encoding="utf-8") as f:
+            field = int(re.search(r"char reply\[(\d+)\];", f.read()).group(1))
+        self.assertEqual(cli.REPLY_ID_MAX, field - 1)
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        c = app.chat.conv("0")
+        c.loaded, c.request = True, ""
+        fits, too_long = "a" * cli.REPLY_ID_MAX, "b" * (cli.REPLY_ID_MAX + 1)
+        c.items = [cli.Message(fits, "", "in", "fits", 1700000000.0),
+                   cli.Message(too_long, "", "in", "too long", 1700000001.0)]
+        self.assertEqual([m.id for m in app.chat.targets("0")], [fits])
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], fits)
+
+    def test_a_reload_that_shows_the_chosen_message_deleted_drops_the_choice(self):
+        app = self.app([{"id": "0", "key": A, "name": "alice"}])
+        self.chat(app)
+        app.size = (80, 16)
+        app.edit("ctrl", "r")
+        app.edit("key", "enter")
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        self.assertEqual(app.pane.reply, "m3")
+        app.chat.load("0")
+        app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
+                      "items": [{"id": "m1", "dir": "in", "text": "first from alice", "ts": 1700000000},
+                                {"id": "m3", "dir": "in", "text": "latest from alice", "ts": 1700000005,
+                                 "deleted": True}]})
+        self.assertEqual(app.pane.reply, "")
+        self.assertIn("Reply canceled: the message was deleted", self.plain(app.render()))
+        app.edit("text", "yes")
+        app.edit("key", "enter")
+        self.assertEqual(app.link.ops("msg.send")[-1]["reply"], "")
+        app.edit("ctrl", "r")
+        self.assertEqual(app.pane.select, "m1")
+        app.drop_link()
+        app.link, app.handshake = FakeLink(), True
+        app.chat.load("0")
+        app.on_event({"event": "history", "request": app.link.ops("history")[-1]["id"], "conversation": "0", "key": A,
+                      "items": [{"id": "m0", "dir": "in", "text": "older from alice", "ts": 1699999999},
+                                {"id": "m1", "dir": "in", "text": "", "ts": 1700000000, "deleted": True}]})
+        self.assertEqual(app.pane.select, "m0")
+
 
 class IdentityActions(Sandbox):
     def plain(self, text):

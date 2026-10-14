@@ -53,7 +53,7 @@ EVENT_HANDLERS = {
     "identity": "_ev_identity",
     "error": "_ev_error",
     "unread": "chat.on_unread",
-    "history": "chat.on_history",
+    "history": "_ev_history",
     "history.failed": "chat.on_history_failed",
     "message": "_ev_message",
     "message.failed": "chat.on_message_failed",
@@ -1173,18 +1173,25 @@ class App:
         if m.dir == "in" and f and conversation not in self.visible:
             self.say("%s: %s" % (f["name"], shorten(m.text.split("\n", 1)[0], 60)), 8)
 
+    def _ev_history(self, ev):
+        self.chat.on_history(ev)
+        self.drop_deleted_choices(str(ev.get("conversation") or ""))
+
     def _ev_message_updated(self, ev):
         m = self.chat.on_message_updated(ev)
-        if m is None or not m.deleted:
-            return
-        conversation = str(ev.get("conversation") or "")
+        if m is not None and m.deleted:
+            self.drop_deleted_choices(str(ev.get("conversation") or ""))
+
+    def drop_deleted_choices(self, conversation):
+        c = self.chat.convs.get(conversation)
+        deleted = {m.id for m in (c.items if c else []) if m.deleted and m.id}
         for pane in self.layout.panes():
             if pane.conv != conversation:
                 continue
-            if pane.select == m.id:
+            if pane.select in deleted:
                 targets = self.chat.targets(conversation)
                 pane.select = targets[-1].id if targets else None
-            if pane.reply == m.id:
+            if pane.reply in deleted:
                 pane.reply = ""
                 self.say("Reply canceled: the message was deleted")
 

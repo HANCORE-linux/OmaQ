@@ -141,6 +141,11 @@ for request in phase8-queued-1 phase8-queued-2; do
 	grep -a '"event":"message"' "$fa" | grep -a -q "\"request\":\"$request\"" ||
 		{ echo "phase8: $request was not confirmed to the sender" >&2; exit 1; }
 done
+if grep -a '"event":"message.failed"' "$fa" | grep -a -q '"request":"phase8-queued-'; then
+	echo "phase8: a delivered queued message was also reported as failed" >&2
+	grep -a '"event":"message.failed"' "$fa" | grep -a '"request":"phase8-queued-' >&2
+	exit 1
+fi
 
 sent=0
 i=0

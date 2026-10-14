@@ -5,6 +5,7 @@ LINE_MAX = 4096
 
 
 TEXT_MAX = 511
+REPLY_ID_MAX = 79
 FILE_MAX = 8 * 1024 * 1024
 
 
@@ -135,8 +136,8 @@ def shown_text(m):
 
 
 def replyable(m):
-    return (bool(m.id) and m.dir in ("in", "out") and not (m.failed or m.local or m.kind or m.deleted)
-            and bool(m.text.strip()))
+    return (bool(m.id) and len(m.id.encode("utf-8", "surrogatepass")) <= REPLY_ID_MAX and m.dir in ("in", "out")
+            and not (m.failed or m.local or m.kind or m.deleted) and bool(m.text.strip()))
 
 
 def message_from(item):
