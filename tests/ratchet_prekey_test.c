@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,6 +134,144 @@ static int regular_entries(const char *path)
 			count++;
 	closedir(directory);
 	return count;
+}
+
+static int hex_value(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	return -1;
+}
+
+static int varint_read(const unsigned char *data, size_t size, size_t *offset,
+		       uint64_t *value)
+{
+	*value = 0;
+	for (unsigned shift = 0; shift < 64 && *offset < size; shift += 7) {
+		unsigned char byte = data[(*offset)++];
+		*value |= (uint64_t)(byte & 0x7f) << shift;
+		if (!(byte & 0x80))
+			return 0;
+	}
+	return -1;
+}
+
+/* Forges the preKeyId (protobuf field 1) of the PreKeySignalMessage in an OQR103 frame:
+ * `drop` removes it (no one-time prekey), otherwise it becomes 0. The outer protobuf is not
+ * authenticated, so an accepted contact can send either form. The forged message is never
+ * longer than the original. */
+static int forge_prekey_id(const char *wire, int drop, char *out, size_t out_size)
+{
+	static const char digits[] = "0123456789abcdef";
+	unsigned char raw[800], forged[800];
+	size_t hex_length = strlen(wire), size, offset = 1, length = 1;
+	int found = 0;
+
+	if (strncmp(wire, "OQR103", 6) != 0 || hex_length % 2 != 0 ||
+	    (hex_length - 6) / 2 > sizeof(raw) || hex_length < 8)
+		return -1;
+	size = (hex_length - 6) / 2;
+	for (size_t i = 0; i < size; i++) {
+		int high = hex_value(wire[6 + 2 * i]), low = hex_value(wire[7 + 2 * i]);
+		if (high < 0 || low < 0)
+			return -1;
+		raw[i] = (unsigned char)(high << 4 | low);
+	}
+	forged[0] = raw[0]; /* version byte */
+	while (offset < size) {
+		size_t start = offset;
+		uint64_t key, value;
+		if (varint_read(raw, size, &offset, &key) != 0)
+			return -1;
+		if ((key & 7) == 0) {
+			if (varint_read(raw, size, &offset, &value) != 0)
+				return -1;
+			if (key >> 3 == 1) {
+				found = 1;
+				if (!drop) {
+					forged[length++] = 0x08;
+					forged[length++] = 0x00;
+				}
+				continue;
+			}
+		} else if ((key & 7) == 2) {
+			if (varint_read(raw, size, &offset, &value) != 0 || value > size - offset)
+				return -1;
+			offset += (size_t)value;
+		} else {
+			return -1;
+		}
+		memcpy(forged + length, raw + start, offset - start);
+		length += offset - start;
+	}
+	if (!found || 6 + 2 * length + 1 > out_size)
+		return -1;
+	memcpy(out, "OQR103", 6);
+	for (size_t i = 0; i < length; i++) {
+		out[6 + 2 * i] = digits[forged[i] >> 4];
+		out[7 + 2 * i] = digits[forged[i] & 0x0f];
+	}
+	out[6 + 2 * length] = '\0';
+	return 0;
+}
+
+/* Prekey message without a usable one-time-prekey id (missing, or 0: the "any id" sentinel of the
+ * reservation lookup) is refused (-1, never RECOVER), on the first message as on an existing
+ * session, and consumes no reservation. */
+static void prekey_id_guard(const char *root)
+{
+	const char *peer_x = "d:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+	const char *peer_y = "d:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+	const char *peer_z = "d:0000000000000000000000000000000000000000000000000000000000000000";
+	char home_x[640], home_y[640], pre_dir[680];
+	char bundle_x[900], bundle_z[900], bundle_y[900];
+	char rk_x[OMAQ_RK_HEX + 1], rk_y[OMAQ_RK_HEX + 1];
+	char wire[1600], forged[1600], plain[128];
+	struct omaq_ratchet *x, *y;
+	size_t plain_length = 0;
+
+	if (snprintf(home_x, sizeof(home_x), "%s/x", root) >= (int)sizeof(home_x) ||
+	    snprintf(home_y, sizeof(home_y), "%s/y", root) >= (int)sizeof(home_y) ||
+	    snprintf(pre_dir, sizeof(pre_dir), "%s/ratchet/pre", home_x) >= (int)sizeof(pre_dir) ||
+	    mkdir(home_x, 0700) != 0 || mkdir(home_y, 0700) != 0)
+		fail("prekey id guard homes");
+	x = omaq_ratchet_open(home_x);
+	y = omaq_ratchet_open(home_y);
+	if (!x || !y || omaq_ratchet_local_rk(x, rk_x) != 0 || omaq_ratchet_local_rk(y, rk_y) != 0 ||
+	    omaq_ratchet_bundle(x, peer_y, bundle_x, sizeof(bundle_x)) != 0 ||
+	    omaq_ratchet_bundle(x, peer_z, bundle_z, sizeof(bundle_z)) != 0 ||
+	    omaq_ratchet_bundle(y, peer_x, bundle_y, sizeof(bundle_y)) != 0 ||
+	    omaq_ratchet_accept_bundle(x, peer_y, bundle_y, rk_y) != 0 ||
+	    omaq_ratchet_accept_bundle(y, peer_x, bundle_x, rk_x) != 0 ||
+	    omaq_ratchet_encrypt(y, peer_x, "first", wire, sizeof(wire)) != 0)
+		fail("prekey id guard sessions");
+	for (int drop = 1; drop >= 0; drop--)
+		if (forge_prekey_id(wire, drop, forged, sizeof(forged)) != 0 ||
+		    omaq_ratchet_decrypt(x, peer_y, forged, plain, sizeof(plain), &plain_length) != -1)
+			fail(drop ? "first prekey message without prekey id accepted"
+				  : "first prekey message with prekey id 0 accepted");
+	if (regular_entries(pre_dir) != 2 || suffix_entries(pre_dir, ".used") != 0)
+		fail("forged first message consumed a prekey");
+	if (omaq_ratchet_decrypt(x, peer_y, wire, plain, sizeof(plain), &plain_length) != 0 ||
+	    strcmp(plain, "first") != 0 || suffix_entries(pre_dir, ".used") != 1)
+		fail("genuine first prekey message");
+	/* Until y hears back from x, its messages stay prekey messages on the session just built. */
+	if (omaq_ratchet_encrypt(y, peer_x, "second", wire, sizeof(wire)) != 0 ||
+	    strncmp(wire, "OQR103", 6) != 0)
+		fail("follow-up prekey message");
+	for (int drop = 1; drop >= 0; drop--)
+		if (forge_prekey_id(wire, drop, forged, sizeof(forged)) != 0 ||
+		    omaq_ratchet_decrypt(x, peer_y, forged, plain, sizeof(plain), &plain_length) != -1)
+			fail(drop ? "follow-up prekey message without prekey id accepted"
+				  : "follow-up prekey message with prekey id 0 accepted");
+	if (regular_entries(pre_dir) != 2 || suffix_entries(pre_dir, ".used") != 1 ||
+	    omaq_ratchet_decrypt(x, peer_y, wire, plain, sizeof(plain), &plain_length) != 0 ||
+	    strcmp(plain, "second") != 0)
+		fail("genuine follow-up prekey message");
+	omaq_ratchet_close(y);
+	omaq_ratchet_close(x);
 }
 
 int main(void)
@@ -306,6 +445,7 @@ int main(void)
 	omaq_ratchet_close(c);
 	omaq_ratchet_close(b);
 	omaq_ratchet_close(a);
+	prekey_id_guard(root);
 	remove_tree(root);
 	puts("ratchet_prekey_test: ok");
 	return 0;

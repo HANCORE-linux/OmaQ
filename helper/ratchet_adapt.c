@@ -872,9 +872,13 @@ static int pre_rm(uint32_t id, void *ud)
 {
 	struct omaq_ratchet *r = ud;
 	struct prekey_reservation *reservation;
-	struct rec *record = rec_find(r->pre, PREKEYS, NULL, id, 0);
+	struct rec *record;
 	char path[640], used[648];
 
+	/* 0 is the "any id" sentinel of the reservation lookups, never a prekey to consume. */
+	if (id == 0)
+		return -1;
+	record = rec_find(r->pre, PREKEYS, NULL, id, 0);
 	reservation = prekey_reservation_find(r, NULL, id, 0);
 	if (reservation) {
 		if (prekey_path(r, reservation->peer, id, path, sizeof(path)) != 0 ||
@@ -2233,7 +2237,12 @@ int omaq_ratchet_decrypt(struct omaq_ratchet *r, const char *peer,
 	}
 	if (typ == CIPHERTEXT_PREKEY_TYPE) {
 		pre_key_signal_message *m = NULL;
-		if (pre_key_signal_message_deserialize(&m, raw, rawn, r->ctx) == 0) {
+		/* The one-time prekey id is optional on the wire and the getter asserts it is
+		 * present. OmaQ always sends one, in [1, 0xFFFFFF]; 0 is the "any id" sentinel
+		 * of the reservation lookups. Refuse both (-1, no recovery). */
+		if (pre_key_signal_message_deserialize(&m, raw, rawn, r->ctx) == 0 &&
+		    pre_key_signal_message_has_pre_key_id(m) &&
+		    pre_key_signal_message_get_pre_key_id(m) != 0) {
 			uint32_t prekey_id = pre_key_signal_message_get_pre_key_id(m);
 			struct prekey_reservation *reservation =
 				prekey_reservation_find(r, peer, prekey_id, 0);
