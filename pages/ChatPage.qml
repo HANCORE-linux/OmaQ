@@ -320,6 +320,15 @@ FocusScope {
     id: lines
   }
 
+  // Measures message lines with the real font so full-width scripts (Hangul,
+  // CJK) are not undersized by a Latin-only per-character estimate.
+  FontMetrics {
+    id: messageFontMetrics
+    font.family: root.fontFamily
+    font.pixelSize: root.messageTextPx
+    font.hintingPreference: Font.PreferNoHinting
+  }
+
   MediaPlayer {
     id: mediaPlayer
     source: root.activeAudioPath ? root.localFileUrl(root.activeAudioPath) : ""
@@ -1825,10 +1834,11 @@ FocusScope {
       root.replyPreviewFor(replyId)).split("\n")
     var longest = 0
     for (var i = 0; i < sourceLines.length; i++)
-      longest = Math.max(longest, sourceLines[i].length)
+      longest = Math.max(longest, messageFontMetrics.advanceWidth(sourceLines[i]))
     // Size from the complete logical line, not a single-word minimum. This
     // keeps short three-word messages on one line when the window allows it.
-    var estimated = longest * root.messageTextPx * 0.72 + Style.space(16)
+    // The small slack covers bold/markup glyphs that render wider than source.
+    var estimated = Math.ceil(longest * 1.06) + Style.space(18)
     if (withReceipt)
       estimated += Style.space(24)
     var minimum = hasCode ? Style.space(180) : Style.space(52)

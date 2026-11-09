@@ -25,7 +25,7 @@ QML_POLICY_SHA256 = {
     "SafeText.qml": "a8bfa2ea5e13cbd50bf7e9c70995bea06ceeaca9c9d61e63b243ce18a830e354",
     "Service.qml": "ffd4171eb4506e6722fcb0747cf99bbf3c4fc341a9877fb20a5c3c1ab7ddf5ec",
     "SurfaceCoordinator.qml": "c206242de180c0b3a02b5ac50af9ba7e2486be1b0f585ed6ab8983979b0666f0",
-    "pages/ChatPage.qml": "a9a112f8918b09603c83156a0af7866df7621d7d812f75acf59678dc1843b4c1",
+    "pages/ChatPage.qml": "a7298da7cb46665cdf453f9496a97196f404f91d61e09b4fa7fd277ebb95efab",
 }
 TEXT_KINDS = (
     "Controls.TextArea",
@@ -149,7 +149,7 @@ COMPUTED_WRITE_SOURCE_SHA256 = {
     "ChatSurface.qml": "f2454a007e434f61efb711b881261c722405e625dbfd7769ee3c8230949444a5",
     "Panel.qml": "2fc1a84d3c8a9842215b990236b56e7e30252b48551d9717d86fa0b920933edb",
     "Service.qml": "2395f4a77de4bc06a4cd21ad77bdd19fe98c9d41b2bd48de7bfb69eb1d383809",
-    "pages/ChatPage.qml": "1eef27f59165b114dfce943780132009f5491ed96eaccafde3486a7c5e6a28f8",
+    "pages/ChatPage.qml": "cfcec7fd06a1538922ea068d20e63fd1a2dc08db497807d1dc4abfe98c6dfea6",
 }
 REVIEWED_MODEL_MUTATION_IDS = {
     "pages/ChatPage.qml": {"groupReceiptModel"},
